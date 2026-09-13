@@ -6638,6 +6638,10 @@ _NTP_DISP_ALARM = 4.0
 _NTP_EVENTS_CAP = 200
 # tcpdump mode labels for a *time source* (something a client would sync to).
 _NTP_SERVER_MODES = ('Server', 'Broadcast', 'Symmetric Active', 'Symmetric Passive')
+# Symmetric association modes (1/2) — the crypto-NAK auth-bypass path (CVE-2015-7871).
+_NTP_SYM_MODES = ('Symmetric Active', 'Symmetric Passive')
+# Modes where a crypto-NAK is meaningful at all (peer/client/server exchanges).
+_NTP_NAK_MODES = ('Symmetric Active', 'Symmetric Passive', 'Client', 'Server', 'Broadcast')
 # Non-standard modes on 123 = ntpq control (6) / private-monlist (7); some tcpdump
 # builds print both as 'Reserved'. Either way it's query/recon/amplification, never
 # normal client<->server time exchange.
@@ -6656,6 +6660,8 @@ _NTP_HEADER_LEN = 48
 _NTP_EF_MIN_LEN = 28              # RFC 7822 minimum extension-field length
 _NTP_EF_LEN_FLOOR = 8            # absolute floor: type(2)+len(2)+4 body
 _NTP_MAC_SIZES = frozenset((0, 4, 20, 24))   # none / crypto-NAK / MD5 / SHA-1
+_NTP_CRYPTO_NAK_LEN = 4         # a 4-octet MAC = key ID, empty digest (crypto-NAK)
+_NTP_OFF_ORIGIN = 24            # u64 origin timestamp offset within the NTP header
 _NTP_EF_OFF_LEN = 2              # u16 total EF length (incl. header + padding)
 _NTP_EF_OFF_VALLEN = 16         # u32 value length — the crypto_recv() copy length
 _NTP_EF_VALUE_START = 20        # first octet of the value payload
@@ -6799,7 +6805,8 @@ def _parse_ntp_capture(output):
                'ntp_len': int(sm.group(7)),
                'stratum': None, 'sdesc': '', 'refid': '', 'disp': 0.0,
                'leap': None, 'xmit_unix': None, 'offset': None, 'origin': None,
-               'autokey': False, 'autokey_info': None, 'autokey_reasons': []}
+               'autokey': False, 'autokey_info': None, 'autokey_reasons': [],
+               'mac_len': None, 'crypto_nak': False, 'origin_zero': False}
 
         # Autokey / extension-field inspection. Prefer the exact wire bytes from the
         # -x hex dump (lets us catch a malformed EF = the CVE-2014-9295 exploit
@@ -6818,6 +6825,19 @@ def _parse_ntp_capture(output):
                 if trailer < _NTP_EF_MIN_LEN:
                     rec['autokey_reasons'] = ['ef_region_undersized']
                     rec['autokey_info'] = {'ef_len': None, 'region': trailer}
+
+        # MAC trailer classification for the crypto-NAK check (RN16 / CVE-2015-7871).
+        # A 4-octet trailer is a key ID with NO digest — a crypto-NAK. Read from the
+        # wire bytes when present, else from tcpdump's reported NTP length; a trailer
+        # of 4 is unambiguous (a real extension field is >= 28 bytes).
+        mac_trailer = None
+        if payload is not None and len(payload) >= _NTP_HEADER_LEN:
+            mac_trailer = len(payload) - _NTP_HEADER_LEN
+        elif rec['ntp_len'] is not None:
+            mac_trailer = rec['ntp_len'] - _NTP_HEADER_LEN
+        if mac_trailer in _NTP_MAC_SIZES and mac_trailer > 0:
+            rec['mac_len'] = mac_trailer
+            rec['crypto_nak'] = (mac_trailer == _NTP_CRYPTO_NAK_LEN)
 
         st = re.search(r'Stratum\s+(\d+)\s*\(([^)]*)\)', text)
         if st:
@@ -6844,6 +6864,18 @@ def _parse_ntp_capture(output):
                 rec['origin'] = float(om.group(1))
             except ValueError:
                 pass
+        # Zero origin timestamp (RN17 / CVE-2016-7431, CVE-2015-8138): the server's
+        # echo of the client's transmit nonce is all-zero, so the "reply" binds to no
+        # request the client actually made. Read from the wire bytes when present,
+        # else from the parsed text field (an explicit 0.0, not a missing field).
+        if payload is not None and len(payload) >= _NTP_OFF_ORIGIN + 8:
+            try:
+                rec['origin_zero'] = (int.from_bytes(
+                    payload[_NTP_OFF_ORIGIN:_NTP_OFF_ORIGIN + 8], 'big') == 0)
+            except Exception:
+                pass
+        elif rec['origin'] == 0.0:
+            rec['origin_zero'] = True
         xm = re.search(r'(?<!- )Transmit Timestamp:\s*([\d.]+)', text)
         if xm:
             try:
@@ -6953,8 +6985,9 @@ def _ntp_analyze(records, seconds, baseline, learn=True, threshold=None):
         known = dict(baseline['servers'])
         had_baseline = True
 
-    PRIORITY = ['autokey-exploit', 'time-injection', 'rogue-server', 'kod',
-                'stratum-spoof', 'broadcast', 'recon', 'autokey', 'anomaly', 'clean']
+    PRIORITY = ['auth-bypass', 'autokey-exploit', 'time-injection', 'rogue-server',
+                'kod', 'stratum-spoof', 'broadcast', 'recon', 'autokey', 'anomaly',
+                'clean']
     verdict = 'clean'
     reasons = []
 
@@ -7094,6 +7127,50 @@ def _ntp_analyze(records, seconds, baseline, learn=True, threshold=None):
             f"surface for CVE-2014-9295 and its siblings; disable it and use NTS "
             f"or symmetric keys")
 
+    # --- auth-bypass: crypto-NAK (CVE-2015-7871, "NAK to the Future") ---
+    # A 4-octet MAC is a key ID with an empty digest — a crypto-NAK. ntpd < 4.2.8p4
+    # accepted it as satisfying authentication when mobilizing an ephemeral SYMMETRIC
+    # association, so an off-path attacker could peer with the victim and then steer
+    # its clock (marking the real sources falsetickers). A NAK is a legitimate element
+    # in general ("I cannot authenticate you"); the exploit is the symmetric modes
+    # (1/2), so severity splits — symmetric is the bypass, other modes are only noted.
+    sym_nak_srcs = sorted({r['src'] for r in records
+                           if r.get('crypto_nak') and r['mode'] in _NTP_SYM_MODES})
+    other_nak_srcs = sorted({r['src'] for r in records
+                             if r.get('crypto_nak') and r['mode'] in _NTP_NAK_MODES
+                             and r['mode'] not in _NTP_SYM_MODES
+                             and r['src'] not in sym_nak_srcs})
+    for src in sym_nak_srcs:
+        bump('auth-bypass')
+        reasons.append(
+            f"NTP crypto-NAK on a symmetric association from {src} (4-byte MAC, "
+            f"empty digest) — the authentication-bypass path of CVE-2015-7871 "
+            f"('NAK to the Future'): ntpd < 4.2.8p4 mobilizes an unauthenticated peer "
+            f"that can then steer the clock. Upgrade ntp >= 4.2.8p4 / use NTS")
+    for src in other_nak_srcs:
+        bump('anomaly')
+        reasons.append(
+            f"NTP crypto-NAK from {src} — a peer signalling it cannot authenticate; "
+            f"benign in isolation, but the CVE-2015-7871 bypass rides the symmetric "
+            f"(peer) modes, so an unexpected NAK is worth noting")
+
+    # --- time-injection: mode-4 reply with a zero origin timestamp ---
+    # CVE-2016-7431 / CVE-2015-8138: the origin timestamp binds a response to a query
+    # the client actually sent. A zero origin on a SERVER reply echoes no request — an
+    # off-path spoofed response or origin-check bypass, accepted without ever seeing
+    # the client's packet. Distinct from the transmit-offset check (a bad time VALUE)
+    # and the on-path nonce collision above (a non-zero nonce reused). Gated to mode
+    # Server: mode 3/5 and the first packet of a symmetric exchange legitimately carry
+    # a zero origin, so alerting on those would be a guaranteed false positive.
+    zero_origin_srcs = sorted({r['src'] for r in server_recs
+                               if r['mode'] == 'Server' and r.get('origin_zero')})
+    for src in zero_origin_srcs:
+        bump('time-injection')
+        reasons.append(
+            f"NTP server {src} sent a reply with a zero origin timestamp — it echoed "
+            f"no client request (CVE-2016-7431 / CVE-2015-8138): an off-path spoofed "
+            f"response or origin-check bypass, accepted without seeing the query")
+
     # --- anomaly: unusable / forged time source ---
     for src in sorted(servers):
         s = servers[src]
@@ -7175,6 +7252,8 @@ def _ntp_analyze(records, seconds, baseline, learn=True, threshold=None):
         'control_count': len(control_recs),
         'autokey_count': len(ak_seen),
         'autokey_malformed': len(ak_bad),
+        'crypto_nak_count': sum(1 for r in records if r.get('crypto_nak')),
+        'zero_origin_count': len(zero_origin_srcs),
         'rate': round(len(records) / seconds, 2),
         'servers': [_pub(servers[s]) for s in sorted(servers)],
         'advisories': advisories,
@@ -7245,12 +7324,13 @@ def _ntp_selftest():
 
     def block(src, mode='Server', stratum=2, refid='17.253.14.125', xmit_off=0.0,
               disp='0.020000', leap=0, ver=4, rx=BASE, dst='192.168.1.50',
-              origin=None):
+              origin=None, ntp_len=48, origin_zero=False):
         """Craft one tcpdump -tt -v NTP packet block. xmit_off is how far the
         server's transmit time is from the capture time (the injected skew).
         origin is the echoed client nonce — by default a per-source value (real
         servers each echo a different client query), overridable to force the
-        on-path-forgery collision."""
+        on-path-forgery collision. ntp_len sets the reported NTP message length
+        (52 = a 4-byte crypto-NAK MAC); origin_zero emits an all-zero origin echo."""
         ntp_secs = rx + xmit_off + _NTP_UNIX_DELTA
         if origin is None:
             try:
@@ -7259,18 +7339,20 @@ def _ntp_selftest():
                 origin_secs = ntp_secs - 1
         else:
             origin_secs = origin + _NTP_UNIX_DELTA
+        origin_line = ('0.000000000 (1900-01-01T00:00:00Z)' if origin_zero
+                       else f'{origin_secs:.9f} (2026-05-28T20:26:39Z)')
         sdesc = {0: 'unspecified', 1: 'primary reference'}.get(
             stratum, 'secondary reference')
         return "\n".join([
             f"{rx:.6f} IP (tos 0x0, ttl 64, id 1, offset 0, flags [none], "
-            f"proto UDP (17), length 76)",
-            f"    {src}.123 > {dst}.123: NTPv{ver}, {mode}, length 48",
+            f"proto UDP (17), length {ntp_len + 28})",
+            f"    {src}.123 > {dst}.123: NTPv{ver}, {mode}, length {ntp_len}",
             f"\tLeap indicator:  ({leap}), Stratum {stratum} ({sdesc}), "
             f"poll 10 (1024s), precision -23",
             f"\tRoot Delay: 0.000000, Root dispersion: {disp}, "
             f"Reference-ID: {refid}",
             f"\t  Reference Timestamp:  {ntp_secs - 60:.9f} (2026-05-28T20:00:00Z)",
-            f"\t  Originator Timestamp: {origin_secs:.9f} (2026-05-28T20:26:39Z)",
+            f"\t  Originator Timestamp: {origin_line}",
             f"\t  Receive Timestamp:    {ntp_secs:.9f} (2026-05-28T20:26:40Z)",
             f"\t  Transmit Timestamp:   {ntp_secs:.9f} (2026-05-28T20:26:40Z)",
             f"\t    Originator - Receive Timestamp:  +1.000000000",
@@ -7364,6 +7446,49 @@ def _ntp_selftest():
     scenarios.append({'name': 'ntp-origin-parse', 'expect': 'origin!=None',
                       'got': f"origin={op[0].get('origin') if op else None}",
                       'pass': origin_ok})
+
+    # 14. crypto-NAK on a symmetric association (CVE-2015-7871) → auth-bypass.
+    r_nak = run('crypto-nak-symmetric',
+                block('10.0.0.1', mode='Symmetric Active', ntp_len=52),
+                15, base, 'auth-bypass')
+    scenarios.append({'name': 'crypto-nak-reason', 'expect': 'CVE-2015-7871 flagged',
+                      'got': 'present' if any('CVE-2015-7871' in x for x in r_nak['reasons'])
+                      else 'absent',
+                      'pass': any('CVE-2015-7871' in x for x in r_nak['reasons'])})
+    # 15. crypto-NAK parse: a 52-byte NTP message (48 + 4-byte MAC) is a crypto-NAK.
+    pn = _parse_ntp_capture(block('10.0.0.1', ntp_len=52))
+    nak_parse_ok = bool(pn and pn[0].get('crypto_nak') and pn[0].get('mac_len') == 4)
+    scenarios.append({'name': 'crypto-nak-parse', 'expect': 'crypto_nak+mac_len=4',
+                      'got': f"nak={pn[0].get('crypto_nak') if pn else None}"
+                             f",mac={pn[0].get('mac_len') if pn else None}",
+                      'pass': nak_parse_ok})
+    # 16. crypto-NAK in server mode is benign-in-isolation → anomaly, NOT auth-bypass.
+    r_naks = run('crypto-nak-server-benign',
+                 block('10.0.0.1', mode='Server', ntp_len=52), 15, base, 'anomaly')
+    scenarios.append({'name': 'crypto-nak-server-not-bypass',
+                      'expect': 'not auth-bypass',
+                      'got': r_naks['verdict'],
+                      'pass': r_naks['verdict'] != 'auth-bypass'})
+    # 17. zero origin timestamp on a mode-4 reply (CVE-2016-7431) → time-injection.
+    r_zo = run('zero-origin',
+               block('10.0.0.1', origin_zero=True), 15, base, 'time-injection')
+    scenarios.append({'name': 'zero-origin-reason', 'expect': 'CVE-2016-7431 flagged',
+                      'got': 'present' if any('CVE-2016-7431' in x for x in r_zo['reasons'])
+                      else 'absent',
+                      'pass': any('CVE-2016-7431' in x for x in r_zo['reasons'])})
+    # 18. zero-origin parse: the byte/text origin echo is recognised as all-zero.
+    pz = _parse_ntp_capture(block('10.0.0.1', origin_zero=True))
+    scenarios.append({'name': 'zero-origin-parse', 'expect': 'origin_zero=True',
+                      'got': f"origin_zero={pz[0].get('origin_zero') if pz else None}",
+                      'pass': bool(pz and pz[0].get('origin_zero'))})
+    # 19. FP guard: a zero origin in CLIENT mode (mode 3) is legitimate — no RN17.
+    r_zc = run('zero-origin-client-nofp',
+               block('10.0.0.1', mode='Client', origin_zero=True), 15, base, 'clean')
+    scenarios.append({'name': 'zero-origin-client-no-fp',
+                      'expect': 'no zero-origin finding',
+                      'got': 'clean' if not any('zero origin' in x for x in r_zc['reasons'])
+                      else 'flagged',
+                      'pass': not any('zero origin' in x for x in r_zc['reasons'])})
 
     # --- Autokey extension-field detector (byte-level, deterministic, no deps) ---
     def _ak_ef(ef_len, vallen, total=28):
@@ -18989,6 +19114,693 @@ def _comware_in_prefix(family, addr_int, prefix):
     return int(net.network_address) <= addr_int <= int(net.broadcast_address)
 
 
+# ==========================================================================
+# MikroTik Switch and Router Guard — passive RouterOS (CCR/CRS) CVE monitor
+# ==========================================================================
+# Ported from the standalone mikrotikwatch. Detection-only, driven by the shared
+# _guard_packets tcpdump-record model, so it is the per-packet SIGNATURE subset a
+# stateless capture can observe. Deliberately NOT ported (each needs state or
+# frames outside this model, documented so nothing is a silent gap):
+#   - MTK-011 www-crash / MTK-012 jsproxy-crash: the signal is a SERVER connection
+#     teardown with no HTTP response — flow-close behaviour, not a packet signature.
+#     (The MTK-011 Chimay-Red VERSION posture, which needs no interaction, IS ported.)
+#   - MTK-018 + MTK-C02 / MTK-C03: the Winbox->DNS->downgrade chain and the
+#     reboot-after-SCEP sequence are cross-flow / cross-time correlations.
+#   - MTK-009 VXLAN source bypass: silent without an operator-declared VTEP peer
+#     list, which this guard has no config for (the standalone is silent too).
+#   - MTK-004 btest: needs the tcp/2000 control-channel flow state.
+#   - MTK-016 bridge2: arbitrary native-L2 frames, unreachable behind a port-scoped
+#     BPF (the standalone flags it so). tcpdump -x carries only IP-onward bytes.
+_MIKROTIK_GUARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'data', 'mikrotik_guard.json')
+_mikrotik_guard_lock = threading.Lock()
+
+_MIKROTIK_HTTP_PORTS = (80, 8080)
+_MIKROTIK_WINBOX_PORT = 8291
+_MIKROTIK_FTP_PORT = 21
+_MIKROTIK_DNS_PORT = 53
+_MIKROTIK_SMB_PORTS = (139, 445)
+_MIKROTIK_MNDP_PORT = 5678
+_MIKROTIK_TRACEROUTE_LO, _MIKROTIK_TRACEROUTE_HI = 33434, 33534   # MTK-010
+_MIKROTIK_NPK_ORIGINS = ('mikrotik.com',)
+
+# Bare `port` clauses match IPv4 AND IPv6; icmp6 admits the RA (MTK-007); the
+# ext-header clause admits v6 behind an extension header (shared guard constant).
+_MIKROTIK_GUARD_BPF = (
+    'tcp port 80 or tcp port 8080 or tcp port 139 or tcp port 445 or '
+    'tcp port 8291 or tcp port 21 or udp port 53 or udp port 5678 or '
+    'udp portrange 33434-33534 or icmp6 or ' + _GUARD_IP6_EXTHDR_BPF)
+
+_MIKROTIK_WINBOX_TRAVERSAL = (b'../', b'..\\', b'%2e%2e%2f', b'%2e%2e/')      # MTK-003
+_MIKROTIK_WINBOX_CRED_PATHS = (b'user.dat', b'/rw/store/', b'/flash/rw/store')
+_MIKROTIK_FTP_MAX_LINE = 512                                                  # MTK-014
+_MIKROTIK_FTP_MAX_VERB = 4
+_MIKROTIK_CRED_FIELDS = (b'password', b'passwd', b'pass', b'name', b'user', b'username')
+_MIKROTIK_SCEP_LEAF = ('/pkiclient.exe', '/mscep.dll', '/mscep_admin/mscep.dll')  # MTK-008/013
+_MIKROTIK_HOTSPOT_PATHS = ('/login', '/logout', '/status', '/alogin', '/flogin',
+                           '/rlogin', '/error.html', '/redirect.html', '/md5.js')  # MTK-017
+_MIKROTIK_ND_RA = 134                                                        # MTK-007
+_MIKROTIK_ND_OPT_RDNSS = 25
+_MIKROTIK_MNDP_TLV = {1: 'mac', 5: 'identity', 7: 'version', 8: 'platform',
+                      10: 'uptime', 11: 'software_id', 12: 'board', 14: 'unpack',
+                      15: 'ipv6', 16: 'interface', 17: 'ipv4'}
+_MIKROTIK_MNDP_HEADER_LEN = 4
+# DNS RR types for the MTK-019 bailiwick check (A / NS / CNAME / AAAA / DNAME)
+_MIKROTIK_DNS_A, _MIKROTIK_DNS_NS, _MIKROTIK_DNS_CNAME = 1, 2, 5
+_MIKROTIK_DNS_AAAA, _MIKROTIK_DNS_DNAME = 28, 39
+
+# code -> (NAME, CVE). MTK-015 is retired (a Siemens flaw); the gap is deliberate.
+_MIKROTIK_REGISTRY = {
+    'MTK-001': ('WEBFIG_CLEARTEXT_CREDENTIAL_EXPOSURE', 'CVE-2025-61481'),
+    'MTK-002': ('SMB_NETBIOS_PREAUTH_OVERFLOW', 'CVE-2018-7445'),
+    'MTK-003': ('WINBOX_PATH_TRAVERSAL', 'CVE-2018-14847'),
+    'MTK-005': ('REST_LIBJSON_OVERFLOW', 'CVE-2025-10948'),
+    'MTK-006': ('WEBFIG_JSPROXY_TRAVERSAL', 'CVE-2026-67281'),
+    'MTK-007': ('RADVD_RDNSS_BUFFER_OVERFLOW', 'CVE-2023-32154'),
+    'MTK-008': ('SCEP_ASN1_OOB_READ', 'CVE-2026-7668'),
+    'MTK-010': ('IPV6_UDP_FIREWALL_BYPASS', 'CVE-2023-47310'),
+    'MTK-011': ('CHIMAY_RED_WEB_MEMORY_CORRUPTION', 'CVE-2017-20149'),
+    'MTK-013': ('SCEP_BASE64_HEAP_OVERFLOW', 'CVE-2021-41987'),
+    'MTK-014': ('FTP_REQUEST_OVERFLOW', 'CVE-2020-22845'),
+    'MTK-017': ('HOTSPOT_OOB_READ', 'CVE-2022-45313'),
+    'MTK-019': ('DNS_UNRELATED_DATA_CACHE_POISON', 'CVE-2019-3979'),
+    'MTK-020': ('AUTOUPGRADE_ORIGIN_BYPASS', 'CVE-2019-3977'),
+}
+
+
+def _mikrotik_version_tuple(ver):
+    m = re.match(r'^(\d+)\.(\d+)(?:\.(\d+))?', (ver or '').strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+def _mikrotik_chimay_red_affected(version):
+    """CVE-2017-20149: stable fixed 6.38.5, long-term fixed 6.37.5 (branches bounded
+    separately so 6.37.5/6.37.6 are not wrongly condemned); v7 clean."""
+    t = _mikrotik_version_tuple(version)
+    if t is None:
+        return None
+    if t[0] >= 7:
+        return False
+    if t[0] < 6:
+        return None
+    if t[1] == 37:
+        return t < (6, 37, 5)
+    if t[1] >= 38:
+        return t < (6, 38, 5)
+    return True                          # 6.0 .. 6.36.x
+
+
+def _mikrotik_parse_mndp(payload):
+    """Walk MNDP TLVs (UDP/5678). Returns {} on anything that does not walk cleanly —
+    the only passive source of a RouterOS version string on the wire."""
+    out, n = {}, len(payload)
+    if n <= _MIKROTIK_MNDP_HEADER_LEN:
+        return out
+    off = _MIKROTIK_MNDP_HEADER_LEN
+    while off + 4 <= n:
+        ttype = int.from_bytes(payload[off:off + 2], 'big')
+        tlen = int.from_bytes(payload[off + 2:off + 4], 'big')
+        off += 4
+        if tlen > n - off:
+            return {}                    # truncated: distrust the whole walk
+        val = payload[off:off + tlen]
+        off += tlen
+        name = _MIKROTIK_MNDP_TLV.get(ttype)
+        if name in ('identity', 'version', 'platform', 'board', 'software_id',
+                    'interface'):
+            try:
+                out[name] = val.decode('utf-8', 'replace').strip('\x00').strip()
+            except Exception:
+                continue
+    return out
+
+
+def _mikrotik_rdnss_defects(icmp):
+    """MTK-007. RFC 8106: an RDNSS option Length (8-octet units) must be 1 + 2*n for
+    n addresses — always >= 3 and ODD. Anything else is malformed by the arithmetic."""
+    defects = []
+    if len(icmp) < 16 or icmp[0] != _MIKROTIK_ND_RA:
+        return defects
+    off, guard = 16, 0
+    while off + 2 <= len(icmp) and guard < 64:
+        guard += 1
+        otype, olen = icmp[off], icmp[off + 1]
+        if olen == 0:
+            defects.append('option type %d declares length 0' % otype)
+            break
+        span = olen * 8
+        if off + span > len(icmp):
+            defects.append('option type %d overruns the message' % otype)
+            break
+        if otype == _MIKROTIK_ND_OPT_RDNSS:
+            if olen < 3:
+                defects.append('RDNSS length %d is below the minimum of 3' % olen)
+            elif olen % 2 == 0:
+                defects.append('RDNSS length %d is even; RFC 8106 requires an odd '
+                               '1 + 2*n' % olen)
+        off += span
+    return defects
+
+
+def _mikrotik_nbss_defects(buf):
+    """MTK-002. Parse the NBSS header and, for a session request (0x81), validate both
+    encoded names (first-level encoding: exactly 32 chars drawn from A..P). Returns
+    (mtype, defects)."""
+    if len(buf) < 4:
+        return None, ['truncated-header']
+    mtype = buf[0]
+    length = ((buf[1] & 0x01) << 16) | int.from_bytes(buf[2:4], 'big')
+    if mtype not in (0x00, 0x81, 0x82, 0x83, 0x84, 0x85):
+        return mtype, ['unknown-type-0x%02x' % mtype]
+    defects = []
+    if buf[1] & 0xFE:
+        defects.append('reserved-flag-bits-set')
+    body = buf[4:4 + length]
+    if len(body) < length:
+        defects.append('declared-length-exceeds-payload')
+    if mtype != 0x81:
+        return mtype, defects
+    off = 0
+    for which in ('called', 'calling'):
+        if off >= len(body):
+            defects.append('%s-name-missing' % which)
+            break
+        ln = body[off]
+        off += 1
+        if ln != 0x20:
+            defects.append('%s-name-length-0x%02x-not-0x20' % (which, ln))
+            if ln > len(body) - off:
+                defects.append('%s-name-overruns-message' % which)
+                break
+        chunk = body[off:off + ln]
+        if len(chunk) < ln:
+            defects.append('%s-name-truncated' % which)
+            break
+        if ln == 0x20 and any(not (0x41 <= c <= 0x50) for c in chunk):
+            defects.append('%s-name-outside-A-P-encoding' % which)
+        off += ln
+        guard = 0
+        while off < len(body) and body[off] != 0x00 and guard < 64:
+            off += 1 + body[off]
+            guard += 1
+        off += 1
+    return mtype, defects
+
+
+def _mikrotik_dns_name(buf, off):
+    """Decode a possibly-compressed DNS name; bounded pointer-following (a compression
+    loop must not hang a passive observer). Returns (name_lower_bytes, next_off)."""
+    labels, jumps, cursor, end = [], 0, off, -1
+    while 0 <= cursor < len(buf):
+        ln = buf[cursor]
+        if ln == 0:
+            cursor += 1
+            break
+        if ln & 0xC0 == 0xC0:
+            if cursor + 1 >= len(buf):
+                break
+            ptr = ((ln & 0x3F) << 8) | buf[cursor + 1]
+            if end < 0:
+                end = cursor + 2
+            jumps += 1
+            if jumps > 16 or ptr >= len(buf):
+                break
+            cursor = ptr
+            continue
+        labels.append(buf[cursor + 1:cursor + 1 + ln])
+        cursor += 1 + ln
+    return b'.'.join(labels).lower(), (end if end >= 0 else cursor)
+
+
+def _mikrotik_parse_dns(buf):
+    """Return (qname, [(name, rtype, is_chain_target)], is_response) or None."""
+    if len(buf) < 12:
+        return None
+    is_response = bool(int.from_bytes(buf[2:4], 'big') & 0x8000)
+    qd, an, ns, ar = (int.from_bytes(buf[i:i + 2], 'big') for i in (4, 6, 8, 10))
+    if qd < 1 or qd > 4:
+        return None
+    off = 12
+    qname, off = _mikrotik_dns_name(buf, off)
+    off += 4
+    for _ in range(qd - 1):
+        _, off = _mikrotik_dns_name(buf, off)
+        off += 4
+    records = []
+    for count in (an, ns, ar):
+        for _ in range(min(count, 128)):
+            if off >= len(buf):
+                return qname, records, is_response
+            name, off = _mikrotik_dns_name(buf, off)
+            if off + 10 > len(buf):
+                return qname, records, is_response
+            rtype = int.from_bytes(buf[off:off + 2], 'big')
+            rdlen = int.from_bytes(buf[off + 8:off + 10], 'big')
+            rdata_at = off + 10
+            records.append((name, rtype, False))
+            if rtype in (_MIKROTIK_DNS_CNAME, _MIKROTIK_DNS_DNAME, _MIKROTIK_DNS_NS):
+                target, _ = _mikrotik_dns_name(buf, rdata_at)
+                records.append((target, rtype, True))
+            off = rdata_at + rdlen
+    return qname, records, is_response
+
+
+def _mikrotik_in_bailiwick(name, allowed):
+    return any(name == a or name.endswith(b'.' + a) for a in allowed)
+
+
+def _mikrotik_http_request(payload):
+    """Best-effort single-segment HTTP request parse. Returns
+    (method, target, path_lower, headers_lower, body) or None. Like the in-app
+    Juniper guard, this reads the first data segment; a request split across TCP
+    segments is best-effort, which the model documents."""
+    if not payload or (b'\n' not in payload[:4096]):
+        return None
+    try:
+        head, _, body = payload.partition(b'\r\n\r\n')
+        lines = head.split(b'\r\n')
+        parts = lines[0].split(b' ')
+        if len(parts) < 3 or not parts[2].startswith(b'HTTP/') or not parts[0].isalpha():
+            return None
+        target = parts[1].decode('latin-1', 'replace')
+        headers = {}
+        for ln in lines[1:]:
+            k, sep, v = ln.partition(b':')
+            if sep:
+                headers[k.strip().lower().decode('latin-1', 'replace')] = \
+                    v.strip().decode('latin-1', 'replace')
+        return (parts[0].decode('latin-1', 'replace'), target,
+                target.split('?', 1)[0].lower(), headers, body)
+    except Exception:
+        return None
+
+
+def _mikrotik_analyze(records):
+    """Pure classifier over parsed guard packets -> MikroTik findings + verdict.
+    Separated from capture so the self-test can drive it with synthetic packets."""
+    findings = []
+    seen_codes = set()
+    cleartext_mgmt = set()      # server addrs seen serving cleartext mgmt (MTK-001)
+    gated_hits = []             # (server, code) for the MTK-C01 correlation
+
+    def add(code, name, sev, klass, src, cves, detail):
+        key = (code, src)
+        if key in seen_codes:
+            return
+        seen_codes.add(key)
+        findings.append({'code': code, 'name': name, 'severity': sev,
+                         'klass': klass, 'src': src, 'cves': cves, 'detail': detail})
+
+    for r in records:
+        proto = (r.get('proto') or '')
+        pl = r.get('payload') or b''
+        src, dst = r.get('src'), r.get('dst')
+        sport, dport = r.get('sport'), r.get('dport')
+
+        # --- MNDP (UDP/5678): device/version substrate -> MTK-011 Chimay-Red posture
+        if proto == 'UDP' and (dport == _MIKROTIK_MNDP_PORT or sport == _MIKROTIK_MNDP_PORT):
+            ver = _mikrotik_parse_mndp(pl).get('version', '')
+            if ver and _mikrotik_chimay_red_affected(ver) is True:
+                name, cve = _MIKROTIK_REGISTRY['MTK-011']
+                add('MTK-011', name, 'HIGH', 'POSTURE', src, [cve],
+                    {'version': ver, 'posture_only': True,
+                     'note': ('RouterOS %s is inside the Chimay-Red range (stable '
+                              '<6.38.5 / long-term <6.37.5). RouterOS ships one '
+                              'monolithic image with no downstream backporting, so the '
+                              'MNDP version is dispositive of patch state; the web '
+                              'server memory corruption is wormable and mass-exploited '
+                              'since 2017.' % ver)})
+            continue
+
+        # --- DNS response (UDP sport 53): MTK-019 unrelated-data cache poison
+        if proto == 'UDP' and sport == _MIKROTIK_DNS_PORT:
+            parsed = _mikrotik_parse_dns(pl)
+            if parsed and parsed[2] and parsed[0]:
+                qname, recs, _resp = parsed
+                allowed = {qname} | {nm for (nm, _rt, is_t) in recs if is_t}
+                strays = [(nm, rt) for (nm, rt, is_t) in recs
+                          if (not is_t) and rt in (_MIKROTIK_DNS_A, _MIKROTIK_DNS_AAAA)
+                          and not _mikrotik_in_bailiwick(nm, allowed)]
+                if strays:
+                    name, cve = _MIKROTIK_REGISTRY['MTK-019']
+                    a_present = any(rt == _MIKROTIK_DNS_A for _nm, rt in strays)
+                    names = sorted({nm.decode('latin-1', 'replace') for nm, _rt in strays})[:8]
+                    add('MTK-019', name, 'HIGH', 'ATTACK', dst, [cve],
+                        {'qname': qname.decode('latin-1', 'replace'),
+                         'stray_records': names,
+                         'confidence': 'high' if a_present else 'medium',
+                         'aaaa_unconfirmed': not a_present,
+                         'note': ('DNS response carries %d address record(s) outside the '
+                                  'query bailiwick. RouterOS caches every A record in a '
+                                  'response, including unrelated ones, so an '
+                                  'attacker-controlled server poisons the resolver with '
+                                  'records nobody asked for.%s' % (
+                                      len(strays),
+                                      '' if a_present else ' Only AAAA records are out of '
+                                      'bailiwick here; the advisory names A records and '
+                                      'AAAA handling is not confirmed.'))})
+            continue
+
+        # --- IPv6 UDP traceroute-range firewall bypass: MTK-010
+        if (proto == 'UDP' and r.get('ipver') == 6 and sport is not None
+                and _MIKROTIK_TRACEROUTE_LO <= sport <= _MIKROTIK_TRACEROUTE_HI
+                and not (dport is not None
+                         and _MIKROTIK_TRACEROUTE_LO <= dport <= _MIKROTIK_TRACEROUTE_HI)):
+            name, cve = _MIKROTIK_REGISTRY['MTK-010']
+            add('MTK-010', name, 'MEDIUM', 'ATTACK', dst, [cve],
+                {'sport': sport, 'dport': dport, 'ipv6_only': True,
+                 'note': ('inbound IPv6 UDP from source port %d — inside the %d-%d range '
+                          'the default /ipv6 filter accepts for traceroute — addressed to '
+                          'port %s, not a traceroute destination. The attacker-chosen '
+                          'source port rides the rule to any UDP service.'
+                          % (sport, _MIKROTIK_TRACEROUTE_LO, _MIKROTIK_TRACEROUTE_HI, dport))})
+            continue
+
+        # --- ICMPv6 Router Advertisement (type 134): MTK-007 RDNSS overflow
+        if (r.get('ipver') == 6 and 'ICMP' in proto.upper()
+                and pl[:1] == bytes([_MIKROTIK_ND_RA])):
+            defects = _mikrotik_rdnss_defects(pl)
+            if defects:
+                name, cve = _MIKROTIK_REGISTRY['MTK-007']
+                add('MTK-007', name, 'HIGH', 'ATTACK', dst, [cve],
+                    {'defects': defects, 'ipv6_only': True,
+                     'note': ('Router Advertisement carries a malformed RDNSS option — '
+                              + '; '.join(defects) + '. radvd does not length-check this '
+                              'field before copying it. Reachable where '
+                              'accept-router-advertisements=yes.')})
+            continue
+
+        if proto != 'TCP':
+            continue
+
+        # --- Winbox (TCP/8291): MTK-003 path traversal
+        if sport == _MIKROTIK_WINBOX_PORT or dport == _MIKROTIK_WINBOX_PORT:
+            hits = [t for t in _MIKROTIK_WINBOX_TRAVERSAL if t in pl]
+            if hits:
+                creds = [c for c in _MIKROTIK_WINBOX_CRED_PATHS if c.lower() in pl.lower()]
+                name, cve = _MIKROTIK_REGISTRY['MTK-003']
+                add('MTK-003', name, 'HIGH', 'ATTACK', dst, [cve],
+                    {'sequences': len(hits), 'credential_store_path': bool(creds),
+                     'note': ('Winbox frame on tcp/8291 carries parent-directory '
+                              'components — the CVE-2018-14847 unauthenticated traversal '
+                              'that reads the credential store'
+                              + (' (a credential-store path is present)' if creds else '')
+                              + '. A traversal string is unambiguously hostile and is '
+                              'reported regardless of the target patch level.')})
+            continue
+
+        # --- SMB (TCP/139,445): MTK-002 malformed pre-auth NBSS
+        if sport in _MIKROTIK_SMB_PORTS or dport in _MIKROTIK_SMB_PORTS:
+            if pl and dport in _MIKROTIK_SMB_PORTS:               # client -> server
+                mtype, defects = _mikrotik_nbss_defects(pl)
+                if defects and mtype == 0x81:
+                    name, cve = _MIKROTIK_REGISTRY['MTK-002']
+                    add('MTK-002', name, 'HIGH', 'ATTACK', dst, [cve],
+                        {'defects': defects,
+                         'note': ('malformed NetBIOS session request on tcp/%d: '
+                                  % dport + '; '.join(defects) + '. The stack overflow '
+                                  'in RouterOS SMB happens while processing this message, '
+                                  'before authentication.')})
+            continue
+
+        # --- FTP (TCP/21): MTK-014 request overflow / malformed command
+        if sport == _MIKROTIK_FTP_PORT or dport == _MIKROTIK_FTP_PORT:
+            if pl and dport == _MIKROTIK_FTP_PORT:                # client command
+                line = pl.split(b'\n', 1)[0].rstrip(b'\r')
+                verb = line.split(b' ', 1)[0]
+                reasons = []
+                if len(line) > _MIKROTIK_FTP_MAX_LINE:
+                    reasons.append('command line of %d octets exceeds the %d-octet '
+                                   'ceiling FTP servers conventionally enforce'
+                                   % (len(line), _MIKROTIK_FTP_MAX_LINE))
+                if len(verb) > _MIKROTIK_FTP_MAX_VERB or (verb and not verb.isalpha()):
+                    reasons.append('command verb %r is not a valid FTP verb' % verb[:24])
+                if any(c < 0x20 and c != 0x09 for c in line):
+                    reasons.append('control bytes inside the command line')
+                if reasons:
+                    name, cve = _MIKROTIK_REGISTRY['MTK-014']
+                    add('MTK-014', name, 'HIGH', 'ATTACK', dst, [cve],
+                        {'reasons': reasons,
+                         'note': ('malformed FTP request on tcp/21 — ' + '; '.join(reasons)
+                                  + '. The RouterOS FTP request parser overflows on this.')})
+            continue
+
+        # --- HTTP management surface (TCP/80,8080): request-line + header signatures
+        if sport in _MIKROTIK_HTTP_PORTS or dport in _MIKROTIK_HTTP_PORTS:
+            if dport not in _MIKROTIK_HTTP_PORTS:
+                continue
+            req = _mikrotik_http_request(pl)
+            if not req:
+                continue
+            _method, target, path, headers, body = req
+            # MTK-001 — credentials transmitted in the clear (state source + event)
+            has_cred_hdr = ('authorization' in headers or 'proxy-authorization' in headers)
+            has_cred_form = (
+                'application/x-www-form-urlencoded' in headers.get('content-type', '').lower()
+                and body and any(
+                    f.partition(b'=')[0].strip().lower() in _MIKROTIK_CRED_FIELDS
+                    for f in body.split(b'&') if b'=' in f))
+            if has_cred_hdr or has_cred_form:
+                cleartext_mgmt.add(dst)
+                name, cve = _MIKROTIK_REGISTRY['MTK-001']
+                add('MTK-001', name, 'HIGH', 'EXPOSURE', dst, [cve],
+                    {'target': target,
+                     'note': ('credentials transmitted in the clear: %s on cleartext '
+                              'tcp/%s with no TLS — anything on the path has the login.'
+                              % (target, dport))})
+            # MTK-005 — REST libjson overflow (PR:L; body-bearing /rest request)
+            if (path == '/rest' or path.startswith('/rest/')) and body:
+                name, cve = _MIKROTIK_REGISTRY['MTK-005']
+                add('MTK-005', name, 'HIGH', 'ATTACK', dst, [cve],
+                    {'endpoint': target, 'priv': 'PR:L',
+                     'note': ('REST request with a body to %s — the parse_json_element '
+                              'overflow in libjson.so (CVE-2025-10948). PR:L: requires low '
+                              'privileges; never described as unauthenticated.' % target)})
+                gated_hits.append((dst, 'MTK-005'))
+            # MTK-006 — WebFig /jsproxy attack surface (traversal URI is encrypted)
+            if path == '/jsproxy' or path.startswith('/jsproxy/'):
+                name, cve = _MIKROTIK_REGISTRY['MTK-006']
+                add('MTK-006', name, 'MEDIUM', 'EXPOSURE', dst, [cve],
+                    {'target': target,
+                     'note': ('WebFig /jsproxy request observed. The traversal URI is '
+                              'WebFig-encrypted and not readable on the wire, so this '
+                              'records the reachable jsproxy attack surface '
+                              '(CVE-2026-67281), not the traversal itself.')})
+                gated_hits.append((dst, 'MTK-006'))
+            # MTK-013/008 — SCEP: base64 message= with length %% 4 != 0 is the overflow
+            is_scep = (path == '/scep' or path.startswith('/scep/')
+                       or any(path.endswith(leaf) for leaf in _MIKROTIK_SCEP_LEAF))
+            if is_scep:
+                b64_bad = False
+                if '?' in target:
+                    for pair in target.split('?', 1)[1].split('&'):
+                        if pair.lower().startswith('message='):
+                            from urllib.parse import unquote
+                            if len(unquote(pair.split('=', 1)[1])) % 4 != 0:
+                                b64_bad = True
+                if b64_bad:
+                    name, cve = _MIKROTIK_REGISTRY['MTK-013']
+                    add('MTK-013', name, 'HIGH', 'ATTACK', dst, [cve],
+                        {'endpoint': target,
+                         'note': ('SCEP PKIOperation message= base64 length is not a '
+                                  'multiple of 4 — the CVE-2021-41987 base64 heap '
+                                  'overflow (RouterOS is the SCEP server).')})
+                    gated_hits.append((dst, 'MTK-013'))
+                else:
+                    name, cve = _MIKROTIK_REGISTRY['MTK-008']
+                    add('MTK-008', name, 'MEDIUM', 'EXPOSURE', dst, [cve],
+                        {'endpoint': target,
+                         'note': ('SCEP endpoint reachable on cleartext HTTP — the ASN.1 '
+                                  'OOB-read surface (CVE-2026-7668).')})
+                    gated_hits.append((dst, 'MTK-008'))
+            # MTK-017 — hotspot OOB read (PR:L: a captive-portal guest credential)
+            if path.rstrip('/') in _MIKROTIK_HOTSPOT_PATHS:
+                name, cve = _MIKROTIK_REGISTRY['MTK-017']
+                add('MTK-017', name, 'MEDIUM', 'EXPOSURE', dst, [cve],
+                    {'target': target, 'priv': 'PR:L',
+                     'note': ('hotspot login endpoint reachable — the OOB-read surface '
+                              '(CVE-2022-45313). PR:L: on a captive portal that is a '
+                              'guest credential.')})
+                gated_hits.append((dst, 'MTK-017'))
+            # MTK-020 — autoupgrade origin bypass: a .npk fetch from a non-MikroTik origin
+            if path.endswith('.npk'):
+                host = headers.get('host', '').split(':', 1)[0].strip().lower().rstrip('.')
+                if host and not any(host == d or host.endswith('.' + d)
+                                    for d in _MIKROTIK_NPK_ORIGINS):
+                    name, cve = _MIKROTIK_REGISTRY['MTK-020']
+                    add('MTK-020', name, 'HIGH', 'ATTACK', dst, [cve],
+                        {'target': target, 'host': host,
+                         'note': ('RouterOS .npk package fetch from origin %r, not a '
+                                  'MikroTik origin — the autoupgrade origin bypass '
+                                  '(CVE-2019-3977) that installs an attacker-supplied '
+                                  'firmware image.' % host)})
+            continue
+
+    # --- MTK-C01: a gated exploit code fired on a device already serving cleartext mgmt
+    for (dev, code) in gated_hits:
+        if dev in cleartext_mgmt:
+            add('MTK-C01', 'GATED_EVENT_ON_CLEARTEXT_MGMT', 'HIGH', 'ATTACK', dev,
+                sorted({_MIKROTIK_REGISTRY['MTK-001'][1], _MIKROTIK_REGISTRY[code][1]}),
+                {'gated_code': code,
+                 'note': ('a gated exploit signature (%s) fired on a device already '
+                          'observed running management in the clear (MTK-001) — the two '
+                          'legs correlated on one device.' % code)})
+
+    return _guard_finish('mikrotik_guard', None, None, findings, records)
+
+
+def do_mikrotik_guard(interface=None, seconds=20, learn=True, quick=False):
+    """Passive MikroTik RouterOS (CCR/CRS) CVE guard (detection-only). Captures the
+    RouterOS management + attack surface (WebFig/REST/SCEP/hotspot HTTP, Winbox, SMB,
+    FTP, DNS, MNDP, ICMPv6 RA) for a few seconds and reports POSTURE / EXPOSURE /
+    ATTACK findings against a tracked CVE set. Ported from the standalone mikrotikwatch.
+    Never transmits."""
+    iface, iface_error = _lan_guard_iface(interface, 'MikroTik Guard')
+    if iface_error:
+        return iface_error
+    seconds = _clamp_int(seconds, 20, 5, 40)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-tt',
+                '-v', '-x', '-s', '1600', '-c', '20000', _MIKROTIK_GUARD_BPF],
+               timeout=seconds + 8)
+    out = res['out']
+    if not out and res['err'] and any(k in res['err'].lower() for k in (
+            'permission', "couldn't", 'no such device', 'syntax error')):
+        return {'success': False, 'interface': iface, 'error': res['err'].strip()[:200]}
+    records = _guard_packets(out)
+    result = _mikrotik_analyze(records)
+    result['interface'] = iface
+    result['seconds'] = seconds
+    if not quick:
+        _guard_record_event(_MIKROTIK_GUARD_PATH, _mikrotik_guard_lock, result)
+    _guard_emit_jsonl('mikrotik_guard', result)
+    return result
+
+
+def _mikrotik_selftest():
+    """Self-test the MikroTik guard detectors with synthetic records. No root, no
+    live traffic, no persistence."""
+    scenarios = []
+
+    def check(name, recs, expect_verdict, expect_codes=()):
+        res = _mikrotik_analyze(recs)
+        codes = {f['code'] for f in res['findings']}
+        ok = res['verdict'] == expect_verdict and all(c in codes for c in expect_codes)
+        scenarios.append({'name': name, 'expect': '%s/%s' % (expect_verdict, list(expect_codes)),
+                          'got': '%s/%s' % (res['verdict'], sorted(codes)), 'pass': ok})
+        return res
+
+    # BPF conformance: v6 admitted via the next-header ip6[6] clause (not a blanket
+    # `or ip6` that floods a Pi), icmp6 present (MTK-007), no `(ip and ...)` wrapper.
+    _bpf = _MIKROTIK_GUARD_BPF
+    scenarios.append({'name': 'mikrotik-bpf-dualstack',
+                      'expect': 'ip6[6] + icmp6, no blanket/ip-wrapper', 'got': _bpf,
+                      'pass': ('ip6[6]' in _bpf and 'icmp6' in _bpf
+                               and 'tcp port 8291' in _bpf and '(ip and' not in _bpf)})
+
+    def mndp(ver):
+        body = b'\x00\x07' + len(ver.encode()).to_bytes(2, 'big') + ver.encode()
+        return b'\x00\x00\x00\x00' + body
+
+    def dns_resp(qname, stray_name, rtype=1):
+        def enc(n):
+            return b''.join(bytes([len(l)]) + l for l in n.split(b'.')) + b'\x00'
+        hdr = b'\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00'
+        q = enc(qname) + b'\x00\x01\x00\x01'
+        ans = (enc(stray_name) + rtype.to_bytes(2, 'big') + b'\x00\x01'
+               + b'\x00\x00\x00\x3c' + b'\x00\x04' + b'\x01\x02\x03\x04')
+        return hdr + q + ans
+
+    check('mikrotik-clean', [], 'clean')
+    # MTK-011 Chimay-Red posture from an MNDP version string.
+    check('mikrotik-chimay-posture',
+          [_guard_rec(proto='UDP', sport=5678, dport=5678, payload=mndp('6.30.0'))],
+          'posture', ['MTK-011'])
+    # A patched version raises nothing.
+    check('mikrotik-chimay-patched',
+          [_guard_rec(proto='UDP', sport=5678, dport=5678, payload=mndp('6.48.6'))],
+          'clean')
+    # MTK-003 Winbox path traversal.
+    check('mikrotik-winbox-traversal',
+          [_guard_rec(proto='TCP', dport=8291,
+                      payload=b'\x02\x01' + b'GET ../../flash/rw/store/user.dat')],
+          'attack', ['MTK-003'])
+    # MTK-002 malformed pre-auth NBSS session request (called-name length not 0x20).
+    check('mikrotik-smb-nbss',
+          [_guard_rec(proto='TCP', dport=445, payload=b'\x81\x00\x00\x02\x1fA')],
+          'attack', ['MTK-002'])
+    # MTK-014 FTP overlong command line.
+    check('mikrotik-ftp-overflow',
+          [_guard_rec(proto='TCP', dport=21, payload=b'USER ' + b'A' * 600 + b'\r\n')],
+          'attack', ['MTK-014'])
+    # MTK-001 cleartext credentials (Authorization header on HTTP).
+    check('mikrotik-webfig-cred',
+          [_guard_rec(proto='TCP', dport=80,
+                      payload=b'GET /webfig/ HTTP/1.1\r\nAuthorization: Basic eA==\r\n\r\n')],
+          'exposure', ['MTK-001'])
+    # MTK-005 REST body.
+    check('mikrotik-rest',
+          [_guard_rec(proto='TCP', dport=80,
+                      payload=b'POST /rest/ip/address/print HTTP/1.1\r\n'
+                              b'Content-Type: application/json\r\n\r\n{"x":1}')],
+          'attack', ['MTK-005'])
+    # MTK-006 jsproxy request.
+    check('mikrotik-jsproxy',
+          [_guard_rec(proto='TCP', dport=80, payload=b'GET /jsproxy HTTP/1.1\r\n\r\n')],
+          'exposure', ['MTK-006'])
+    # MTK-013 SCEP PKIOperation with a base64 message not a multiple of 4.
+    check('mikrotik-scep-overflow',
+          [_guard_rec(proto='TCP', dport=80,
+                      payload=b'GET /scep?operation=PKIOperation&message=YWJ HTTP/1.1\r\n\r\n')],
+          'attack', ['MTK-013'])
+    # MTK-008 SCEP endpoint reachable (well-formed base64).
+    check('mikrotik-scep-exposure',
+          [_guard_rec(proto='TCP', dport=80,
+                      payload=b'GET /pkiclient.exe?operation=GetCACert HTTP/1.1\r\n\r\n')],
+          'exposure', ['MTK-008'])
+    # MTK-017 hotspot login endpoint.
+    check('mikrotik-hotspot',
+          [_guard_rec(proto='TCP', dport=80, payload=b'GET /login HTTP/1.1\r\n\r\n')],
+          'exposure', ['MTK-017'])
+    # MTK-020 .npk fetch from a non-MikroTik origin.
+    check('mikrotik-npk-origin',
+          [_guard_rec(proto='TCP', dport=80,
+                      payload=b'GET /routeros-6.48.6.npk HTTP/1.1\r\nHost: evil.example\r\n\r\n')],
+          'attack', ['MTK-020'])
+    # MTK-019 DNS response with an out-of-bailiwick A record.
+    check('mikrotik-dns-poison',
+          [_guard_rec(proto='UDP', sport=53, payload=dns_resp(b'a.example', b'evil.net'))],
+          'attack', ['MTK-019'])
+    # A response answering only its own name raises nothing.
+    check('mikrotik-dns-clean',
+          [_guard_rec(proto='UDP', sport=53, payload=dns_resp(b'a.example', b'a.example'))],
+          'clean')
+    # MTK-007 ICMPv6 RA with a malformed (even-length) RDNSS option.
+    check('mikrotik-icmpv6-rdnss',
+          [_guard_rec(proto='ICMPv6', ipver=6, dst='2001:db8::1',
+                      payload=b'\x86\x00\x00\x00\x40\x00\x07\x08' + b'\x00' * 8
+                              + b'\x19\x02' + b'\x00' * 14)],
+          'attack', ['MTK-007'])
+    # MTK-010 IPv6 UDP from a traceroute source port to a non-traceroute service port.
+    check('mikrotik-ipv6-traceroute-bypass',
+          [_guard_rec(proto='UDP', ipver=6, sport=33440, dport=22, dst='2001:db8::1')],
+          'attack', ['MTK-010'])
+    # MTK-C01 correlation: cleartext creds + a gated code on the same device.
+    check('mikrotik-c01-correlation',
+          [_guard_rec(proto='TCP', dport=80, dst='10.0.0.7',
+                      payload=b'GET /webfig/ HTTP/1.1\r\nAuthorization: Basic eA==\r\n\r\n'),
+           _guard_rec(proto='TCP', dport=80, dst='10.0.0.7',
+                      payload=b'POST /rest/x HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{}')],
+          'attack', ['MTK-001', 'MTK-005', 'MTK-C01'])
+
+    failed = sum(1 for s in scenarios if not s['pass'])
+    return {'success': failed == 0, 'passed': len(scenarios) - failed,
+            'total': len(scenarios), 'scenarios': scenarios}
+
+
 def _guard_rec(proto=None, src='10.0.0.9', sport=40000, dst='10.0.0.1',
                dport=None, payload=b'', dissect='', vlan_tags=0, ipver=4,
                ip_raw=b''):
@@ -19615,6 +20427,7 @@ def do_routing_selftest():
               'mac': _mac_selftest(), 'dhcp': _dhcp_selftest(),
               'cisco_guard': _cisco_selftest(), 'juniper_guard': _juniper_selftest(),
               'arista_guard': _arista_selftest(), 'comware_guard': _comware_selftest(),
+              'mikrotik_guard': _mikrotik_selftest(),
               'bgp_speaker': bgp_speaker.selftest(), 'path_asymmetry': path_asymmetry.selftest()}
     return {
         'success': all(s['success'] for s in suites.values()),
@@ -20760,6 +21573,135 @@ def _install_scapy():
     return {'success': True, 'tool': 'scapy', 'message': 'Installed scapy.'}
 
 
+# ==========================================================================
+# Dell Guard daemon control — UI enable/disable for the standalone dellguard
+# ==========================================================================
+# Dell Guard is a standalone systemd daemon (it needs native-L2 LLDP attribution +
+# a learned egress baseline, which a bounded on-demand scan cannot do), so the card
+# offers an enable/disable switch that drives systemd rather than a Scan button. The
+# Ragnar service runs as root, so systemctl is invoked directly (same as the LLDP /
+# sensing-service controls). Unit names are FIXED; the only variable is the interface,
+# which is validated with _valid_iface — no operator string reaches a shell.
+_DELL_GUARD_UNITS = ('dellguard@.service', 'dellguard-learn@.service')
+_DELL_GUARD_CONF = '/etc/ragnar/dellguard.conf'
+_DELL_GUARD_BASELINE = '/var/lib/ragnar/dellguard.baseline.json'
+
+
+def _dell_guard_repo_paths():
+    root = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(root, 'scripts'), os.path.join(root, 'python')
+
+
+def _dell_guard_status(interface=None):
+    """Report the daemon state: units installed, config + baseline present, and which
+    interface (if any) is currently learning or enforcing."""
+    installed = all(os.path.exists('/etc/systemd/system/' + u) for u in _DELL_GUARD_UNITS)
+    baseline_present = os.path.exists(_DELL_GUARD_BASELINE)
+    baseline_age = None
+    if baseline_present:
+        try:
+            baseline_age = int(time.time() - os.path.getmtime(_DELL_GUARD_BASELINE))
+        except OSError:
+            baseline_present = False
+    active_iface, enforcing, learning = None, False, False
+    lu = _run(['systemctl', 'list-units', '--type=service', '--all', '--no-legend',
+               'dellguard@*.service', 'dellguard-learn@*.service'], timeout=10)
+    for ln in (lu['out'] or '').splitlines():
+        parts = ln.replace('●', ' ').split()
+        if len(parts) < 3:
+            continue
+        name, active_col = parts[0], parts[2]        # UNIT LOAD ACTIVE SUB ...
+        if active_col not in ('active', 'activating'):   # a 24h learn oneshot sits in 'activating'
+            continue
+        if name.startswith('dellguard@') and name.endswith('.service'):
+            enforcing = True
+            active_iface = name[len('dellguard@'):-len('.service')]
+        elif name.startswith('dellguard-learn@') and name.endswith('.service'):
+            learning = True
+            active_iface = active_iface or name[len('dellguard-learn@'):-len('.service')]
+    state = ('enforcing' if enforcing else 'learning' if learning
+             else 'installed' if installed else 'not-installed')
+    return {'success': True, 'installed': installed,
+            'config_present': os.path.exists(_DELL_GUARD_CONF),
+            'baseline_present': baseline_present, 'baseline_age_seconds': baseline_age,
+            'active_interface': active_iface, 'enforcing': enforcing,
+            'learning': learning, 'state': state}
+
+
+def _dell_guard_install_files():
+    """Copy the shipped units into /etc/systemd/system, seed the config template (never
+    overwriting an operator config), and reload systemd. Returns a steps dict."""
+    scripts, py = _dell_guard_repo_paths()
+    steps = {}
+    for u in _DELL_GUARD_UNITS:
+        src = os.path.join(scripts, u)
+        if os.path.exists(src):
+            steps['cp_' + u] = _run(['cp', src, '/etc/systemd/system/' + u],
+                                    timeout=10)['rc'] == 0
+    if not os.path.exists(_DELL_GUARD_CONF):
+        try:
+            os.makedirs('/etc/ragnar', exist_ok=True)
+        except OSError:
+            pass
+        tmpl = os.path.join(py, 'dellguard.example.json')
+        if os.path.exists(tmpl):
+            steps['config'] = _run(['install', '-Dm640', '-o', 'ragnar', '-g', 'ragnar',
+                                    tmpl, _DELL_GUARD_CONF], timeout=10)['rc'] == 0
+    _run(['systemctl', 'daemon-reload'], timeout=15)
+    return steps
+
+
+def do_dell_guard_control(action, interface=None):
+    """Drive the Dell Guard daemon from the UI (the Ragnar service runs as root).
+    Actions: 'status'; 'baseline' (start the learn one-shot on <interface>);
+    'enforce' (enable+start the sensor); 'disable' (stop+disable both). Unit names are
+    fixed and the interface is validated, so no untrusted string reaches systemctl."""
+    if action == 'status':
+        return _dell_guard_status(interface)
+    iface = (interface or '').strip()
+    if not iface or not _valid_iface(iface):
+        return {'success': False, 'error': 'a valid interface is required'}
+    if not _have('systemctl'):
+        return {'success': False, 'error': 'systemctl is not available on this host'}
+    at = '@%s.service' % iface
+    # --no-block is essential: dellguard-learn@ is Type=oneshot with a 24h run, so a
+    # plain `systemctl start` blocks for the whole baseline and times out. The units
+    # Conflicts= each other, so starting one stops the other as part of the transaction
+    # — no explicit pre-stop needed. Actions return once the job is queued; the status
+    # pill reflects learning/enforcing on the next refresh.
+    if action == 'baseline':
+        _dell_guard_install_files()
+        r = _run(['systemctl', '--no-block', 'start', 'dellguard-learn' + at], timeout=25)
+        st = _dell_guard_status(iface)
+        st['success'] = (r['rc'] == 0)
+        if r['rc'] == 0:
+            st['message'] = ('baseline learn started on %s — it runs ~24h in the '
+                             'background and emits nothing; it will show as Learning' % iface)
+        else:
+            st['error'] = (r['err'] or 'failed to start the baseline learn run').strip()[:300]
+        return st
+    if action == 'enforce':
+        _dell_guard_install_files()
+        _run(['systemctl', 'enable', 'dellguard' + at], timeout=15)       # symlink only, fast
+        r = _run(['systemctl', '--no-block', 'start', 'dellguard' + at], timeout=25)
+        st = _dell_guard_status(iface)
+        st['success'] = (r['rc'] == 0)
+        if r['rc'] == 0:
+            st['message'] = 'enforcement enabled on %s (starts on boot too)' % iface
+        else:
+            st['error'] = (r['err'] or 'failed to start the sensor').strip()[:300]
+        return st
+    if action == 'disable':
+        _run(['systemctl', 'disable', 'dellguard' + at], timeout=15)      # symlink only, fast
+        _run(['systemctl', '--no-block', 'stop', 'dellguard' + at], timeout=25)
+        _run(['systemctl', '--no-block', 'stop', 'dellguard-learn' + at], timeout=25)
+        st = _dell_guard_status(iface)
+        st['success'] = True
+        st['message'] = 'disabled on %s' % iface
+        return st
+    return {'success': False, 'error': 'unknown action: %s' % action}
+
+
 def do_install_tool(tool):
     """Install a missing network tool on demand via apt. Whitelisted packages
     only. The Ragnar service runs as root, so apt is invoked directly."""
@@ -21476,6 +22418,33 @@ def register_network_diagnostics(app, logger=None):
             role = 'unknown'
         _log(f"net/comware-guard iface={iface or 'default-route'} secs={secs} role={role}")
         return jsonify(do_comware_guard(interface=iface, seconds=secs, role=role))
+
+    @app.route('/api/net/mikrotik-guard', methods=['GET'])
+    def net_mikrotik_guard():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
+        _log(f"net/mikrotik-guard iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_mikrotik_guard(interface=iface, seconds=secs))
+
+    @app.route('/api/net/dell-guard', methods=['GET', 'POST'])
+    def net_dell_guard():
+        # GET = status; POST {action, interface} = baseline / enforce / disable. Dell
+        # Guard is a standalone daemon (LLDP + learned baseline), so this drives systemd
+        # rather than running a bounded scan.
+        if request.method == 'GET':
+            iface = (request.args.get('interface') or '').strip() or None
+            return jsonify(do_dell_guard_control('status', interface=iface))
+        data = request.get_json(silent=True) or {}
+        action = (data.get('action') or '').strip().lower()
+        iface = (data.get('interface') or '').strip() or None
+        if action not in ('status', 'baseline', 'enforce', 'disable'):
+            return _bad('Invalid action')
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        _log(f"net/dell-guard action={action} iface={iface or '-'}")
+        return jsonify(do_dell_guard_control(action, interface=iface))
 
     @app.route('/api/net/fhrp-baseline', methods=['GET', 'POST'])
     def net_fhrp_baseline():
@@ -23735,7 +24704,8 @@ def _cli(argv=None):
     for _gname, _ghelp in (('cisco', 'Cisco router/switch/edge'),
                            ('juniper', 'Juniper J-Web/SSR/Junos-Space'),
                            ('arista', 'Arista EOS switch/router'),
-                           ('comware', 'HPE Comware / Huawei VRF-hopping (MPLS)')):
+                           ('comware', 'HPE Comware / Huawei VRF-hopping (MPLS)'),
+                           ('mikrotik', 'MikroTik RouterOS (CCR/CRS)')):
         gp = sub.add_parser('%s-guard' % _gname,
                             help='passive %s CVE guard (posture/exposure/attack)' % _ghelp)
         gp.add_argument('--iface', '-i', default=None, help='interface (default: route)')
@@ -24622,6 +25592,7 @@ def _cli(argv=None):
         'juniper-guard': (do_juniper_guard, 'Juniper'),
         'arista-guard': (do_arista_guard, 'Arista'),
         'comware-guard': (do_comware_guard, 'Comware'),
+        'mikrotik-guard': (do_mikrotik_guard, 'MikroTik'),
     }
     if args.cmd in _GUARD_CLI:
         fn, label = _GUARD_CLI[args.cmd]
@@ -24650,6 +25621,7 @@ def _cli(argv=None):
         'juniper-guard-selftest': (_juniper_selftest, 'Juniper'),
         'arista-guard-selftest': (_arista_selftest, 'Arista'),
         'comware-guard-selftest': (_comware_selftest, 'Comware'),
+        'mikrotik-guard-selftest': (_mikrotik_selftest, 'MikroTik'),
     }
     if args.cmd in _GUARD_SELFTEST_CLI:
         fn, label = _GUARD_SELFTEST_CLI[args.cmd]

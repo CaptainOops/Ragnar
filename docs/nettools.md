@@ -764,6 +764,23 @@ per-packet Unix timestamp via `-tt`) is parsed and classified:
   is **misaligned**, or is structurally impossible. That value-length overflow is the
   specific signature of **CVE-2014-9295 / CVE-2014-9750** and escalates to a
   **critical** verdict (ranked as such by the Network Integrity Monitor).
+- **Auth bypass — crypto-NAK *(new in v4)*** — a **4-octet MAC** (a key ID with an
+  **empty digest**) is a *crypto-NAK*. On a **symmetric** association (modes 1/2) that
+  is the **CVE-2015-7871** (&ldquo;NAK to the Future&rdquo;) authentication-bypass path:
+  `ntpd` < 4.2.8p4 mobilizes an unauthenticated peer that can then steer the clock, so
+  it escalates to a **critical `auth-bypass`** verdict. A crypto-NAK is a legitimate
+  protocol element in general (&ldquo;I cannot authenticate you&rdquo;), so a NAK in
+  client/server mode is only **noted** (`anomaly`) — the exploit is the peer modes. The
+  4-octet trailer is read from the reconstructed `-x` bytes, with a fallback to the
+  reported NTP length; a real extension field is ≥ 28 bytes, so a 4-byte trailer is
+  unambiguous.
+- **Zero origin timestamp *(new in v4)*** — a **mode-4 server reply** whose **origin
+  timestamp is all-zero** echoes no request the client actually sent — an **off-path
+  spoofed response** or origin-check bypass (**CVE-2016-7431** / **CVE-2015-8138**),
+  surfaced as **`time-injection`**. It is distinct from the transmit-offset check (a bad
+  time *value*) and the on-path nonce collision (a *non-zero* nonce reused). Gated to
+  server replies: mode 3 (client), mode 5 (broadcast) and the first packet of a
+  symmetric exchange legitimately carry a zero origin, so those never false-positive.
 
 The **first scan learns** the trusted time source(s) + their stratum into
 `data/ntp_watch.json`; after a legitimate NTP change, click **Trust current** to
@@ -1215,6 +1232,16 @@ hit, **suspicious** on any other high/warn finding (weak/RC4 cipher, SWEET32, an
 alert flood or truncated record, expired cert, legacy version) — these are exposures
 and attack shapes, not a broken session — else **clean**. Needs a SPAN/mirror port to
 see other hosts on a switched segment.
+
+**Dual-stack capture *(new in v5)*.** The capture filter is port-scoped for IPv4 and
+plain IPv6 (libpcap's `port` primitive matches both), and now also admits **IPv6
+traffic behind an extension header** — a narrow next-header clause
+(`ip6[6]` ∈ Hop-by-Hop/Routing/Fragment/AH/Dest-Opts), since `port` reads the
+transport port at a fixed offset that an EH chain shifts, so an EH-bearing TLS/QUIC
+flow would otherwise be dropped by the kernel filter before `parse_pcap` (which walks
+the chain via scapy) sees it. It is **not** a blanket `or ip6` — that would copy the
+whole v6 stream to userspace to drop it in Python, a needless load on a Pi Zero 2W —
+the same next-header-qualified shape the in-app vendor guards use.
 
 **Deduplicated results.** A browser routinely opens several parallel connections
 to the same host, and a QUIC client may retransmit its Initial — all with an
@@ -1792,8 +1819,12 @@ What it flags:
 Verdict is **clean → suspicious**: every SSH finding is posture, exposure or heuristic —
 none is a confirmed live compromise (regreSSHion can't be confirmed passively), so the scale
 does not reach "compromised". Capture is a short passive tcpdump snapshot dissected with
-Scapy. The parse+detect path is pure Python and self-tests without root (`ssh_watch.py
---selftest`, 201 checks; fixtures are bytes captured from a real OpenSSH server). Hardening
+Scapy; the filter is port-scoped for IPv4 and plain IPv6 and *(new in v3)* also admits
+**IPv6 behind an extension header** via a narrow `ip6[6]` next-header clause (not a blanket
+`or ip6` that would flood a Pi Zero 2W), since libpcap's `port` primitive can't chase an EH
+chain and the replay path already walks it via Scapy. The parse+detect path is pure Python and
+self-tests without root (`ssh_watch.py --selftest`, 204 checks; fixtures are bytes captured
+from a real OpenSSH server). Hardening
 it drives: upgrade sshd to **9.8p1+**, enable **strict KEX** and drop CBC-EtM / ChaCha where
 Terrapin matters, and remove SSH-1 / weak KEX / host-key / cipher / MAC offers. **API:**
 `GET /api/net/ssh-watch` (`seconds`, `grace_seconds`). **CLI:** `ssh-watch`, `ssh-selftest`.
@@ -2685,7 +2716,12 @@ in-app: **`JNPR-060`** (version posture) has no Junos version banner on this cap
 passive version extraction is a known dead end for this vendor, so version postures are
 **not** claimed; **`JNPR-062`** (VSTP BPDU on an L2PT UNI) is a non-IP LLC/SNAP frame
 not reconstructable from IP-onward hex (and is lab-deferred even in the standalone); and
-**`JNPR-063`** needs an operator-declared VTEP set the in-app guard has no config for. **Dual-stack** — the same attacks are detected over **IPv4 and
+**`JNPR-063`** needs an operator-declared VTEP set the in-app guard has no config for.
+*Juniper Guard v4* adds two VXLAN CVEs — **`CVE-2025-21595`** and **`CVE-2026-33781`** —
+but both are reachable only through those same skipped codes (version posture under
+`JNPR-060`, and the non-IP VSTP BPDU under `JNPR-062`), so there is **no new passively
+observable detection** to port; the one feasible VXLAN attack shape (`JNPR-061`,
+`CVE-2021-0254`) is already in-app. **Dual-stack** — the same attacks are detected over **IPv4 and
 IPv6** with the same codes (the logic keys on port + payload, which are identical
 over either family). libpcap's `port` primitive already matches plain v6, so the
 only real gap is a packet **behind an extension header**, where the next-header byte
@@ -2738,10 +2774,81 @@ validated against the published PoC pcap (506 frames → `VRF-001/002/003/014/01
 - Endpoint: `GET /api/net/comware-guard` `{interface, seconds, role}` · binary: `tcpdump`
 - CLI: `python3 network_diagnostics.py comware-guard [--iface I] [--seconds N] [--role ce|core|unknown] [--json]`
 
-> **Watchtower feed.** All four vendor guards append their findings as JSON-lines to
+#### MikroTik Switch and Router Guard
+MikroTik **RouterOS** (CCR / CRS) — a multi-CVE passive guard ported from the standalone
+`mikrotikwatch`. Reads the RouterOS management + attack surface off the wire and names the
+exploit signatures for a tracked CVE set: the two **CISA-KEV** bugs — **`MTK-003`** Winbox
+path traversal that reads the credential store (**CVE-2018-14847**) and **`MTK-002`** the
+pre-auth SMB/NetBIOS overflow (**CVE-2018-7445**, validated by the exact NetBIOS
+first-level name encoding, not a threshold) — plus **`MTK-001`** WebFig credentials in the
+clear (CVE-2025-61481), **`MTK-005`** the REST libjson overflow (CVE-2025-10948, PR:L),
+**`MTK-013`/`MTK-008`** SCEP base64/ASN.1 overflows (CVE-2021-41987 / CVE-2026-7668 — the
+base64 `message=` length mod-4 residue is exact), **`MTK-017`** hotspot (CVE-2022-45313),
+**`MTK-006`** jsproxy surface (CVE-2026-67281), **`MTK-014`** FTP request overflow
+(CVE-2020-22845), **`MTK-020`** the autoupgrade `.npk` origin bypass (CVE-2019-3977),
+**`MTK-019`** DNS unrelated-data cache poisoning (CVE-2019-3979, a bailiwick check over the
+response's own CNAME/DNAME/NS chain), and the IPv6-only **`MTK-007`** RDNSS RA overflow
+(CVE-2023-32154) and **`MTK-010`** traceroute-range firewall bypass (CVE-2023-47310). It
+reads the RouterOS version from **MNDP** (UDP 5678) to raise **`MTK-011`** Chimay-Red
+posture (CVE-2017-20149) — version is *dispositive* because RouterOS ships one monolithic
+image with no downstream backporting — and **`MTK-C01`** correlates a gated exploit on a
+device already seen running management in the clear. **Dual-stack** (bare `port` clauses
+match v4 and v6; a narrow `ip6[6]` clause admits v6 behind an extension header).
+**Signature-based on the per-packet capture model**, so the standalone's codes that need
+state, config or raw L2 are deliberately **not** ported, each with a reason: the www/jsproxy
+**crash** codes (server teardown with no response — flow-close behaviour), the
+Winbox→DNS→downgrade **chain** (`MTK-018` + `MTK-C02`/`C03`, cross-flow/cross-time), the
+VTEP-peer-gated **VXLAN** code (`MTK-009`, needs an operator peer list this guard has no
+config for), the btest control-channel code (`MTK-004`), and `MTK-016` (arbitrary native-L2
+frames, unreachable behind a port-scoped BPF — `tcpdump -x` carries only IP-onward bytes).
+- Endpoint: `GET /api/net/mikrotik-guard` `{interface, seconds}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py mikrotik-guard [--iface I] [--seconds N] [--json]`
+
+> **Watchtower feed.** All five vendor guards append their findings as JSON-lines to
 > `/var/log/ragnar/<guard>.jsonl` (time-window deduplicated), so [Watchtower](#watchtower)
 > tails them into the unified alert pane and single Pushover path alongside the standalone
 > watcher daemons — automatically whenever Extended Monitoring is on.
+
+#### Dell Guard (standalone daemon)
+Dell **SmartFabric OS10** SSRF-egress sensor for **CVE-2025-22474** (CWE-918, CVSS 6.8,
+`C:H/I:N/A:N`). Unlike the four guards above, Dell Guard is **not** an on-demand in-app
+scan — it is an **opt-in standalone daemon** (`python/dellguard.py`, units
+`scripts/dellguard@.service` + `scripts/dellguard-learn@.service`) that feeds
+[Watchtower](#watchtower) via `/var/log/ragnar/dellguard.jsonl`. It lives outside the
+in-app guard model for two structural reasons the bounded `tcpdump` scan cannot meet:
+**(1) attribution is native-L2 LLDP** — it reads the OS10 identity from LLDP (chassis-ID /
+system-description / Management-Address TLV) to prove *this Dell device* originated a
+request; **(2) detection is a *learned baseline*** — a `--learn` run (24 h by default)
+records each device's normal egress, and enforcement flags departures from it. A stateless
+per-capture classifier can hold neither.
+
+CVE-2025-22474 is **PR:H**, so this is a **post-exploitation egress** detector, not a
+vulnerability scanner: a true positive means an already-admin attacker is using the switch
+as an SSRF proxy. The SSRF trigger (HTTPS REST / SSH CLI on the management plane) is
+invisible to a passive tap; the *resulting egress* is not, so detection is **by effect** —
+an outbound request from an attributed OS10 device to a destination absent from its
+baseline. Finding classes: **DG-0xx** posture (OS10 version vs the affected trains
+10.5.4/5/6, 10.6.0), **DG-1xx** exposure (mgmt plane on the segment / cleartext mgmt /
+no Management-Address TLV), **DG-2xx** attack (`DG-201` egress to a cloud
+instance-metadata endpoint — critical, needs no baseline; `DG-202..206` baseline-gated new
+endpoint / protocol / DNS name / fan-out / scope-crossing; `DG-207` egress that could not be
+attributed), and **DG-3xx** operational sensor-state (baseline absent/thin/mismatch). The
+baseline is **never auto-learned** (an auto-updating baseline is attacker-poisonable) and is
+fingerprinted against the attribution config so a baseline built under different attribution
+is refused (`DG-303`) rather than silently applied.
+
+Version **0.1.0-dev**: several thresholds (the sufficiency gate, the 10.5.6 boundary) are
+documented as *starting points, not measured values* — re-derive them against a real
+segment before they drive a patch SLA. Passive/RX-only, kernel-enforced (no `AF_INET`, so
+it can never transmit or open an IP socket). Take a baseline first, then enable the sensor:
+
+```
+sudo cp scripts/dellguard@.service scripts/dellguard-learn@.service /etc/systemd/system/
+sudo install -Dm640 -o ragnar -g ragnar python/dellguard.example.json /etc/ragnar/dellguard.conf
+sudo systemctl start dellguard-learn@eth1.service      # emits nothing; writes the baseline
+sudo systemctl enable --now dellguard@eth1.service     # then enforce
+python3 python/dellguard.py --selftest                 # 256 KAT checks, no root
+```
 
 ### Locate Port
 Physically find **which switch port** the device is plugged into — the software
