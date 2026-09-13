@@ -8567,8 +8567,10 @@ function _dellGuardRender(d) {
     } else {
         bits.push('<span class="text-amber-300">no baseline yet</span>');
     }
-    return '<span class="inline-block px-2 py-0.5 rounded border text-xs ' + p[0] + '">' + p[1] + '</span> '
+    let html = '<span class="inline-block px-2 py-0.5 rounded border text-xs ' + p[0] + '">' + p[1] + '</span> '
          + '<span class="text-gray-400">' + bits.join(' · ') + '</span>';
+    if (d.message) html += '<div class="text-emerald-300 text-xs mt-1">✓ ' + escapeHtml(d.message) + '</div>';
+    return html;
 }
 async function dellGuardRefresh(btn) {
     const out = document.getElementById('dell-guard-status');

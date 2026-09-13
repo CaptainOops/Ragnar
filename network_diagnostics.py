@@ -21608,14 +21608,15 @@ def _dell_guard_status(interface=None):
                'dellguard@*.service', 'dellguard-learn@*.service'], timeout=10)
     for ln in (lu['out'] or '').splitlines():
         parts = ln.replace('●', ' ').split()
-        if not parts:
+        if len(parts) < 3:
             continue
-        name = parts[0]
-        running = ('running' in ln) or (' active ' in (' ' + ln + ' ') and 'exited' not in ln)
-        if name.startswith('dellguard@') and name.endswith('.service') and running:
+        name, active_col = parts[0], parts[2]        # UNIT LOAD ACTIVE SUB ...
+        if active_col not in ('active', 'activating'):   # a 24h learn oneshot sits in 'activating'
+            continue
+        if name.startswith('dellguard@') and name.endswith('.service'):
             enforcing = True
             active_iface = name[len('dellguard@'):-len('.service')]
-        elif name.startswith('dellguard-learn@') and name.endswith('.service') and running:
+        elif name.startswith('dellguard-learn@') and name.endswith('.service'):
             learning = True
             active_iface = active_iface or name[len('dellguard-learn@'):-len('.service')]
     state = ('enforcing' if enforcing else 'learning' if learning
@@ -21663,29 +21664,40 @@ def do_dell_guard_control(action, interface=None):
     if not _have('systemctl'):
         return {'success': False, 'error': 'systemctl is not available on this host'}
     at = '@%s.service' % iface
+    # --no-block is essential: dellguard-learn@ is Type=oneshot with a 24h run, so a
+    # plain `systemctl start` blocks for the whole baseline and times out. The units
+    # Conflicts= each other, so starting one stops the other as part of the transaction
+    # — no explicit pre-stop needed. Actions return once the job is queued; the status
+    # pill reflects learning/enforcing on the next refresh.
     if action == 'baseline':
         _dell_guard_install_files()
-        _run(['systemctl', 'stop', 'dellguard' + at], timeout=15)         # never both at once
-        r = _run(['systemctl', 'start', 'dellguard-learn' + at], timeout=20)
+        r = _run(['systemctl', '--no-block', 'start', 'dellguard-learn' + at], timeout=25)
         st = _dell_guard_status(iface)
         st['success'] = (r['rc'] == 0)
-        if r['rc'] != 0:
+        if r['rc'] == 0:
+            st['message'] = ('baseline learn started on %s — it runs ~24h in the '
+                             'background and emits nothing; it will show as Learning' % iface)
+        else:
             st['error'] = (r['err'] or 'failed to start the baseline learn run').strip()[:300]
         return st
     if action == 'enforce':
         _dell_guard_install_files()
-        _run(['systemctl', 'stop', 'dellguard-learn' + at], timeout=15)
-        r = _run(['systemctl', 'enable', '--now', 'dellguard' + at], timeout=20)
+        _run(['systemctl', 'enable', 'dellguard' + at], timeout=15)       # symlink only, fast
+        r = _run(['systemctl', '--no-block', 'start', 'dellguard' + at], timeout=25)
         st = _dell_guard_status(iface)
         st['success'] = (r['rc'] == 0)
-        if r['rc'] != 0:
-            st['error'] = (r['err'] or 'failed to enable the sensor').strip()[:300]
+        if r['rc'] == 0:
+            st['message'] = 'enforcement enabled on %s (starts on boot too)' % iface
+        else:
+            st['error'] = (r['err'] or 'failed to start the sensor').strip()[:300]
         return st
     if action == 'disable':
-        _run(['systemctl', 'disable', '--now', 'dellguard' + at], timeout=20)
-        _run(['systemctl', 'stop', 'dellguard-learn' + at], timeout=15)
+        _run(['systemctl', 'disable', 'dellguard' + at], timeout=15)      # symlink only, fast
+        _run(['systemctl', '--no-block', 'stop', 'dellguard' + at], timeout=25)
+        _run(['systemctl', '--no-block', 'stop', 'dellguard-learn' + at], timeout=25)
         st = _dell_guard_status(iface)
         st['success'] = True
+        st['message'] = 'disabled on %s' % iface
         return st
     return {'success': False, 'error': 'unknown action: %s' % action}
 
