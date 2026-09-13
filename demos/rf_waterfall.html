@@ -372,6 +372,7 @@
     this.replaying=false; this.replay=null; this._recPoll=null;
     this.busy=0; this.log=[]; this._lastLog=0; this._ismPoll=null;
     this.hist=[]; this.threeD=false; this._last3D=0;   // 3D terrain waterfall state
+    this._liveQ=[]; this._acc=0; this._arrEma=0; this._lastPoll=0;   // de-jitter buffer for even live scroll
     this.model=cfg.synth(cfg.synthDefault);
     this.lo=this.model.lo; this.hi=this.model.hi; this.floor=this.model.floor;
     this.homeLo=this.lo; this.homeHi=this.hi;
@@ -1065,6 +1066,7 @@
   // ---- live sweep ----
   Scope.prototype.startLive=function(){
     var self=this; this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
+    this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0;
     var body={band:this.liveBand};
     if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
     else if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
@@ -1072,10 +1074,10 @@
       .then(function(r){return r.json();}).then(function(res){
         if(res&&res.error){ self.liveErr=res.error; self.showVeil('Could not start '+self.cfg.short,res.error); }
         if(self._poll) clearInterval(self._poll);
-        self._poll=setInterval(function(){ self.livePoll(); },200);
+        self._poll=setInterval(function(){ self.livePoll(); },120);
       }).catch(function(){ self.liveErr='Failed to start '+self.cfg.short; self.showVeil('Could not start '+self.cfg.short,self.liveErr); });
   };
-  Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
+  Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} this._liveQ.length=0; this._acc=0; if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
   Scope.prototype.livePoll=function(){
     if(!running || this.mode!=='live' || this.decoding || this.replaying) return;
     var self=this;
@@ -1093,7 +1095,14 @@
       if(frames.length){
         if(!self._rangeKnown||lo!==self.lo||hi!==self.hi){ self.lo=lo;self.hi=hi;self.floor=floor;self._rangeKnown=true;self.drawRuler();self.placeMarker(); }
         self.hideVeil();
-        frames.forEach(function(f){ self.seq=f.seq; self.pushRow(f.power,self.lo,self.hi,floor); });
+        // Measured arrival rate (rows/s) drives the paced drain in loop().
+        var _now=performance.now();
+        if(self._lastPoll){ var _dt=(_now-self._lastPoll)/1000; if(_dt>0){ var _inst=frames.length/_dt; self._arrEma=self._arrEma?self._arrEma*0.8+_inst*0.2:_inst; } }
+        self._lastPoll=_now;
+        // Enqueue instead of painting per-poll — loop() releases rows evenly so
+        // the fall is continuous, not a burst of rows then a poll-gap freeze.
+        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:self.lo,hi:self.hi,floor:floor}); });
+        if(self._liveQ.length>160) self._liveQ.splice(0,self._liveQ.length-160);
       } else if(self.liveErr){ self.showVeil('⚠ '+self.cfg.short,self.liveErr); }
       else if(!self._rangeKnown){ self.showVeil('Starting '+self.cfg.short+' sweep…','Waiting for the first frame.'); }
     }).catch(function(){});
@@ -1447,6 +1456,16 @@
   var acc=0,last=performance.now();
   function loop(now){ if(!running)return; var dt=(now-last)/1000;last=now;acc+=dt;var interval=1/HZ,did=0;
     while(acc>=interval&&did<4){ scopes.forEach(function(s){ if(s.mode==='synth'&&!s.decoding&&!s.replaying) s.synthStep(); }); acc-=interval;did++; }
+    // Live scopes: release queued rows at the measured arrival rate, evenly, with
+    // a small de-jitter buffer so poll-timing jitter never starves the scroll.
+    scopes.forEach(function(s){
+      if(s.mode!=='live'||s.decoding||s.replaying||!s._liveQ) return;
+      var q=s._liveQ, TARGET=5, nom=s._arrEma>0?s._arrEma:16;
+      var rate=nom+2.0*(q.length-TARGET); if(rate<0)rate=0; if(rate>nom*3)rate=nom*3;
+      s._acc+=rate*dt; var g=0;
+      while(s._acc>=1 && q.length && g++<12){ var it=q.shift(); s.pushRow(it.power,it.lo,it.hi,it.floor); s._acc-=1; }
+      if(s._acc>1) s._acc=1;
+    });
     scopes.forEach(function(s){s.setRate(HZ);}); requestAnimationFrame(loop); }
 
   function updateFoot(){
