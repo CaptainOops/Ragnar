@@ -2566,6 +2566,18 @@
                     </div>
                     <div id="mikrotik-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                 </div>
+                <!-- Dell SmartFabric OS10 Guard (standalone daemon — informational, no on-demand scan) -->
+                <div class="glass rounded-xl p-4 sm:p-6 mt-6">
+                    <h3 class="text-lg font-semibold mb-1">Dell Switch and Router Guard <span class="text-xs font-normal text-gray-500">(SmartFabric OS10 · SSRF egress · standalone daemon)</span></h3>
+                    <p class="text-xs text-amber-300/90 mb-2"><strong>Standalone daemon — no on-demand scan.</strong> Unlike the vendor guards above, Dell Guard has no Scan button here. Its detection needs native-L2 <strong>LLDP</strong> attribution (to prove <em>this</em> is the OS10 device) and a <strong>24-hour learned egress baseline</strong> — neither of which a short bounded capture can hold — so it runs as an opt-in <span class="font-mono">systemd</span> daemon and streams findings into the <strong>Watchtower</strong> feed instead of a card.</p>
+                    <p class="text-sm text-gray-400 mb-2">Passive, detection-only sensor for <strong><code>CVE-2025-22474</code></strong> (Dell SmartFabric OS10 SSRF, CWE-918). It is a <strong>post-exploitation egress</strong> detector — the CVE is PR:H, so the attacker already holds admin: a true positive means an attributed OS10 device made an outbound request to a destination absent from its learned baseline. Findings appear in <strong>Watchtower</strong> once the unit is running. Take a baseline first (emits nothing), then enforce:</p>
+                    <pre class="bg-slate-800 rounded p-3 text-xs font-mono text-gray-300 overflow-x-auto">sudo cp scripts/dellguard@.service scripts/dellguard-learn@.service /etc/systemd/system/
+sudo install -Dm640 -o ragnar -g ragnar python/dellguard.example.json /etc/ragnar/dellguard.conf
+sudo systemctl start dellguard-learn@eth1.service     # baseline (emits nothing)
+sudo systemctl enable --now dellguard@eth1.service    # then enforce
+python3 python/dellguard.py --selftest                # 256 KAT checks, no root</pre>
+                    <p class="text-xs text-gray-500 mt-2">Version 0.1.0-dev — its sufficiency gate and the 10.5.6 train boundary are documented starting points; re-derive them against a real segment before they drive a patch SLA. Full detail in <span class="font-mono">docs/nettools.md → Dell Guard</span>.</p>
+                </div>
                 <!-- BGP Collector + Path Asymmetry (OWD) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">BGP Collector &amp; Path Asymmetry <span class="text-xs font-normal text-gray-500">(control-plane ↔ data-plane)</span></h3>
