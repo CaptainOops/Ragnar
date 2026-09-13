@@ -2566,16 +2566,21 @@
                     </div>
                     <div id="mikrotik-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                 </div>
-                <!-- Dell SmartFabric OS10 Guard (standalone daemon — informational, no on-demand scan) -->
+                <!-- Dell SmartFabric OS10 Guard (standalone daemon — enable/disable switch) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">Dell Switch and Router Guard <span class="text-xs font-normal text-gray-500">(SmartFabric OS10 · SSRF egress · standalone daemon)</span></h3>
-                    <p class="text-xs text-amber-300/90 mb-2"><strong>Standalone daemon — no on-demand scan.</strong> Unlike the vendor guards above, Dell Guard has no Scan button here. Its detection needs native-L2 <strong>LLDP</strong> attribution (to prove <em>this</em> is the OS10 device) and a <strong>24-hour learned egress baseline</strong> — neither of which a short bounded capture can hold — so it runs as an opt-in <span class="font-mono">systemd</span> daemon and streams findings into the <strong>Watchtower</strong> feed instead of a card.</p>
-                    <p class="text-sm text-gray-400 mb-2">Passive, detection-only sensor for <strong><code>CVE-2025-22474</code></strong> (Dell SmartFabric OS10 SSRF, CWE-918). It is a <strong>post-exploitation egress</strong> detector — the CVE is PR:H, so the attacker already holds admin: a true positive means an attributed OS10 device made an outbound request to a destination absent from its learned baseline. Findings appear in <strong>Watchtower</strong> once the unit is running. Take a baseline first (emits nothing), then enforce:</p>
-                    <pre class="bg-slate-800 rounded p-3 text-xs font-mono text-gray-300 overflow-x-auto">sudo cp scripts/dellguard@.service scripts/dellguard-learn@.service /etc/systemd/system/
-sudo install -Dm640 -o ragnar -g ragnar python/dellguard.example.json /etc/ragnar/dellguard.conf
-sudo systemctl start dellguard-learn@eth1.service     # baseline (emits nothing)
-sudo systemctl enable --now dellguard@eth1.service    # then enforce
-python3 python/dellguard.py --selftest                # 256 KAT checks, no root</pre>
+                    <p class="text-xs text-amber-300/90 mb-2"><strong>Standalone daemon, not a bounded scan.</strong> Dell Guard needs native-L2 <strong>LLDP</strong> attribution and a <strong>24-hour learned egress baseline</strong>, so instead of a Scan button it runs continuously as a <span class="font-mono">systemd</span> service and streams findings into the <strong>Watchtower</strong> feed. The switch below installs the units, seeds the config template and drives systemd for you (the Ragnar service runs as root).</p>
+                    <p class="text-sm text-gray-400 mb-3">Passive detection-only sensor for <strong><code>CVE-2025-22474</code></strong> (SmartFabric OS10 SSRF, CWE-918) — a post-exploitation egress detector. Pick the SPAN/mirror interface, <strong>Take a baseline</strong> first (24&nbsp;h, emits nothing — enforcement against no baseline only reports &ldquo;baseline absent&rdquo;), then <strong>Enable enforcement</strong>. For attribution across a routed hop, declare your OS10 devices in <span class="font-mono">/etc/ragnar/dellguard.conf</span>.</p>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <select id="dell-guard-iface" onfocus="_guardFillIfaces('dell-guard-iface')" title="Interface the daemon watches — a SPAN/mirror of the OS10 device's own L2 segment (LLDP is link-local)" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                            <option value="">Select interface…</option>
+                        </select>
+                        <button onclick="dellGuardAction('baseline', this)" class="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Take 24h baseline</button>
+                        <button onclick="dellGuardAction('enforce', this)" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Enable enforcement</button>
+                        <button onclick="dellGuardAction('disable', this)" class="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Disable</button>
+                        <button onclick="dellGuardRefresh(this)" class="w-full sm:w-auto text-cyan-400 underline text-sm whitespace-nowrap">Refresh status</button>
+                    </div>
+                    <div id="dell-guard-status" class="text-sm text-gray-400">Status not loaded — click <span class="text-cyan-400">Refresh status</span>.</div>
                     <p class="text-xs text-gray-500 mt-2">Version 0.1.0-dev — its sufficiency gate and the 10.5.6 train boundary are documented starting points; re-derive them against a real segment before they drive a patch SLA. Full detail in <span class="font-mono">docs/nettools.md → Dell Guard</span>.</p>
                 </div>
                 <!-- BGP Collector + Path Asymmetry (OWD) -->
@@ -8567,7 +8572,7 @@ python3 python/dellguard.py --selftest                # 256 KAT checks, no root<
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260913-mikrotik-guard"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260913-dell-switch"></script>
 
 
 
