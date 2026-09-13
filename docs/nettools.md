@@ -2774,7 +2774,37 @@ validated against the published PoC pcap (506 frames → `VRF-001/002/003/014/01
 - Endpoint: `GET /api/net/comware-guard` `{interface, seconds, role}` · binary: `tcpdump`
 - CLI: `python3 network_diagnostics.py comware-guard [--iface I] [--seconds N] [--role ce|core|unknown] [--json]`
 
-> **Watchtower feed.** All four vendor guards append their findings as JSON-lines to
+#### MikroTik Switch and Router Guard
+MikroTik **RouterOS** (CCR / CRS) — a multi-CVE passive guard ported from the standalone
+`mikrotikwatch`. Reads the RouterOS management + attack surface off the wire and names the
+exploit signatures for a tracked CVE set: the two **CISA-KEV** bugs — **`MTK-003`** Winbox
+path traversal that reads the credential store (**CVE-2018-14847**) and **`MTK-002`** the
+pre-auth SMB/NetBIOS overflow (**CVE-2018-7445**, validated by the exact NetBIOS
+first-level name encoding, not a threshold) — plus **`MTK-001`** WebFig credentials in the
+clear (CVE-2025-61481), **`MTK-005`** the REST libjson overflow (CVE-2025-10948, PR:L),
+**`MTK-013`/`MTK-008`** SCEP base64/ASN.1 overflows (CVE-2021-41987 / CVE-2026-7668 — the
+base64 `message=` length mod-4 residue is exact), **`MTK-017`** hotspot (CVE-2022-45313),
+**`MTK-006`** jsproxy surface (CVE-2026-67281), **`MTK-014`** FTP request overflow
+(CVE-2020-22845), **`MTK-020`** the autoupgrade `.npk` origin bypass (CVE-2019-3977),
+**`MTK-019`** DNS unrelated-data cache poisoning (CVE-2019-3979, a bailiwick check over the
+response's own CNAME/DNAME/NS chain), and the IPv6-only **`MTK-007`** RDNSS RA overflow
+(CVE-2023-32154) and **`MTK-010`** traceroute-range firewall bypass (CVE-2023-47310). It
+reads the RouterOS version from **MNDP** (UDP 5678) to raise **`MTK-011`** Chimay-Red
+posture (CVE-2017-20149) — version is *dispositive* because RouterOS ships one monolithic
+image with no downstream backporting — and **`MTK-C01`** correlates a gated exploit on a
+device already seen running management in the clear. **Dual-stack** (bare `port` clauses
+match v4 and v6; a narrow `ip6[6]` clause admits v6 behind an extension header).
+**Signature-based on the per-packet capture model**, so the standalone's codes that need
+state, config or raw L2 are deliberately **not** ported, each with a reason: the www/jsproxy
+**crash** codes (server teardown with no response — flow-close behaviour), the
+Winbox→DNS→downgrade **chain** (`MTK-018` + `MTK-C02`/`C03`, cross-flow/cross-time), the
+VTEP-peer-gated **VXLAN** code (`MTK-009`, needs an operator peer list this guard has no
+config for), the btest control-channel code (`MTK-004`), and `MTK-016` (arbitrary native-L2
+frames, unreachable behind a port-scoped BPF — `tcpdump -x` carries only IP-onward bytes).
+- Endpoint: `GET /api/net/mikrotik-guard` `{interface, seconds}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py mikrotik-guard [--iface I] [--seconds N] [--json]`
+
+> **Watchtower feed.** All five vendor guards append their findings as JSON-lines to
 > `/var/log/ragnar/<guard>.jsonl` (time-window deduplicated), so [Watchtower](#watchtower)
 > tails them into the unified alert pane and single Pushover path alongside the standalone
 > watcher daemons — automatically whenever Extended Monitoring is on.

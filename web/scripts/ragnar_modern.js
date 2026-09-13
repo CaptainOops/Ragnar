@@ -8546,6 +8546,7 @@ function runCiscoGuard() { _runGuard('cisco', 'Cisco', (typeof event !== 'undefi
 function runJuniperGuard() { _runGuard('juniper', 'Juniper', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runAristaGuard() { _runGuard('arista', 'Arista', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runComwareGuard() { _runGuard('comware', 'Comware', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
+function runMikroTikGuard() { _runGuard('mikrotik', 'MikroTik', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 
 // ---- ICMP Watch (passive ICMP-redirect / L3 route injection) ---------------
 const _ICMP_VERDICT_STYLE = {

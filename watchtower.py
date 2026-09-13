@@ -111,6 +111,8 @@ DEFAULT_SOURCES = {
                       'paths': ['/var/log/ragnar/arista_guard.jsonl']},
     'comware_guard': {'label': 'Comware Guard (VRF-hop / MPLS)',
                       'paths': ['/var/log/ragnar/comware_guard.jsonl']},
+    'mikrotik_guard': {'label': 'MikroTik Guard (RouterOS CCR/CRS)',
+                       'paths': ['/var/log/ragnar/mikrotik_guard.jsonl']},
     # In-app L5-L7 passive observers (ssh_watch / telnet_watch do_*_watch) emit
     # their non-info findings here so the unified pane tails them too.
     'ssh_watch':     {'label': 'SSH Watch (regreSSHion / Terrapin)',
