@@ -21573,6 +21573,135 @@ def _install_scapy():
     return {'success': True, 'tool': 'scapy', 'message': 'Installed scapy.'}
 
 
+# ==========================================================================
+# Dell Guard daemon control — UI enable/disable for the standalone dellguard
+# ==========================================================================
+# Dell Guard is a standalone systemd daemon (it needs native-L2 LLDP attribution +
+# a learned egress baseline, which a bounded on-demand scan cannot do), so the card
+# offers an enable/disable switch that drives systemd rather than a Scan button. The
+# Ragnar service runs as root, so systemctl is invoked directly (same as the LLDP /
+# sensing-service controls). Unit names are FIXED; the only variable is the interface,
+# which is validated with _valid_iface — no operator string reaches a shell.
+_DELL_GUARD_UNITS = ('dellguard@.service', 'dellguard-learn@.service')
+_DELL_GUARD_CONF = '/etc/ragnar/dellguard.conf'
+_DELL_GUARD_BASELINE = '/var/lib/ragnar/dellguard.baseline.json'
+
+
+def _dell_guard_repo_paths():
+    root = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(root, 'scripts'), os.path.join(root, 'python')
+
+
+def _dell_guard_status(interface=None):
+    """Report the daemon state: units installed, config + baseline present, and which
+    interface (if any) is currently learning or enforcing."""
+    installed = all(os.path.exists('/etc/systemd/system/' + u) for u in _DELL_GUARD_UNITS)
+    baseline_present = os.path.exists(_DELL_GUARD_BASELINE)
+    baseline_age = None
+    if baseline_present:
+        try:
+            baseline_age = int(time.time() - os.path.getmtime(_DELL_GUARD_BASELINE))
+        except OSError:
+            baseline_present = False
+    active_iface, enforcing, learning = None, False, False
+    lu = _run(['systemctl', 'list-units', '--type=service', '--all', '--no-legend',
+               'dellguard@*.service', 'dellguard-learn@*.service'], timeout=10)
+    for ln in (lu['out'] or '').splitlines():
+        parts = ln.replace('●', ' ').split()
+        if len(parts) < 3:
+            continue
+        name, active_col = parts[0], parts[2]        # UNIT LOAD ACTIVE SUB ...
+        if active_col not in ('active', 'activating'):   # a 24h learn oneshot sits in 'activating'
+            continue
+        if name.startswith('dellguard@') and name.endswith('.service'):
+            enforcing = True
+            active_iface = name[len('dellguard@'):-len('.service')]
+        elif name.startswith('dellguard-learn@') and name.endswith('.service'):
+            learning = True
+            active_iface = active_iface or name[len('dellguard-learn@'):-len('.service')]
+    state = ('enforcing' if enforcing else 'learning' if learning
+             else 'installed' if installed else 'not-installed')
+    return {'success': True, 'installed': installed,
+            'config_present': os.path.exists(_DELL_GUARD_CONF),
+            'baseline_present': baseline_present, 'baseline_age_seconds': baseline_age,
+            'active_interface': active_iface, 'enforcing': enforcing,
+            'learning': learning, 'state': state}
+
+
+def _dell_guard_install_files():
+    """Copy the shipped units into /etc/systemd/system, seed the config template (never
+    overwriting an operator config), and reload systemd. Returns a steps dict."""
+    scripts, py = _dell_guard_repo_paths()
+    steps = {}
+    for u in _DELL_GUARD_UNITS:
+        src = os.path.join(scripts, u)
+        if os.path.exists(src):
+            steps['cp_' + u] = _run(['cp', src, '/etc/systemd/system/' + u],
+                                    timeout=10)['rc'] == 0
+    if not os.path.exists(_DELL_GUARD_CONF):
+        try:
+            os.makedirs('/etc/ragnar', exist_ok=True)
+        except OSError:
+            pass
+        tmpl = os.path.join(py, 'dellguard.example.json')
+        if os.path.exists(tmpl):
+            steps['config'] = _run(['install', '-Dm640', '-o', 'ragnar', '-g', 'ragnar',
+                                    tmpl, _DELL_GUARD_CONF], timeout=10)['rc'] == 0
+    _run(['systemctl', 'daemon-reload'], timeout=15)
+    return steps
+
+
+def do_dell_guard_control(action, interface=None):
+    """Drive the Dell Guard daemon from the UI (the Ragnar service runs as root).
+    Actions: 'status'; 'baseline' (start the learn one-shot on <interface>);
+    'enforce' (enable+start the sensor); 'disable' (stop+disable both). Unit names are
+    fixed and the interface is validated, so no untrusted string reaches systemctl."""
+    if action == 'status':
+        return _dell_guard_status(interface)
+    iface = (interface or '').strip()
+    if not iface or not _valid_iface(iface):
+        return {'success': False, 'error': 'a valid interface is required'}
+    if not _have('systemctl'):
+        return {'success': False, 'error': 'systemctl is not available on this host'}
+    at = '@%s.service' % iface
+    # --no-block is essential: dellguard-learn@ is Type=oneshot with a 24h run, so a
+    # plain `systemctl start` blocks for the whole baseline and times out. The units
+    # Conflicts= each other, so starting one stops the other as part of the transaction
+    # — no explicit pre-stop needed. Actions return once the job is queued; the status
+    # pill reflects learning/enforcing on the next refresh.
+    if action == 'baseline':
+        _dell_guard_install_files()
+        r = _run(['systemctl', '--no-block', 'start', 'dellguard-learn' + at], timeout=25)
+        st = _dell_guard_status(iface)
+        st['success'] = (r['rc'] == 0)
+        if r['rc'] == 0:
+            st['message'] = ('baseline learn started on %s — it runs ~24h in the '
+                             'background and emits nothing; it will show as Learning' % iface)
+        else:
+            st['error'] = (r['err'] or 'failed to start the baseline learn run').strip()[:300]
+        return st
+    if action == 'enforce':
+        _dell_guard_install_files()
+        _run(['systemctl', 'enable', 'dellguard' + at], timeout=15)       # symlink only, fast
+        r = _run(['systemctl', '--no-block', 'start', 'dellguard' + at], timeout=25)
+        st = _dell_guard_status(iface)
+        st['success'] = (r['rc'] == 0)
+        if r['rc'] == 0:
+            st['message'] = 'enforcement enabled on %s (starts on boot too)' % iface
+        else:
+            st['error'] = (r['err'] or 'failed to start the sensor').strip()[:300]
+        return st
+    if action == 'disable':
+        _run(['systemctl', 'disable', 'dellguard' + at], timeout=15)      # symlink only, fast
+        _run(['systemctl', '--no-block', 'stop', 'dellguard' + at], timeout=25)
+        _run(['systemctl', '--no-block', 'stop', 'dellguard-learn' + at], timeout=25)
+        st = _dell_guard_status(iface)
+        st['success'] = True
+        st['message'] = 'disabled on %s' % iface
+        return st
+    return {'success': False, 'error': 'unknown action: %s' % action}
+
+
 def do_install_tool(tool):
     """Install a missing network tool on demand via apt. Whitelisted packages
     only. The Ragnar service runs as root, so apt is invoked directly."""
@@ -22298,6 +22427,24 @@ def register_network_diagnostics(app, logger=None):
         secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
         _log(f"net/mikrotik-guard iface={iface or 'default-route'} secs={secs}")
         return jsonify(do_mikrotik_guard(interface=iface, seconds=secs))
+
+    @app.route('/api/net/dell-guard', methods=['GET', 'POST'])
+    def net_dell_guard():
+        # GET = status; POST {action, interface} = baseline / enforce / disable. Dell
+        # Guard is a standalone daemon (LLDP + learned baseline), so this drives systemd
+        # rather than running a bounded scan.
+        if request.method == 'GET':
+            iface = (request.args.get('interface') or '').strip() or None
+            return jsonify(do_dell_guard_control('status', interface=iface))
+        data = request.get_json(silent=True) or {}
+        action = (data.get('action') or '').strip().lower()
+        iface = (data.get('interface') or '').strip() or None
+        if action not in ('status', 'baseline', 'enforce', 'disable'):
+            return _bad('Invalid action')
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        _log(f"net/dell-guard action={action} iface={iface or '-'}")
+        return jsonify(do_dell_guard_control(action, interface=iface))
 
     @app.route('/api/net/fhrp-baseline', methods=['GET', 'POST'])
     def net_fhrp_baseline():

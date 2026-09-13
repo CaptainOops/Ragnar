@@ -8547,6 +8547,59 @@ function runJuniperGuard() { _runGuard('juniper', 'Juniper', (typeof event !== '
 function runAristaGuard() { _runGuard('arista', 'Arista', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runComwareGuard() { _runGuard('comware', 'Comware', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runMikroTikGuard() { _runGuard('mikrotik', 'MikroTik', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
+// --- Dell Guard daemon control (standalone systemd sensor; enable/disable switch) ---
+function _dellGuardRender(d) {
+    if (!d) return '<span class="text-red-400">No status returned.</span>';
+    if (d.success === false && d.error) return '<span class="text-red-400">Error: ' + escapeHtml(d.error) + '</span>';
+    const pills = {
+        'enforcing':     ['bg-emerald-950/50 border-emerald-800 text-emerald-300', '● Enforcing'],
+        'learning':      ['bg-amber-950/50 border-amber-800 text-amber-300', '◐ Learning baseline'],
+        'installed':     ['bg-slate-800 border-slate-700 text-slate-300', '○ Installed · idle'],
+        'not-installed': ['bg-slate-800 border-slate-700 text-slate-400', '○ Not installed'],
+    };
+    const p = pills[d.state] || ['bg-slate-800 border-slate-700 text-slate-400', escapeHtml(d.state || 'unknown')];
+    const bits = [];
+    if (d.active_interface) bits.push('iface <span class="font-mono">' + escapeHtml(d.active_interface) + '</span>');
+    bits.push('config ' + (d.config_present ? 'present' : '<span class="text-amber-300">missing — LLDP-only attribution</span>'));
+    if (d.baseline_present) {
+        const h = (d.baseline_age_seconds != null) ? Math.floor(d.baseline_age_seconds / 3600) : null;
+        bits.push('baseline ' + (h != null ? h + 'h old' : 'present') + ((h != null && h < 24) ? ' <span class="text-amber-300">(thin, &lt;24h)</span>' : ''));
+    } else {
+        bits.push('<span class="text-amber-300">no baseline yet</span>');
+    }
+    let html = '<span class="inline-block px-2 py-0.5 rounded border text-xs ' + p[0] + '">' + p[1] + '</span> '
+         + '<span class="text-gray-400">' + bits.join(' · ') + '</span>';
+    if (d.message) html += '<div class="text-emerald-300 text-xs mt-1">✓ ' + escapeHtml(d.message) + '</div>';
+    return html;
+}
+async function dellGuardRefresh(btn) {
+    const out = document.getElementById('dell-guard-status');
+    _guardFillIfaces('dell-guard-iface');
+    if (out) out.innerHTML = '<span class="text-gray-500">Checking…</span>';
+    try {
+        const d = await fetchAPI('/api/net/dell-guard');
+        if (out) out.innerHTML = _dellGuardRender(d);
+    } catch (e) {
+        if (out) out.innerHTML = '<span class="text-red-400">Error: ' + escapeHtml(e.message) + '</span>';
+    }
+}
+async function dellGuardAction(action, btn) {
+    const out = document.getElementById('dell-guard-status');
+    const sel = document.getElementById('dell-guard-iface');
+    const iface = sel && sel.value ? sel.value : '';
+    if (!iface) { if (out) out.innerHTML = '<span class="text-amber-300">Select an interface first.</span>'; return; }
+    const labels = { baseline: 'Starting 24h baseline…', enforce: 'Enabling enforcement…', disable: 'Disabling…' };
+    _ndBusy(btn, true, labels[action] || 'Working…');
+    if (out) out.innerHTML = '<span class="text-gray-500">' + escapeHtml(labels[action] || 'Working…') + '</span>';
+    try {
+        const d = await postAPI('/api/net/dell-guard', { action: action, interface: iface });
+        if (out) out.innerHTML = _dellGuardRender(d);
+    } catch (e) {
+        if (out) out.innerHTML = '<span class="text-red-400">Error: ' + escapeHtml(e.message) + '</span>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
 
 // ---- ICMP Watch (passive ICMP-redirect / L3 route injection) ---------------
 const _ICMP_VERDICT_STYLE = {
