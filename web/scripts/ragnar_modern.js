@@ -24297,6 +24297,8 @@ function loadCydNodes() {
         const s = (d && d.serial) || {};
         const cb = document.getElementById('cyd-serial-toggle');
         if (cb) cb.checked = !!s.enabled;
+        const pin = document.getElementById('cyd-serial-port');
+        if (pin && document.activeElement !== pin) pin.value = s.configured_port || '';
         const ss = document.getElementById('cyd-serial-status');
         if (ss) {
             ss.textContent = !s.enabled ? 'off'
@@ -24390,7 +24392,21 @@ window.loadCydNodes = loadCydNodes;
 window.loadCydTokens = loadCydTokens;
 window.cydGenerateToken = cydGenerateToken;
 window.cydRevokeToken = cydRevokeToken;
+function cydSaveSerialPort() {
+    const pin = document.getElementById('cyd-serial-port');
+    const port = (pin && pin.value || '').trim();
+    networkAwareFetch('/api/cyd/serial/port', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port })
+    }).then(r => r.json()).then(d => {
+        if (d && d.success === false) { showNotification(d.error || 'Invalid port', 'error'); return; }
+        showNotification(port ? ('Serial port set to ' + port) : 'Serial port set to auto-detect', 'success');
+        loadCydNodes();
+    }).catch(() => { showNotification('Set serial port failed', 'error'); });
+}
+
 window.cydToggleSerial = cydToggleSerial;
+window.cydSaveSerialPort = cydSaveSerialPort;
 function _xferStartPolling() { _xferStopPolling(); _xferPollTimer = setInterval(xferRefresh, 2000); }
 function _xferStopPolling() { if (_xferPollTimer) { clearInterval(_xferPollTimer); _xferPollTimer = null; } }
 function xferRefresh() { loadXferTransfers(); loadXferInbox(); }

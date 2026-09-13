@@ -61,14 +61,15 @@ class CydSerialBridge:
     """
 
     def __init__(self, build_status, on_ingest, on_action, enabled,
-                 baud=115200, status_interval=2.0, port=None):
+                 baud=115200, status_interval=2.0, port=None, get_port=None):
         self._build_status = build_status
         self._on_ingest = on_ingest
         self._on_action = on_action
         self._enabled = enabled
         self._baud = baud
         self._status_interval = status_interval
-        self._forced_port = port
+        self._forced_port = port          # static override (tests)
+        self._get_port = get_port          # dynamic override (a config getter)
         self._thread = None
         self._stop = threading.Event()
         # Observable state for the UI / API.
@@ -90,9 +91,11 @@ class CydSerialBridge:
         self._stop.set()
 
     def status(self):
+        cfg = self._configured_port()
         return {
             'enabled': bool(self._safe_enabled()),
-            'port': self.port,
+            'port': self.port,                 # the port actually open (None if not)
+            'configured_port': cfg,            # the override, or None = auto-detect USB
             'connected': self.connected,
             'last_rx': int(self.last_rx) if self.last_rx else None,
             'error': self.last_error,
@@ -105,6 +108,18 @@ class CydSerialBridge:
         except Exception:
             return False
 
+    def _configured_port(self):
+        """The port override: static, else the config getter, else None (auto)."""
+        if self._forced_port:
+            return self._forced_port
+        if self._get_port:
+            try:
+                p = (self._get_port() or '').strip()
+                return p or None
+            except Exception:
+                return None
+        return None
+
     def _run(self):
         pyserial = _import_serial()
         if pyserial is None:
@@ -115,9 +130,11 @@ class CydSerialBridge:
                 self._teardown(None)
                 time.sleep(1.0)
                 continue
-            port = self._forced_port or detect_port()
+            # A configured port (e.g. /dev/serial0 for the GPIO-UART wiring) wins;
+            # otherwise auto-detect a USB device.
+            port = self._configured_port() or detect_port()
             if not port:
-                self._teardown('no CYD device found')
+                self._teardown('no port (set one, or plug in a USB CYD)')
                 time.sleep(2.0)
                 continue
             try:
@@ -149,7 +166,13 @@ class CydSerialBridge:
         """Read reports + push status until disabled, unplugged, or stopped."""
         buf = bytearray()
         next_status = 0.0
+        opened_on = self.port
         while not self._stop.is_set() and self._safe_enabled():
+            # If the operator points us at a different explicit port, drop this
+            # session so _run reopens on the new one.
+            cfg = self._configured_port()
+            if cfg and cfg != opened_on:
+                break
             # ── inbound: drain available bytes, split on newline ──────────────
             try:
                 n = ser.in_waiting

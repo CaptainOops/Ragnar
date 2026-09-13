@@ -47,6 +47,14 @@ The firmware picks its transport at compile time (`CYD_TRANSPORT_SERIAL` in
   the same allowlist as the HTTP path — the endpoints below are the WiFi path's
   door to the very same machinery.
 
+  The link is **UART0** either way, so it needs no firmware change: run it over
+  the **USB cable** (auto-detected, `/dev/ttyUSB*`), or over the CYD's **P1
+  header** (VIN/GND/TX0/RX0) wired straight to the Pi's GPIO UART — both 3.3 V,
+  no level shifter. Pick the port with the **Serial port** field under Mesh →
+  CYD Nodes (empty = auto-detect USB; `/dev/serial0` = the GPIO wiring), which
+  sets `config['cyd_serial_port']` — `POST /api/cyd/serial/port`. SPI isn't
+  usable: the board breaks out only 3 free pins (one input-only).
+
 - **WiFi (`=0`).** The node joins WiFi and calls the REST API below, authenticated
   by a Bearer device token, provisioned via the on-device captive portal.
 

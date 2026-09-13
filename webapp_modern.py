@@ -2801,6 +2801,8 @@ _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     on_ingest=_cyd_serial_on_ingest,
     on_action=_cyd_serial_on_action,
     enabled=lambda: bool(shared_data.config.get('cyd_serial_enabled', False)),
+    # Empty = auto-detect a USB CYD; set e.g. /dev/serial0 for the GPIO-UART wiring.
+    get_port=lambda: (shared_data.config.get('cyd_serial_port') or '').strip() or None,
     baud=115200,
 )
 try:
@@ -2826,6 +2828,23 @@ def cyd_serial_toggle():
         shared_data.save_config()
     except Exception as exc:
         logger.debug(f"[cyd] save_config after serial toggle failed: {exc}")
+    return jsonify({'success': True, 'serial': _cyd_bridge.status()})
+
+
+@app.route('/api/cyd/serial/port', methods=['POST'])
+def cyd_serial_port():
+    """Set the serial port the bridge uses. Empty string = auto-detect a USB
+    CYD; a path like /dev/serial0 selects the Pi's GPIO UART (the P1-header
+    wiring). Basic validation: must be a /dev/... path."""
+    data = request.get_json(silent=True) or {}
+    port = str(data.get('port') or '').strip()
+    if port and not (port.startswith('/dev/') and '..' not in port):
+        return jsonify({'success': False, 'error': 'port must be a /dev/... path'}), 400
+    shared_data.config['cyd_serial_port'] = port
+    try:
+        shared_data.save_config()
+    except Exception as exc:
+        logger.debug(f"[cyd] save_config after serial port set failed: {exc}")
     return jsonify({'success': True, 'serial': _cyd_bridge.status()})
 
 
