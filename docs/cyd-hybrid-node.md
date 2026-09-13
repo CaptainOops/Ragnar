@@ -47,6 +47,14 @@ The firmware picks its transport at compile time (`CYD_TRANSPORT_SERIAL` in
   the same allowlist as the HTTP path — the endpoints below are the WiFi path's
   door to the very same machinery.
 
+  The link is **UART0** either way, so it needs no firmware change: run it over
+  the **USB cable** (auto-detected, `/dev/ttyUSB*`), or over the CYD's **P1
+  header** (VIN/GND/TX0/RX0) wired straight to the Pi's GPIO UART — both 3.3 V,
+  no level shifter. Pick the port with the **Serial port** field under Mesh →
+  CYD Nodes (empty = auto-detect USB; `/dev/serial0` = the GPIO wiring), which
+  sets `config['cyd_serial_port']` — `POST /api/cyd/serial/port`. SPI isn't
+  usable: the board breaks out only 3 free pins (one input-only).
+
 - **WiFi (`=0`).** The node joins WiFi and calls the REST API below, authenticated
   by a Bearer device token, provisioned via the on-device captive portal.
 
@@ -154,6 +162,61 @@ device token and node name. Values persist in NVS (`Preferences`), the node
 reboots, connects, and appears under `/api/cyd/nodes`. Hold **BOOT** at power-on
 to re-provision. See [`cyd_firmware/README.md`](../cyd_firmware/README.md).
 
+## WiFi-Defense sensor (2.4 GHz offload)
+
+The node's own radio is a **coarse second WiFi-Defense vantage point** — not a
+replacement for the Pi's monitor-mode WIDS, but a continuous 2.4 GHz watch that
+frees the Pi's radio and adds a viewpoint. `cyd_sensor.py` folds its detections
+into Ragnar's **existing** alert plumbing: it writes JSON-lines to
+`/var/log/ragnar/cydsensor.jsonl`, which **Watchtower already tails** (any
+`*.jsonl` there is picked up), so they appear in the unified Watchtower feed +
+Pushover with no parallel system. Two Stage-1 detections:
+
+- **Deauth/disassoc flood** (`CYD-DEAUTH-FLOOD`, high) — from the deauth count
+  the node already sends; `≥ cyd_deauth_flood_threshold` (default 8) in a report
+  window fires, deduped for `cyd_deauth_realert_sec` (default 60 s).
+- **New / rogue AP** (`CYD-NEW-AP`, medium) — the firmware reports the beacons it
+  saw this window (`aps`: BSSID/SSID/channel/RSSI, ≤ 32); the first report from a
+  node **seeds a baseline silently**, then a BSSID not in the baseline alerts.
+  `cyd_reset_baseline` / `cyd_sensor.reset_baseline()` re-learns after a move.
+
+Records use the schema `watchtower.normalize` expects (`severity`/`code`/
+`summary`/`src`/`module: cyd:<node>`). This is 2.4 GHz only, and coarse — the Pi
+still owns real monitor-mode WIDS, PMKID/handshake analysis, and 5/6 GHz.
+
+## On-screen console (app launcher)
+
+The CYD's screen is a native, Ragnar-themed **touch console** — not the web page
+(no browser), and not framed as a mesh node. A HOME launcher of tiles drills into
+full screens, each with a back bar:
+
+| Tile | Screen |
+|------|--------|
+| **DASH** | Ragnar status: unit, threat, 2.4/5 GHz counts, Bluetooth, last-sync |
+| **DEFEND** | this node's live 2.4 GHz Defense view (deauth/APs/probes/BLE) — what it reports to WiFi Defense |
+| **SCAN** | raw 2.4 GHz counters (beacons/APs/probes/deauth/BLE/frames) |
+| **SIGINT** | a native **radar/dome** of the APs it hears — centre = the node, radius ∝ RSSI, colour by strength |
+| **WFALL** | **RF waterfall** streamed from Ragnar's SDR (see below) |
+| **CTRL** | the allowlisted action buttons |
+
+### RF waterfall (streamed, SDR-gated)
+
+The CYD has no SDR, so the waterfall is **Ragnar's** HackRF/RTL-SDR spectrum,
+downsampled and streamed to the console. `cyd_waterfall.py` drives
+`sdr_spectrum.py` on the requested band and returns a quantised **120-bin** row
+(0..255) per frame; the ESP32 scrolls them into a low-res waterfall. Tap the band
+bar to cycle bands — **Sub-GHz ISM** (433/868/915/315) and a few **RF** bands
+(fm/air/2.4). Opening the screen asks Ragnar to sweep; leaving it (or a
+`cyd_waterfall` idle timeout) stops the sweep, freeing the shared radio.
+
+- Transport: **USB-serial only** (continuous stream, ~3 rows/s over the cable;
+  the console pauses its sniff cycle while the waterfall is open). The WiFi build
+  shows "USB-serial only". A `GET /api/cyd/wf?band=&on=` endpoint exists for the
+  WiFi/manual path.
+- **Needs a HackRF/RTL-SDR attached to the Pi** — otherwise the screen shows
+  "no SDR", exactly like Ragnar's own RF Waterfall. It is a coarse postage-stamp,
+  never the full web waterfall.
+
 ## Operator UI
 
 **Ragnar Mesh → CYD Nodes** sub‑tab: a live list of reporting nodes (status dot,
@@ -169,4 +232,9 @@ Tailscale mesh itself is running.
 - [x] Fill `nets_24` / `nets_5` from the kernel's cached scan (`iw scan dump`).
 - [x] On-device captive-portal provisioning (WiFi build; no secrets in `config.h`).
 - [x] USB-serial transport (`cyd_serial_bridge.py` + UI toggle) — cabled node.
+- [x] Selectable serial port (USB auto-detect or `/dev/serial0` GPIO/P1 UART).
+- [x] WiFi-Defense sensor: deauth-flood + new-AP → `cydsensor.jsonl` → Watchtower.
+- [x] App-launcher console (Dashboard/Defense/Scan/SigInt radar/Waterfall/Controls).
+- [x] RF waterfall streamed from the Pi's SDR (`cyd_waterfall.py`, SDR-gated).
+- [ ] Move the operator web UI out of the Ragnar Mesh tab (de-mesh, pending).
 - [x] ESP Web Tools flasher page + committed bins (`cyd_firmware/flasher`).

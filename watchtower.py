@@ -160,6 +160,11 @@ DEFAULT_SOURCES = {
     # IP-move / spoof / offline events here so they page + forward like any alert.
     'asset_inventory': {'label': 'Asset Inventory',
                         'paths': ['/var/log/ragnar/asset_inventory.jsonl']},
+    # CYD hybrid-node 2.4 GHz sensor (cyd_sensor.py): deauth floods + new/rogue
+    # AP sightings a cabled Cheap-Yellow-Display reports, folded in as a coarse
+    # second WiFi-Defense vantage point.
+    'cydsensor': {'label': 'CYD Sensor (2.4 GHz WiFi Defense)',
+                  'paths': ['/var/log/ragnar/cydsensor.jsonl']},
 }
 
 # Directories globbed for `*.jsonl`; the basename becomes the source name. This is

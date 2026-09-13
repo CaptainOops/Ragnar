@@ -98,8 +98,9 @@ static const int16_t SCR_H = 320;
 static SPIClass touchSPI(HSPI);
 
 // ── UI state ──────────────────────────────────────────────────────────────────
-enum Page { PAGE_STATUS = 0, PAGE_SCAN = 1, PAGE_ACTIONS = 2 };
-static Page   g_page       = PAGE_STATUS;
+// App-launcher model: a HOME grid of tiles that drill into full screens.
+enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_SCAN, SCR_SIGINT, SCR_WFALL, SCR_CTRL };
+static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
 // ── Live model: last status synced from Ragnar ────────────────────────────────
@@ -127,10 +128,35 @@ struct SensorCounts {
 };
 static SensorCounts g_sc;
 
-// Small unique-BSSID set (RAM-bounded).
-#define MAX_BSSID 96
-static uint8_t  g_bssidSet[MAX_BSSID][6];
-static uint32_t g_bssidCount = 0;
+// Per-window AP sightings (RAM-bounded): BSSID + SSID + channel + strongest RSSI.
+// Reported to Ragnar so its WiFi-Defense side can flag new/rogue APs.
+#define MAX_AP 48
+struct ApInfo {
+  uint8_t bssid[6];
+  char    ssid[33];
+  uint8_t ch;
+  int8_t  rssi;
+};
+static ApInfo   g_aps[MAX_AP];
+static uint32_t g_apCount = 0;
+
+// ── RF waterfall (downsampled spectrum streamed from Ragnar's SDR) ─────────────
+// The CYD has no SDR; when the Waterfall screen is open it asks Ragnar to sweep
+// a band and stream one quantised row per frame, which we scroll here.
+#define WF_BINS 120
+#define WF_ROWS 150
+static uint8_t  g_wfImg[WF_ROWS][WF_BINS];   // ring of rows (0=strong..)
+static int      g_wfHead = 0;                // next write row
+static bool     g_wfHave = false;            // got at least one row
+static uint32_t g_wfSeq  = 0;                // last applied row seq
+static int      g_wfLo = 0, g_wfHi = 0;      // band edges, MHz
+static char     g_wfErr[24] = "";            // e.g. "no SDR"
+// Bands the CYD cycles: sub-GHz ISM first, then a few RF bands.
+static const char *WF_BANDS[] = {"433", "868", "915", "315", "fm", "air", "2.4"};
+static const int   WF_NBANDS  = 7;
+static int         g_wfBandIdx = 0;
+static bool        g_wfActive  = false;      // screen open -> streaming requested
+static void applyWfRow(const String &body);  // defined in the UI section
 
 // ── Pending action queue (taps flushed on next sync window) ───────────────────
 #define MAX_ACTIONS 6
@@ -199,13 +225,41 @@ static bool touchRead(int16_t &px, int16_t &py) {
 // ════════════════════════════════════════════════════════════════════════════
 //  WiFi promiscuous sniffer
 // ════════════════════════════════════════════════════════════════════════════
-static void bssidSeen(const uint8_t *mac) {
-  for (uint32_t i = 0; i < g_bssidCount; i++)
-    if (memcmp(g_bssidSet[i], mac, 6) == 0) return;
-  if (g_bssidCount < MAX_BSSID) {
-    memcpy(g_bssidSet[g_bssidCount], mac, 6);
-    g_bssidCount++;
+// Record a beacon's AP (BSSID/SSID/channel/RSSI). Called from the sniffer
+// callback, so kept short: a bounded linear scan + a <=32-byte SSID copy.
+static void apSeen(const wifi_promiscuous_pkt_t *pkt) {
+  const uint8_t *p = pkt->payload;
+  const uint8_t *bssid = &p[16];                 // addr3
+  int8_t rssi = pkt->rx_ctrl.rssi;
+  uint8_t ch = pkt->rx_ctrl.channel;
+  for (uint32_t i = 0; i < g_apCount; i++) {
+    if (memcmp(g_aps[i].bssid, bssid, 6) == 0) {
+      if (rssi > g_aps[i].rssi) g_aps[i].rssi = rssi;   // keep the strongest
+      return;
+    }
   }
+  if (g_apCount >= MAX_AP) return;
+  ApInfo &a = g_aps[g_apCount];
+  memcpy(a.bssid, bssid, 6);
+  a.ch = ch;
+  a.rssi = rssi;
+  a.ssid[0] = 0;
+  // SSID = tag 0 of the tagged params (beacon: 24-byte hdr + 12 fixed = off 36).
+  int total = pkt->rx_ctrl.sig_len;
+  if (total >= 38 && p[36] == 0) {
+    int len = p[37];
+    if (len > 32) len = 32;
+    if (38 + len <= total) {
+      int j = 0;
+      for (int k = 0; k < len; k++) {
+        char c = (char)p[38 + k];
+        // Sanitize for JSON: printable ASCII only, no quote/backslash.
+        a.ssid[j++] = (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') ? c : '.';
+      }
+      a.ssid[j] = 0;
+    }
+  }
+  g_apCount++;
 }
 
 static void IRAM_ATTR snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
@@ -215,7 +269,7 @@ static void IRAM_ATTR snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
   g_sc.frames++;
   uint8_t subtype = (p[0] & 0xF0) >> 4;   // frame-control subtype
   switch (subtype) {
-    case 0x08: g_sc.beacons++; bssidSeen(&p[16]); break;  // beacon (BSSID @ addr3)
+    case 0x08: g_sc.beacons++; apSeen(pkt); break;        // beacon (BSSID @ addr3)
     case 0x04: g_sc.probes++;  break;                     // probe request
     case 0x0C: g_sc.deauths++; break;                     // deauth
     case 0x0A: g_sc.deauths++; break;                     // disassoc (count as deauth)
@@ -225,7 +279,7 @@ static void IRAM_ATTR snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
 static void sniffReset() {
   g_sc.beacons = g_sc.probes = g_sc.deauths = g_sc.frames = 0;
-  g_bssidCount = 0;
+  g_apCount = 0;
 }
 
 static void sniffWindow(uint32_t durationMs) {
@@ -243,7 +297,7 @@ static void sniffWindow(uint32_t durationMs) {
     delay(durationMs / (nch + 1) > 60 ? 60 : durationMs / (nch + 1));
   }
   esp_wifi_set_promiscuous(false);
-  g_sc.bssids = g_bssidCount;
+  g_sc.bssids = g_apCount;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -264,6 +318,28 @@ static void bleWindow(uint32_t durationMs) {
 #else
 static void bleWindow(uint32_t) { g_sc.bleAdv = 0; }
 #endif
+
+// Build the "aps":[...] fragment for an ingest payload (shared by both
+// transports). Capped so the line stays small; SSIDs were sanitised on capture.
+#define AP_REPORT_MAX 32
+static String apsJson() {
+  String s = "\"aps\":[";
+  uint32_t n = g_apCount < AP_REPORT_MAX ? g_apCount : AP_REPORT_MAX;
+  char mac[18];
+  for (uint32_t i = 0; i < n; i++) {
+    const ApInfo &a = g_aps[i];
+    snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+             a.bssid[0], a.bssid[1], a.bssid[2], a.bssid[3], a.bssid[4], a.bssid[5]);
+    if (i) s += ",";
+    s += "{\"bssid\":\""; s += mac;
+    s += "\",\"ssid\":\""; s += a.ssid;
+    s += "\",\"ch\":"; s += String(a.ch);
+    s += ",\"rssi\":"; s += String(a.rssi);
+    s += "}";
+  }
+  s += "]";
+  return s;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Ragnar REST client
@@ -336,7 +412,8 @@ static bool httpPostIngest() {
     + "\"frames\":"  + String((uint32_t)g_sc.frames)  + ","
     + "\"bssids\":"  + String(g_sc.bssids) + ","
     + "\"ble_adv\":" + String(g_sc.bleAdv) + ","
-    + "\"rssi\":"    + String(WiFi.RSSI()) + "}";
+    + "\"rssi\":"    + String(WiFi.RSSI()) + ","
+    + apsJson() + "}";
   int code = http.POST(payload);
   http.end();
   return code == 200 || code == 204;
@@ -375,8 +452,16 @@ static bool wifiConnect() {
 //              "threat":..,"bluetooth":"idle","uptime":..}
 // node -> Pi: {"t":"in", <sensor counts>}   and   {"t":"ac","action":".."}
 static void handleSerialLine(const String &line) {
-  if (line.indexOf("\"st\"") < 0) return;   // only status frames are inbound
-  applyStatus(line);
+  if (line.indexOf("\"wf\"") >= 0) { applyWfRow(line); return; }   // waterfall frame
+  if (line.indexOf("\"st\"") >= 0) applyStatus(line);             // status frame
+}
+
+// Ask Ragnar to (start/stop) streaming the current band's spectrum.
+static void serialSendWfReq(bool on) {
+  Serial.print("{\"t\":\"wr\",\"band\":\"");
+  Serial.print(WF_BANDS[g_wfBandIdx]);
+  Serial.print("\",\"on\":"); Serial.print(on ? "1" : "0");
+  Serial.println("}");
 }
 
 // Drain any pending inbound bytes and apply complete lines (non-blocking).
@@ -398,6 +483,7 @@ static void serialSendIngest() {
   Serial.print(",\"frames\":");     Serial.print((uint32_t)g_sc.frames);
   Serial.print(",\"bssids\":");     Serial.print(g_sc.bssids);
   Serial.print(",\"ble_adv\":");    Serial.print(g_sc.bleAdv);
+  Serial.print(",");                Serial.print(apsJson());
   Serial.println("}");
 }
 
@@ -413,24 +499,31 @@ static void serialSendAction(const String &action) {
 // ════════════════════════════════════════════════════════════════════════════
 //  UI
 // ════════════════════════════════════════════════════════════════════════════
-static const int16_t TAB_H = 34;
+// ── Ragnar palette ────────────────────────────────────────────────────────────
+static uint16_t colBg()    { return gfx->color565(11, 14, 20); }
+static uint16_t colHead()  { return gfx->color565(16, 22, 34); }
+static uint16_t colBlue()  { return gfx->color565(40, 120, 200); }
+static uint16_t colSky()   { return gfx->color565(90, 180, 255); }
+static uint16_t colGray()  { return gfx->color565(140, 152, 165); }
+static uint16_t colDim()   { return gfx->color565(90, 100, 112); }
+static uint16_t colGreen() { return gfx->color565(70, 200, 120); }
+static uint16_t colAmber() { return gfx->color565(230, 170, 50); }
+static uint16_t colRed()   { return gfx->color565(224, 64, 64); }
 
-static void drawTabs() {
-  const char *labels[3] = {"STATUS", "SCAN", "ACT"};
-  int16_t w = SCR_W / 3;
-  for (int i = 0; i < 3; i++) {
-    uint16_t bg = (i == (int)g_page) ? gfx->color565(30, 90, 160) : gfx->color565(20, 24, 30);
-    gfx->fillRect(i * w, 0, w, TAB_H, bg);
-    gfx->drawRect(i * w, 0, w, TAB_H, gfx->color565(60, 70, 80));
-    gfx->setTextColor(WHITE);
-    gfx->setTextSize(2);
-    gfx->setCursor(i * w + 8, 9);
-    gfx->print(labels[i]);
-  }
+static uint16_t threatColor(int t) {
+  if (t >= 66) return colRed();
+  if (t >= 33) return colAmber();
+  return colGreen();
 }
 
+// ── Tile geometry (2x3 launcher grid) ─────────────────────────────────────────
+static const int16_t HEAD_H  = 30;
+static const int16_t TILE_W  = 105, TILE_H = 76;
+static const int16_t TILE_XL = 10,  TILE_XR = 125;
+static const int16_t TILE_R0 = 38, TILE_R1 = 122, TILE_R2 = 206;
+
 static void drawStatusBar() {
-  gfx->fillRect(0, SCR_H - 22, SCR_W, 22, gfx->color565(16, 18, 22));
+  gfx->fillRect(0, SCR_H - 22, SCR_W, 22, colHead());
   gfx->setTextSize(1);
   gfx->setTextColor(g_statusColor);
   gfx->setCursor(6, SCR_H - 15);
@@ -439,49 +532,200 @@ static void drawStatusBar() {
 
 static void kv(int16_t y, const char *k, const String &v, uint16_t vc) {
   gfx->setTextSize(1);
-  gfx->setTextColor(gfx->color565(150, 160, 170));
-  gfx->setCursor(10, y);
+  gfx->setTextColor(colGray());
+  gfx->setCursor(12, y);
   gfx->print(k);
   gfx->setTextColor(vc);
   gfx->setTextSize(2);
-  gfx->setCursor(10, y + 10);
+  gfx->setCursor(12, y + 10);
   gfx->print(v);
 }
 
-static uint16_t threatColor(int t) {
-  if (t >= 66) return gfx->color565(220, 60, 60);
-  if (t >= 33) return gfx->color565(230, 170, 50);
-  return gfx->color565(70, 200, 120);
+// Brand header (home) or a titled back-bar (drill-in screens).
+static void drawHeader(const char *title, bool home) {
+  gfx->fillRect(0, 0, SCR_W, HEAD_H, colHead());
+  if (home) {
+    gfx->setTextColor(colSky()); gfx->setTextSize(2);
+    gfx->setCursor(8, 8); gfx->print("RAGNAR");
+    gfx->setTextColor(colGray()); gfx->setTextSize(1);
+    gfx->setCursor(96, 12);
+    String u = g_rs.unitName; if (u.length() > 20) u = u.substring(0, 20);
+    gfx->print(u);
+  } else {
+    gfx->setTextColor(colSky()); gfx->setTextSize(2);
+    gfx->setCursor(8, 8); gfx->print("<");
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(34, 8); gfx->print(title);
+  }
 }
 
-static void drawStatusPage() {
-  int16_t y = TAB_H + 10;
-  gfx->setTextColor(gfx->color565(90, 180, 255));
-  gfx->setTextSize(2);
-  gfx->setCursor(10, y); gfx->print(g_rs.unitName);
-  y += 30;
-  kv(y, "MESH NODES", String(g_rs.meshNodes), WHITE); y += 40;
-  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE); y += 40;
-  kv(y, "NETWORKS 5G", String(g_rs.nets5), gfx->color565(120,130,140)); y += 40;
-  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE); y += 40;
-  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 40;
+static void drawTile(int16_t x, int16_t y, const char *title,
+                     const String &sub, uint16_t accent, uint16_t subCol) {
+  gfx->fillRoundRect(x, y, TILE_W, TILE_H, 10, gfx->color565(22, 28, 40));
+  gfx->drawRoundRect(x, y, TILE_W, TILE_H, 10, accent);
+  gfx->fillRoundRect(x, y, TILE_W, 5, 3, accent);        // accent cap
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(x + 10, y + 18); gfx->print(title);
+  gfx->setTextColor(subCol); gfx->setTextSize(2);
+  gfx->setCursor(x + 10, y + 46); gfx->print(sub);
+}
+
+static void drawHome() {
+  drawHeader(nullptr, true);
+  bool attack = g_sc.deauths > 0;
+  // Row 0
+  drawTile(TILE_XL, TILE_R0, "DASH",  String(g_rs.threat), colBlue(), threatColor(g_rs.threat));
+  drawTile(TILE_XR, TILE_R0, "DEFEND",
+           attack ? String("!") + String((uint32_t)g_sc.deauths) : String("ok"),
+           attack ? colRed() : colGreen(), attack ? colRed() : colGreen());
+  // Row 1
+  drawTile(TILE_XL, TILE_R1, "SCAN",   String(g_sc.bssids), gfx->color565(150, 90, 210), colSky());
+  drawTile(TILE_XR, TILE_R1, "SIGINT", String(g_apCount) + "ap", gfx->color565(60, 190, 190), colSky());
+  // Row 2
+  drawTile(TILE_XL, TILE_R2, "WFALL",  String(WF_BANDS[g_wfBandIdx]), colAmber(), colAmber());
+  drawTile(TILE_XR, TILE_R2, "CTRL",   String("tap"), colGray(), colGray());
+}
+
+static void drawDash() {
+  drawHeader("DASHBOARD", false);
+  int16_t y = HEAD_H + 8;
+  kv(y, "UNIT", String(g_rs.unitName), colSky()); y += 38;
+  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 38;
+  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE); y += 38;
+  kv(y, "NETWORKS 5G", String(g_rs.nets5), colDim()); y += 38;
+  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE); y += 38;
   uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
-  kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? gfx->color565(70,200,120) : gfx->color565(220,60,60));
+  kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? colGreen() : colRed());
 }
 
-static void drawScanPage() {
-  int16_t y = TAB_H + 10;
-  gfx->setTextColor(gfx->color565(90, 180, 255));
-  gfx->setTextSize(2);
-  gfx->setCursor(10, y); gfx->print("LOCAL 2.4 GHz");
-  y += 30;
-  kv(y, "BEACONS", String((uint32_t)g_sc.beacons), WHITE); y += 40;
-  kv(y, "UNIQUE APs", String(g_sc.bssids), WHITE); y += 40;
-  kv(y, "PROBE REQ", String((uint32_t)g_sc.probes), WHITE); y += 40;
-  kv(y, "DEAUTH/DISASSOC", String((uint32_t)g_sc.deauths),
-     g_sc.deauths > 0 ? gfx->color565(220,60,60) : WHITE); y += 40;
-  kv(y, "BLE ADVERTS", String(g_sc.bleAdv), WHITE); y += 40;
-  kv(y, "FRAMES SEEN", String((uint32_t)g_sc.frames), gfx->color565(120,130,140));
+static void drawDefense() {
+  drawHeader("DEFENSE", false);
+  int16_t y = HEAD_H + 8;
+  // Headline banner: attack (red) vs watching (green)
+  bool attack = g_sc.deauths > 0;
+  gfx->fillRoundRect(10, y, SCR_W - 20, 30, 6, attack ? colRed() : gfx->color565(20, 60, 40));
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(20, y + 8);
+  gfx->print(attack ? "DEAUTH SEEN" : "WATCHING 2.4G");
+  y += 44;
+  kv(y, "DEAUTH/DISASSOC", String((uint32_t)g_sc.deauths), attack ? colRed() : WHITE); y += 38;
+  kv(y, "APs THIS SWEEP", String(g_sc.bssids), WHITE); y += 38;
+  kv(y, "PROBE REQUESTS", String((uint32_t)g_sc.probes), WHITE); y += 38;
+  kv(y, "BLE DEVICES", String(g_sc.bleAdv), WHITE); y += 38;
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  gfx->setCursor(12, y + 6); gfx->print("reported to Ragnar WiFi Defense");
+}
+
+static void drawScan() {
+  drawHeader("SCAN 2.4 GHz", false);
+  int16_t y = HEAD_H + 8;
+  kv(y, "BEACONS", String((uint32_t)g_sc.beacons), WHITE); y += 38;
+  kv(y, "UNIQUE APs", String(g_sc.bssids), WHITE); y += 38;
+  kv(y, "PROBE REQ", String((uint32_t)g_sc.probes), WHITE); y += 38;
+  kv(y, "DEAUTH/DISASSOC", String((uint32_t)g_sc.deauths), g_sc.deauths > 0 ? colRed() : WHITE); y += 38;
+  kv(y, "BLE ADVERTS", String(g_sc.bleAdv), WHITE); y += 38;
+  kv(y, "FRAMES SEEN", String((uint32_t)g_sc.frames), colDim());
+}
+
+// ── Signal Intelligence: a radar/dome view of the 2.4 GHz APs we hear ─────────
+static void drawSigInt() {
+  drawHeader("SIGINT", false);
+  int16_t cx = SCR_W / 2;
+  int16_t cy = HEAD_H + 118;
+  int16_t rmax = 100;
+  for (int r = rmax; r > 0; r -= rmax / 3)
+    gfx->drawCircle(cx, cy, r, gfx->color565(28, 38, 50));
+  gfx->drawCircle(cx, cy, rmax, colDim());
+  gfx->fillCircle(cx, cy, 3, colSky());                 // this node = centre
+  for (uint32_t i = 0; i < g_apCount; i++) {
+    const ApInfo &a = g_aps[i];
+    float frac = (-30.0f - a.rssi) / 60.0f;             // -30dBm→centre, -90→edge
+    if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+    int rr = (int)(frac * rmax);
+    uint32_t h = a.bssid[5] | (a.bssid[4] << 8) | (a.bssid[3] << 16);
+    float ang = (h % 360) * 0.017453f;
+    int px = cx + (int)(rr * cosf(ang));
+    int py = cy + (int)(rr * sinf(ang));
+    gfx->fillCircle(px, py, 2, a.rssi > -55 ? colGreen() : (a.rssi > -75 ? colAmber() : colRed()));
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(8, SCR_H - 38);
+  gfx->print(String(g_apCount) + " APs  centre=here  outer ring=weak");
+}
+
+// ── RF waterfall: palette + a streamed-row renderer ───────────────────────────
+static uint16_t wfColor(uint8_t v) {
+  uint8_t r, g, b;
+  if (v < 64)       { r = 0;             g = v * 4;             b = 128 + v / 2; }
+  else if (v < 128) { r = 0;             g = 255;               b = 255 - (v - 64) * 4; }
+  else if (v < 192) { r = (v - 128) * 4; g = 255;               b = 0; }
+  else              { r = 255;           g = 255 - (v - 192) * 4;b = 0; }
+  return gfx->color565(r, g, b);
+}
+
+static void drawWaterfall() {
+  drawHeader("WATERFALL", false);
+  int16_t by = HEAD_H;
+  gfx->fillRect(0, by, SCR_W, 20, gfx->color565(24, 30, 42));
+  gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+  gfx->setCursor(8, by + 3); gfx->print(WF_BANDS[g_wfBandIdx]);
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  if (g_wfLo) { gfx->setCursor(58, by + 7);
+                gfx->print(String(g_wfLo) + "-" + String(g_wfHi) + "MHz"); }
+  gfx->setTextColor(colSky()); gfx->setCursor(184, by + 7); gfx->print("band>");
+  int16_t yTop = by + 22;
+  int16_t hArea = (SCR_H - 22) - yTop;
+  if (g_wfErr[0]) {
+    gfx->setTextColor(colRed()); gfx->setTextSize(2);
+    gfx->setCursor(16, yTop + 40); gfx->print(g_wfErr);
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(16, yTop + 70); gfx->print("attach a HackRF/RTL-SDR to Ragnar");
+    return;
+  }
+  if (!g_wfHave) {
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(16, yTop + 40); gfx->print("waiting for spectrum...");
+    return;
+  }
+  int rows = hArea < WF_ROWS ? hArea : WF_ROWS;
+  for (int r = 0; r < rows; r++) {
+    int src = (g_wfHead - 1 - r + WF_ROWS * 2) % WF_ROWS;   // newest at the top
+    int y = yTop + r;
+    for (int c = 0; c < WF_BINS; c++)
+      gfx->fillRect(c * 2, y, 2, 1, wfColor(g_wfImg[src][c]));
+  }
+}
+
+// Apply one streamed waterfall frame (shared by both transports).
+static void applyWfRow(const String &body) {
+  String err = jsonStr(body, "err");
+  if (err.length()) {
+    strncpy(g_wfErr, err.c_str(), sizeof(g_wfErr) - 1);
+    g_wfErr[sizeof(g_wfErr) - 1] = 0;
+    g_needRedraw = true;
+    return;
+  }
+  g_wfErr[0] = 0;
+  g_wfLo = jsonInt(body, "lo");
+  g_wfHi = jsonInt(body, "hi");
+  g_wfSeq = jsonInt(body, "seq");
+  int i = body.indexOf("\"bins\"");
+  if (i < 0) return;
+  i = body.indexOf('[', i);
+  int end = (i >= 0) ? body.indexOf(']', i) : -1;
+  if (i < 0 || end < 0) return;
+  int col = 0, p = i + 1;
+  while (p < end && col < WF_BINS) {
+    while (p < end && (body[p] == ' ' || body[p] == ',')) p++;
+    int v = 0; bool any = false;
+    while (p < end && body[p] >= '0' && body[p] <= '9') { v = v * 10 + (body[p] - '0'); p++; any = true; }
+    if (!any) break;
+    g_wfImg[g_wfHead][col++] = (uint8_t)(v > 255 ? 255 : v);
+  }
+  while (col < WF_BINS) g_wfImg[g_wfHead][col++] = 0;
+  g_wfHead = (g_wfHead + 1) % WF_ROWS;
+  g_wfHave = true;
+  g_needRedraw = true;
 }
 
 struct ActionBtn { const char *label; const char *action; };
@@ -491,55 +735,90 @@ static const ActionBtn g_actions[] = {
   {"Watchtower clear",  "watchtower_clear"},
 };
 static const int N_ACTIONS = sizeof(g_actions) / sizeof(g_actions[0]);
+static const int16_t CTRL_Y0 = HEAD_H + 12, CTRL_BH = 48, CTRL_GAP = 10;
 
-static void drawActionsPage() {
-  int16_t y = TAB_H + 14;
-  gfx->setTextColor(gfx->color565(90, 180, 255));
-  gfx->setTextSize(2);
-  gfx->setCursor(10, y); gfx->print("TRIGGER");
-  y += 30;
+static void drawControls() {
+  drawHeader("CONTROLS", false);
+  int16_t y = CTRL_Y0;
   for (int i = 0; i < N_ACTIONS; i++) {
-    gfx->fillRoundRect(10, y, SCR_W - 20, 44, 6, gfx->color565(30, 90, 160));
-    gfx->drawRoundRect(10, y, SCR_W - 20, 44, 6, gfx->color565(70, 130, 200));
-    gfx->setTextColor(WHITE);
-    gfx->setTextSize(2);
-    gfx->setCursor(22, y + 14);
+    gfx->fillRoundRect(10, y, SCR_W - 20, CTRL_BH, 8, colBlue());
+    gfx->drawRoundRect(10, y, SCR_W - 20, CTRL_BH, 8, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(22, y + 16);
     gfx->print(g_actions[i].label);
-    y += 54;
+    y += CTRL_BH + CTRL_GAP;
   }
 }
 
 static void render() {
-  gfx->fillScreen(gfx->color565(10, 12, 16));
-  drawTabs();
-  switch (g_page) {
-    case PAGE_STATUS:  drawStatusPage();  break;
-    case PAGE_SCAN:    drawScanPage();    break;
-    case PAGE_ACTIONS: drawActionsPage(); break;
+  gfx->fillScreen(colBg());
+  switch (g_screen) {
+    case SCR_HOME:    drawHome();      break;
+    case SCR_DASH:    drawDash();      break;
+    case SCR_DEFENSE: drawDefense();   break;
+    case SCR_SCAN:    drawScan();      break;
+    case SCR_SIGINT:  drawSigInt();    break;
+    case SCR_WFALL:   drawWaterfall(); break;
+    case SCR_CTRL:    drawControls();  break;
   }
   drawStatusBar();
   g_needRedraw = false;
 }
 
-// Handle a touch at (px,py): tab switching + action buttons.
+static bool inRect(int16_t px, int16_t py, int16_t x, int16_t y, int16_t w, int16_t h) {
+  return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+// Reset the waterfall image (band change / (re)open).
+static void wfReset() {
+  g_wfHave = false; g_wfHead = 0; g_wfErr[0] = 0; g_wfLo = g_wfHi = 0;
+}
+
+// Touch: HOME picks a tile; a drill-in screen's header returns HOME; CONTROLS
+// buttons enqueue an action; WATERFALL's band bar cycles the band.
 static void handleTouch(int16_t px, int16_t py) {
-  if (py < TAB_H) {
-    Page np = (Page)(px / (SCR_W / 3));
-    if (np != g_page) { g_page = np; g_needRedraw = true; }
+  if (g_screen == SCR_HOME) {
+    if      (inRect(px, py, TILE_XL, TILE_R0, TILE_W, TILE_H)) g_screen = SCR_DASH;
+    else if (inRect(px, py, TILE_XR, TILE_R0, TILE_W, TILE_H)) g_screen = SCR_DEFENSE;
+    else if (inRect(px, py, TILE_XL, TILE_R1, TILE_W, TILE_H)) g_screen = SCR_SCAN;
+    else if (inRect(px, py, TILE_XR, TILE_R1, TILE_W, TILE_H)) g_screen = SCR_SIGINT;
+    else if (inRect(px, py, TILE_XL, TILE_R2, TILE_W, TILE_H)) {
+      g_screen = SCR_WFALL; wfReset();
+#if CYD_TRANSPORT_SERIAL
+      g_wfActive = true;                          // stream over the cable
+#else
+      strncpy(g_wfErr, "USB-serial only", sizeof(g_wfErr) - 1);
+#endif
+    }
+    else if (inRect(px, py, TILE_XR, TILE_R2, TILE_W, TILE_H)) g_screen = SCR_CTRL;
+    else return;
+    g_needRedraw = true;
     return;
   }
-  if (g_page == PAGE_ACTIONS) {
-    int16_t y = TAB_H + 14 + 30;
+  if (py < HEAD_H) {                 // back
+    if (g_screen == SCR_WFALL) g_wfActive = false;
+    g_screen = SCR_HOME; g_needRedraw = true; return;
+  }
+  if (g_screen == SCR_WFALL) {
+    // Tap the band bar (top strip) to cycle to the next band.
+    if (py >= HEAD_H && py < HEAD_H + 20) {
+      g_wfBandIdx = (g_wfBandIdx + 1) % WF_NBANDS;
+      wfReset();
+      g_needRedraw = true;
+    }
+    return;
+  }
+  if (g_screen == SCR_CTRL) {
+    int16_t y = CTRL_Y0;
     for (int i = 0; i < N_ACTIONS; i++) {
-      if (py >= y && py < y + 44 && px >= 10 && px <= SCR_W - 10) {
-        if (actionEnqueue(g_actions[i].action)) {
-          setStatus((String("queued: ") + g_actions[i].label).c_str(), gfx->color565(230,170,50));
-        } else {
-          setStatus("action queue full", gfx->color565(220,60,60));
-        }
+      if (inRect(px, py, 10, y, SCR_W - 20, CTRL_BH)) {
+        if (actionEnqueue(g_actions[i].action))
+          setStatus((String("queued: ") + g_actions[i].label).c_str(), colAmber());
+        else
+          setStatus("action queue full", colRed());
         return;
       }
-      y += 54;
+      y += CTRL_BH + CTRL_GAP;
     }
   }
 }
@@ -709,6 +988,21 @@ static void pollTouchFor(uint32_t ms) {
 }
 
 void loop() {
+  // ── 0) WATERFALL MODE ───────────────────────────────────────────────────────
+  // While the Waterfall screen is open, dedicate the loop to streaming spectrum
+  // (skip the sniff/BLE windows) so it stays live. Tell Ragnar to stop the SDR
+  // when the screen closes.
+  static bool wasWf = false;
+#if CYD_TRANSPORT_SERIAL
+  if (g_wfActive) {
+    serialSendWfReq(true);
+    wasWf = true;
+    pollTouchFor(1500);                  // drains wf frames, renders, handles touch
+    return;
+  }
+  if (wasWf) { serialSendWfReq(false); wasWf = false; }
+#endif
+
   // ── 1) SYNC WITH RAGNAR ─────────────────────────────────────────────────────
 #if CYD_TRANSPORT_SERIAL
   // Cabled transport: push our counts, flush queued actions, and read whatever

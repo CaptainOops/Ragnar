@@ -86,15 +86,35 @@ To drop BLE (saves flash/RAM), set `CYD_ENABLE_BLE 0` in `config.h`.
 
 ## Connecting it (USB-serial build — the default)
 
-No provisioning at all. Flash it, keep it plugged into the Pi over USB, then in
-Ragnar open **Ragnar Mesh → CYD Nodes** and switch on the **USB-serial bridge**
-toggle. `cyd_serial_bridge.py` (a daemon thread in the webapp) auto-detects the
-port, feeds the node's reports into the same registry, dispatches its taps
-through the same allowlist, and pushes status back for the display. Toggle off
-to release the port.
+No provisioning at all. Flash it, connect it to the Pi, then in Ragnar open
+**Ragnar Mesh → CYD Nodes** and switch on the **USB-serial bridge** toggle.
+`cyd_serial_bridge.py` (a daemon thread in the webapp) feeds the node's reports
+into the same registry, dispatches its taps through the same allowlist, and
+pushes status back for the display. Toggle off to release the port.
 
-> If the port doesn't appear, the Pi user needs access to it (add to the
-> `dialout` group) — Ragnar runs as root here, so this is usually a non-issue.
+**Two ways to wire it (same UART0 either way — no firmware change):**
+
+- **USB cable (default):** plug it into a Pi USB port. The bridge auto-detects
+  it (`/dev/ttyUSB*`), so leave the **Serial port** field empty.
+- **GPIO / P1 header (no USB):** the CYD's **P1** connector breaks out VIN, GND
+  and UART0 (TX0/RX0). Wire it to the Pi's GPIO — logic is 3.3 V on both sides,
+  so **no level shifter**:
+
+  | CYD P1 | → | Raspberry Pi |
+  |---|---|---|
+  | VIN (5 V) | → | 5V |
+  | GND | → | GND |
+  | RX0 (IO3) | → | Pi TX (GPIO14) |
+  | TX0 (IO1) | → | Pi RX (GPIO15) |
+
+  Enable the Pi UART (`raspi-config` → Interface → Serial: login shell **off**,
+  hardware **on**), then set the **Serial port** field to `/dev/serial0`.
+
+> SPI isn't an option on this board — it only breaks out 3 free pins (one
+> input-only), so a 4-wire SPI slave won't fit. UART0 is the link.
+>
+> If a USB port doesn't appear, the Pi user needs access to it (`dialout`
+> group) — Ragnar runs as root, so this is usually a non-issue.
 
 ## Provisioning the WiFi build (on-device setup portal)
 

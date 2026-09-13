@@ -55,6 +55,8 @@ from init_shared import shared_data
 import git_updater
 import cyd_node
 import cyd_serial_bridge
+import cyd_sensor
+import cyd_waterfall
 from safe_vault import SafeVault, SafeError, SafeLockedError
 from wifi_interfaces import gather_wifi_interfaces, gather_ethernet_interfaces, is_ethernet_available, get_active_ethernet_interface
 from utils import WebUtils
@@ -721,6 +723,7 @@ def check_authentication():
     if cyd_name:
         cyd_ok = (
             (request.method == 'GET'  and path == '/api/cyd/status') or
+            (request.method == 'GET'  and path == '/api/cyd/wf') or
             (request.method == 'POST' and path == '/api/cyd/ingest') or
             (request.method == 'POST' and path == '/api/cyd/action')
         )
@@ -2699,6 +2702,10 @@ def cyd_ingest():
     counts) and store it in the registry. Returns the node's stored summary."""
     data = request.get_json(silent=True) or {}
     summary = cyd_node.record_ingest(data, request.remote_addr)
+    try:
+        cyd_sensor.process_report(data.get('node'), data)   # → WiFi-Defense alerts
+    except Exception as exc:
+        logger.debug(f"[cyd] sensor process failed: {exc}")
     return jsonify({'success': True, 'node': summary})
 
 
@@ -2763,6 +2770,17 @@ def _cyd_dispatch_action(action, node_name):
     return 'unknown', 400
 
 
+@app.route('/api/cyd/wf', methods=['GET'])
+def cyd_wf():
+    """Waterfall row for the CYD's Waterfall screen (WiFi transport; the serial
+    transport streams these over the cable). `band` selects the sweep, `on=0`
+    releases the SDR. Returns a data row, {'waiting':1}, or {'err':'no SDR'}."""
+    band = request.args.get('band') or '433'
+    on = request.args.get('on', '1') not in ('0', 'false', 'off', '')
+    cyd_waterfall.request(band, on)
+    return jsonify(cyd_waterfall.latest_row())
+
+
 @app.route('/api/cyd/action', methods=['POST'])
 def cyd_action():
     """Dispatch an operator action requested from a node's touch screen. The
@@ -2787,6 +2805,10 @@ def cyd_action():
 # status builder and action allowlist as the WiFi transport.
 def _cyd_serial_on_ingest(payload):
     cyd_node.record_ingest(payload, 'usb-serial')
+    try:
+        cyd_sensor.process_report(payload.get('node'), payload)   # → WiFi-Defense alerts
+    except Exception as exc:
+        logger.debug(f"[cyd] sensor process failed: {exc}")
 
 
 def _cyd_serial_on_action(node, action):
@@ -2796,12 +2818,18 @@ def _cyd_serial_on_action(node, action):
     cyd_node.record_action(node, action, 'usb-serial', status=status)
 
 
+cyd_sensor.configure(lambda key, default: shared_data.config.get(key, default))
+
 _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     build_status=_cyd_build_status_dict,
     on_ingest=_cyd_serial_on_ingest,
     on_action=_cyd_serial_on_action,
     enabled=lambda: bool(shared_data.config.get('cyd_serial_enabled', False)),
+    # Empty = auto-detect a USB CYD; set e.g. /dev/serial0 for the GPIO-UART wiring.
+    get_port=lambda: (shared_data.config.get('cyd_serial_port') or '').strip() or None,
     baud=115200,
+    on_wf_request=lambda band, on: cyd_waterfall.request(band, on),
+    get_wf=lambda: cyd_waterfall.latest_row() if cyd_waterfall.wants_stream() else None,
 )
 try:
     _cyd_bridge.start()
@@ -2826,6 +2854,23 @@ def cyd_serial_toggle():
         shared_data.save_config()
     except Exception as exc:
         logger.debug(f"[cyd] save_config after serial toggle failed: {exc}")
+    return jsonify({'success': True, 'serial': _cyd_bridge.status()})
+
+
+@app.route('/api/cyd/serial/port', methods=['POST'])
+def cyd_serial_port():
+    """Set the serial port the bridge uses. Empty string = auto-detect a USB
+    CYD; a path like /dev/serial0 selects the Pi's GPIO UART (the P1-header
+    wiring). Basic validation: must be a /dev/... path."""
+    data = request.get_json(silent=True) or {}
+    port = str(data.get('port') or '').strip()
+    if port and not (port.startswith('/dev/') and '..' not in port):
+        return jsonify({'success': False, 'error': 'port must be a /dev/... path'}), 400
+    shared_data.config['cyd_serial_port'] = port
+    try:
+        shared_data.save_config()
+    except Exception as exc:
+        logger.debug(f"[cyd] save_config after serial port set failed: {exc}")
     return jsonify({'success': True, 'serial': _cyd_bridge.status()})
 
 
