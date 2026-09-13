@@ -61,11 +61,14 @@ class CydSerialBridge:
     """
 
     def __init__(self, build_status, on_ingest, on_action, enabled,
-                 baud=115200, status_interval=2.0, port=None, get_port=None):
+                 baud=115200, status_interval=2.0, port=None, get_port=None,
+                 on_wf_request=None, get_wf=None):
         self._build_status = build_status
         self._on_ingest = on_ingest
         self._on_action = on_action
         self._enabled = enabled
+        self._on_wf_request = on_wf_request   # (band, on) -> None
+        self._get_wf = get_wf                  # () -> row dict or None
         self._baud = baud
         self._status_interval = status_interval
         self._forced_port = port          # static override (tests)
@@ -166,6 +169,7 @@ class CydSerialBridge:
         """Read reports + push status until disabled, unplugged, or stopped."""
         buf = bytearray()
         next_status = 0.0
+        next_wf = 0.0
         opened_on = self.port
         while not self._stop.is_set() and self._safe_enabled():
             # If the operator points us at a different explicit port, drop this
@@ -192,6 +196,19 @@ class CydSerialBridge:
             if now >= next_status:
                 next_status = now + self._status_interval
                 self._push_status(ser)
+            # ── outbound: waterfall rows while the CYD asks for them ──────────
+            if self._get_wf and now >= next_wf:
+                next_wf = now + 0.3
+                try:
+                    row = self._get_wf()
+                except Exception:
+                    row = None
+                if row:
+                    frame = dict(row); frame['t'] = 'wf'
+                    try:
+                        ser.write((json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8'))
+                    except Exception:
+                        raise
             time.sleep(0.05)
 
     def _handle_line(self, line):
@@ -215,6 +232,12 @@ class CydSerialBridge:
                 self._on_action(msg.get('node') or 'cyd-node', msg.get('action') or '')
             except Exception:
                 pass
+        elif t == 'wr':                       # waterfall stream request
+            if self._on_wf_request:
+                try:
+                    self._on_wf_request(msg.get('band'), bool(msg.get('on')))
+                except Exception:
+                    pass
 
     def _push_status(self, ser):
         try:

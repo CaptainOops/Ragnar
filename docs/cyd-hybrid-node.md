@@ -184,6 +184,39 @@ Records use the schema `watchtower.normalize` expects (`severity`/`code`/
 `summary`/`src`/`module: cyd:<node>`). This is 2.4 GHz only, and coarse — the Pi
 still owns real monitor-mode WIDS, PMKID/handshake analysis, and 5/6 GHz.
 
+## On-screen console (app launcher)
+
+The CYD's screen is a native, Ragnar-themed **touch console** — not the web page
+(no browser), and not framed as a mesh node. A HOME launcher of tiles drills into
+full screens, each with a back bar:
+
+| Tile | Screen |
+|------|--------|
+| **DASH** | Ragnar status: unit, threat, 2.4/5 GHz counts, Bluetooth, last-sync |
+| **DEFEND** | this node's live 2.4 GHz Defense view (deauth/APs/probes/BLE) — what it reports to WiFi Defense |
+| **SCAN** | raw 2.4 GHz counters (beacons/APs/probes/deauth/BLE/frames) |
+| **SIGINT** | a native **radar/dome** of the APs it hears — centre = the node, radius ∝ RSSI, colour by strength |
+| **WFALL** | **RF waterfall** streamed from Ragnar's SDR (see below) |
+| **CTRL** | the allowlisted action buttons |
+
+### RF waterfall (streamed, SDR-gated)
+
+The CYD has no SDR, so the waterfall is **Ragnar's** HackRF/RTL-SDR spectrum,
+downsampled and streamed to the console. `cyd_waterfall.py` drives
+`sdr_spectrum.py` on the requested band and returns a quantised **120-bin** row
+(0..255) per frame; the ESP32 scrolls them into a low-res waterfall. Tap the band
+bar to cycle bands — **Sub-GHz ISM** (433/868/915/315) and a few **RF** bands
+(fm/air/2.4). Opening the screen asks Ragnar to sweep; leaving it (or a
+`cyd_waterfall` idle timeout) stops the sweep, freeing the shared radio.
+
+- Transport: **USB-serial only** (continuous stream, ~3 rows/s over the cable;
+  the console pauses its sniff cycle while the waterfall is open). The WiFi build
+  shows "USB-serial only". A `GET /api/cyd/wf?band=&on=` endpoint exists for the
+  WiFi/manual path.
+- **Needs a HackRF/RTL-SDR attached to the Pi** — otherwise the screen shows
+  "no SDR", exactly like Ragnar's own RF Waterfall. It is a coarse postage-stamp,
+  never the full web waterfall.
+
 ## Operator UI
 
 **Ragnar Mesh → CYD Nodes** sub‑tab: a live list of reporting nodes (status dot,
@@ -201,5 +234,7 @@ Tailscale mesh itself is running.
 - [x] USB-serial transport (`cyd_serial_bridge.py` + UI toggle) — cabled node.
 - [x] Selectable serial port (USB auto-detect or `/dev/serial0` GPIO/P1 UART).
 - [x] WiFi-Defense sensor: deauth-flood + new-AP → `cydsensor.jsonl` → Watchtower.
-- [ ] Console redesign (Ragnar-styled touch UI) + move UI out of the Mesh tab.
+- [x] App-launcher console (Dashboard/Defense/Scan/SigInt radar/Waterfall/Controls).
+- [x] RF waterfall streamed from the Pi's SDR (`cyd_waterfall.py`, SDR-gated).
+- [ ] Move the operator web UI out of the Ragnar Mesh tab (de-mesh, pending).
 - [x] ESP Web Tools flasher page + committed bins (`cyd_firmware/flasher`).
