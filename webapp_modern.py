@@ -53,6 +53,8 @@ except ImportError:
     pandas_available = False
 from init_shared import shared_data
 import git_updater
+import cyd_node
+import cyd_serial_bridge
 from safe_vault import SafeVault, SafeError, SafeLockedError
 from wifi_interfaces import gather_wifi_interfaces, gather_ethernet_interfaces, is_ethernet_available, get_active_ethernet_interface
 from utils import WebUtils
@@ -549,6 +551,20 @@ def _valid_share_token():
     return False
 
 
+def _valid_cyd_token():
+    """Node name bound to the CYD device token on this request, or None.
+
+    A CYD hybrid node (cyd_firmware/ragnar_cyd) reaches us over plain WiFi, not
+    the tailnet, so it authenticates purely by an operator-issued Bearer token
+    (shared_data.config['cyd_device_tokens']). Constant-time compared in
+    cyd_node.valid_token. The token grants only the three /api/cyd/* device
+    endpoints (gated in check_authentication)."""
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return None
+    return cyd_node.valid_token(shared_data.config, auth[7:].strip())
+
+
 def _remote_shares():
     """Outbound remote-share targets (address + token) this unit can send to."""
     v = shared_data.config.get('mesh_remote_shares')
@@ -694,6 +710,25 @@ def check_authentication():
         token_push = request.method == 'POST' and path == '/api/mesh/files/push'
         if token_push and _valid_share_token():
             return
+
+    # CYD hybrid-node role. A device carrying a valid CYD device token (one this
+    # unit's operator generated and pasted into the firmware) may reach ONLY the
+    # three device-facing endpoints: pull its status display, push sensor counts,
+    # and request an allowlisted action. Authenticated purely by the bearer token
+    # — no tailnet identity needed — so a plain-WiFi CYD that is not a mesh peer
+    # still works. Scoped hard by exact path + method, fail-closed.
+    cyd_name = _valid_cyd_token()
+    if cyd_name:
+        cyd_ok = (
+            (request.method == 'GET'  and path == '/api/cyd/status') or
+            (request.method == 'POST' and path == '/api/cyd/ingest') or
+            (request.method == 'POST' and path == '/api/cyd/action')
+        )
+        if cyd_ok:
+            g.cyd_node = cyd_name
+            return
+        return jsonify({'error': 'Forbidden',
+                        'detail': 'cyd device token: status/ingest/action only'}), 403
 
     # Check if user is authenticated via Flask session
     if not session.get('authenticated'):
@@ -2528,23 +2563,302 @@ def watchtower_clear():
     tailer keeps its file offsets, so cleared alerts don't re-appear; only
     genuinely new watcher lines show up afterwards. The Pushover dedup memory
     is left intact so clearing the pane never re-pages old findings."""
-    global _wt_summary
     try:
-        with _watchtower_lock:
-            wt = _wt_get()
-            wt.clear()
-            _wt_summary = wt.summary()
-            _wt_save(wt)
-            # Also empty the correlated-incident view — it's fused from the same
-            # alert stream, so a Clear that left incidents behind would look broken.
-            try:
-                _inc_get().clear()
-            except Exception as exc:
-                logger.debug(f"[watchtower] incident clear failed: {exc}")
+        summary = _watchtower_clear_core()
     except Exception as exc:
         logger.debug(f"[watchtower] clear failed: {exc}")
         return jsonify({'success': False, 'error': str(exc)}), 500
-    return jsonify({'success': True, 'summary': _wt_summary})
+    return jsonify({'success': True, 'summary': summary})
+
+
+def _watchtower_clear_core():
+    """Empty the Watchtower display ring and the correlated-incident view, and
+    persist the cleared state. Shared by the HTTP route and the CYD action
+    dispatcher. Raises on failure; returns the fresh summary on success."""
+    global _wt_summary
+    with _watchtower_lock:
+        wt = _wt_get()
+        wt.clear()
+        _wt_summary = wt.summary()
+        _wt_save(wt)
+        # Also empty the correlated-incident view — it's fused from the same
+        # alert stream, so a Clear that left incidents behind would look broken.
+        try:
+            _inc_get().clear()
+        except Exception as exc:
+            logger.debug(f"[watchtower] incident clear failed: {exc}")
+    return _wt_summary
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  CYD HYBRID NODE  (ESP32-2432S028R "Cheap Yellow Display")
+#  Device-facing endpoints, reached over plain WiFi and gated by the CYD device
+#  token role in check_authentication(). A node pulls a compact status for its
+#  touch display, pushes its own 2.4 GHz sensor counts, and may request an
+#  allowlisted operator action. Registry + tokens live in cyd_node.py.
+#  Operator-only management endpoints (session-gated) generate/list/revoke the
+#  device tokens and view reporting nodes.
+# ════════════════════════════════════════════════════════════════════════════
+def _cyd_threat_score():
+    """Best-effort 0..100 indicator from the Watchtower alert volume."""
+    try:
+        total = int((_wt_summary or {}).get('total', 0))
+    except (TypeError, ValueError):
+        total = 0
+    return max(0, min(100, total * 5))
+
+
+def _cyd_mesh_node_count():
+    try:
+        if not mesh_available or not _mesh_enabled():
+            return 0
+        return len(mesh_manager.status().get('peers', []) or [])
+    except Exception:
+        return 0
+
+
+def _cyd_uptime_sec():
+    try:
+        with open('/proc/uptime', 'r') as fh:
+            return int(float(fh.read().split()[0]))
+    except Exception:
+        return 0
+
+
+def _cyd_bluetooth_state():
+    try:
+        if getattr(shared_data, 'bluetooth_scan_active', False):
+            return 'scanning'
+    except Exception:
+        pass
+    return 'idle'
+
+
+_cyd_netcount = {'t': 0.0, 'nets_24': 0, 'nets_5': 0}
+_cyd_netcount_lock = threading.Lock()
+
+
+def _cyd_network_band_counts():
+    """Distinct 2.4/5 GHz BSSIDs from the kernel's CACHED scan (`iw scan dump`),
+    memoised for 30 s. Non-disruptive — it never triggers a new scan, so it is
+    safe to call from the frequently-polled CYD status endpoint. Reuses
+    wifi_analyzer.parse_scan (dump output shares the `iw scan` format).
+    Best-effort: any failure (no iface, no cached scan, not root) yields 0/0."""
+    now = time.time()
+    with _cyd_netcount_lock:
+        if now - _cyd_netcount['t'] < 30:
+            return _cyd_netcount['nets_24'], _cyd_netcount['nets_5']
+    nets_24 = nets_5 = 0
+    try:
+        import wifi_analyzer
+        iface = _get_wifi_iface()
+        if iface:
+            iw = getattr(wifi_analyzer, '_IW', 'iw')
+            out = subprocess.run([iw, 'dev', iface, 'scan', 'dump', '-u'],
+                                 capture_output=True, text=True, timeout=5).stdout
+            bss = wifi_analyzer.parse_scan(out) or []
+            nets_24 = len({b['bssid'] for b in bss if b.get('band') == '2.4' and b.get('bssid')})
+            nets_5 = len({b['bssid'] for b in bss if b.get('band') == '5' and b.get('bssid')})
+    except Exception as exc:
+        logger.debug(f"[cyd] band counts failed: {exc}")
+    with _cyd_netcount_lock:
+        _cyd_netcount.update(t=now, nets_24=nets_24, nets_5=nets_5)
+    return nets_24, nets_5
+
+
+def _cyd_build_status_dict():
+    """The compact, flat status a CYD node displays — shared by the HTTP status
+    endpoint and the USB-serial bridge. Flat on purpose: the firmware parses it
+    with lightweight string matching (no JSON library)."""
+    try:
+        unit = _mesh_unit_name()
+    except Exception:
+        unit = socket.gethostname()
+    nets_24, nets_5 = _cyd_network_band_counts()
+    return {
+        'unit': unit,
+        'mesh_nodes': _cyd_mesh_node_count(),
+        'nets_24': nets_24,
+        'nets_5': nets_5,
+        'threat': _cyd_threat_score(),
+        'bluetooth': _cyd_bluetooth_state(),
+        'uptime': _cyd_uptime_sec(),
+        'ts': int(time.time()),
+    }
+
+
+@app.route('/api/cyd/status', methods=['GET'])
+def cyd_status():
+    """Compact status for a WiFi-transport CYD node's touch display."""
+    return jsonify(_cyd_build_status_dict())
+
+
+@app.route('/api/cyd/ingest', methods=['POST'])
+def cyd_ingest():
+    """Accept a node's 2.4 GHz sensor report (beacon/probe/deauth/BSSID/BLE
+    counts) and store it in the registry. Returns the node's stored summary."""
+    data = request.get_json(silent=True) or {}
+    summary = cyd_node.record_ingest(data, request.remote_addr)
+    return jsonify({'success': True, 'node': summary})
+
+
+def _cyd_pick_monitor_iface():
+    """Choose a monitor-capable WiFi interface for a WIDS scan: the active
+    monitor vif if one is up, else the first monitor-capable base adapter."""
+    import wifi_defense
+    caps = wifi_defense.list_monitor_capable() or {}
+    active = caps.get('active_monitor')
+    if active:
+        return active
+    for dev in caps.get('interfaces', []):
+        if dev.get('monitor_capable') and not dev.get('is_monitor'):
+            return dev.get('iface')
+    return None
+
+
+def _cyd_dispatch_action(action, node_name):
+    """Execute an allowlisted CYD action against the live subsystems. Long or
+    blocking work (the WIDS scan) runs in a background thread and reports its
+    final status back into the node's action log. Returns (status, http_code)."""
+    if action == 'watchtower_clear':
+        try:
+            _watchtower_clear_core()
+            return 'done', 200
+        except Exception as exc:
+            logger.warning(f"[cyd] watchtower_clear failed: {exc}")
+            return 'error', 500
+
+    if action == 'ble_scan':
+        if not BLUETOOTH_AVAILABLE or bluetooth_manager is None:
+            return 'unavailable', 503
+        try:
+            ok, _msg = bluetooth_manager.start_scan(None)
+            if ok:
+                shared_data.bluetooth_scan_active = True
+                shared_data.bluetooth_scan_start_time = time.time()
+                return 'started', 202
+            return 'error', 500
+        except Exception as exc:
+            logger.warning(f"[cyd] ble_scan failed: {exc}")
+            return 'error', 500
+
+    if action == 'wifi_defense_scan':
+        def _run():
+            try:
+                iface = _cyd_pick_monitor_iface()
+                if not iface:
+                    cyd_node.record_action(node_name, action, None, status='no-monitor-iface')
+                    logger.info("[cyd] wifi_defense_scan: no monitor-capable interface")
+                    return
+                import wifi_defense
+                wifi_defense.do_scan(iface, seconds=15, auto_enable=True)
+                cyd_node.record_action(node_name, action, None, status='completed')
+                logger.info(f"[cyd] wifi_defense_scan completed on {iface}")
+            except Exception as exc:
+                cyd_node.record_action(node_name, action, None, status='error')
+                logger.warning(f"[cyd] wifi_defense_scan failed: {exc}")
+        threading.Thread(target=_run, name='cyd-wids-scan', daemon=True).start()
+        return 'started', 202
+
+    return 'unknown', 400
+
+
+@app.route('/api/cyd/action', methods=['POST'])
+def cyd_action():
+    """Dispatch an operator action requested from a node's touch screen. The
+    action is validated against cyd_node.ALLOWED_ACTIONS, executed against the
+    live subsystem (_cyd_dispatch_action), and logged with its outcome so the
+    operator can see what a tap did via /api/cyd/nodes."""
+    data = request.get_json(silent=True) or {}
+    action = str(data.get('action') or '').strip()
+    node_name = data.get('node') or getattr(g, 'cyd_node', None) or 'cyd-node'
+    if action not in cyd_node.ALLOWED_ACTIONS:
+        return jsonify({'success': False, 'error': 'unknown action'}), 400
+    status, code = _cyd_dispatch_action(action, node_name)
+    cyd_node.record_action(node_name, action, request.remote_addr, status=status)
+    logger.info(f"[cyd] node {node_name} action '{action}' -> {status}")
+    ok = status in ('done', 'started')
+    return jsonify({'success': ok, 'accepted': action, 'status': status}), code
+
+
+# ── USB-serial bridge: the Pi end of a cabled CYD (CYD_TRANSPORT_SERIAL) ──────
+# Self-managing daemon: only opens a port while `cyd_serial_enabled` is set AND a
+# device is present, so it is safe to leave running. Reuses the same registry,
+# status builder and action allowlist as the WiFi transport.
+def _cyd_serial_on_ingest(payload):
+    cyd_node.record_ingest(payload, 'usb-serial')
+
+
+def _cyd_serial_on_action(node, action):
+    if action not in cyd_node.ALLOWED_ACTIONS:
+        return
+    status, _code = _cyd_dispatch_action(action, node)
+    cyd_node.record_action(node, action, 'usb-serial', status=status)
+
+
+_cyd_bridge = cyd_serial_bridge.CydSerialBridge(
+    build_status=_cyd_build_status_dict,
+    on_ingest=_cyd_serial_on_ingest,
+    on_action=_cyd_serial_on_action,
+    enabled=lambda: bool(shared_data.config.get('cyd_serial_enabled', False)),
+    baud=115200,
+)
+try:
+    _cyd_bridge.start()
+except Exception as _cyd_exc:  # pragma: no cover - never block startup
+    logger.debug(f"[cyd] serial bridge failed to start: {_cyd_exc}")
+
+
+@app.route('/api/cyd/nodes', methods=['GET'])
+def cyd_nodes():
+    """Operator view of CYD nodes that have reported in (session-gated), plus the
+    USB-serial bridge's state."""
+    return jsonify({'success': True, 'nodes': cyd_node.list_nodes(),
+                    'serial': _cyd_bridge.status()})
+
+
+@app.route('/api/cyd/serial/toggle', methods=['POST'])
+def cyd_serial_toggle():
+    """Enable/disable the USB-serial bridge (persisted in config)."""
+    data = request.get_json(silent=True) or {}
+    shared_data.config['cyd_serial_enabled'] = bool(data.get('enabled'))
+    try:
+        shared_data.save_config()
+    except Exception as exc:
+        logger.debug(f"[cyd] save_config after serial toggle failed: {exc}")
+    return jsonify({'success': True, 'serial': _cyd_bridge.status()})
+
+
+@app.route('/api/cyd/tokens', methods=['GET'])
+def cyd_tokens():
+    """List issued CYD device tokens (previews only, never the raw secret)."""
+    return jsonify({'success': True, 'tokens': cyd_node.list_tokens(shared_data.config)})
+
+
+@app.route('/api/cyd/token/generate', methods=['POST'])
+def cyd_token_generate():
+    """Issue a new CYD device token. The raw token is returned ONCE for pasting
+    into the firmware's config.h; only a copy is persisted."""
+    data = request.get_json(silent=True) or {}
+    entry, raw = cyd_node.generate_token(shared_data.config, data.get('name'))
+    try:
+        shared_data.save_config()
+    except Exception as exc:
+        logger.debug(f"[cyd] save_config after token generate failed: {exc}")
+    return jsonify({'success': True, 'token': raw, 'entry': entry})
+
+
+@app.route('/api/cyd/token/revoke', methods=['POST'])
+def cyd_token_revoke():
+    """Revoke a CYD device token by id."""
+    data = request.get_json(silent=True) or {}
+    changed = cyd_node.revoke_token(shared_data.config, data.get('id'))
+    if changed:
+        try:
+            shared_data.save_config()
+        except Exception as exc:
+            logger.debug(f"[cyd] save_config after token revoke failed: {exc}")
+    return jsonify({'success': changed})
 
 
 @app.route('/api/net/incidents', methods=['GET'])

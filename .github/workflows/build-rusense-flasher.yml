@@ -17,6 +17,7 @@ on:
       - 'espnow_bridge_firmware/espnow_bridge_c5/**'
       - 'espnow_bridge_firmware/espnow_bridge_s3_lcd/**'
       - 'roomscan_firmware/**'
+      - 'cyd_firmware/flasher/**'
       - '.github/workflows/build-rusense-flasher.yml'
   workflow_dispatch:
 
@@ -110,6 +111,14 @@ jobs:
           mkdir -p site
           cp -r rusense_flasher/. site/
           mkdir -p site/firmware
+
+          # ── CYD hybrid-node flasher ─────────────────────────────────────
+          # Bins are committed under cyd_firmware/flasher/firmware/ (built from
+          # the serial-transport image), so no build step — just stage it at
+          # /cyd/. Its manifest references firmware/*.bin relative to itself.
+          cp -r cyd_firmware/flasher site/cyd
+          echo "=== CYD flasher staged ==="
+          ls -lhR site/cyd/firmware
 
           # ── Merge the coordinator images into single .bin files ─────────
           # esptool merge_bin flattens bootloader + partition-table +
