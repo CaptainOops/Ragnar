@@ -162,6 +162,28 @@ device token and node name. Values persist in NVS (`Preferences`), the node
 reboots, connects, and appears under `/api/cyd/nodes`. Hold **BOOT** at power-on
 to re-provision. See [`cyd_firmware/README.md`](../cyd_firmware/README.md).
 
+## WiFi-Defense sensor (2.4 GHz offload)
+
+The node's own radio is a **coarse second WiFi-Defense vantage point** — not a
+replacement for the Pi's monitor-mode WIDS, but a continuous 2.4 GHz watch that
+frees the Pi's radio and adds a viewpoint. `cyd_sensor.py` folds its detections
+into Ragnar's **existing** alert plumbing: it writes JSON-lines to
+`/var/log/ragnar/cydsensor.jsonl`, which **Watchtower already tails** (any
+`*.jsonl` there is picked up), so they appear in the unified Watchtower feed +
+Pushover with no parallel system. Two Stage-1 detections:
+
+- **Deauth/disassoc flood** (`CYD-DEAUTH-FLOOD`, high) — from the deauth count
+  the node already sends; `≥ cyd_deauth_flood_threshold` (default 8) in a report
+  window fires, deduped for `cyd_deauth_realert_sec` (default 60 s).
+- **New / rogue AP** (`CYD-NEW-AP`, medium) — the firmware reports the beacons it
+  saw this window (`aps`: BSSID/SSID/channel/RSSI, ≤ 32); the first report from a
+  node **seeds a baseline silently**, then a BSSID not in the baseline alerts.
+  `cyd_reset_baseline` / `cyd_sensor.reset_baseline()` re-learns after a move.
+
+Records use the schema `watchtower.normalize` expects (`severity`/`code`/
+`summary`/`src`/`module: cyd:<node>`). This is 2.4 GHz only, and coarse — the Pi
+still owns real monitor-mode WIDS, PMKID/handshake analysis, and 5/6 GHz.
+
 ## Operator UI
 
 **Ragnar Mesh → CYD Nodes** sub‑tab: a live list of reporting nodes (status dot,
@@ -177,4 +199,7 @@ Tailscale mesh itself is running.
 - [x] Fill `nets_24` / `nets_5` from the kernel's cached scan (`iw scan dump`).
 - [x] On-device captive-portal provisioning (WiFi build; no secrets in `config.h`).
 - [x] USB-serial transport (`cyd_serial_bridge.py` + UI toggle) — cabled node.
+- [x] Selectable serial port (USB auto-detect or `/dev/serial0` GPIO/P1 UART).
+- [x] WiFi-Defense sensor: deauth-flood + new-AP → `cydsensor.jsonl` → Watchtower.
+- [ ] Console redesign (Ragnar-styled touch UI) + move UI out of the Mesh tab.
 - [x] ESP Web Tools flasher page + committed bins (`cyd_firmware/flasher`).

@@ -55,6 +55,7 @@ from init_shared import shared_data
 import git_updater
 import cyd_node
 import cyd_serial_bridge
+import cyd_sensor
 from safe_vault import SafeVault, SafeError, SafeLockedError
 from wifi_interfaces import gather_wifi_interfaces, gather_ethernet_interfaces, is_ethernet_available, get_active_ethernet_interface
 from utils import WebUtils
@@ -2699,6 +2700,10 @@ def cyd_ingest():
     counts) and store it in the registry. Returns the node's stored summary."""
     data = request.get_json(silent=True) or {}
     summary = cyd_node.record_ingest(data, request.remote_addr)
+    try:
+        cyd_sensor.process_report(data.get('node'), data)   # → WiFi-Defense alerts
+    except Exception as exc:
+        logger.debug(f"[cyd] sensor process failed: {exc}")
     return jsonify({'success': True, 'node': summary})
 
 
@@ -2787,6 +2792,10 @@ def cyd_action():
 # status builder and action allowlist as the WiFi transport.
 def _cyd_serial_on_ingest(payload):
     cyd_node.record_ingest(payload, 'usb-serial')
+    try:
+        cyd_sensor.process_report(payload.get('node'), payload)   # → WiFi-Defense alerts
+    except Exception as exc:
+        logger.debug(f"[cyd] sensor process failed: {exc}")
 
 
 def _cyd_serial_on_action(node, action):
@@ -2795,6 +2804,8 @@ def _cyd_serial_on_action(node, action):
     status, _code = _cyd_dispatch_action(action, node)
     cyd_node.record_action(node, action, 'usb-serial', status=status)
 
+
+cyd_sensor.configure(lambda key, default: shared_data.config.get(key, default))
 
 _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     build_status=_cyd_build_status_dict,

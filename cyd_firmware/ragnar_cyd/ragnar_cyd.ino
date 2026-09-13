@@ -127,10 +127,17 @@ struct SensorCounts {
 };
 static SensorCounts g_sc;
 
-// Small unique-BSSID set (RAM-bounded).
-#define MAX_BSSID 96
-static uint8_t  g_bssidSet[MAX_BSSID][6];
-static uint32_t g_bssidCount = 0;
+// Per-window AP sightings (RAM-bounded): BSSID + SSID + channel + strongest RSSI.
+// Reported to Ragnar so its WiFi-Defense side can flag new/rogue APs.
+#define MAX_AP 48
+struct ApInfo {
+  uint8_t bssid[6];
+  char    ssid[33];
+  uint8_t ch;
+  int8_t  rssi;
+};
+static ApInfo   g_aps[MAX_AP];
+static uint32_t g_apCount = 0;
 
 // ── Pending action queue (taps flushed on next sync window) ───────────────────
 #define MAX_ACTIONS 6
@@ -199,13 +206,41 @@ static bool touchRead(int16_t &px, int16_t &py) {
 // ════════════════════════════════════════════════════════════════════════════
 //  WiFi promiscuous sniffer
 // ════════════════════════════════════════════════════════════════════════════
-static void bssidSeen(const uint8_t *mac) {
-  for (uint32_t i = 0; i < g_bssidCount; i++)
-    if (memcmp(g_bssidSet[i], mac, 6) == 0) return;
-  if (g_bssidCount < MAX_BSSID) {
-    memcpy(g_bssidSet[g_bssidCount], mac, 6);
-    g_bssidCount++;
+// Record a beacon's AP (BSSID/SSID/channel/RSSI). Called from the sniffer
+// callback, so kept short: a bounded linear scan + a <=32-byte SSID copy.
+static void apSeen(const wifi_promiscuous_pkt_t *pkt) {
+  const uint8_t *p = pkt->payload;
+  const uint8_t *bssid = &p[16];                 // addr3
+  int8_t rssi = pkt->rx_ctrl.rssi;
+  uint8_t ch = pkt->rx_ctrl.channel;
+  for (uint32_t i = 0; i < g_apCount; i++) {
+    if (memcmp(g_aps[i].bssid, bssid, 6) == 0) {
+      if (rssi > g_aps[i].rssi) g_aps[i].rssi = rssi;   // keep the strongest
+      return;
+    }
   }
+  if (g_apCount >= MAX_AP) return;
+  ApInfo &a = g_aps[g_apCount];
+  memcpy(a.bssid, bssid, 6);
+  a.ch = ch;
+  a.rssi = rssi;
+  a.ssid[0] = 0;
+  // SSID = tag 0 of the tagged params (beacon: 24-byte hdr + 12 fixed = off 36).
+  int total = pkt->rx_ctrl.sig_len;
+  if (total >= 38 && p[36] == 0) {
+    int len = p[37];
+    if (len > 32) len = 32;
+    if (38 + len <= total) {
+      int j = 0;
+      for (int k = 0; k < len; k++) {
+        char c = (char)p[38 + k];
+        // Sanitize for JSON: printable ASCII only, no quote/backslash.
+        a.ssid[j++] = (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') ? c : '.';
+      }
+      a.ssid[j] = 0;
+    }
+  }
+  g_apCount++;
 }
 
 static void IRAM_ATTR snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
@@ -215,7 +250,7 @@ static void IRAM_ATTR snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
   g_sc.frames++;
   uint8_t subtype = (p[0] & 0xF0) >> 4;   // frame-control subtype
   switch (subtype) {
-    case 0x08: g_sc.beacons++; bssidSeen(&p[16]); break;  // beacon (BSSID @ addr3)
+    case 0x08: g_sc.beacons++; apSeen(pkt); break;        // beacon (BSSID @ addr3)
     case 0x04: g_sc.probes++;  break;                     // probe request
     case 0x0C: g_sc.deauths++; break;                     // deauth
     case 0x0A: g_sc.deauths++; break;                     // disassoc (count as deauth)
@@ -225,7 +260,7 @@ static void IRAM_ATTR snifferCb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
 static void sniffReset() {
   g_sc.beacons = g_sc.probes = g_sc.deauths = g_sc.frames = 0;
-  g_bssidCount = 0;
+  g_apCount = 0;
 }
 
 static void sniffWindow(uint32_t durationMs) {
@@ -243,7 +278,7 @@ static void sniffWindow(uint32_t durationMs) {
     delay(durationMs / (nch + 1) > 60 ? 60 : durationMs / (nch + 1));
   }
   esp_wifi_set_promiscuous(false);
-  g_sc.bssids = g_bssidCount;
+  g_sc.bssids = g_apCount;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -264,6 +299,28 @@ static void bleWindow(uint32_t durationMs) {
 #else
 static void bleWindow(uint32_t) { g_sc.bleAdv = 0; }
 #endif
+
+// Build the "aps":[...] fragment for an ingest payload (shared by both
+// transports). Capped so the line stays small; SSIDs were sanitised on capture.
+#define AP_REPORT_MAX 32
+static String apsJson() {
+  String s = "\"aps\":[";
+  uint32_t n = g_apCount < AP_REPORT_MAX ? g_apCount : AP_REPORT_MAX;
+  char mac[18];
+  for (uint32_t i = 0; i < n; i++) {
+    const ApInfo &a = g_aps[i];
+    snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+             a.bssid[0], a.bssid[1], a.bssid[2], a.bssid[3], a.bssid[4], a.bssid[5]);
+    if (i) s += ",";
+    s += "{\"bssid\":\""; s += mac;
+    s += "\",\"ssid\":\""; s += a.ssid;
+    s += "\",\"ch\":"; s += String(a.ch);
+    s += ",\"rssi\":"; s += String(a.rssi);
+    s += "}";
+  }
+  s += "]";
+  return s;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Ragnar REST client
@@ -336,7 +393,8 @@ static bool httpPostIngest() {
     + "\"frames\":"  + String((uint32_t)g_sc.frames)  + ","
     + "\"bssids\":"  + String(g_sc.bssids) + ","
     + "\"ble_adv\":" + String(g_sc.bleAdv) + ","
-    + "\"rssi\":"    + String(WiFi.RSSI()) + "}";
+    + "\"rssi\":"    + String(WiFi.RSSI()) + ","
+    + apsJson() + "}";
   int code = http.POST(payload);
   http.end();
   return code == 200 || code == 204;
@@ -398,6 +456,7 @@ static void serialSendIngest() {
   Serial.print(",\"frames\":");     Serial.print((uint32_t)g_sc.frames);
   Serial.print(",\"bssids\":");     Serial.print(g_sc.bssids);
   Serial.print(",\"ble_adv\":");    Serial.print(g_sc.bleAdv);
+  Serial.print(",");                Serial.print(apsJson());
   Serial.println("}");
 }
 
