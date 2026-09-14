@@ -212,7 +212,7 @@ class CydSerialBridge:
                 self._push_status(ser)
             # ── outbound: waterfall rows while the CYD asks for them ──────────
             if self._get_wf and now >= next_wf:
-                next_wf = now + 0.3
+                next_wf = now + 0.12          # ~8 rows/s (was 0.3 ≈ 3/s)
                 try:
                     row = self._get_wf()
                 except Exception as exc:

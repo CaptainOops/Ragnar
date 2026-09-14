@@ -160,8 +160,22 @@ def wants_stream():
         return (time.time() - _last_req) < _STALE_SEC
 
 
-def _downsample_quant(power):
+def _downsample_quant(power, floor=None):
+    """Downsample to WF_BINS and quantise 0..255 across [floor .. -20 dBm] so the
+    contrast tracks the live noise floor (a fixed -110..-30 range made everything
+    saturate on a high auto-gain floor — the 'all red' look). Robust floor: the
+    10th-percentile of the frame when floor_dbm isn't given."""
     n = len(power)
+    if not n:
+        return [0] * WF_BINS
+    if floor is None:
+        s = sorted(power)
+        floor = s[len(s) // 10]
+    base = float(floor)
+    top = -20.0
+    span = top - base
+    if span < 12:
+        span = 12.0
     out = []
     for i in range(WF_BINS):
         a = i * n // WF_BINS
@@ -169,8 +183,8 @@ def _downsample_quant(power):
         if b <= a:
             b = a + 1
         seg = power[a:b]
-        db = max(seg) if seg else _BASE_DBM
-        v = int((db - _BASE_DBM) / _SPAN_DB * 255)
+        db = max(seg) if seg else base
+        v = int((db - base) / span * 255)
         out.append(0 if v < 0 else (255 if v > 255 else v))
     return out
 
@@ -203,5 +217,5 @@ def latest_row():
             'band': _band,
             'lo': int(bm[0] or 0),
             'hi': int(bm[1] or 0),
-            'bins': _downsample_quant(latest.get('power') or []),
+            'bins': _downsample_quant(latest.get('power') or [], res.get('floor_dbm')),
         }

@@ -195,7 +195,7 @@ static uint32_t g_apCount = 0;
 // The CYD has no SDR; when the Waterfall screen is open it asks Ragnar to sweep
 // a band and stream one quantised row per frame, which we scroll here.
 #define WF_BINS 120
-#define WF_ROWS 150
+#define WF_ROWS 246                          // fills the waterfall area (52..298)
 static uint8_t  g_wfImg[WF_ROWS][WF_BINS];   // ring of rows (0=strong..)
 static int      g_wfHead = 0;                // next write row
 static bool     g_wfHave = false;            // got at least one row
@@ -881,13 +881,21 @@ static void drawSigInt() {
 }
 
 // ── RF waterfall: palette + a streamed-row renderer ───────────────────────────
+// Inferno colour map (dark → purple → red → orange → yellow), so the noise floor
+// reads near-black instead of the old blue, and signals ramp through warm tones.
 static uint16_t wfColor(uint8_t v) {
-  uint8_t r, g, b;
-  if (v < 64)       { r = 0;             g = v * 4;             b = 128 + v / 2; }
-  else if (v < 128) { r = 0;             g = 255;               b = 255 - (v - 64) * 4; }
-  else if (v < 192) { r = (v - 128) * 4; g = 255;               b = 0; }
-  else              { r = 255;           g = 255 - (v - 192) * 4;b = 0; }
-  return gfx->color565(r, g, b);
+  static const uint8_t stops[9][3] = {
+    {0,0,4},{40,11,84},{101,21,110},{159,42,99},{212,72,66},
+    {245,125,21},{250,193,39},{252,229,120},{252,255,164}
+  };
+  int seg = v * 8 / 255; if (seg > 7) seg = 7;
+  int t0 = seg * 255 / 8, t1 = (seg + 1) * 255 / 8;
+  int f = (t1 > t0) ? (v - t0) * 255 / (t1 - t0) : 0;
+  const uint8_t *a = stops[seg], *b = stops[seg + 1];
+  uint8_t r = a[0] + (b[0] - a[0]) * f / 255;
+  uint8_t g = a[1] + (b[1] - a[1]) * f / 255;
+  uint8_t bl = a[2] + (b[2] - a[2]) * f / 255;
+  return gfx->color565(r, g, bl);
 }
 
 static void drawWaterfall() {
@@ -914,12 +922,18 @@ static void drawWaterfall() {
     gfx->setCursor(16, yTop + 40); gfx->print("waiting for spectrum...");
     return;
   }
+  // Fast path: build one RGB565 line (240px = 120 bins x2) and blit it per row —
+  // one bitmap push per row instead of 120 fillRects (was ~18k fillRects/frame).
+  static uint16_t linebuf[240];
   int rows = hArea < WF_ROWS ? hArea : WF_ROWS;
   for (int r = 0; r < rows; r++) {
     int src = (g_wfHead - 1 - r + WF_ROWS * 2) % WF_ROWS;   // newest at the top
-    int y = yTop + r;
-    for (int c = 0; c < WF_BINS; c++)
-      gfx->fillRect(c * 2, y, 2, 1, wfColor(g_wfImg[src][c]));
+    const uint8_t *row = g_wfImg[src];
+    for (int c = 0; c < WF_BINS; c++) {
+      uint16_t col = wfColor(row[c]);
+      linebuf[c * 2] = col; linebuf[c * 2 + 1] = col;
+    }
+    gfx->draw16bitRGBBitmap(0, yTop + r, linebuf, 240, 1);
   }
 }
 
@@ -933,14 +947,16 @@ static void applyWfRow(const String &body) {
     return;
   }
   g_wfErr[0] = 0;
-  g_wfLo = jsonInt(body, "lo");
-  g_wfHi = jsonInt(body, "hi");
-  g_wfSeq = jsonInt(body, "seq");
+  // Bail on 'waiting' frames (no bins) BEFORE touching lo/hi/seq, so the band
+  // label doesn't flicker to 0-0 and we don't force a needless redraw.
   int i = body.indexOf("\"bins\"");
   if (i < 0) return;
   i = body.indexOf('[', i);
   int end = (i >= 0) ? body.indexOf(']', i) : -1;
   if (i < 0 || end < 0) return;
+  g_wfLo = jsonInt(body, "lo");
+  g_wfHi = jsonInt(body, "hi");
+  g_wfSeq = jsonInt(body, "seq");
   int col = 0, p = i + 1;
   while (p < end && col < WF_BINS) {
     while (p < end && (body[p] == ' ' || body[p] == ',')) p++;
