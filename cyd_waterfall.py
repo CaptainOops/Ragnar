@@ -171,18 +171,18 @@ def wants_stream():
 
 
 def _downsample_quant(power, floor=None):
-    """Downsample to WF_BINS and quantise 0..255 across [floor .. -20 dBm] so the
-    contrast tracks the live noise floor (a fixed -110..-30 range made everything
-    saturate on a high auto-gain floor — the 'all red' look). Robust floor: the
-    10th-percentile of the frame when floor_dbm isn't given."""
+    """Downsample to WF_BINS and quantise 0..255 with a robust PER-FRAME range so
+    the inferno palette reads right: base = 10th-percentile (the real noise floor,
+    → dark), top = the frame peak (→ pale yellow), with a ≥20 dB minimum span. The
+    reported floor_dbm is ignored on purpose — trusting it (often the -110 default)
+    mapped noise into the mid palette and washed everything orange."""
     n = len(power)
     if not n:
         return [0] * WF_BINS
-    if floor is None:
-        s = sorted(power)
-        floor = s[len(s) // 10]
-    base = float(floor)
-    top = -20.0
+    s = sorted(power)
+    base = float(s[n // 10])                 # p10 noise floor -> dark
+    peak = float(s[-1])
+    top = peak if (peak - base) >= 20 else base + 20.0
     span = top - base
     if span < 12:
         span = 12.0

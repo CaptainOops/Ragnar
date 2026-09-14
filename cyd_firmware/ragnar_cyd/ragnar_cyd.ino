@@ -967,15 +967,14 @@ static void drawSigInt() {
 }
 
 // ── RF waterfall: palette + a streamed-row renderer ───────────────────────────
-// Inferno colour map (dark → purple → red → orange → yellow), so the noise floor
-// reads near-black instead of the old blue, and signals ramp through warm tones.
+// Inferno colour map — the SAME 5-stop LUT the web RF-waterfall uses
+// (black→purple→red→orange→pale), so the two match. Dark noise floor, warm signals.
 static uint16_t wfColor(uint8_t v) {
-  static const uint8_t stops[9][3] = {
-    {0,0,4},{40,11,84},{101,21,110},{159,42,99},{212,72,66},
-    {245,125,21},{250,193,39},{252,229,120},{252,255,164}
+  static const uint8_t stops[5][3] = {
+    {4,3,18},{87,16,110},{188,55,84},{249,142,9},{252,255,164}
   };
-  int seg = v * 8 / 255; if (seg > 7) seg = 7;
-  int t0 = seg * 255 / 8, t1 = (seg + 1) * 255 / 8;
+  int seg = v * 4 / 255; if (seg > 3) seg = 3;
+  int t0 = seg * 255 / 4, t1 = (seg + 1) * 255 / 4;
   int f = (t1 > t0) ? (v - t0) * 255 / (t1 - t0) : 0;
   const uint8_t *a = stops[seg], *b = stops[seg + 1];
   uint8_t r = a[0] + (b[0] - a[0]) * f / 255;
@@ -995,8 +994,13 @@ static void drawWaterfall() {
                 gfx->print(String(g_wfLo) + "-" + String(g_wfHi) + "MHz"); }
   gfx->setTextColor(colSky()); gfx->setCursor(184, by + 7); gfx->print("band>");
   int16_t yTop = by + 22;
-  int16_t hArea = (SCR_H - 22) - yTop;
+  // Reserve a bottom spectrum strip (live signal per frequency) + a frequency axis,
+  // like the web waterfall. The scrolling waterfall fills the space above them.
+  const int16_t AXIS_H = 10, STRIP_H = 30;
+  int16_t wfBottom = SCR_H - 22 - AXIS_H - STRIP_H;   // waterfall ends here
+  int16_t hArea = wfBottom - yTop;
   if (g_wfErr[0]) {
+    gfx->fillRect(0, yTop, SCR_W, SCR_H - 22 - yTop, colBg());
     gfx->setTextColor(colRed()); gfx->setTextSize(2);
     gfx->setCursor(16, yTop + 40); gfx->print(g_wfErr);
     gfx->setTextColor(colDim()); gfx->setTextSize(1);
@@ -1020,6 +1024,24 @@ static void drawWaterfall() {
       linebuf[c * 2] = col; linebuf[c * 2 + 1] = col;
     }
     gfx->draw16bitRGBBitmap(0, yTop + r, linebuf, 240, 1);
+  }
+  // ── live spectrum strip: the newest row as inferno-coloured bars ─────────────
+  int newest = (g_wfHead - 1 + WF_ROWS) % WF_ROWS;
+  const uint8_t *cur = g_wfImg[newest];
+  int16_t sBot = wfBottom + STRIP_H;
+  gfx->fillRect(0, wfBottom, SCR_W, STRIP_H, colBg());
+  for (int c = 0; c < WF_BINS; c++) {
+    int16_t h = (int16_t)cur[c] * STRIP_H / 255;
+    if (h > 0) gfx->fillRect(c * 2, sBot - h, 2, h, wfColor(cur[c]));
+  }
+  // ── frequency axis (MHz): lo · mid · hi ─────────────────────────────────────
+  gfx->fillRect(0, sBot, SCR_W, AXIS_H, colBg());
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  if (g_wfLo) {
+    String loS = String(g_wfLo), midS = String((g_wfLo + g_wfHi) / 2), hiS = String(g_wfHi);
+    gfx->setCursor(2, sBot + 1);                             gfx->print(loS);
+    gfx->setCursor(SCR_W / 2 - midS.length() * 3, sBot + 1); gfx->print(midS);
+    gfx->setCursor(SCR_W - hiS.length() * 6 - 2, sBot + 1);  gfx->print(hiS);
   }
 }
 

@@ -285,10 +285,13 @@ The CYD has no SDR, so the waterfall is **Ragnar's** SDR spectrum, downsampled
 and streamed to the console. `cyd_waterfall.py` auto-selects the attached radio —
 HackRF (`sdr_spectrum`) or **RTL-SDR** (`rtl_sdr`) — and **piggybacks a sweep
 that's already running** (e.g. the web RF-waterfall) rather than fighting it for
-the one dongle. It returns a **120-bin** row (0..255) per frame, quantised across
-the live noise floor for contrast; the ESP32 scrolls them with an inferno
-palette. Tap the band bar to cycle **Sub-GHz ISM** (433/868/915/315) and a few
-**RF** bands (fm/air/2.4); on an RTL-SDR the 2.4/5/6 requests fall back to 433.
+the one dongle. It returns a **120-bin** row (0..255) per frame, quantised over a
+robust per-frame range (10th-percentile floor → dark, frame peak → pale) so the
+palette reads right. The ESP32 scrolls it with the **same 5-stop inferno LUT the
+web waterfall uses**, and below it draws a **live spectrum strip** (current signal
+per frequency) and a **frequency axis** (lo · mid · hi MHz) — matching the web.
+Tap the band bar to cycle **Sub-GHz ISM** (433/868/915/315) and a few **RF** bands
+(fm/air/2.4); on an RTL-SDR the 2.4/5/6 requests fall back to 433.
 
 - Transport: **serial only** (~8 rows/s over the cable; the console pauses its
   sniff cycle while the waterfall is open). The legacy WiFi build shows
