@@ -128,7 +128,9 @@ static const int16_t SCR_H = 320;
 #define CYD_GIF_BE       0
 static const int16_t GIF_X_OFF = 0;
 static const int16_t GIF_Y_OFF = (SCR_H - 240) / 2;   // 40 px: centre the square
-static AnimatedGIF g_bootGif;
+// AnimatedGIF embeds tens of KB of decode buffers; it's only needed at boot, so
+// it is heap-allocated in playBootAnimation() and freed before WiFi/BLE start —
+// keeping it as a static global permanently starved the WiFi RX buffers.
 
 static void GIFDraw(GIFDRAW *pDraw) {
   uint8_t *s;
@@ -173,15 +175,18 @@ static void GIFDraw(GIFDRAW *pDraw) {
 // Play the embedded GIF for ~durationMs, honouring per-frame delays; loops if the
 // clip is shorter. Blocking by design — it IS the boot delay.
 static void playBootAnimation(uint32_t durationMs) {
-  g_bootGif.begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
-  if (!g_bootGif.open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw))
-    return;                                 // decode unavailable — skip silently
-  uint32_t start = millis();
-  int delayMs = 0;
-  while (millis() - start < durationMs) {
-    if (!g_bootGif.playFrame(true, &delayMs)) g_bootGif.reset();  // end -> loop
+  AnimatedGIF *gif = new AnimatedGIF();       // ~tens of KB, freed below (boot only)
+  if (!gif) return;
+  gif->begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
+  if (gif->open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw)) {
+    uint32_t start = millis();
+    int delayMs = 0;
+    while (millis() - start < durationMs) {
+      if (!gif->playFrame(true, &delayMs)) gif->reset();  // end -> loop
+    }
+    gif->close();
   }
-  g_bootGif.close();
+  delete gif;                                 // reclaim the decode buffers
 }
 
 // ── Touch (XPT2046 on its own SPI bus) ────────────────────────────────────────
@@ -191,7 +196,7 @@ static SPIClass touchSPI(HSPI);
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
               SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_MESH, SCR_NETCONN,
-              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
+              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST, SCR_ACTION };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -232,6 +237,10 @@ struct RagnarStatus {
   int      tfConns          = 0;
   uint32_t tfPkts           = 0;
   int      tfAlerts         = 0;
+  // Last action lifecycle (for the generic Action result subpage):
+  char     actName[24]      = "";
+  char     actState[12]     = "";
+  char     actDetail[28]    = "";
 };
 static RagnarStatus g_rs;
 
@@ -263,8 +272,13 @@ static uint32_t g_apCount = 0;
 // a band and stream one quantised row per frame, which we scroll here.
 #define WF_BINS 120
 #define WF_ROWS 246                          // fills the waterfall area (52..298)
-static uint8_t  g_wfImg[WF_ROWS][WF_BINS];   // ring of rows (0=strong..)
+// ~29.5 KB ring — allocated only WHILE the waterfall screen is open (which pauses
+// the WiFi/BLE duty cycle), so it never competes with the WiFi RX buffers. Keeping
+// it static exhausted DRAM and the sniff phase aborted every cycle (SW_CPU_RESET).
+static uint8_t (*g_wfImg)[WF_BINS] = nullptr;
 static int      g_wfHead = 0;                // next write row
+static void wfAlloc() { if (!g_wfImg) { g_wfImg = (uint8_t(*)[WF_BINS])malloc((size_t)WF_ROWS * WF_BINS); if (g_wfImg) memset(g_wfImg, 0, (size_t)WF_ROWS * WF_BINS); } }
+static void wfFree()  { if (g_wfImg) { free(g_wfImg); g_wfImg = nullptr; } }
 static bool     g_wfHave = false;            // got at least one row
 static uint32_t g_wfSeq  = 0;                // last applied row seq
 static int      g_wfLo = 0, g_wfHi = 0;      // band edges, MHz
@@ -571,6 +585,9 @@ static void applyStatus(const String &body) {
   CYD_CPYS(ni2, "ni2");
   CYD_CPYS(ni3, "ni3");
   CYD_CPYS(tfMbps, "tf_mbps");
+  CYD_CPYS(actName, "act_name");
+  CYD_CPYS(actState, "act_state");
+  CYD_CPYS(actDetail, "act_detail");
   #undef CYD_CPYS
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
   g_rs.tfPps    = jsonInt(body, "tf_pps");
@@ -591,7 +608,8 @@ static void applyStatus(const String &body) {
     + g_rs.netint + '|' + g_rs.speedtest + '|' + g_rs.captive + '|' + g_rs.pwn + '|'
     + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
-    + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts;
+    + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
+    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -949,15 +967,14 @@ static void drawSigInt() {
 }
 
 // ── RF waterfall: palette + a streamed-row renderer ───────────────────────────
-// Inferno colour map (dark → purple → red → orange → yellow), so the noise floor
-// reads near-black instead of the old blue, and signals ramp through warm tones.
+// Inferno colour map — the SAME 5-stop LUT the web RF-waterfall uses
+// (black→purple→red→orange→pale), so the two match. Dark noise floor, warm signals.
 static uint16_t wfColor(uint8_t v) {
-  static const uint8_t stops[9][3] = {
-    {0,0,4},{40,11,84},{101,21,110},{159,42,99},{212,72,66},
-    {245,125,21},{250,193,39},{252,229,120},{252,255,164}
+  static const uint8_t stops[5][3] = {
+    {4,3,18},{87,16,110},{188,55,84},{249,142,9},{252,255,164}
   };
-  int seg = v * 8 / 255; if (seg > 7) seg = 7;
-  int t0 = seg * 255 / 8, t1 = (seg + 1) * 255 / 8;
+  int seg = v * 4 / 255; if (seg > 3) seg = 3;
+  int t0 = seg * 255 / 4, t1 = (seg + 1) * 255 / 4;
   int f = (t1 > t0) ? (v - t0) * 255 / (t1 - t0) : 0;
   const uint8_t *a = stops[seg], *b = stops[seg + 1];
   uint8_t r = a[0] + (b[0] - a[0]) * f / 255;
@@ -977,15 +994,20 @@ static void drawWaterfall() {
                 gfx->print(String(g_wfLo) + "-" + String(g_wfHi) + "MHz"); }
   gfx->setTextColor(colSky()); gfx->setCursor(184, by + 7); gfx->print("band>");
   int16_t yTop = by + 22;
-  int16_t hArea = (SCR_H - 22) - yTop;
+  // Reserve a bottom spectrum strip (live signal per frequency) + a frequency axis,
+  // like the web waterfall. The scrolling waterfall fills the space above them.
+  const int16_t AXIS_H = 10, STRIP_H = 30;
+  int16_t wfBottom = SCR_H - 22 - AXIS_H - STRIP_H;   // waterfall ends here
+  int16_t hArea = wfBottom - yTop;
   if (g_wfErr[0]) {
+    gfx->fillRect(0, yTop, SCR_W, SCR_H - 22 - yTop, colBg());
     gfx->setTextColor(colRed()); gfx->setTextSize(2);
     gfx->setCursor(16, yTop + 40); gfx->print(g_wfErr);
     gfx->setTextColor(colDim()); gfx->setTextSize(1);
     gfx->setCursor(16, yTop + 70); gfx->print("attach a HackRF/RTL-SDR to Ragnar");
     return;
   }
-  if (!g_wfHave) {
+  if (!g_wfHave || !g_wfImg) {
     gfx->setTextColor(colDim()); gfx->setTextSize(1);
     gfx->setCursor(16, yTop + 40); gfx->print("waiting for spectrum...");
     return;
@@ -1003,6 +1025,24 @@ static void drawWaterfall() {
     }
     gfx->draw16bitRGBBitmap(0, yTop + r, linebuf, 240, 1);
   }
+  // ── live spectrum strip: the newest row as inferno-coloured bars ─────────────
+  int newest = (g_wfHead - 1 + WF_ROWS) % WF_ROWS;
+  const uint8_t *cur = g_wfImg[newest];
+  int16_t sBot = wfBottom + STRIP_H;
+  gfx->fillRect(0, wfBottom, SCR_W, STRIP_H, colBg());
+  for (int c = 0; c < WF_BINS; c++) {
+    int16_t h = (int16_t)cur[c] * STRIP_H / 255;
+    if (h > 0) gfx->fillRect(c * 2, sBot - h, 2, h, wfColor(cur[c]));
+  }
+  // ── frequency axis (MHz): lo · mid · hi ─────────────────────────────────────
+  gfx->fillRect(0, sBot, SCR_W, AXIS_H, colBg());
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  if (g_wfLo) {
+    String loS = String(g_wfLo), midS = String((g_wfLo + g_wfHi) / 2), hiS = String(g_wfHi);
+    gfx->setCursor(2, sBot + 1);                             gfx->print(loS);
+    gfx->setCursor(SCR_W / 2 - midS.length() * 3, sBot + 1); gfx->print(midS);
+    gfx->setCursor(SCR_W - hiS.length() * 6 - 2, sBot + 1);  gfx->print(hiS);
+  }
 }
 
 // Apply one streamed waterfall frame (shared by both transports).
@@ -1015,6 +1055,7 @@ static void applyWfRow(const String &body) {
     return;
   }
   g_wfErr[0] = 0;
+  if (!g_wfImg) return;                      // buffer only exists while the screen is open
   // Bail on 'waiting' frames (no bins) BEFORE touching lo/hi/seq, so the band
   // label doesn't flicker to 0-0 and we don't force a needless redraw.
   int i = body.indexOf("\"bins\"");
@@ -1101,26 +1142,74 @@ static int16_t drawActionList(const ActionBtn *items, int n, int16_t y0) {
 }
 
 // Hit-test an action list at y0; enqueues the tapped action. Returns true if hit.
-static bool hitActionList(const ActionBtn *items, int n, int16_t y0,
-                          int16_t px, int16_t py) {
-  int16_t y = y0;
-  for (int i = 0; i < n; i++) {
-    if (inRect(px, py, 10, y, SCR_W - 20, BTN_BH)) {
-      if (actionEnqueue(items[i].action))
-        setStatus((String("queued: ") + items[i].label).c_str(), colAmber());
-      else
-        setStatus("action queue full", colRed());
-      return true;
-    }
-    y += BTN_BH + BTN_GAP;
-  }
-  return false;
-}
 
 static const int16_t CTRL_Y0 = HEAD_H + 10;
 static void drawControls() {
   drawHeader("CONTROLS", false);
   drawActionList(g_ctrlActions, N_CTRL, CTRL_Y0);
+}
+
+// ── Generic Action result subpage ─────────────────────────────────────────────
+// A tap on a one-shot action navigates here and shows starting -> running ->
+// done/error with the result Ragnar reports (act_name/act_state/act_detail),
+// instead of firing blind. requestAction() sends the action immediately (serial)
+// so there's no wait for the sync window.
+static Screen   g_actReturn = SCR_HOME;    // where the tap came from
+static char     g_actLabel[24] = "";       // friendly label of what we asked
+static char     g_actName[24]  = "";       // action id we're tracking
+static uint32_t g_actStartMs   = 0;
+
+static void requestAction(const char *action, const char *label) {
+#if CYD_TRANSPORT_SERIAL
+  serialSendAction(String(action));        // send now, don't wait for SYNC
+#else
+  actionEnqueue(action);
+#endif
+  strncpy(g_actName, action, sizeof(g_actName) - 1);  g_actName[sizeof(g_actName)-1] = 0;
+  strncpy(g_actLabel, label,  sizeof(g_actLabel) - 1); g_actLabel[sizeof(g_actLabel)-1] = 0;
+  // Clear the local copy of the last result so we show "starting..." until Ragnar
+  // reports THIS action (avoids flashing a previous run's result).
+  g_rs.actName[0] = 0; g_rs.actState[0] = 0; g_rs.actDetail[0] = 0;
+  g_actReturn = g_screen;
+  g_actStartMs = millis();
+  g_screen = SCR_ACTION;
+  g_needRedraw = true;
+}
+
+static void drawAction() {
+  drawHeader("ACTION", false);
+  int16_t y = HEAD_H + 20;
+  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
+  // What we asked for
+  gfx->setTextColor(colSky()); gfx->setTextSize(2);
+  gfx->setCursor(12, y); gfx->print(g_actLabel); y += 40;
+
+  // Fresh result only if Ragnar is reporting THIS action; a ~1.2s grace ignores a
+  // stale terminal result carried by an in-flight push right after the tap.
+  bool mine = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
+  bool grace = (millis() - g_actStartMs) < 1200;
+  const char *st = g_rs.actState;
+  if (!mine || (grace && strcmp(st, "running") != 0)) {
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print("starting...");
+    return;
+  }
+  uint16_t c = colAmber(); const char *word = "RUNNING...";
+  if      (strcmp(st, "done")  == 0) { c = colGreen(); word = "DONE"; }
+  else if (strcmp(st, "error") == 0) { c = colRed();   word = "FAILED"; }
+  gfx->setTextColor(c); gfx->setTextSize(3);
+  gfx->setCursor(12, y); gfx->print(word); y += 44;
+  if (g_rs.actDetail[0]) {
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print(g_rs.actDetail); y += 34;
+  }
+  // Actions that take the link down get an explicit heads-up.
+  if (strcmp(g_actName, "service_restart") == 0 || strcmp(g_actName, "ragnar_update") == 0) {
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(12, y + 4); gfx->print("link will drop, reconnects shortly");
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(12, SCR_H - 40); gfx->print("tap < to go back");
 }
 
 // ── Network: compact status header + wardrive/scan action buttons ─────────────
@@ -1186,7 +1275,7 @@ static void drawTraffic() {
   kv(y, "THROUGHPUT", String(g_rs.tfMbps) + " Mbps", colSky()); y += 34;
   kv(y, "PACKETS/S", String(g_rs.tfPps), WHITE); y += 34;
   kv(y, "HOSTS / CONNS", String(g_rs.tfHosts) + " / " + String(g_rs.tfConns), WHITE); y += 34;
-  kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colDim()); y += 34;
+  kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colGreen()); y += 34;
   kv(y, "ALERTS", String(g_rs.tfAlerts), g_rs.tfAlerts ? colRed() : colGreen());
   // start/stop button
   uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
@@ -1479,6 +1568,7 @@ static void render() {
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
+    case SCR_ACTION:  drawAction();    break;
   }
   drawStatusBar();
   g_needRedraw = false;
@@ -1502,6 +1592,7 @@ static void handleTouch(int16_t px, int16_t py) {
       if (!inRect(px, py, x, y, TILE_W, TILE_H)) continue;
       g_screen = g_menu[i].scr;
       if (g_screen == SCR_WFALL) {
+        wfAlloc();                                // ~30KB, freed on exit (see back)
         wfReset();
 #if CYD_TRANSPORT_SERIAL
         g_wfActive = true;                        // stream over the cable
@@ -1528,9 +1619,11 @@ static void handleTouch(int16_t px, int16_t py) {
   // under the header (there, back stays header-only so band-cycling is usable).
   bool back = (g_screen == SCR_WFALL) ? (py < HEAD_H) : inBackZone(px, py);
   if (back) {
-    if (g_screen == SCR_WFALL) g_wfActive = false;
+    if (g_screen == SCR_WFALL) { g_wfActive = false; wfFree(); }  // reclaim ~30KB
     g_meshActive = false; g_wifiActive = false;   // stop roster/wifi streams
-    g_screen = SCR_HOME; g_needRedraw = true; return;
+    // The Action subpage returns to wherever it was launched from.
+    g_screen = (g_screen == SCR_ACTION) ? g_actReturn : SCR_HOME;
+    g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
     uint8_t tags[8]; int n = settingsRows(tags);
@@ -1541,10 +1634,10 @@ static void handleTouch(int16_t px, int16_t py) {
         case STAG_BLE: g_bleEnabled = !g_bleEnabled; saveSettings(); break;
         case STAG_BL:  g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
                        applyBacklight(); saveSettings(); break;
-        case STAG_WDRV:   if (!actionEnqueue("wardrive_toggle")) setStatus("queue full", colRed()); else setStatus("queued: wardrive", colAmber()); break;
-        case STAG_UPDATE: if (!actionEnqueue("ragnar_update"))   setStatus("queue full", colRed()); else setStatus("queued: update", colAmber()); break;
-        case STAG_SVC:    if (!actionEnqueue("service_restart")) setStatus("queue full", colRed()); else setStatus("queued: restart", colAmber()); break;
-        case STAG_PWN:    if (!actionEnqueue("pwn_swap"))        setStatus("queue full", colRed()); else setStatus("queued: pwn swap", colAmber()); break;
+        case STAG_WDRV:   requestAction("wardrive_toggle", "Wardriving"); return;
+        case STAG_UPDATE: requestAction("ragnar_update", "Ragnar update"); return;
+        case STAG_SVC:    requestAction("service_restart", "Restart service"); return;
+        case STAG_PWN:    requestAction("pwn_swap", "Pwnagotchi swap"); return;
         case STAG_TOUCH:  g_ttX = g_ttY = -1; g_screen = SCR_TOUCHTEST; break;
       }
       g_needRedraw = true;
@@ -1570,7 +1663,13 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_CTRL) {
-    hitActionList(g_ctrlActions, N_CTRL, CTRL_Y0, px, py);
+    int16_t y = CTRL_Y0;
+    for (int i = 0; i < N_CTRL; i++) {
+      if (inRect(px, py, 10, y, SCR_W - 20, BTN_BH)) {
+        requestAction(g_ctrlActions[i].action, g_ctrlActions[i].label); return;
+      }
+      y += BTN_BH + BTN_GAP;
+    }
     return;
   }
   if (g_screen == SCR_TRAFFIC) {
@@ -1594,8 +1693,9 @@ static void handleTouch(int16_t px, int16_t py) {
     // bottom action buttons: AP / Scan+ / Scan-
     if (py >= NC_BTN_Y && py < NC_BTN_Y + 32) {
       int b = -1; for (int i = 0; i < 3; i++) if (px >= 8 + i * 76 && px < 8 + i * 76 + 72) b = i;
-      const char *acts[3] = {"ap_toggle", "scanner_start", "scanner_stop"};
-      if (b >= 0) { if (actionEnqueue(acts[b])) setStatus("queued", colAmber()); else setStatus("queue full", colRed()); }
+      const char *acts[3]   = {"ap_toggle", "scanner_start", "scanner_stop"};
+      const char *labels[3] = {"AP mode", "Scanner on", "Scanner off"};
+      if (b >= 0) requestAction(acts[b], labels[b]);
       return;
     }
     // tap a WiFi row -> pick it and open the password keyboard
@@ -1615,9 +1715,7 @@ static void handleTouch(int16_t px, int16_t py) {
       int16_t x, gy; gridBtnXY(i, NET_GRID_Y0, x, gy);
       if (!inRect(px, py, x, gy, GBTN_W, GBTN_H)) continue;
       if (g_netItems[i].nav) { g_screen = (Screen)g_netItems[i].scr; g_needRedraw = true; }
-      else if (actionEnqueue(g_netItems[i].action))
-        setStatus((String("queued: ") + g_netItems[i].label).c_str(), colAmber());
-      else setStatus("action queue full", colRed());
+      else requestAction(g_netItems[i].action, g_netItems[i].label);
       return;
     }
     return;

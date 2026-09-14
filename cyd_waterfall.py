@@ -29,6 +29,9 @@ except Exception:  # pragma: no cover
 WF_BINS = 120
 _BASE_DBM = -110        # 0 in the quantised row
 _SPAN_DB = 80           # -110..-30 dBm -> 0..255
+_WF_GAMMA = 0.50        # <1 brightens the low/mid waterfall (1.0 = linear)
+_WF_FLOOR_LIFT = 55     # min palette value for any bin (lifts the black level so
+                        # the whole field glows instead of reading near-black)
 _STALE_SEC = 15         # stop the sweep if the CYD stops asking
 # Fixed tuner gain when the CYD starts its OWN sweep (auto-gain lets the floor
 # wander, so contrast breathes). Only applied to a sweep we start — never to one
@@ -171,18 +174,18 @@ def wants_stream():
 
 
 def _downsample_quant(power, floor=None):
-    """Downsample to WF_BINS and quantise 0..255 across [floor .. -20 dBm] so the
-    contrast tracks the live noise floor (a fixed -110..-30 range made everything
-    saturate on a high auto-gain floor — the 'all red' look). Robust floor: the
-    10th-percentile of the frame when floor_dbm isn't given."""
+    """Downsample to WF_BINS and quantise 0..255 with a robust PER-FRAME range so
+    the inferno palette reads right: base = 10th-percentile (the real noise floor,
+    → dark), top = the frame peak (→ pale yellow), with a ≥20 dB minimum span. The
+    reported floor_dbm is ignored on purpose — trusting it (often the -110 default)
+    mapped noise into the mid palette and washed everything orange."""
     n = len(power)
     if not n:
         return [0] * WF_BINS
-    if floor is None:
-        s = sorted(power)
-        floor = s[len(s) // 10]
-    base = float(floor)
-    top = -20.0
+    s = sorted(power)
+    base = float(s[n // 10])                 # p10 noise floor -> dark
+    peak = float(s[-1])
+    top = peak if (peak - base) >= 20 else base + 20.0
     span = top - base
     if span < 12:
         span = 12.0
@@ -194,7 +197,15 @@ def _downsample_quant(power, floor=None):
             b = a + 1
         seg = power[a:b]
         db = max(seg) if seg else base
-        v = int((db - base) / span * 255)
+        t = (db - base) / span
+        if t < 0:
+            t = 0.0
+        elif t > 1:
+            t = 1.0
+        # Gamma < 1 lifts the low/mid range, and _WF_FLOOR_LIFT raises the black
+        # level so the whole field glows (inferno's lower half is otherwise
+        # near-black -> dim). Peak still maps to 255 (pale yellow).
+        v = int(_WF_FLOOR_LIFT + (t ** _WF_GAMMA) * (255 - _WF_FLOOR_LIFT))
         out.append(0 if v < 0 else (255 if v > 255 else v))
     return out
 
