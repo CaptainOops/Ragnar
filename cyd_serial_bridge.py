@@ -63,7 +63,8 @@ class CydSerialBridge:
     def __init__(self, build_status, on_ingest, on_action, enabled,
                  baud=115200, status_interval=2.0, port=None, get_port=None,
                  on_wf_request=None, get_wf=None,
-                 get_mesh=None, get_wifi=None, on_wifi_connect=None):
+                 get_mesh=None, get_wifi=None, on_wifi_connect=None,
+                 publish_port=None):
         self._build_status = build_status
         self._on_ingest = on_ingest
         self._on_action = on_action
@@ -73,6 +74,7 @@ class CydSerialBridge:
         self._get_mesh = get_mesh              # () -> roster dict (pushed while on)
         self._get_wifi = get_wifi              # () -> wifi-list dict (pushed while on)
         self._on_wifi_connect = on_wifi_connect  # (ssid, pw) -> None
+        self._publish_port = publish_port        # (port_or_None) -> None
         self._mesh_on = False
         self._wifi_on = False
         self._dbg = {'wr': 0, 'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0,
@@ -156,6 +158,7 @@ class CydSerialBridge:
                 time.sleep(2.0)
                 continue
             self.port, self.connected, self.last_error = port, True, None
+            self._publish(port)          # let others (e.g. GPS probe) avoid this port
             try:
                 self._session(ser)
             except Exception as exc:
@@ -166,11 +169,20 @@ class CydSerialBridge:
                 except Exception:
                     pass
                 self.connected = False
+                self._publish(None)
         self._teardown(None)
+
+    def _publish(self, port):
+        if self._publish_port:
+            try:
+                self._publish_port(port)
+            except Exception:
+                pass
 
     def _teardown(self, err):
         self.connected = False
         self.port = None
+        self._publish(None)
         if err is not None:
             self.last_error = err
 

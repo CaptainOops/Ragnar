@@ -3255,6 +3255,9 @@ _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     get_mesh=_cyd_mesh_roster,
     get_wifi=_cyd_wifi_list,
     on_wifi_connect=_cyd_wifi_connect,
+    # Publish the CYD's serial port so other probes (e.g. wardriving GPS detect)
+    # skip it instead of stealing its bytes.
+    publish_port=lambda p: setattr(shared_data, 'cyd_serial_active_port', p),
 )
 try:
     _cyd_bridge.start()
