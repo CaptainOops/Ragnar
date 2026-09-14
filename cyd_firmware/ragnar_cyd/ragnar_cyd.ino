@@ -667,11 +667,25 @@ static void drawHeader(const char *title, bool home) {
     String u = g_rs.unitName; if (u.length() > 20) u = u.substring(0, 20);
     gfx->print(u);
   } else {
-    gfx->setTextColor(colSky()); gfx->setTextSize(2);
-    gfx->setCursor(8, 8); gfx->print("<");
+    // Bigger, obvious back target: a rounded chip filling the header-left, with a
+    // large arrow. The touch zone (see handleTouch) is even larger than the chip.
+    gfx->fillRoundRect(2, 2, 58, HEAD_H - 4, 6, gfx->color565(30, 90, 160));
+    gfx->drawRoundRect(2, 2, 58, HEAD_H - 4, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(3);
+    gfx->setCursor(14, 5); gfx->print("<");
+    gfx->setTextSize(2);
     gfx->setTextColor(WHITE);
-    gfx->setCursor(34, 8); gfx->print(title);
+    gfx->setCursor(70, 8); gfx->print(title);
   }
+}
+
+// Back target: the full header, plus a generous top-left zone that extends below
+// the header edge (resistive panels are least sensitive at the very top edge, so
+// a taller/wider hit box makes "back" easy to hit).
+static const int16_t BACK_ZONE_W = 90;
+static const int16_t BACK_ZONE_H = HEAD_H + 12;
+static bool inBackZone(int16_t px, int16_t py) {
+  return (py < HEAD_H) || (px < BACK_ZONE_W && py < BACK_ZONE_H);
 }
 
 // A half-height menu tile: left accent bar + label, with a compact live value
@@ -1096,7 +1110,10 @@ static void handleTouch(int16_t px, int16_t py) {
     }
     return;
   }
-  if (py < HEAD_H) {                 // back
+  // Back: enlarged hit zone everywhere except WFALL, whose band bar sits right
+  // under the header (there, back stays header-only so band-cycling is usable).
+  bool back = (g_screen == SCR_WFALL) ? (py < HEAD_H) : inBackZone(px, py);
+  if (back) {
     if (g_screen == SCR_WFALL) g_wfActive = false;
     g_screen = SCR_HOME; g_needRedraw = true; return;
   }
