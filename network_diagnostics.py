@@ -19801,6 +19801,532 @@ def _mikrotik_selftest():
             'total': len(scenarios), 'scenarios': scenarios}
 
 
+# ==========================================================================
+# Aruba Guard — passive HPE Aruba (ArubaOS / InstantOS) CVE monitor
+# ==========================================================================
+# Ported from the standalone arubaguard. The in-app _guard_packets model is the
+# per-packet UDP/PAPI subset: PAPI (UDP/8211) is the module's core — 42 CVEs, all
+# unauthenticated cleartext on the wire — and maps cleanly onto the guard framework
+# (payload signatures + dual-stack via the shared ip6[6] clause). Deliberately NOT
+# ported, each with a reason:
+#   - ARB-002 papi_crosses_trust_boundary / ARB-003 papi_undeclared_peer: need an
+#     operator-declared --mgmt-prefix / --tenant-prefix set the in-app guard has no
+#     config for (the standalone is silent without it too).
+#   - ARB-201 aruba_device_observed / ARB-301 l2_malformed_frame / ARB-302
+#     l2_tag_stack_anomaly: native-L2 / 802.1Q frame structure + Aruba-OUI source MAC —
+#     tcpdump -x carries only IP-onward bytes, so the frame/MAC aren't reconstructable
+#     (CVE-2025-37148, the one L2 CVE).
+#   - ARB-401 / ARB-402 vlan_*: need an operator VLAN-per-interface declaration
+#     (CVE-2025-37165, the one VLAN-topology CVE).
+_ARUBA_GUARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'data', 'aruba_guard.json')
+_aruba_guard_lock = threading.Lock()
+
+_ARUBA_PAPI_PORT = 8211
+_ARUBA_PAPI_MAGIC = 0x4972
+_ARUBA_PAPI_HDR_V4 = 44
+_ARUBA_PAPI_HDR_V4V6 = 76
+_ARUBA_PAPI_V4V6_VERSION = 0x03
+_ARUBA_PAPI_MAX_LEN = 1024          # ARB-101 oversized-datagram threshold
+_ARUBA_PAPI_MAX_FIELD = 256         # ARB-105 unterminated-run threshold
+_ARUBA_FLOOD_THRESHOLD = 200        # ARB-106 datagrams per source in the window
+
+_ARUBA_GUARD_BPF = ('udp port %d or ' % _ARUBA_PAPI_PORT) + _GUARD_IP6_EXTHDR_BPF
+
+# 42 PAPI CVEs grouped by vulnerability class (from the standalone's PAPI_CVES table).
+_ARUBA_CVES_OVERFLOW = (
+    'CVE-2022-37885', 'CVE-2022-37886', 'CVE-2022-37887', 'CVE-2022-37888',
+    'CVE-2022-37889', 'CVE-2023-22751', 'CVE-2023-22752', 'CVE-2023-22779',
+    'CVE-2023-22780', 'CVE-2023-22781', 'CVE-2023-22782', 'CVE-2023-22783',
+    'CVE-2023-22784', 'CVE-2023-22785', 'CVE-2023-22786', 'CVE-2024-26304',
+    'CVE-2024-26305', 'CVE-2024-33511', 'CVE-2024-33512', 'CVE-2024-31466',
+    'CVE-2024-31467', 'CVE-2024-31468', 'CVE-2024-31469', 'CVE-2024-31470',
+    'CVE-2024-42393', 'CVE-2024-42394', 'CVE-2024-42395')
+_ARUBA_CVES_INJECTION = (
+    'CVE-2023-22747', 'CVE-2023-22748', 'CVE-2023-22749', 'CVE-2023-22750',
+    'CVE-2024-31471', 'CVE-2024-31472', 'CVE-2024-31473', 'CVE-2024-42505',
+    'CVE-2024-42506', 'CVE-2024-42507', 'CVE-2024-42509', 'CVE-2024-47460')
+_ARUBA_CVES_FILEDELETE = ('CVE-2024-31474', 'CVE-2024-31475')
+_ARUBA_CVES_DOS = ('CVE-2023-22787',)
+_ARUBA_PAPI_CVES = tuple(sorted(set(_ARUBA_CVES_OVERFLOW + _ARUBA_CVES_INJECTION
+                                    + _ARUBA_CVES_FILEDELETE + _ARUBA_CVES_DOS)))
+
+# ARB-109 service attribution: PAPI service port -> (advisory service, its CVEs). Only
+# services the HPE advisories name are mapped, so ordinary PAPI stays quiet.
+_ARUBA_CLI_CVES = ('CVE-2024-31466', 'CVE-2024-31467', 'CVE-2024-31474',
+                   'CVE-2024-42505', 'CVE-2024-42506', 'CVE-2024-42507',
+                   'CVE-2024-42509', 'CVE-2024-47460')
+_ARUBA_SOFTAP_CVES = ('CVE-2024-31472', 'CVE-2024-42393', 'CVE-2024-42394')
+_ARUBA_CERT_CVES = ('CVE-2024-42395',)
+_ARUBA_UDB_CVES = ('CVE-2024-33512',)
+_ARUBA_UTIL_CVES = ('CVE-2024-26305',)
+_ARUBA_PAPI_SERVICE_MAP = {}
+for _p in (8213, 8239, 8361, 8220, 8364, 8375, 8367, 8368, 8369):
+    _ARUBA_PAPI_SERVICE_MAP[_p] = ('CLI service', _ARUBA_CLI_CVES)
+for _p in (8222, 8223, 8436, 8438):
+    _ARUBA_PAPI_SERVICE_MAP[_p] = ('Soft AP Daemon', _ARUBA_SOFTAP_CVES)
+for _p in (8343, 8349, 8353):
+    _ARUBA_PAPI_SERVICE_MAP[_p] = ('AP Certificate Management', _ARUBA_CERT_CVES)
+_ARUBA_PAPI_SERVICE_MAP[8344] = ('Local User Authentication Database', _ARUBA_UDB_CVES)
+_ARUBA_PAPI_SERVICE_MAP[8449] = ('Utility daemon', _ARUBA_UTIL_CVES)
+del _p
+
+_ARUBA_SHELL_META = (b';', b'|', b'`', b'$(', b'&&', b'||', b'\n', b'\r\n', b'${')
+_ARUBA_CMD_RE = re.compile(
+    rb'(?:/bin/|/sbin/|/usr/bin/|/tmp/|busybox'
+    rb'|\bsh\b|\bbash\b|\bcat\b|\bwget\b|\bcurl\b|\bnc\b|\bncat\b'
+    rb'|\btelnet\b|\btftp\b|\bchmod\b|\bchown\b|\brm\b|\bcp\b|\bmv\b'
+    rb'|\bpython\d?\b|\bperl\b|\becho\b|\bwhoami\b|\bnohup\b|\breboot\b'
+    rb'|\bkill\b|\bdd\b|\bmkfifo\b|\bbase64\b)', re.IGNORECASE)
+_ARUBA_TRAVERSAL = (b'../', b'..\\', b'%2e%2e%2f', b'....//')
+_ARUBA_SENSITIVE_PATHS = (b'/etc/', b'/tmp/', b'/flash/', b'/proc/', b'/var/',
+                          b'/dev/', b'/mswitch/', b'/aruba/')
+_ARUBA_FMT_RE = re.compile(rb'%\d*\$?n|(?:%[sx]){4,}')
+_ARUBA_PRINTABLE = frozenset(range(0x20, 0x7f)) | {0x09}
+# framing bands — measured in the standalone (LESSON U), not tuned here.
+_ARUBA_FRAMING_MIN_LEN = 24
+_ARUBA_FRAMING_OPAQUE_ENTROPY = 0.86
+_ARUBA_FRAMING_OPAQUE_MAX_RUN = 16
+_ARUBA_FRAMING_CLEAR_ENTROPY = 0.84
+_ARUBA_FRAMING_CLEAR_MIN_RUN = 8
+_ARUBA_FRAMING_CLEAR_MIN_PRINTABLE = 0.25
+
+
+def _aruba_printable_runs(payload, minlen=4):
+    runs, start = [], -1
+    for i, b in enumerate(payload):
+        if b in _ARUBA_PRINTABLE:
+            if start < 0:
+                start = i
+        else:
+            if start >= 0 and i - start >= minlen:
+                runs.append(payload[start:i])
+            start = -1
+    if start >= 0 and len(payload) - start >= minlen:
+        runs.append(payload[start:])
+    return runs
+
+
+def _aruba_longest_run(payload):
+    return max((len(r) for r in _aruba_printable_runs(payload, minlen=1)), default=0)
+
+
+def _aruba_printable_ratio(payload):
+    if not payload:
+        return 0.0
+    return sum(1 for b in payload if b in _ARUBA_PRINTABLE) / float(len(payload))
+
+
+def _aruba_norm_entropy(payload):
+    """Shannon entropy / max achievable for this length (a raw threshold is wrong for
+    short datagrams — 64 random bytes can only reach 6.0 bits)."""
+    from math import log2
+    n = len(payload)
+    if n < 2:
+        return 0.0
+    counts = [0] * 256
+    for b in payload:
+        counts[b] += 1
+    ent = 0.0
+    for c in counts:
+        if c:
+            p = c / float(n)
+            ent -= p * log2(p)
+    return ent / log2(min(n, 256))
+
+
+def _aruba_classify_framing(payload):
+    """cleartext | opaque | unknown — leaves an ambiguous middle band as 'unknown' and
+    emits nothing there (forcing a verdict on ambiguous entropy trains operators to
+    ignore it)."""
+    if len(payload) < _ARUBA_FRAMING_MIN_LEN:
+        return 'unknown'
+    ne = _aruba_norm_entropy(payload)
+    run = _aruba_longest_run(payload)
+    if ne >= _ARUBA_FRAMING_OPAQUE_ENTROPY and run <= _ARUBA_FRAMING_OPAQUE_MAX_RUN:
+        return 'opaque'
+    if (ne <= _ARUBA_FRAMING_CLEAR_ENTROPY and run >= _ARUBA_FRAMING_CLEAR_MIN_RUN
+            and _aruba_printable_ratio(payload) >= _ARUBA_FRAMING_CLEAR_MIN_PRINTABLE):
+        return 'cleartext'
+    return 'unknown'
+
+
+def _aruba_find_shell(payload):
+    """A metacharacter AND a command token in the same printable run (binary fields
+    carry lone 0x3b/0x7c constantly, so the conjunction is what makes it evidence)."""
+    for run in _aruba_printable_runs(payload, minlen=6):
+        if any(m in run for m in _ARUBA_SHELL_META) and _ARUBA_CMD_RE.search(run.lower()):
+            return run[:160]
+    return None
+
+
+def _aruba_find_traversal(payload):
+    for run in _aruba_printable_runs(payload, minlen=4):
+        if any(t in run for t in _ARUBA_TRAVERSAL):
+            return run[:160]
+        low = run.lower()
+        if low.startswith(b'/') and any(p in low for p in _ARUBA_SENSITIVE_PATHS) and b'..' in low:
+            return run[:160]
+    return None
+
+
+def _aruba_find_format_string(payload):
+    for run in _aruba_printable_runs(payload, minlen=4):
+        if _ARUBA_FMT_RE.search(run):
+            return run[:160]
+    return None
+
+
+def _aruba_is_group_ip(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return ip.is_multicast or (ip.version == 4 and str(ip) == '255.255.255.255')
+
+
+def _aruba_parse_papi(payload):
+    """Decode a PAPI header (Wireshark layout, tshark-round-trip-verified). Returns
+    a dict or None — the magic 0x4972 is definitive: an encrypted / cluster-security
+    payload cannot present a parseable header."""
+    if len(payload) < _ARUBA_PAPI_HDR_V4:
+        return None
+    if struct.unpack_from('!H', payload, 0)[0] != _ARUBA_PAPI_MAGIC:
+        return None
+    version = struct.unpack_from('!H', payload, 2)[0]
+    (nat, garbage, dport, sport, ptype, psize, seq,
+     mcode) = struct.unpack_from('!HHHHHHHH', payload, 12)
+    hdr_len = _ARUBA_PAPI_HDR_V4
+    if version == _ARUBA_PAPI_V4V6_VERSION:
+        if len(payload) < _ARUBA_PAPI_HDR_V4V6:
+            return None
+        hdr_len = _ARUBA_PAPI_HDR_V4V6
+    return {'version': version, 'dest_port': dport, 'src_port': sport,
+            'packet_type': ptype, 'packet_size': psize, 'seq': seq,
+            'message_code': mcode, 'hdr_len': hdr_len, 'body': payload[hdr_len:]}
+
+
+def _aruba_ipv6_ext_present(ip_raw):
+    """True if the datagram arrived behind an IPv6 extension header (its first
+    next-header is an extension header, so a `udp port` BPF would have missed it)."""
+    return bool(ip_raw) and len(ip_raw) >= 7 and (ip_raw[0] >> 4) == 6 \
+        and ip_raw[6] in _IPV6_EXT_HDRS
+
+
+def _aruba_v4_fragment(ip_raw):
+    """(more_frags, frag_offset) for an IPv4 datagram, else (False, 0)."""
+    if not ip_raw or len(ip_raw) < 8 or (ip_raw[0] >> 4) != 4:
+        return (False, 0)
+    ff = int.from_bytes(ip_raw[6:8], 'big')
+    return (bool(ff & 0x2000), (ff & 0x1fff) * 8)
+
+
+def _aruba_analyze(records):
+    """Pure classifier over parsed guard packets -> Aruba PAPI findings + verdict."""
+    findings = []
+    seen_codes = set()
+    endpoints = set()
+    papi_by_src = {}
+
+    def add(code, name, sev, klass, src, cves, detail):
+        key = (code, src)
+        if key in seen_codes:
+            return
+        seen_codes.add(key)
+        findings.append({'code': code, 'name': name, 'severity': sev,
+                         'klass': klass, 'src': src, 'cves': cves, 'detail': detail})
+
+    for r in records:
+        if (r.get('proto') or '') != 'UDP':
+            continue
+        if r.get('dport') != _ARUBA_PAPI_PORT and r.get('sport') != _ARUBA_PAPI_PORT:
+            continue
+        pl = r.get('payload') or b''
+        src, dst = r.get('src'), r.get('dst')
+        ip_raw = r.get('ip_raw') or b''
+        af = 'ipv6' if r.get('ipver') == 6 else 'ipv4'
+        endpoints.add(src)
+        endpoints.add(dst)
+        papi_by_src[src] = papi_by_src.get(src, 0) + 1
+
+        # ARB-001: PAPI observed — reachability IS the finding for the permanently
+        # unpatched population (8 of the 2023-006 CVEs can never be patched).
+        add('ARB-001', 'papi_observed', 'INFO', 'EXPOSURE', src, list(_ARUBA_PAPI_CVES),
+            {'af': af, 'dst': dst, 'sport': r.get('sport'), 'dport': r.get('dport'),
+             'note': ('PAPI (UDP/%d) observed %s -> %s — the Aruba control protocol is '
+                      'cleartext and unauthenticated; reachability alone is the exposure '
+                      'for the permanently-unpatched ArubaOS/InstantOS population.'
+                      % (_ARUBA_PAPI_PORT, src, dst))})
+
+        # ARB-008: reached behind an IPv6 extension-header chain (a port BPF misses it).
+        if af == 'ipv6' and _aruba_ipv6_ext_present(ip_raw):
+            add('ARB-008', 'papi_behind_ipv6_extension_headers', 'LOW', 'EXPOSURE', src,
+                list(_ARUBA_PAPI_CVES),
+                {'af': af, 'dst': dst,
+                 'note': 'PAPI reached the tap behind an IPv6 extension-header chain — a '
+                         'capture filter that cannot chain-walk would miss this datagram.'})
+
+        # ARB-007: carried in IP fragments — payload heuristics cannot run.
+        more, foff = _aruba_v4_fragment(ip_raw)
+        if more or foff > 0:
+            add('ARB-007', 'papi_fragmented', 'LOW', 'EXPOSURE', src, list(_ARUBA_PAPI_CVES),
+                {'af': af, 'dst': dst, 'frag_offset': foff, 'more_frags': more,
+                 'note': 'PAPI carried in IP fragments; a signature split across fragments '
+                         'is a known miss.'})
+
+        # ARB-006: group-addressed — discovery scope extends past unicast peers.
+        if _aruba_is_group_ip(dst):
+            add('ARB-006', 'papi_group_addressed', 'LOW', 'EXPOSURE', dst,
+                list(_ARUBA_PAPI_CVES),
+                {'af': af, 'dst': dst,
+                 'note': 'PAPI addressed to a group destination — discovery scope extends '
+                         'past unicast peers.'})
+
+        hdr = None if (foff > 0) else _aruba_parse_papi(pl)
+
+        # ARB-102: declared packet_size exceeds the bytes that arrived — the classic
+        # over-declared-length overflow trigger.
+        if hdr and hdr['packet_size'] > len(pl):
+            add('ARB-102', 'papi_length_field_mismatch', 'MEDIUM', 'ATTACK', src,
+                list(_ARUBA_CVES_OVERFLOW),
+                {'af': af, 'dst': dst, 'declared': hdr['packet_size'], 'actual': len(pl),
+                 'note': ('PAPI header declares packet_size=%d but only %d bytes arrived — '
+                          'over-declared length is the classic overflow trigger.'
+                          % (hdr['packet_size'], len(pl)))})
+
+        # ARB-109: the addressed service maps to one the advisories name.
+        if hdr:
+            for port in (hdr['dest_port'], hdr['src_port']):
+                svc = _ARUBA_PAPI_SERVICE_MAP.get(port)
+                if svc:
+                    adv, cves = svc
+                    add('ARB-109', 'papi_service_attribution', 'MEDIUM', 'ATTACK', src,
+                        list(cves),
+                        {'af': af, 'dst': dst, 'advisory_service': adv, 'papi_port': port,
+                         'note': ('PAPI datagram addressed to the "%s" (PAPI port %d) — %d '
+                                  'unauthenticated CVEs land in this service.'
+                                  % (adv, port, len(cves)))})
+                    break
+
+        # ARB-004 / ARB-005: framing. A parsed magic is proof of cleartext (high conf).
+        framing = 'cleartext' if hdr else _aruba_classify_framing(pl)
+        if framing == 'cleartext':
+            add('ARB-004', 'papi_cleartext_framing', 'MEDIUM', 'EXPOSURE', src,
+                list(_ARUBA_PAPI_CVES),
+                {'af': af, 'dst': dst, 'magic_verified': hdr is not None,
+                 'confidence': 'high' if hdr else 'medium',
+                 'note': ('PAPI header parsed in the clear (magic 0x4972, version %d) — '
+                          'neither Enhanced PAPI Security nor cluster-security is in effect '
+                          'on this exchange. Key strength is not observable passively; this '
+                          'reports framing only.' % hdr['version']) if hdr else
+                         ('PAPI payload is structured cleartext (no magic found) — neither '
+                          'Enhanced PAPI Security nor cluster-security appears in effect.')})
+        elif framing == 'opaque':
+            add('ARB-005', 'papi_opaque_framing', 'INFO', 'EXPOSURE', src,
+                list(_ARUBA_PAPI_CVES),
+                {'af': af, 'dst': dst,
+                 'note': 'PAPI payload is opaque, consistent with cluster-security / '
+                         'Enhanced PAPI Security enabled (does NOT confirm a non-default '
+                         'key, which is not observable passively).'})
+
+        # ARB-101 / 103 / 104 / 105 / 107: attack shapes in the payload.
+        if len(pl) > _ARUBA_PAPI_MAX_LEN:
+            add('ARB-101', 'papi_oversized_datagram', 'MEDIUM', 'ATTACK', src,
+                list(_ARUBA_CVES_OVERFLOW),
+                {'af': af, 'dst': dst, 'payload_len': len(pl),
+                 'note': ('PAPI payload is %d bytes (threshold %d) — the delivery shape for '
+                          'the PAPI buffer-overflow CVEs.' % (len(pl), _ARUBA_PAPI_MAX_LEN))})
+        run = _aruba_find_shell(pl)
+        if run is not None:
+            add('ARB-103', 'papi_shell_metacharacters', 'CRITICAL', 'ATTACK', src,
+                list(_ARUBA_CVES_INJECTION),
+                {'af': af, 'dst': dst, 'evidence': run.decode('ascii', 'replace'),
+                 'note': 'Shell metacharacters alongside a command token in a PAPI payload '
+                         'field — the PAPI command-injection delivery shape.'})
+        run = _aruba_find_traversal(pl)
+        if run is not None:
+            add('ARB-104', 'papi_path_traversal', 'CRITICAL', 'ATTACK', src,
+                list(_ARUBA_CVES_FILEDELETE),
+                {'af': af, 'dst': dst, 'evidence': run.decode('ascii', 'replace'),
+                 'note': 'Path traversal in a PAPI payload field — CVE-2024-31474/31475 are '
+                         'unauthenticated arbitrary file deletion over exactly this path.'})
+        run = _aruba_find_format_string(pl)
+        if run is not None:
+            add('ARB-107', 'papi_format_string', 'MEDIUM', 'ATTACK', src,
+                list(_ARUBA_CVES_INJECTION),
+                {'af': af, 'dst': dst, 'evidence': run.decode('ascii', 'replace'),
+                 'note': 'Format-string specifiers in a PAPI payload field.'})
+        lr = _aruba_longest_run(pl)
+        if lr > _ARUBA_PAPI_MAX_FIELD:
+            add('ARB-105', 'papi_long_unterminated_run', 'MEDIUM', 'ATTACK', src,
+                list(_ARUBA_CVES_OVERFLOW),
+                {'af': af, 'dst': dst, 'longest_run': lr,
+                 'note': ('PAPI payload contains a %d-byte unterminated printable run '
+                          '(threshold %d) — stack-overflow shape.'
+                          % (lr, _ARUBA_PAPI_MAX_FIELD))})
+
+    # ARB-106: an unauthenticated PAPI DoS flood from one source in the capture window.
+    for src, n in sorted(papi_by_src.items()):
+        if n >= _ARUBA_FLOOD_THRESHOLD:
+            add('ARB-106', 'papi_source_flood', 'MEDIUM', 'ATTACK', src,
+                list(_ARUBA_CVES_DOS),
+                {'count': n, 'threshold': _ARUBA_FLOOD_THRESHOLD,
+                 'note': ('%d PAPI datagrams from %s in the capture window (threshold %d) — '
+                          'the unauthenticated PAPI DoS shape.' % (n, src, _ARUBA_FLOOD_THRESHOLD))})
+
+    # ARB-202: endpoint inventory (posture) — the PAPI speakers seen on the segment.
+    if endpoints:
+        eps = sorted(e for e in endpoints if e)
+        add('ARB-202', 'papi_endpoint_inventory', 'INFO', 'POSTURE', None,
+            list(_ARUBA_PAPI_CVES),
+            {'endpoints': eps[:32], 'endpoint_count': len(eps),
+             'note': 'PAPI endpoints observed on the segment.'})
+
+    return _guard_finish('aruba_guard', None, None, findings, records)
+
+
+def do_aruba_guard(interface=None, seconds=20, learn=True, quick=False):
+    """Passive HPE Aruba (ArubaOS / InstantOS) CVE guard (detection-only). Captures the
+    Aruba PAPI control plane (UDP/8211) for a few seconds and reports EXPOSURE / ATTACK /
+    POSTURE findings against the tracked 42-CVE PAPI set. Ported from the standalone
+    arubaguard. Never transmits."""
+    iface, iface_error = _lan_guard_iface(interface, 'Aruba Guard')
+    if iface_error:
+        return iface_error
+    seconds = _clamp_int(seconds, 20, 5, 40)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-tt',
+                '-v', '-x', '-s', '1600', '-c', '20000', _ARUBA_GUARD_BPF],
+               timeout=seconds + 8)
+    out = res['out']
+    if not out and res['err'] and any(k in res['err'].lower() for k in (
+            'permission', "couldn't", 'no such device', 'syntax error')):
+        return {'success': False, 'interface': iface, 'error': res['err'].strip()[:200]}
+    records = _guard_packets(out)
+    result = _aruba_analyze(records)
+    result['interface'] = iface
+    result['seconds'] = seconds
+    if not quick:
+        _guard_record_event(_ARUBA_GUARD_PATH, _aruba_guard_lock, result)
+    _guard_emit_jsonl('aruba_guard', result)
+    return result
+
+
+def _aruba_selftest():
+    """Self-test the Aruba guard detectors with synthetic records. No root, no live
+    traffic, no persistence."""
+    scenarios = []
+
+    def check(name, recs, expect_verdict, expect_codes=()):
+        res = _aruba_analyze(recs)
+        codes = {f['code'] for f in res['findings']}
+        ok = res['verdict'] == expect_verdict and all(c in codes for c in expect_codes)
+        scenarios.append({'name': name, 'expect': '%s/%s' % (expect_verdict, list(expect_codes)),
+                          'got': '%s/%s' % (res['verdict'], sorted(codes)), 'pass': ok})
+        return res
+
+    def papi(version=0x02, dport=0, sport=0, psize=0, body=b'', v6=False):
+        """Craft a PAPI datagram (Wireshark layout)."""
+        hdr = struct.pack('!H', _ARUBA_PAPI_MAGIC) + struct.pack('!H', version)
+        hdr += b'\x0a\x01\x01\x0a' + b'\x0a\x09\x09\x09'          # dest/src ipv4
+        hdr += struct.pack('!HHHHHHHH', 0, 0, dport, sport, 0,
+                           psize, 1, 0)                          # nat..mcode
+        hdr += b'\x00' * 16                                       # checksum
+        if version == _ARUBA_PAPI_V4V6_VERSION:
+            hdr += b'\x00' * 32                                   # dest/src ipv6
+        return hdr + body
+
+    # BPF conformance: udp/8211 + next-header ip6[6] clause, no blanket or ip6.
+    _bpf = _ARUBA_GUARD_BPF
+    scenarios.append({'name': 'aruba-bpf', 'expect': 'udp 8211 + ip6[6], no blanket',
+                      'got': _bpf,
+                      'pass': ('udp port 8211' in _bpf and 'ip6[6]' in _bpf
+                               and '(ip and' not in _bpf)})
+
+    check('aruba-clean', [], 'clean')
+    # ARB-001: any PAPI datagram is exposure (reachability). Opaque body stays exposure.
+    check('aruba-papi-observed',
+          [_guard_rec(proto='UDP', dport=8211, payload=papi(body=os.urandom(64)))],
+          'exposure', ['ARB-001'])
+    # ARB-004: a parsed magic proves cleartext framing.
+    check('aruba-cleartext',
+          [_guard_rec(proto='UDP', dport=8211,
+                      payload=papi(body=b'config interface vlan 10 name office-net '))],
+          'exposure', ['ARB-001', 'ARB-004'])
+    # ARB-103: shell metacharacters + a command token = command-injection shape.
+    check('aruba-shell-inject',
+          [_guard_rec(proto='UDP', dport=8211,
+                      payload=papi(body=b'name=x; /bin/sh -c reboot'))],
+          'attack', ['ARB-103'])
+    # ARB-104: path traversal.
+    check('aruba-traversal',
+          [_guard_rec(proto='UDP', dport=8211,
+                      payload=papi(body=b'/flash/config/../../../etc/passwd'))],
+          'attack', ['ARB-104'])
+    # ARB-107: format string.
+    check('aruba-format-string',
+          [_guard_rec(proto='UDP', dport=8211, payload=papi(body=b'user=%n%n%n%n done'))],
+          'attack', ['ARB-107'])
+    # ARB-101: oversized datagram.
+    check('aruba-oversized',
+          [_guard_rec(proto='UDP', dport=8211, payload=papi(body=b'A' * 1100))],
+          'attack', ['ARB-101'])
+    # ARB-105: long unterminated printable run (but under the oversize cap).
+    check('aruba-long-run',
+          [_guard_rec(proto='UDP', dport=8211, payload=papi(body=b'B' * 300))],
+          'attack', ['ARB-105'])
+    # ARB-102: declared packet_size exceeds what arrived.
+    check('aruba-length-mismatch',
+          [_guard_rec(proto='UDP', dport=8211, payload=papi(psize=9000, body=b'short'))],
+          'attack', ['ARB-102'])
+    # ARB-109: a datagram addressed to an advisory-named service (CLI service port 8213).
+    r109 = check('aruba-service-attribution',
+                 [_guard_rec(proto='UDP', dport=8211, payload=papi(dport=8213, body=b'x' * 40))],
+                 'attack', ['ARB-109'])
+    f109 = next((f for f in r109['findings'] if f['code'] == 'ARB-109'), None)
+    scenarios.append({'name': 'aruba-service-cli-cves',
+                      'expect': 'CLI-service CVEs attached',
+                      'got': str((f109 or {}).get('cves'))[:60],
+                      'pass': bool(f109) and 'CVE-2024-42509' in f109['cves']})
+    # ARB-006: group-addressed PAPI.
+    check('aruba-group',
+          [_guard_rec(proto='UDP', dport=8211, dst='224.0.0.251',
+                      payload=papi(body=os.urandom(64)))],
+          'exposure', ['ARB-006'])
+    # ARB-008: PAPI behind an IPv6 extension header (ip_raw first next-header = HBH 0).
+    v6ext = (b'\x60\x00\x00\x00' + struct.pack('!H', 8) + bytes([0, 64])
+             + ipaddress.IPv6Address('2001:db8:9::9').packed
+             + ipaddress.IPv6Address('2001:db8:1::10').packed
+             + bytes([17, 0, 0, 0, 0, 0, 0, 0]))                  # HBH -> UDP
+    check('aruba-ipv6-extheader',
+          [_guard_rec(proto='UDP', dport=8211, ipver=6, src='2001:db8:9::9',
+                      dst='2001:db8:1::10', ip_raw=v6ext, payload=papi(body=os.urandom(64)))],
+          'exposure', ['ARB-008'])
+    # ARB-106: a source flood in the capture window.
+    flood = [_guard_rec(proto='UDP', dport=8211, src='10.9.9.9',
+                        payload=papi(body=os.urandom(40)))
+             for _ in range(_ARUBA_FLOOD_THRESHOLD)]
+    check('aruba-flood', flood, 'attack', ['ARB-106'])
+    # ARB-202 posture is always present when PAPI is seen; a clean opaque exchange from a
+    # single source should NOT raise an attack.
+    r_ep = _aruba_analyze([_guard_rec(proto='UDP', dport=8211, payload=papi(body=os.urandom(64)))])
+    scenarios.append({'name': 'aruba-endpoint-inventory',
+                      'expect': 'ARB-202 present',
+                      'got': str(sorted({f['code'] for f in r_ep['findings']})),
+                      'pass': any(f['code'] == 'ARB-202' for f in r_ep['findings'])})
+    # Non-PAPI UDP is ignored entirely.
+    check('aruba-ignores-non-papi',
+          [_guard_rec(proto='UDP', dport=53, payload=b'\x12\x34\x01\x00' + b'\x00' * 60)],
+          'clean')
+
+    failed = sum(1 for s in scenarios if not s['pass'])
+    return {'success': failed == 0, 'passed': len(scenarios) - failed,
+            'total': len(scenarios), 'scenarios': scenarios}
+
+
 def _guard_rec(proto=None, src='10.0.0.9', sport=40000, dst='10.0.0.1',
                dport=None, payload=b'', dissect='', vlan_tags=0, ipver=4,
                ip_raw=b''):
@@ -20428,6 +20954,7 @@ def do_routing_selftest():
               'cisco_guard': _cisco_selftest(), 'juniper_guard': _juniper_selftest(),
               'arista_guard': _arista_selftest(), 'comware_guard': _comware_selftest(),
               'mikrotik_guard': _mikrotik_selftest(),
+              'aruba_guard': _aruba_selftest(),
               'bgp_speaker': bgp_speaker.selftest(), 'path_asymmetry': path_asymmetry.selftest()}
     return {
         'success': all(s['success'] for s in suites.values()),
@@ -22427,6 +22954,15 @@ def register_network_diagnostics(app, logger=None):
         secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
         _log(f"net/mikrotik-guard iface={iface or 'default-route'} secs={secs}")
         return jsonify(do_mikrotik_guard(interface=iface, seconds=secs))
+
+    @app.route('/api/net/aruba-guard', methods=['GET'])
+    def net_aruba_guard():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
+        _log(f"net/aruba-guard iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_aruba_guard(interface=iface, seconds=secs))
 
     @app.route('/api/net/dell-guard', methods=['GET', 'POST'])
     def net_dell_guard():
@@ -24705,7 +25241,8 @@ def _cli(argv=None):
                            ('juniper', 'Juniper J-Web/SSR/Junos-Space'),
                            ('arista', 'Arista EOS switch/router'),
                            ('comware', 'HPE Comware / Huawei VRF-hopping (MPLS)'),
-                           ('mikrotik', 'MikroTik RouterOS (CCR/CRS)')):
+                           ('mikrotik', 'MikroTik RouterOS (CCR/CRS)'),
+                           ('aruba', 'HPE Aruba ArubaOS/InstantOS (PAPI)')):
         gp = sub.add_parser('%s-guard' % _gname,
                             help='passive %s CVE guard (posture/exposure/attack)' % _ghelp)
         gp.add_argument('--iface', '-i', default=None, help='interface (default: route)')
@@ -25593,6 +26130,7 @@ def _cli(argv=None):
         'arista-guard': (do_arista_guard, 'Arista'),
         'comware-guard': (do_comware_guard, 'Comware'),
         'mikrotik-guard': (do_mikrotik_guard, 'MikroTik'),
+        'aruba-guard': (do_aruba_guard, 'Aruba'),
     }
     if args.cmd in _GUARD_CLI:
         fn, label = _GUARD_CLI[args.cmd]
@@ -25622,6 +26160,7 @@ def _cli(argv=None):
         'arista-guard-selftest': (_arista_selftest, 'Arista'),
         'comware-guard-selftest': (_comware_selftest, 'Comware'),
         'mikrotik-guard-selftest': (_mikrotik_selftest, 'MikroTik'),
+        'aruba-guard-selftest': (_aruba_selftest, 'Aruba'),
     }
     if args.cmd in _GUARD_SELFTEST_CLI:
         fn, label = _GUARD_SELFTEST_CLI[args.cmd]

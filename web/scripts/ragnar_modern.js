@@ -8547,6 +8547,7 @@ function runJuniperGuard() { _runGuard('juniper', 'Juniper', (typeof event !== '
 function runAristaGuard() { _runGuard('arista', 'Arista', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runComwareGuard() { _runGuard('comware', 'Comware', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runMikroTikGuard() { _runGuard('mikrotik', 'MikroTik', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
+function runArubaGuard() { _runGuard('aruba', 'Aruba', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 // --- Dell Guard daemon control (standalone systemd sensor; enable/disable switch) ---
 function _dellGuardRender(d) {
     if (!d) return '<span class="text-red-400">No status returned.</span>';

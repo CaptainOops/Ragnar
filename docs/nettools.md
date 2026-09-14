@@ -2804,7 +2804,39 @@ frames, unreachable behind a port-scoped BPF — `tcpdump -x` carries only IP-on
 - Endpoint: `GET /api/net/mikrotik-guard` `{interface, seconds}` · binary: `tcpdump`
 - CLI: `python3 network_diagnostics.py mikrotik-guard [--iface I] [--seconds N] [--json]`
 
-> **Watchtower feed.** All five vendor guards append their findings as JSON-lines to
+#### Aruba Guard
+HPE **Aruba** (ArubaOS / InstantOS) — a passive guard ported from the standalone
+`arubaguard`. Its core surface is **PAPI**, the Aruba AP↔controller control protocol on
+**UDP/8211**, which is **cleartext and unauthenticated** on the wire; the guard names the
+exploit shapes for the **42 PAPI CVEs**. The primary class is deliberately *exposure*, not
+version posture: **eight of the ARUBA-PSA-2023-006 CVEs are permanently unpatched** on
+InstantOS 6.4/6.5/8.6 and ArubaOS 10.3 (HPE could only fix them in newer trains, and the
+only workaround, `cluster-security`, does not exist on ArubaOS 10), so for a large installed
+population **reachability itself is the finding** — **`ARB-001`** fires on any PAPI datagram.
+Attack shapes: **`ARB-101`** oversized datagram and **`ARB-102`** declared-length overrun
+(`packet_size` > bytes present) for the buffer-overflow CVEs; **`ARB-103`** shell
+metacharacters *alongside a command token* (critical) and **`ARB-107`** format-string
+specifiers for the injection CVEs; **`ARB-104`** path traversal (critical —
+CVE-2024-31474/31475 are unauthenticated arbitrary file deletion); **`ARB-105`** a long
+unterminated printable run (stack-overflow shape); **`ARB-106`** a per-source flood (the
+PAPI DoS shape); and **`ARB-109`** service attribution, which fires only when a datagram is
+addressed to a PAPI service the HPE advisories name (CLI service, Soft AP Daemon, AP
+Certificate Management, …) and attaches exactly that service's CVEs. The **PAPI header**
+(magic `0x4972`, Wireshark's dissector layout) is parsed to distinguish **`ARB-004`**
+cleartext framing (a parseable magic is proof — an encrypted / cluster-security payload
+cannot present one) from **`ARB-005`** opaque framing; key *strength* is not observable
+passively, so both report framing only. **`ARB-202`** inventories the PAPI endpoints seen.
+**Dual-stack** — bare `port` matches v4 and v6, and a narrow `ip6[6]` next-header clause
+admits PAPI behind an extension header (**`ARB-008`**). Three of the standalone's non-PAPI
+codes are deliberately **not** ported, each with a reason: the **L2 malformed-frame / OUI**
+codes (`ARB-201/301/302`, CVE-2025-37148) need native Ethernet frames that `tcpdump -x`'s
+IP-onward hex cannot reconstruct; the **VLAN-leak** codes (`ARB-401/402`, CVE-2025-37165)
+need an operator VLAN-per-interface declaration; and the **trust-boundary** codes
+(`ARB-002/003`) need declared management/tenant prefixes the in-app guard has no config for.
+- Endpoint: `GET /api/net/aruba-guard` `{interface, seconds}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py aruba-guard [--iface I] [--seconds N] [--json]`
+
+> **Watchtower feed.** All six vendor guards append their findings as JSON-lines to
 > `/var/log/ragnar/<guard>.jsonl` (time-window deduplicated), so [Watchtower](#watchtower)
 > tails them into the unified alert pane and single Pushover path alongside the standalone
 > watcher daemons — automatically whenever Extended Monitoring is on.
