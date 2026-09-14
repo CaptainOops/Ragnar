@@ -469,7 +469,16 @@ static void applyStatus(const String &body) {
   #undef CYD_CPYS
   g_rs.ok = true;
   g_rs.lastSyncMs = millis();
-  g_needRedraw = true;
+  // Only repaint when a DISPLAYED value actually changed. Ragnar pushes status
+  // ~every 2 s with mostly-identical data; repainting every push is what made the
+  // screen twitch. Build a cheap signature (excluding time-derived fields) and
+  // redraw only on change.
+  String sig = String(g_rs.meshNodes) + '|' + g_rs.nets24 + '|' + g_rs.nets5 + '|'
+    + g_rs.threat + '|' + g_rs.alerts + '|' + g_rs.btState + '|' + g_rs.unitName + '|'
+    + g_rs.iface + '|' + g_rs.ip + '|' + g_rs.wardrive + '|' + g_rs.worst + '|'
+    + g_rs.alert1 + '|' + g_rs.alert2 + '|' + g_rs.alert3;
+  static String lastSig;
+  if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
 
 #if !CYD_TRANSPORT_SERIAL
@@ -1384,4 +1393,13 @@ void loop() {
     }
   }
 #endif
+
+  // Refresh the sensor-driven screens (SCAN/DEFEND/HOME) once per cycle, and only
+  // when the counts actually changed — a real data update (~every sniff cycle),
+  // not the every-2s status-push twitch.
+  static uint32_t lastSensorSig = 0xFFFFFFFFu;
+  uint32_t ss = (uint32_t)g_sc.beacons + ((uint32_t)g_sc.bssids << 9)
+              + ((uint32_t)g_sc.deauths << 16) + ((uint32_t)g_sc.probes << 20)
+              + ((uint32_t)g_sc.bleAdv << 25);
+  if (ss != lastSensorSig) { lastSensorSig = ss; g_needRedraw = true; serviceUI(); }
 }
