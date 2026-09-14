@@ -203,7 +203,7 @@ struct RagnarStatus {
   int      nets5     = 0;
   int      threat    = 0;      // 0..100 threat score
   char     btState[16]      = "?";
-  char     unitName[24]     = "ragnar";
+  char     unitName[24]     = "Ragnar";   // brand default (shown at boot pre-sync); big R
   uint32_t uptimeSec        = 0;
   uint32_t lastSyncMs       = 0;
   // Expanded status fields (DASH / NETWORK / ALERTS):
@@ -804,6 +804,7 @@ static void drawHeader(const char *title, bool home) {
     // Title = this unit's identity (mesh short-name, or 'Ragnar' when no mesh) —
     // no fixed 'RAGNAR' brand + name (which read 'RAGNAR Ragnar' off-mesh).
     String u = g_rs.unitName; if (!u.length()) u = "Ragnar";
+    if (u.equalsIgnoreCase("ragnar")) u = "Ragnar";   // brand always renders with a big R
     if (u.length() > 18) u = u.substring(0, 18);
     gfx->setTextColor(colSky()); gfx->setTextSize(2);
     gfx->setCursor(8, 8); gfx->print(u);

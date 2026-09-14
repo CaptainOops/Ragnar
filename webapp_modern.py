@@ -2899,7 +2899,9 @@ def _cyd_unit_label():
     try:
         if _mesh_enabled():
             n = (_mesh_viking_name() or '').strip()
-            if n:
+            # Use a real Viking identity, but not the bare lowercase hostname
+            # fallback (or a literal 'ragnar') — those render as the brand 'Ragnar'.
+            if n and n.lower() not in ('ragnar', socket.gethostname().lower()):
                 return n
     except Exception:
         pass
