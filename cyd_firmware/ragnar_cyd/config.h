@@ -77,6 +77,16 @@
 #define TOUCH_RAW_MINY  240
 #define TOUCH_RAW_MAXY 3800
 
+// Touch orientation vs the display. CYD panels are commonly mounted 180 deg from
+// the ILI9341's rotation-0 origin, so both axes are inverted by default. If taps
+// are mirrored on ONE axis only, flip just that flag:
+//   - right opens left / left opens right  -> toggle TOUCH_INVERT_X
+//   - top opens bottom / bottom opens top  -> toggle TOUCH_INVERT_Y
+//   - a horizontal drag registers vertical -> set TOUCH_SWAP_XY 1
+#define TOUCH_INVERT_X 1
+#define TOUCH_INVERT_Y 1
+#define TOUCH_SWAP_XY  0
+
 // ── On-board extras ───────────────────────────────────────────────────────────
 #define PIN_LED_R  4      // RGB LED, active LOW
 #define PIN_LED_G  16

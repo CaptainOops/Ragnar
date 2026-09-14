@@ -219,9 +219,21 @@ static bool touchRead(int16_t &px, int16_t &py) {
   }
   if (n == 0) return false;
   uint16_t rawx = sx / n, rawy = sy / n;
-  // Map raw ADC -> pixels (rotation 0, portrait). Clamp to screen.
+#if TOUCH_SWAP_XY
+  { uint16_t t = rawx; rawx = rawy; rawy = t; }
+#endif
+  // Map raw ADC -> pixels (portrait), honouring the orientation flags so touch
+  // lines up with the display. Clamp to screen.
+#if TOUCH_INVERT_X
+  long mx = map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, SCR_W - 1, 0);
+#else
   long mx = map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, 0, SCR_W - 1);
+#endif
+#if TOUCH_INVERT_Y
+  long my = map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, SCR_H - 1, 0);
+#else
   long my = map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, 0, SCR_H - 1);
+#endif
   px = (int16_t)constrain(mx, 0, SCR_W - 1);
   py = (int16_t)constrain(my, 0, SCR_H - 1);
   return true;
