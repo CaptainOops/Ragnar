@@ -1114,7 +1114,12 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_TOUCHTEST) {
-    g_ttX = px; g_ttY = py; g_needRedraw = true; return;   // mark the tap
+    g_ttX = px; g_ttY = py; g_needRedraw = true;            // mark the tap
+    // Diagnostic line for host-side calibration (ignored by the JSON bridge).
+    Serial.print("TT raw="); Serial.print(g_lastRawX); Serial.print(",");
+    Serial.print(g_lastRawY); Serial.print(" map="); Serial.print(px);
+    Serial.print(","); Serial.println(py);
+    return;
   }
   if (g_screen == SCR_WFALL) {
     // Tap the band bar (top strip) to cycle to the next band.

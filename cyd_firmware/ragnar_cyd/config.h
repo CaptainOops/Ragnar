@@ -84,7 +84,7 @@
 //   - top opens bottom / bottom opens top  -> toggle TOUCH_INVERT_Y
 //   - a horizontal drag registers vertical -> set TOUCH_SWAP_XY 1
 #define TOUCH_INVERT_X 1
-#define TOUCH_INVERT_Y 1
+#define TOUCH_INVERT_Y 0   // validated on-device 2026-09-14: top=low raw, so NOT inverted
 #define TOUCH_SWAP_XY  0
 
 // ── On-board extras ───────────────────────────────────────────────────────────
