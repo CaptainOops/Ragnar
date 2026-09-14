@@ -131,19 +131,28 @@ def request(band, on):
         if not backend:
             _active = False
             return
-        # (Re)start only on first open or a real backend/band change. When
-        # piggybacking a running RTL sweep, a band change is ignored (we show the
-        # running band) rather than hijacking someone else's sweep.
-        need = (not _active or backend != _backend
-                or (band != _band and _we_started))
-        if need:
-            if _active and _backend and _we_started and _backend != backend:
-                _stop_backend(_backend)
-            try:
-                _we_started = _start(backend, band)
-                _band, _backend, _active, _since = band, backend, True, 0
-            except Exception:
-                _active = False
+        # Self-healing: called ~every 1.5s while the screen is open, so re-verify
+        # each time instead of starting once. For RTL, trust the actual sweep
+        # state (a sweep that never came up, or died, gets (re)started; an
+        # already-running one — ours or the web page's — is piggybacked).
+        if backend == 'rtl':
+            sweeping = _rtl_sweeping()
+            if sweeping:
+                if not _active or _backend != 'rtl':
+                    _band, _backend, _active, _we_started, _since = band, 'rtl', True, False, 0
+            elif (not _active) or _we_started:      # our sweep isn't up — (re)start it
+                try:
+                    rtl_sdr.power_start(band=_RTL_BAND_FALLBACK.get(band, band))
+                    _band, _backend, _active, _we_started, _since = band, 'rtl', True, True, 0
+                except Exception:
+                    _active = False
+        else:  # hackrf
+            if not _active or _backend != 'hackrf' or (band != _band and _we_started):
+                try:
+                    sdr_spectrum.start(band=band)
+                    _band, _backend, _active, _we_started, _since = band, 'hackrf', True, True, 0
+                except Exception:
+                    _active = False
 
 
 def wants_stream():
