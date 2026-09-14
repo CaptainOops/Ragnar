@@ -35,13 +35,25 @@ _LOCK = threading.RLock()
 _band = None
 _backend = None         # 'hackrf' | 'rtl' | None
 _active = False
+_we_started = False     # did WE start the sweep? (else we piggyback; never stop it)
 _since = 0
 _last_req = 0.0
 _avail_cache = (0.0, None)   # (checked_at, backend) — probing opens the USB bus
 
 
+def _rtl_sweeping():
+    """True if an RTL power sweep is already running (e.g. the web RF-waterfall)."""
+    try:
+        return bool((rtl_sdr.status().get('power') or {}).get('running'))
+    except Exception:
+        return False
+
+
 def _detect_backend():
-    """Return 'hackrf', 'rtl', or None — memoised 5 s (probes open the USB bus)."""
+    """Return 'hackrf', 'rtl', or None — memoised 5 s. Uses streaming-aware status
+    so a device already sweeping (busy) still counts as available; a raw detect()
+    probe would fail on a busy dongle (that's why the CYD said 'no SDR'/'waiting'
+    while the web waterfall held the RTL-SDR)."""
     global _avail_cache
     now = time.time()
     if now - _avail_cache[0] < 5.0:
@@ -55,7 +67,7 @@ def _detect_backend():
             pass
     if backend is None and rtl_sdr is not None:
         try:
-            if bool(rtl_sdr.detect().get('available')):
+            if _rtl_sweeping() or bool(rtl_sdr.detect().get('available')):
                 backend = 'rtl'
         except Exception:
             pass
@@ -69,11 +81,16 @@ _RTL_BAND_FALLBACK = {'2.4': '433', '5': '433', '6': '433'}
 
 
 def _start(backend, band):
+    """Start a sweep and return True if WE started it (False = piggybacking an
+    already-running sweep, which we must not stop or retune)."""
     if backend == 'hackrf':
         sdr_spectrum.start(band=band)
-    else:
-        band = _RTL_BAND_FALLBACK.get(band, band)
-        rtl_sdr.power_start(band=band)
+        return True
+    # RTL: if a sweep is already running (web RF-waterfall etc.), just read it.
+    if _rtl_sweeping():
+        return False
+    rtl_sdr.power_start(band=_RTL_BAND_FALLBACK.get(band, band))
+    return True
 
 
 def _stop_backend(backend):
@@ -93,16 +110,17 @@ def _frames(backend, since):
 
 
 def _stop():
-    global _active
-    if _active and _backend:
-        _stop_backend(_backend)
+    global _active, _we_started
+    if _active and _backend and _we_started:
+        _stop_backend(_backend)      # only stop a sweep we started ourselves
     _active = False
+    _we_started = False
 
 
 def request(band, on):
     """The CYD opened (`on`) or closed the waterfall on `band`. Start/stop the
     sweep on whichever SDR is present. Safe to call repeatedly (keep-alive)."""
-    global _band, _backend, _active, _since, _last_req
+    global _band, _backend, _active, _we_started, _since, _last_req
     band = (str(band or '').strip() or '433')
     with _LOCK:
         _last_req = time.time()
@@ -113,11 +131,16 @@ def request(band, on):
         if not backend:
             _active = False
             return
-        if not _active or band != _band or backend != _backend:
-            if _active and _backend and _backend != backend:
+        # (Re)start only on first open or a real backend/band change. When
+        # piggybacking a running RTL sweep, a band change is ignored (we show the
+        # running band) rather than hijacking someone else's sweep.
+        need = (not _active or backend != _backend
+                or (band != _band and _we_started))
+        if need:
+            if _active and _backend and _we_started and _backend != backend:
                 _stop_backend(_backend)
             try:
-                _start(backend, band)
+                _we_started = _start(backend, band)
                 _band, _backend, _active, _since = band, backend, True, 0
             except Exception:
                 _active = False
