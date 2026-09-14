@@ -75,6 +75,8 @@ class CydSerialBridge:
         self._on_wifi_connect = on_wifi_connect  # (ssid, pw) -> None
         self._mesh_on = False
         self._wifi_on = False
+        self._dbg = {'wr': 0, 'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0,
+                     'wf_err': '', 'in': 0, 'ac': 0}
         self._baud = baud
         self._status_interval = status_interval
         self._forced_port = port          # static override (tests)
@@ -108,6 +110,7 @@ class CydSerialBridge:
             'connected': self.connected,
             'last_rx': int(self.last_rx) if self.last_rx else None,
             'error': self.last_error,
+            'dbg': dict(getattr(self, '_dbg', {})),   # live counters (diagnostics)
         }
 
     # ── internals ────────────────────────────────────────────────────────────
@@ -212,10 +215,15 @@ class CydSerialBridge:
                 next_wf = now + 0.3
                 try:
                     row = self._get_wf()
-                except Exception:
-                    row = None
+                except Exception as exc:
+                    row = None; self._dbg['wf_err'] = str(exc)[:40]
                 if row:
-                    self._send(ser, dict(row, t='wf'))
+                    frame = dict(row, t='wf')
+                    self._send(ser, frame)
+                    self._dbg['wf_sent'] += 1
+                    self._dbg['wf_bytes'] = len(json.dumps(frame, separators=(',', ':')))
+                else:
+                    self._dbg['wf_none'] += 1
             # ── outbound: mesh roster + wifi list while their screens are open ──
             if self._mesh_on and self._get_mesh and now >= next_mesh:
                 next_mesh = now + 3.0
@@ -242,6 +250,12 @@ class CydSerialBridge:
             return
         self.last_rx = time.time()
         t = msg.get('t')
+        if t == 'wr':
+            self._dbg['wr'] += 1
+        elif t == 'in':
+            self._dbg['in'] += 1
+        elif t == 'ac':
+            self._dbg['ac'] += 1
         if t == 'in':
             try:
                 self._on_ingest(msg)

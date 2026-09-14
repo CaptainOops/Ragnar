@@ -2649,24 +2649,34 @@ def _cyd_network_band_counts():
     Best-effort: any failure (no iface, no cached scan, not root) yields 0/0."""
     now = time.time()
     with _cyd_netcount_lock:
-        if now - _cyd_netcount['t'] < 30:
-            return _cyd_netcount['nets_24'], _cyd_netcount['nets_5']
-    nets_24 = nets_5 = 0
-    try:
-        import wifi_analyzer
-        iface = _get_wifi_iface()
-        if iface:
-            iw = getattr(wifi_analyzer, '_IW', 'iw')
-            out = subprocess.run([iw, 'dev', iface, 'scan', 'dump', '-u'],
-                                 capture_output=True, text=True, timeout=5).stdout
-            bss = wifi_analyzer.parse_scan(out) or []
-            nets_24 = len({b['bssid'] for b in bss if b.get('band') == '2.4' and b.get('bssid')})
-            nets_5 = len({b['bssid'] for b in bss if b.get('band') == '5' and b.get('bssid')})
-    except Exception as exc:
-        logger.debug(f"[cyd] band counts failed: {exc}")
-    with _cyd_netcount_lock:
-        _cyd_netcount.update(t=now, nets_24=nets_24, nets_5=nets_5)
-    return nets_24, nets_5
+        fresh = now - _cyd_netcount['t'] < 30
+        busy = _cyd_netcount.get('busy')
+        cached = (_cyd_netcount['nets_24'], _cyd_netcount['nets_5'])
+        if not fresh and not busy:
+            _cyd_netcount['busy'] = True   # refresh in the background (see below)
+            _refresh = True
+        else:
+            _refresh = False
+    if _refresh:
+        def _run():
+            n24 = n5 = 0
+            try:
+                import wifi_analyzer
+                iface = _get_wifi_iface()
+                if iface:
+                    iw = getattr(wifi_analyzer, '_IW', 'iw')
+                    out = subprocess.run([iw, 'dev', iface, 'scan', 'dump', '-u'],
+                                         capture_output=True, text=True, timeout=5).stdout
+                    bss = wifi_analyzer.parse_scan(out) or []
+                    n24 = len({b['bssid'] for b in bss if b.get('band') == '2.4' and b.get('bssid')})
+                    n5 = len({b['bssid'] for b in bss if b.get('band') == '5' and b.get('bssid')})
+            except Exception as exc:
+                logger.debug(f"[cyd] band counts failed: {exc}")
+            with _cyd_netcount_lock:
+                _cyd_netcount.update(t=time.time(), nets_24=n24, nets_5=n5, busy=False)
+        threading.Thread(target=_run, name='cyd-bandcount', daemon=True).start()
+    # Always return instantly from cache — never block the status/bridge push.
+    return cached
 
 
 def _cyd_active_iface_ip():
@@ -2683,19 +2693,42 @@ def _cyd_active_iface_ip():
         return '', ''
 
 
-def _cyd_wardrive_state():
-    """Compact wardrive state for the display: 'off' or 'N nets'."""
+_cyd_wardrive_cache = {'v': 'off', 't': 0.0, 'busy': False}
+
+
+def _cyd_wardrive_refresh():
+    """Background refresh of the wardrive state — the engine's get_status() can
+    block/hang on this hardware (GPS/interface probing), and this runs on the
+    serial bridge's single-threaded push loop, so it must NEVER block there.
+    A hung get_status leaks at most one daemon thread; the bridge stays alive."""
     try:
         if not shared_data.config.get('wardriving_enabled', False):
-            return 'off'
-        eng = _get_wardriving_engine()
-        st = eng.get_status() or {}
-        if not st.get('running'):
-            return 'idle'
-        n = st.get('networks_found') or st.get('total_networks') or st.get('networks') or 0
-        return str(int(n)) + ' nets'
+            v = 'off'
+        else:
+            eng = _get_wardriving_engine()
+            st = eng.get_status() or {}
+            if not st.get('running'):
+                v = 'idle'
+            else:
+                n = st.get('networks_found') or st.get('total_networks') or st.get('networks') or 0
+                v = str(int(n)) + ' nets'
+        _cyd_wardrive_cache['v'] = v
     except Exception:
-        return 'off'
+        _cyd_wardrive_cache['v'] = 'off'
+    finally:
+        _cyd_wardrive_cache['t'] = time.time()
+        _cyd_wardrive_cache['busy'] = False
+
+
+def _cyd_wardrive_state():
+    """Cached wardrive state; refreshed off the hot path so a hung get_status
+    never stalls the status feed / serial bridge."""
+    c = _cyd_wardrive_cache
+    if not c['busy'] and (time.time() - c['t']) > 8:
+        c['busy'] = True
+        threading.Thread(target=_cyd_wardrive_refresh, name='cyd-wardrive-refresh',
+                         daemon=True).start()
+    return c['v']
 
 
 # Last on-demand results the CYD triggered, surfaced back in its status feed.
