@@ -52,6 +52,9 @@ ALLOWED_ACTIONS = {
     'ragnar_update':     'Run a Ragnar self-update',
     'pwn_swap':          'Toggle the Pwnagotchi bridge',
     'traffic_toggle':    'Start/stop live traffic capture',
+    'ap_toggle':         'Start/stop the Pi WiFi AP mode',
+    'scanner_start':     'Start the WiFi scan interface',
+    'scanner_stop':      'Stop the WiFi scan interface',
 }
 
 

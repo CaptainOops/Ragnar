@@ -62,13 +62,19 @@ class CydSerialBridge:
 
     def __init__(self, build_status, on_ingest, on_action, enabled,
                  baud=115200, status_interval=2.0, port=None, get_port=None,
-                 on_wf_request=None, get_wf=None):
+                 on_wf_request=None, get_wf=None,
+                 get_mesh=None, get_wifi=None, on_wifi_connect=None):
         self._build_status = build_status
         self._on_ingest = on_ingest
         self._on_action = on_action
         self._enabled = enabled
         self._on_wf_request = on_wf_request   # (band, on) -> None
         self._get_wf = get_wf                  # () -> row dict or None
+        self._get_mesh = get_mesh              # () -> roster dict (pushed while on)
+        self._get_wifi = get_wifi              # () -> wifi-list dict (pushed while on)
+        self._on_wifi_connect = on_wifi_connect  # (ssid, pw) -> None
+        self._mesh_on = False
+        self._wifi_on = False
         self._baud = baud
         self._status_interval = status_interval
         self._forced_port = port          # static override (tests)
@@ -165,11 +171,16 @@ class CydSerialBridge:
         if err is not None:
             self.last_error = err
 
+    def _send(self, ser, frame):
+        ser.write((json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8'))
+
     def _session(self, ser):
         """Read reports + push status until disabled, unplugged, or stopped."""
         buf = bytearray()
         next_status = 0.0
         next_wf = 0.0
+        next_mesh = 0.0
+        next_wifi = 0.0
         opened_on = self.port
         while not self._stop.is_set() and self._safe_enabled():
             # If the operator points us at a different explicit port, drop this
@@ -204,11 +215,20 @@ class CydSerialBridge:
                 except Exception:
                     row = None
                 if row:
-                    frame = dict(row); frame['t'] = 'wf'
-                    try:
-                        ser.write((json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8'))
-                    except Exception:
-                        raise
+                    self._send(ser, dict(row, t='wf'))
+            # ── outbound: mesh roster + wifi list while their screens are open ──
+            if self._mesh_on and self._get_mesh and now >= next_mesh:
+                next_mesh = now + 3.0
+                try:
+                    self._send(ser, dict(self._get_mesh(), t='me'))
+                except Exception:
+                    pass
+            if self._wifi_on and self._get_wifi and now >= next_wifi:
+                next_wifi = now + 3.0
+                try:
+                    self._send(ser, dict(self._get_wifi(), t='wl'))
+                except Exception:
+                    pass
             time.sleep(0.05)
 
     def _handle_line(self, line):
@@ -236,6 +256,16 @@ class CydSerialBridge:
             if self._on_wf_request:
                 try:
                     self._on_wf_request(msg.get('band'), bool(msg.get('on')))
+                except Exception:
+                    pass
+        elif t == 'mr':                       # mesh roster stream request
+            self._mesh_on = bool(msg.get('on'))
+        elif t == 'wsr':                      # wifi-list stream request
+            self._wifi_on = bool(msg.get('on'))
+        elif t == 'wc':                       # wifi connect (scan index + password)
+            if self._on_wifi_connect:
+                try:
+                    self._on_wifi_connect(msg.get('idx'), msg.get('pw') or '')
                 except Exception:
                     pass
 

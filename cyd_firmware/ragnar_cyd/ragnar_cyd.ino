@@ -123,8 +123,8 @@ static SPIClass touchSPI(HSPI);
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
-              SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_SETTINGS, SCR_CTRL,
-              SCR_TOUCHTEST };
+              SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_MESH, SCR_NETCONN,
+              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -208,6 +208,19 @@ static const int   WF_NBANDS  = 7;
 static int         g_wfBandIdx = 0;
 static bool        g_wfActive  = false;      // screen open -> streaming requested
 static void applyWfRow(const String &body);  // defined in the UI section
+
+// ── Mesh roster + WiFi list (streamed from Ragnar while their screens open) ────
+#define MAX_MESH 24
+#define MAX_WIFI 24
+#define ROW_LEN  40
+static char g_meshRows[MAX_MESH][ROW_LEN];
+static int  g_meshN = 0, g_meshScroll = 0;
+static bool g_meshActive = false;
+static char g_wifiRows[MAX_WIFI][ROW_LEN];
+static int  g_wifiN = 0, g_wifiScroll = 0, g_wifiSel = -1;
+static bool g_wifiActive = false;
+static void applyRoster(const String &body, char rows[][ROW_LEN], int maxr,
+                        int &count, char key);  // defined in the UI section
 
 // ── Pending action queue (taps flushed on next sync window) ───────────────────
 #define MAX_ACTIONS 6
@@ -587,7 +600,21 @@ static bool wifiConnect() {
 // node -> Pi: {"t":"in", <sensor counts>}   and   {"t":"ac","action":".."}
 static void handleSerialLine(const String &line) {
   if (line.indexOf("\"wf\"") >= 0) { applyWfRow(line); return; }   // waterfall frame
+  if (line.indexOf("\"me\"") >= 0) { applyRoster(line, g_meshRows, MAX_MESH, g_meshN, 'm'); g_needRedraw = true; return; }
+  if (line.indexOf("\"wl\"") >= 0) { applyRoster(line, g_wifiRows, MAX_WIFI, g_wifiN, 'w'); g_needRedraw = true; return; }
   if (line.indexOf("\"st\"") >= 0) applyStatus(line);             // status frame
+}
+
+// Ask Ragnar to (start/stop) streaming the mesh roster / wifi list.
+static void serialSendMeshReq(bool on) {
+  Serial.print("{\"t\":\"mr\",\"on\":"); Serial.print(on ? "1" : "0"); Serial.println("}");
+}
+static void serialSendWifiReq(bool on) {
+  Serial.print("{\"t\":\"wsr\",\"on\":"); Serial.print(on ? "1" : "0"); Serial.println("}");
+}
+static void serialSendConnect(int idx, const String &pw) {
+  Serial.print("{\"t\":\"wc\",\"idx\":"); Serial.print(idx);
+  Serial.print(",\"pw\":\""); Serial.print(pw); Serial.println("\"}");
 }
 
 // Ask Ragnar to (start/stop) streaming the current band's spectrum.
@@ -604,7 +631,7 @@ static void serialDrain() {
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n') { if (buf.length()) handleSerialLine(buf); buf = ""; }
-    else if (c != '\r' && buf.length() < 512) buf += c;
+    else if (c != '\r' && buf.length() < 2048) buf += c;  // roster/wifi frames are large
   }
 }
 
@@ -669,6 +696,8 @@ static const MenuItem g_menu[] = {
   {"SIGINT",   SCR_SIGINT,    60, 190, 190},
   {"WFALL",    SCR_WFALL,    230, 170,  50},
   {"NET",      SCR_NETWORK,   80, 160, 120},
+  {"NETCONN",  SCR_NETCONN,   90, 140, 210},
+  {"MESH",     SCR_MESH,     120, 190, 120},
   {"TRAFFIC",  SCR_TRAFFIC,  210, 130,  90},
   {"SETTINGS", SCR_SETTINGS, 140, 152, 165},
   {"CTRL",     SCR_CTRL,     120, 130, 200},
@@ -926,6 +955,21 @@ static void applyWfRow(const String &body) {
   g_needRedraw = true;
 }
 
+// Parse a roster frame {"t":..,"n":K,"<key>0":"..","<key>1":".."} into rows[].
+static void applyRoster(const String &body, char rows[][ROW_LEN], int maxr,
+                        int &count, char key) {
+  int n = jsonInt(body, "n");
+  if (n < 0) n = 0; if (n > maxr) n = maxr;
+  char k[4] = {key, 0, 0, 0};
+  for (int i = 0; i < n; i++) {
+    if (i < 10) { k[1] = '0' + i; k[2] = 0; }
+    else { k[1] = '0' + (i / 10); k[2] = '0' + (i % 10); k[3] = 0; }
+    String v = jsonStr(body, k);
+    strncpy(rows[i], v.c_str(), ROW_LEN - 1); rows[i][ROW_LEN - 1] = 0;
+  }
+  count = n;
+}
+
 // CONTROLS screen actions.
 static const ActionBtn g_ctrlActions[] = {
   {"WiFi Defense scan", "wifi_defense_scan"},
@@ -1068,6 +1112,145 @@ static void drawTraffic() {
   gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
 }
 
+// ── Scrollable list plumbing (Mesh + Net-Conn) ────────────────────────────────
+static const int16_t SB_X = SCR_W - 26, SB_W = 24, SB_H = 26;
+static const int16_t LIST_Y0 = HEAD_H + 4, LIST_ROWH = 26;
+static void drawScrollButtons(int16_t bottomY, int scroll, int n, int vis) {
+  gfx->fillRoundRect(SB_X, LIST_Y0, SB_W, SB_H, 4, scroll > 0 ? colBlue() : gfx->color565(24,30,42));
+  gfx->setTextColor(WHITE); gfx->setTextSize(2); gfx->setCursor(SB_X + 7, LIST_Y0 + 5); gfx->print("^");
+  gfx->fillRoundRect(SB_X, bottomY, SB_W, SB_H, 4, (scroll + vis) < n ? colBlue() : gfx->color565(24,30,42));
+  gfx->setCursor(SB_X + 7, bottomY + 5); gfx->print("v");
+}
+// Draw rows[scroll..] into the list area; colorFn tints by row content.
+static int listVisible(int16_t bottomY) { return (bottomY - LIST_Y0) / LIST_ROWH; }
+
+// ── Mesh: scrollable roster of mesh nodes ─────────────────────────────────────
+static void drawMesh() {
+  drawHeader("MESH", false);
+  int16_t bottomY = SCR_H - 22 - SB_H;
+  int vis = listVisible(SCR_H - 22);
+  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - 22 - HEAD_H, colBg());
+  if (g_meshN == 0) {
+    gfx->setTextSize(1); gfx->setTextColor(colDim());
+    gfx->setCursor(12, LIST_Y0 + 8); gfx->print("no mesh nodes (or mesh off)");
+  }
+  for (int i = 0; i < vis && g_meshScroll + i < g_meshN; i++) {
+    int idx = g_meshScroll + i; int16_t y = LIST_Y0 + i * LIST_ROWH;
+    bool on = strncmp(g_meshRows[idx], "on", 2) == 0;
+    gfx->fillRoundRect(6, y, SB_X - 12, LIST_ROWH - 3, 4, gfx->color565(20, 26, 36));
+    gfx->setTextSize(1); gfx->setTextColor(on ? colGreen() : colGray());
+    gfx->setCursor(12, y + 7); gfx->print(g_meshRows[idx]);
+  }
+  drawScrollButtons(bottomY, g_meshScroll, g_meshN, vis);
+}
+
+// ── Net-Conn: Pi WiFi scan list (tap to connect) + AP / scanner buttons ───────
+static const int16_t NC_BTN_Y = SCR_H - 22 - 34;
+static void drawNetConn() {
+  drawHeader("NET CONN", false);
+  gfx->fillRect(0, HEAD_H, SCR_W, NC_BTN_Y - HEAD_H, colBg());
+  int16_t listBottom = NC_BTN_Y - 4;
+  int vis = (listBottom - LIST_Y0) / LIST_ROWH;
+  if (g_wifiN == 0) {
+    gfx->setTextSize(1); gfx->setTextColor(colDim());
+    gfx->setCursor(12, LIST_Y0 + 8); gfx->print("scanning Pi WiFi...");
+  }
+  for (int i = 0; i < vis && g_wifiScroll + i < g_wifiN; i++) {
+    int idx = g_wifiScroll + i; int16_t y = LIST_Y0 + i * LIST_ROWH;
+    gfx->fillRoundRect(6, y, SB_X - 12, LIST_ROWH - 3, 4, gfx->color565(20, 26, 36));
+    gfx->setTextSize(1); gfx->setTextColor(WHITE);
+    gfx->setCursor(12, y + 7); gfx->print(g_wifiRows[idx]);
+  }
+  drawScrollButtons(listBottom - SB_H, g_wifiScroll, g_wifiN, vis);
+  // bottom action buttons: AP toggle, Scanner start/stop
+  const char *labels[3] = {"AP", "Scan+", "Scan-"};
+  for (int i = 0; i < 3; i++) {
+    int16_t x = 8 + i * 76;
+    gfx->fillRoundRect(x, NC_BTN_Y, 72, 32, 6, colBlue());
+    gfx->drawRoundRect(x, NC_BTN_Y, 72, 32, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(x + 12, NC_BTN_Y + 12); gfx->print(labels[i]);
+  }
+}
+
+// ── On-screen keyboard (WiFi password entry) ──────────────────────────────────
+static String g_kbBuf = "";
+static bool   g_kbShift = false, g_kbSym = false;
+static const char *KB_ABC[3] = {"qwertyuiop", "asdfghjkl", "zxcvbnm"};
+static const char *KB_SYM[3] = {"1234567890", "@#$_&-+()/", "*\"':;!?%="};
+static const int16_t KB_Y0 = 66, KEY_W = 24, KEY_H = 34, KEY_GAP = 2;
+static int16_t kbRowY(int r) { return KB_Y0 + r * (KEY_H + KEY_GAP); }
+static int16_t kbRowStartX(int len) { return (SCR_W - len * KEY_W) / 2; }
+static const int16_t KB_CTRL_Y = KB_Y0 + 3 * (KEY_H + KEY_GAP);
+
+static void drawKeyboard() {
+  drawHeader("WIFI PW", false);
+  // buffer bar
+  gfx->fillRect(0, HEAD_H, SCR_W, KB_Y0 - HEAD_H, gfx->color565(16, 20, 28));
+  gfx->setTextSize(1); gfx->setTextColor(colGray());
+  gfx->setCursor(8, HEAD_H + 4); gfx->print("pw:");
+  gfx->setTextColor(colSky()); gfx->setTextSize(2);
+  String shown = g_kbBuf; if (shown.length() > 18) shown = shown.substring(shown.length() - 18);
+  gfx->setCursor(30, HEAD_H + 6); gfx->print(shown);
+  const char **rows = g_kbSym ? KB_SYM : KB_ABC;
+  for (int r = 0; r < 3; r++) {
+    int len = strlen(rows[r]); int16_t sx = kbRowStartX(len), y = kbRowY(r);
+    for (int c = 0; c < len; c++) {
+      char ch = rows[r][c];
+      if (!g_kbSym && g_kbShift && ch >= 'a' && ch <= 'z') ch -= 32;
+      int16_t x = sx + c * KEY_W;
+      gfx->fillRoundRect(x, y, KEY_W - KEY_GAP, KEY_H - KEY_GAP, 4, gfx->color565(30, 38, 52));
+      gfx->setTextColor(WHITE); gfx->setTextSize(2);
+      gfx->setCursor(x + 6, y + 9); gfx->print(ch);
+    }
+  }
+  // control row: [Shift/abc][space][123/ABC][<-][OK]
+  struct { int16_t x, w; const char *l; uint16_t c; } ctl[5] = {
+    {2,   44, g_kbSym ? "abc" : (g_kbShift ? "SHFT" : "shft"), colGray()},
+    {48,  86, "space", gfx->color565(30,38,52)},
+    {136, 40, g_kbSym ? "ABC" : "123", colGray()},
+    {178, 26, "<-", colAmber()},
+    {206, 32, "OK", colGreen()},
+  };
+  for (int i = 0; i < 5; i++) {
+    gfx->fillRoundRect(ctl[i].x, KB_CTRL_Y, ctl[i].w, KEY_H, 4, ctl[i].c);
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(ctl[i].x + 6, KB_CTRL_Y + 12); gfx->print(ctl[i].l);
+  }
+}
+
+// Handle a keyboard tap. Returns true if the tap was consumed.
+static bool kbHandleTouch(int16_t px, int16_t py) {
+  const char **rows = g_kbSym ? KB_SYM : KB_ABC;
+  for (int r = 0; r < 3; r++) {
+    int16_t y = kbRowY(r);
+    if (py < y || py >= y + KEY_H) continue;
+    int len = strlen(rows[r]); int16_t sx = kbRowStartX(len);
+    int c = (px - sx) / KEY_W;
+    if (c < 0 || c >= len) return true;
+    char ch = rows[r][c];
+    if (!g_kbSym && g_kbShift && ch >= 'a' && ch <= 'z') ch -= 32;
+    if (g_kbBuf.length() < 63) g_kbBuf += ch;
+    g_needRedraw = true; return true;
+  }
+  if (py >= KB_CTRL_Y && py < KB_CTRL_Y + KEY_H) {
+    if (px < 46)        { g_kbShift = !g_kbShift; }
+    else if (px < 134)  { if (g_kbBuf.length() < 63) g_kbBuf += ' '; }
+    else if (px < 176)  { g_kbSym = !g_kbSym; }
+    else if (px < 204)  { if (g_kbBuf.length()) g_kbBuf.remove(g_kbBuf.length() - 1); }
+    else                { // OK -> connect
+#if CYD_TRANSPORT_SERIAL
+      if (g_wifiSel >= 0) serialSendConnect(g_wifiSel, g_kbBuf);
+#endif
+      setStatus("connecting...", colAmber());
+      g_kbBuf = ""; g_kbShift = g_kbSym = false;
+      g_screen = SCR_NETCONN;
+    }
+    g_needRedraw = true; return true;
+  }
+  return true;
+}
+
 // ── Alerts: newest Watchtower findings pushed from Ragnar ─────────────────────
 static void drawAlerts() {
   drawHeader("ALERTS", false);
@@ -1206,6 +1389,9 @@ static void render() {
     case SCR_NETWORK: drawNetwork();   break;
     case SCR_NETINT:  drawNetInt();    break;
     case SCR_TRAFFIC: drawTraffic();   break;
+    case SCR_MESH:    drawMesh();      break;
+    case SCR_NETCONN: drawNetConn();   break;
+    case SCR_KEYBOARD:drawKeyboard();  break;
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
@@ -1238,10 +1424,20 @@ static void handleTouch(int16_t px, int16_t py) {
 #else
         strncpy(g_wfErr, "USB-serial only", sizeof(g_wfErr) - 1);
 #endif
+      } else if (g_screen == SCR_MESH) {
+        g_meshScroll = 0; g_meshActive = true;    // request roster stream
+      } else if (g_screen == SCR_NETCONN) {
+        g_wifiScroll = 0; g_wifiActive = true;    // request Pi wifi scan stream
       }
       g_needRedraw = true;
       return;
     }
+    return;
+  }
+  // Keyboard: header-left cancels back to Net-Conn; everything else is a key.
+  if (g_screen == SCR_KEYBOARD) {
+    if (py < HEAD_H && px < 60) { g_screen = SCR_NETCONN; g_needRedraw = true; return; }
+    kbHandleTouch(px, py);
     return;
   }
   // Back: enlarged hit zone everywhere except WFALL, whose band bar sits right
@@ -1249,6 +1445,7 @@ static void handleTouch(int16_t px, int16_t py) {
   bool back = (g_screen == SCR_WFALL) ? (py < HEAD_H) : inBackZone(px, py);
   if (back) {
     if (g_screen == SCR_WFALL) g_wfActive = false;
+    g_meshActive = false; g_wifiActive = false;   // stop roster/wifi streams
     g_screen = SCR_HOME; g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
@@ -1296,6 +1493,36 @@ static void handleTouch(int16_t px, int16_t py) {
     if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
       if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
       else setStatus("queue full", colRed());
+    }
+    return;
+  }
+  if (g_screen == SCR_MESH) {
+    int vis = listVisible(SCR_H - 22);
+    if (inRect(px, py, SB_X, LIST_Y0, SB_W, SB_H)) { if (g_meshScroll > 0) g_meshScroll--; g_needRedraw = true; }
+    else if (inRect(px, py, SB_X, SCR_H - 22 - SB_H, SB_W, SB_H)) { if (g_meshScroll + vis < g_meshN) g_meshScroll++; g_needRedraw = true; }
+    return;
+  }
+  if (g_screen == SCR_NETCONN) {
+    int16_t listBottom = NC_BTN_Y - 4;
+    int vis = (listBottom - LIST_Y0) / LIST_ROWH;
+    if (inRect(px, py, SB_X, LIST_Y0, SB_W, SB_H)) { if (g_wifiScroll > 0) g_wifiScroll--; g_needRedraw = true; return; }
+    if (inRect(px, py, SB_X, listBottom - SB_H, SB_W, SB_H)) { if (g_wifiScroll + vis < g_wifiN) g_wifiScroll++; g_needRedraw = true; return; }
+    // bottom action buttons: AP / Scan+ / Scan-
+    if (py >= NC_BTN_Y && py < NC_BTN_Y + 32) {
+      int b = -1; for (int i = 0; i < 3; i++) if (px >= 8 + i * 76 && px < 8 + i * 76 + 72) b = i;
+      const char *acts[3] = {"ap_toggle", "scanner_start", "scanner_stop"};
+      if (b >= 0) { if (actionEnqueue(acts[b])) setStatus("queued", colAmber()); else setStatus("queue full", colRed()); }
+      return;
+    }
+    // tap a WiFi row -> pick it and open the password keyboard
+    for (int i = 0; i < vis && g_wifiScroll + i < g_wifiN; i++) {
+      int16_t y = LIST_Y0 + i * LIST_ROWH;
+      if (inRect(px, py, 6, y, SB_X - 12, LIST_ROWH - 3)) {
+        g_wifiSel = g_wifiScroll + i;
+        g_kbBuf = ""; g_kbShift = g_kbSym = false;
+        g_screen = SCR_KEYBOARD; g_needRedraw = true;
+        return;
+      }
     }
     return;
   }
@@ -1486,7 +1713,7 @@ void loop() {
   // While the Waterfall screen is open, dedicate the loop to streaming spectrum
   // (skip the sniff/BLE windows) so it stays live. Tell Ragnar to stop the SDR
   // when the screen closes.
-  static bool wasWf = false;
+  static bool wasWf = false, wasMesh = false, wasWifi = false;
 #if CYD_TRANSPORT_SERIAL
   if (g_wfActive) {
     serialSendWfReq(true);
@@ -1495,6 +1722,16 @@ void loop() {
     return;
   }
   if (wasWf) { serialSendWfReq(false); wasWf = false; }
+  // Mesh roster / WiFi list streams: request while their screen (or the keyboard
+  // launched from Net-Conn) is open, and dedicate the loop to draining them.
+  if (g_meshActive || g_wifiActive) {
+    if (g_meshActive) { serialSendMeshReq(true); wasMesh = true; }
+    if (g_wifiActive) { serialSendWifiReq(true); wasWifi = true; }
+    pollTouchFor(1500);
+    return;
+  }
+  if (wasMesh) { serialSendMeshReq(false); wasMesh = false; }
+  if (wasWifi) { serialSendWifiReq(false); wasWifi = false; }
 #endif
 
   // The LED is a STEADY link indicator, not a per-phase blinker (the old

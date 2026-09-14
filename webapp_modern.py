@@ -2743,6 +2743,92 @@ def _cyd_traffic():
     return out
 
 
+def _cyd_sanitize(s, n=28):
+    """Strip quotes/backslash/control chars (the firmware's naive parser) + cap."""
+    return ''.join(c for c in str(s) if 32 <= ord(c) < 127 and c not in '"\\')[:n]
+
+
+def _cyd_mesh_roster():
+    """Flat mesh roster for the CYD Mesh screen: {'n':K, 'm0':'name on ip', ...}."""
+    rows = []
+    try:
+        if mesh_available and _mesh_enabled():
+            st = mesh_manager.status() or {}
+            for p in (st.get('peers') or [])[:24]:
+                nm = p.get('short_name') or p.get('viking_name') or p.get('id') or '?'
+                on = 'on ' if p.get('online') else 'off'
+                ip = p.get('ip') or '-'
+                rows.append(_cyd_sanitize('%s %s %s' % (on, nm, ip)))
+    except Exception:
+        pass
+    d = {'n': len(rows)}
+    for i, r in enumerate(rows):
+        d['m%d' % i] = r
+    return d
+
+
+_cyd_wifi_cache = {'t': 0.0, 'rows': []}
+
+
+def _cyd_wifi_list():
+    """Flat Pi-WiFi scan for the CYD Net-Conn screen: {'n':K, 'w0':'ssid rssi sec'}.
+    Cached ~20 s — a scan is expensive and disruptive on the station radio."""
+    now = time.time()
+    if now - _cyd_wifi_cache['t'] < 20 and _cyd_wifi_cache['rows']:
+        rows = _cyd_wifi_cache['rows']
+    else:
+        rows = []
+        try:
+            wm = getattr(shared_data, 'wifi_manager', None)
+            nets = (wm.scan_networks() if wm else None) or []
+            seen = set()
+            for net in nets[:24]:
+                ssid = (net.get('ssid') or '').strip()
+                if not ssid or ssid in seen:
+                    continue
+                seen.add(ssid)
+                sig = net.get('signal') or 0
+                sec = 'lock' if (net.get('security') and net.get('security') != 'Open') else 'open'
+                mark = '*' if net.get('known') else ' '
+                rows.append(_cyd_sanitize('%s%s %sdBm %s' % (mark, ssid, sig, sec)))
+            _cyd_wifi_cache.update(t=now, rows=rows)
+        except Exception as exc:
+            logger.debug(f"[cyd] wifi_list failed: {exc}")
+    d = {'n': len(rows)}
+    for i, r in enumerate(rows):
+        d['w%d' % i] = r
+    # The raw SSIDs (unmarked) so the node can connect by index.
+    return d
+
+
+def _cyd_wifi_ssid_by_index(idx):
+    """Resolve a scan-row index back to its raw SSID for connect."""
+    rows = _cyd_wifi_cache['rows']
+    if 0 <= idx < len(rows):
+        r = rows[idx][1:]                    # drop the leading */space mark
+        return r.split(' ')[0] if ' ' in r else r
+    return ''
+
+
+def _cyd_wifi_connect(idx, pw):
+    """Connect the Pi to the scan-row at `idx` (resolved to its raw SSID)."""
+    try:
+        ssid = _cyd_wifi_ssid_by_index(int(idx))
+    except (TypeError, ValueError):
+        ssid = ''
+    if not ssid:
+        return
+    def _run():
+        try:
+            wm = getattr(shared_data, 'wifi_manager', None)
+            if wm:
+                wm.connect_to_network(ssid, pw or None)
+                logger.info(f"[cyd] wifi connect requested: {ssid}")
+        except Exception as exc:
+            logger.warning(f"[cyd] wifi connect failed: {exc}")
+    threading.Thread(target=_run, name='cyd-wifi-connect', daemon=True).start()
+
+
 def _cyd_pwn_state():
     """Pwnagotchi bridge state for the CYD: 'off' when not installed/enabled,
     else the current mode (e.g. 'ragnar' / 'pwnagotchi')."""
@@ -3017,6 +3103,32 @@ def _cyd_dispatch_action(action, node_name):
         threading.Thread(target=_run, name='cyd-update', daemon=True).start()
         return 'started', 202
 
+    if action == 'ap_toggle':
+        try:
+            wm = getattr(shared_data, 'wifi_manager', None)
+            if not wm:
+                return 'unavailable', 503
+            if getattr(wm, 'ap_mode_active', False):
+                wm.stop_ap_mode(); return 'done', 200
+            wm.start_ap_mode(); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] ap_toggle failed: {exc}")
+            return 'error', 500
+
+    if action == 'scanner_start':
+        try:
+            _toggle_scan_interface(True); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] scanner_start failed: {exc}")
+            return 'error', 500
+
+    if action == 'scanner_stop':
+        try:
+            _toggle_scan_interface(False); return 'done', 200
+        except Exception as exc:
+            logger.warning(f"[cyd] scanner_stop failed: {exc}")
+            return 'error', 500
+
     if action == 'traffic_toggle':
         try:
             an = get_traffic_analyzer()
@@ -3107,6 +3219,9 @@ _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     baud=115200,
     on_wf_request=lambda band, on: cyd_waterfall.request(band, on),
     get_wf=lambda: cyd_waterfall.latest_row() if cyd_waterfall.wants_stream() else None,
+    get_mesh=_cyd_mesh_roster,
+    get_wifi=_cyd_wifi_list,
+    on_wifi_connect=_cyd_wifi_connect,
 )
 try:
     _cyd_bridge.start()
