@@ -51,6 +51,7 @@ ALLOWED_ACTIONS = {
     'captive_check':     'Check for a captive portal',
     'ragnar_update':     'Run a Ragnar self-update',
     'pwn_swap':          'Toggle the Pwnagotchi bridge',
+    'traffic_toggle':    'Start/stop live traffic capture',
 }
 
 

@@ -123,7 +123,8 @@ static SPIClass touchSPI(HSPI);
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
-              SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
+              SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_SETTINGS, SCR_CTRL,
+              SCR_TOUCHTEST };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -156,6 +157,14 @@ struct RagnarStatus {
   char     ni1[30]          = "";
   char     ni2[30]          = "";
   char     ni3[30]          = "";
+  // Traffic Analysis live capture:
+  bool     tfRun            = false;
+  int      tfPps            = 0;
+  char     tfMbps[10]       = "0";
+  int      tfHosts          = 0;
+  int      tfConns          = 0;
+  uint32_t tfPkts           = 0;
+  int      tfAlerts         = 0;
 };
 static RagnarStatus g_rs;
 
@@ -481,7 +490,14 @@ static void applyStatus(const String &body) {
   CYD_CPYS(ni1, "ni1");
   CYD_CPYS(ni2, "ni2");
   CYD_CPYS(ni3, "ni3");
+  CYD_CPYS(tfMbps, "tf_mbps");
   #undef CYD_CPYS
+  g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
+  g_rs.tfPps    = jsonInt(body, "tf_pps");
+  g_rs.tfHosts  = jsonInt(body, "tf_hosts");
+  g_rs.tfConns  = jsonInt(body, "tf_conns");
+  g_rs.tfPkts   = (uint32_t)jsonInt(body, "tf_pkts");
+  g_rs.tfAlerts = jsonInt(body, "tf_alerts");
   g_rs.ok = true;
   g_rs.lastSyncMs = millis();
   // Only repaint when a DISPLAYED value actually changed. Ragnar pushes status
@@ -493,7 +509,9 @@ static void applyStatus(const String &body) {
     + g_rs.iface + '|' + g_rs.ip + '|' + g_rs.wardrive + '|' + g_rs.worst + '|'
     + g_rs.alert1 + '|' + g_rs.alert2 + '|' + g_rs.alert3 + '|'
     + g_rs.netint + '|' + g_rs.speedtest + '|' + g_rs.captive + '|' + g_rs.pwn + '|'
-    + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3;
+    + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
+    + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
+    + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -637,10 +655,10 @@ static uint16_t threatColor(int t) {
 // — the grid lays itself out. Up to 10 items fit without scrolling.
 static const int16_t HEAD_H   = 30;
 static const int16_t TILE_W   = 105;
-static const int16_t TILE_H   = 38;                 // half the old tile height
+static const int16_t TILE_H   = 34;                 // sized so 12 tiles (6 rows) fit
 static const int16_t TILE_XL  = 10, TILE_XR = 125;
-static const int16_t MENU_Y0  = 36;                 // first row top
-static const int16_t MENU_PITCH = TILE_H + 8;       // row stride
+static const int16_t MENU_Y0  = 34;                 // first row top
+static const int16_t MENU_PITCH = TILE_H + 8;       // row stride (42)
 
 struct MenuItem { const char *label; Screen scr; uint8_t r, g, b; };
 static const MenuItem g_menu[] = {
@@ -651,6 +669,7 @@ static const MenuItem g_menu[] = {
   {"SIGINT",   SCR_SIGINT,    60, 190, 190},
   {"WFALL",    SCR_WFALL,    230, 170,  50},
   {"NET",      SCR_NETWORK,   80, 160, 120},
+  {"TRAFFIC",  SCR_TRAFFIC,  210, 130,  90},
   {"SETTINGS", SCR_SETTINGS, 140, 152, 165},
   {"CTRL",     SCR_CTRL,     120, 130, 200},
 };
@@ -1027,6 +1046,28 @@ static void drawNetInt() {
   gfx->setCursor(12, y + 4); gfx->print("run tests from the NETWORK buttons");
 }
 
+// Traffic Analysis — live capture stats from Ragnar + a start/stop button.
+static const int16_t TRAF_BTN_Y = SCR_H - 22 - 46;
+static void drawTraffic() {
+  drawHeader("TRAFFIC", false);
+  int16_t y = HEAD_H + 10;
+  gfx->fillRect(0, HEAD_H, SCR_W, TRAF_BTN_Y - HEAD_H, colBg());
+  gfx->setTextSize(2);
+  gfx->setTextColor(g_rs.tfRun ? colGreen() : colGray());
+  gfx->setCursor(12, y); gfx->print(g_rs.tfRun ? "CAPTURING" : "stopped"); y += 30;
+  kv(y, "THROUGHPUT", String(g_rs.tfMbps) + " Mbps", colSky()); y += 34;
+  kv(y, "PACKETS/S", String(g_rs.tfPps), WHITE); y += 34;
+  kv(y, "HOSTS / CONNS", String(g_rs.tfHosts) + " / " + String(g_rs.tfConns), WHITE); y += 34;
+  kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colDim()); y += 34;
+  kv(y, "ALERTS", String(g_rs.tfAlerts), g_rs.tfAlerts ? colRed() : colGreen());
+  // start/stop button
+  uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
+  gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, bc);
+  gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+}
+
 // ── Alerts: newest Watchtower findings pushed from Ragnar ─────────────────────
 static void drawAlerts() {
   drawHeader("ALERTS", false);
@@ -1164,6 +1205,7 @@ static void render() {
     case SCR_WFALL:   drawWaterfall(); break;
     case SCR_NETWORK: drawNetwork();   break;
     case SCR_NETINT:  drawNetInt();    break;
+    case SCR_TRAFFIC: drawTraffic();   break;
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
@@ -1248,6 +1290,13 @@ static void handleTouch(int16_t px, int16_t py) {
   }
   if (g_screen == SCR_CTRL) {
     hitActionList(g_ctrlActions, N_CTRL, CTRL_Y0, px, py);
+    return;
+  }
+  if (g_screen == SCR_TRAFFIC) {
+    if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
+      if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
+      else setStatus("queue full", colRed());
+    }
     return;
   }
   if (g_screen == SCR_NETWORK) {

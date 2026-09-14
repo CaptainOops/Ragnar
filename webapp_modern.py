@@ -2722,6 +2722,27 @@ def _cyd_netint_summary(top=3):
     return summary, lines
 
 
+def _cyd_traffic():
+    """Compact live-capture stats for the CYD Traffic screen (best-effort)."""
+    out = {'tf_run': 0, 'tf_pps': 0, 'tf_mbps': '0', 'tf_hosts': 0,
+           'tf_conns': 0, 'tf_pkts': 0, 'tf_alerts': 0}
+    try:
+        an = get_traffic_analyzer()
+        if not an:
+            return out
+        s = an.get_summary() or {}
+        out['tf_run'] = 1 if s.get('status') == 'running' else 0
+        out['tf_pps'] = int(s.get('packets_per_second') or 0)
+        out['tf_mbps'] = ('%.2f' % float(s.get('throughput_mbps') or 0))
+        out['tf_hosts'] = int(s.get('unique_hosts') or 0)
+        out['tf_conns'] = int(s.get('active_connections') or 0)
+        out['tf_pkts'] = int(s.get('total_packets') or 0)
+        out['tf_alerts'] = int(s.get('total_alerts') or 0)
+    except Exception:
+        pass
+    return out
+
+
 def _cyd_pwn_state():
     """Pwnagotchi bridge state for the CYD: 'off' when not installed/enabled,
     else the current mode (e.g. 'ragnar' / 'pwnagotchi')."""
@@ -2797,6 +2818,7 @@ def _cyd_build_status_dict():
         'pwn': _cyd_pwn_state(),
         'ts': int(time.time()),
     }
+    d.update(_cyd_traffic())          # tf_run / tf_pps / tf_mbps / tf_hosts / ...
     # Flat alert titles (alert1..alert3) + net-integrity lines (ni1..ni3) —
     # firmware string-matches these keys.
     for i in range(3):
@@ -2994,6 +3016,21 @@ def _cyd_dispatch_action(action, node_name):
                 cyd_node.record_action(node_name, action, None, status='error')
         threading.Thread(target=_run, name='cyd-update', daemon=True).start()
         return 'started', 202
+
+    if action == 'traffic_toggle':
+        try:
+            an = get_traffic_analyzer()
+            if not an:
+                return 'unavailable', 503
+            s = an.get_summary() or {}
+            if s.get('status') == 'running':
+                an.stop(); return 'done', 200
+            if hasattr(an, 'is_available') and not an.is_available():
+                return 'unavailable', 503
+            an.start(); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] traffic_toggle failed: {exc}")
+            return 'error', 500
 
     if action == 'pwn_swap':
         # Toggle the Pwnagotchi<->Ragnar port bridge (only if pwnagotchi installed).
