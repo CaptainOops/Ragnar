@@ -123,7 +123,7 @@ static SPIClass touchSPI(HSPI);
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
-              SCR_WFALL, SCR_NETWORK, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
+              SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -148,6 +148,14 @@ struct RagnarStatus {
   char     alert1[30]       = "";
   char     alert2[30]       = "";
   char     alert3[30]       = "";
+  // NETWORK subpages:
+  char     netint[16]       = "off";
+  char     speedtest[16]    = "-";
+  char     captive[16]      = "-";
+  char     pwn[12]          = "off";
+  char     ni1[30]          = "";
+  char     ni2[30]          = "";
+  char     ni3[30]          = "";
 };
 static RagnarStatus g_rs;
 
@@ -466,6 +474,13 @@ static void applyStatus(const String &body) {
   CYD_CPYS(alert1, "alert1");
   CYD_CPYS(alert2, "alert2");
   CYD_CPYS(alert3, "alert3");
+  CYD_CPYS(netint, "netint");
+  CYD_CPYS(speedtest, "speedtest");
+  CYD_CPYS(captive, "captive");
+  CYD_CPYS(pwn, "pwn");
+  CYD_CPYS(ni1, "ni1");
+  CYD_CPYS(ni2, "ni2");
+  CYD_CPYS(ni3, "ni3");
   #undef CYD_CPYS
   g_rs.ok = true;
   g_rs.lastSyncMs = millis();
@@ -476,7 +491,9 @@ static void applyStatus(const String &body) {
   String sig = String(g_rs.meshNodes) + '|' + g_rs.nets24 + '|' + g_rs.nets5 + '|'
     + g_rs.threat + '|' + g_rs.alerts + '|' + g_rs.btState + '|' + g_rs.unitName + '|'
     + g_rs.iface + '|' + g_rs.ip + '|' + g_rs.wardrive + '|' + g_rs.worst + '|'
-    + g_rs.alert1 + '|' + g_rs.alert2 + '|' + g_rs.alert3;
+    + g_rs.alert1 + '|' + g_rs.alert2 + '|' + g_rs.alert3 + '|'
+    + g_rs.netint + '|' + g_rs.speedtest + '|' + g_rs.captive + '|' + g_rs.pwn + '|'
+    + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -899,48 +916,27 @@ static const ActionBtn g_ctrlActions[] = {
 };
 static const int N_CTRL = sizeof(g_ctrlActions) / sizeof(g_ctrlActions[0]);
 
-// NETWORK screen actions — a dense 2-column grid (fits far more than 3 big
-// buttons; add a row here and it lays itself out).
-static const ActionBtn g_netActions[] = {
-  {"Wardrive on",  "wardrive_start"},
-  {"Wardrive off", "wardrive_stop"},
-  {"Airspace",     "network_scan"},
-  {"WIDS scan",    "wifi_defense_scan"},
-  {"BLE scan",     "ble_scan"},
-  {"Clear alerts", "watchtower_clear"},
+// NETWORK screen items — a dense 2-column grid mixing sub-page navigation and
+// one-tap actions (nav=true opens `scr`; nav=false enqueues `action`).
+struct NetItem { const char *label; bool nav; uint8_t scr; const char *action; };
+static const NetItem g_netItems[] = {
+  {"Net Int",    true,  SCR_NETINT, ""},
+  {"Watchtower", true,  SCR_ALERTS, ""},
+  {"Speed test", false, 0, "speed_test"},
+  {"Captive",    false, 0, "captive_check"},
+  {"Airspace",   false, 0, "network_scan"},
+  {"WIDS scan",  false, 0, "wifi_defense_scan"},
 };
-static const int N_NET = sizeof(g_netActions) / sizeof(g_netActions[0]);
+static const int N_NET = sizeof(g_netItems) / sizeof(g_netItems[0]);
 
 static const int16_t BTN_BH = 40, BTN_GAP = 8;
 
-// Compact 2-column action grid (half-height buttons, size-1 labels).
+// Compact 2-column grid geometry (half-height buttons); NETWORK draws its own
+// mixed nav/action tiles using this layout.
 static const int16_t GBTN_W = 105, GBTN_H = 34, GBTN_GAP = 7;
 static void gridBtnXY(int i, int16_t y0, int16_t &x, int16_t &y) {
   x = (i & 1) ? 125 : 10;
   y = y0 + (i / 2) * (GBTN_H + GBTN_GAP);
-}
-static void drawActionGrid(const ActionBtn *items, int n, int16_t y0) {
-  for (int i = 0; i < n; i++) {
-    int16_t x, y; gridBtnXY(i, y0, x, y);
-    gfx->fillRoundRect(x, y, GBTN_W, GBTN_H, 6, colBlue());
-    gfx->drawRoundRect(x, y, GBTN_W, GBTN_H, 6, colSky());
-    gfx->setTextColor(WHITE); gfx->setTextSize(1);
-    gfx->setCursor(x + 8, y + (GBTN_H - 8) / 2); gfx->print(items[i].label);
-  }
-}
-static bool hitActionGrid(const ActionBtn *items, int n, int16_t y0,
-                          int16_t px, int16_t py) {
-  for (int i = 0; i < n; i++) {
-    int16_t x, y; gridBtnXY(i, y0, x, y);
-    if (inRect(px, py, x, y, GBTN_W, GBTN_H)) {
-      if (actionEnqueue(items[i].action))
-        setStatus((String("queued: ") + items[i].label).c_str(), colAmber());
-      else
-        setStatus("action queue full", colRed());
-      return true;
-    }
-  }
-  return false;
 }
 
 // Draw a vertical list of action buttons from y0; returns the y after the list.
@@ -984,19 +980,51 @@ static void drawControls() {
 static const int16_t NET_GRID_Y0 = HEAD_H + 44;
 static void drawNetwork() {
   drawHeader("NETWORK", false);
-  // Condensed 2-line status header, then a dense action grid below.
+  // Condensed 2-line status header, then a dense grid of subpages + actions.
   int16_t y = HEAD_H + 6;
   gfx->fillRect(0, y, SCR_W, 36, colBg());
   gfx->setTextSize(1);
   String l1 = (strlen(g_rs.iface) ? (String(g_rs.iface) + " " + g_rs.ip) : String("link --"))
               + "  " + String(g_rs.nets24) + "/" + String(g_rs.nets5) + "G";
   gfx->setTextColor(colSky()); gfx->setCursor(12, y); gfx->print(l1);
-  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 16); gfx->print("wdrv ");
-  gfx->setTextColor(WHITE); gfx->print(g_rs.wardrive);
-  gfx->setTextColor(colGray()); gfx->print("   alrt ");
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 16); gfx->print("netint ");
+  bool niBad = strcmp(g_rs.netint, "ok") && strcmp(g_rs.netint, "off");
+  gfx->setTextColor(niBad ? colRed() : colGreen()); gfx->print(g_rs.netint);
+  gfx->setTextColor(colGray()); gfx->print("  alrt ");
   gfx->setTextColor(g_rs.alerts ? colRed() : colGreen());
-  gfx->print(String(g_rs.alerts) + " " + g_rs.worst);
-  drawActionGrid(g_netActions, N_NET, NET_GRID_Y0);
+  gfx->print(String(g_rs.alerts));
+  for (int i = 0; i < N_NET; i++) {
+    int16_t x, gy; gridBtnXY(i, NET_GRID_Y0, x, gy);
+    uint16_t bg = g_netItems[i].nav ? gfx->color565(30, 70, 110) : colBlue();
+    gfx->fillRoundRect(x, gy, GBTN_W, GBTN_H, 6, bg);
+    gfx->drawRoundRect(x, gy, GBTN_W, GBTN_H, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(x + 8, gy + (GBTN_H - 8) / 2); gfx->print(g_netItems[i].label);
+    if (g_netItems[i].nav) { gfx->setTextColor(colSky()); gfx->setCursor(x + GBTN_W - 10, gy + (GBTN_H-8)/2); gfx->print(">"); }
+  }
+}
+
+// Net-Integrity Monitor subpage: overall verdict + the worst check lines +
+// on-demand speed-test / captive-portal results (tap NET buttons to run those).
+static void drawNetInt() {
+  drawHeader("NET INTEGRITY", false);
+  int16_t y = HEAD_H + 10;
+  bool bad = strcmp(g_rs.netint, "ok") && strcmp(g_rs.netint, "off");
+  kv(y, "STATUS", String(g_rs.netint), strcmp(g_rs.netint, "off") == 0 ? colDim() : (bad ? colRed() : colGreen())); y += 34;
+  const char *lines[3] = { g_rs.ni1, g_rs.ni2, g_rs.ni3 };
+  for (int i = 0; i < 3; i++) {
+    if (!strlen(lines[i])) continue;
+    gfx->setTextSize(1); gfx->setTextColor(colAmber());
+    gfx->fillRect(0, y, SCR_W, 12, colBg());
+    gfx->setCursor(12, y); gfx->print(lines[i]); y += 14;
+  }
+  if (y < HEAD_H + 44) y = HEAD_H + 44;
+  y += 6;
+  kv(y, "SPEED TEST", String(g_rs.speedtest), colSky()); y += 34;
+  kv(y, "CAPTIVE", String(g_rs.captive),
+     strcmp(g_rs.captive, "portal!") == 0 ? colRed() : WHITE); y += 34;
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  gfx->setCursor(12, y + 4); gfx->print("run tests from the NETWORK buttons");
 }
 
 // ── Alerts: newest Watchtower findings pushed from Ragnar ─────────────────────
@@ -1033,28 +1061,52 @@ static void drawAlerts() {
 
 // ── Settings: device-local, tappable rows + info. Persisted to NVS ────────────
 static const char *FW_BUILD = "cyd 0.5 " __DATE__;
-static const int16_t SET_Y0 = HEAD_H + 10, SET_ROWH = 32, SET_PITCH = 40;
+static const int16_t SET_Y0 = HEAD_H + 8, SET_ROWH = 30, SET_PITCH = 34;
 
+// Settings rows, built at draw time (Pwnagotchi row only when the bridge exists).
+enum { STAG_BLE, STAG_BL, STAG_WDRV, STAG_UPDATE, STAG_SVC, STAG_PWN, STAG_TOUCH };
+static int settingsRows(uint8_t *tags) {
+  int n = 0;
+  tags[n++] = STAG_BLE;
+  tags[n++] = STAG_BL;
+  tags[n++] = STAG_WDRV;
+  tags[n++] = STAG_UPDATE;
+  tags[n++] = STAG_SVC;
+  if (strcmp(g_rs.pwn, "off") != 0) tags[n++] = STAG_PWN;
+  tags[n++] = STAG_TOUCH;
+  return n;
+}
+static void settingRowText(uint8_t tag, const char *&label, String &val, uint16_t &vcol) {
+  vcol = colSky();
+  switch (tag) {
+    case STAG_BLE:    label = "BLE scan";  val = g_bleEnabled ? "ON" : "OFF"; vcol = g_bleEnabled ? colGreen() : colGray(); break;
+    case STAG_BL:     label = "Backlight"; val = String(g_backlightPct) + "%"; break;
+    case STAG_WDRV:   label = "Wardriving"; val = String(g_rs.wardrive); vcol = (strcmp(g_rs.wardrive,"off")==0)?colGray():colGreen(); break;
+    case STAG_UPDATE: label = "Ragnar update"; val = "run"; vcol = colAmber(); break;
+    case STAG_SVC:    label = "Restart svc"; val = "go"; vcol = colAmber(); break;
+    case STAG_PWN:    label = "Pwnagotchi"; val = String(g_rs.pwn); break;
+    case STAG_TOUCH:  label = "Touch test"; val = "open"; vcol = colAmber(); break;
+    default:          label = "?"; val = ""; break;
+  }
+}
 static void drawSettingRow(int16_t y, const char *label, const String &val, uint16_t vcol) {
   gfx->fillRoundRect(10, y, SCR_W - 20, SET_ROWH, 6, gfx->color565(28, 34, 48));
   gfx->drawRoundRect(10, y, SCR_W - 20, SET_ROWH, 6, gfx->color565(50, 60, 78));
   gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(20, y + 8); gfx->print(label);
-  gfx->setTextColor(vcol); gfx->setTextSize(2);
-  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 12 - 8;
-  gfx->setCursor(vx, y + 8); gfx->print(val);
+  gfx->setCursor(18, y + 7); gfx->print(label);
+  gfx->setTextColor(vcol); gfx->setTextSize(1);
+  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 6 - 8;
+  gfx->setCursor(vx, y + 11); gfx->print(val);
 }
 
 static void drawSettings() {
   drawHeader("SETTINGS", false);
-  drawSettingRow(SET_Y0, "BLE scan", g_bleEnabled ? "ON" : "OFF",
-                 g_bleEnabled ? colGreen() : colGray());
-  drawSettingRow(SET_Y0 + SET_PITCH, "Backlight", String(g_backlightPct) + "%", colSky());
-  drawSettingRow(SET_Y0 + SET_PITCH * 2, "Touch test", "open", colAmber());
-  int16_t y = SET_Y0 + SET_PITCH * 3 + 4;
-  kv(y, "NODE", g_cfg.name, colSky());                         y += 32;
-  kv(y, "FIRMWARE", String(FW_BUILD), WHITE);                  y += 32;
-  kv(y, "FREE HEAP", String(ESP.getFreeHeap() / 1024) + " KB", colDim());
+  uint8_t tags[8]; int n = settingsRows(tags);
+  for (int i = 0; i < n; i++) {
+    const char *label; String val; uint16_t vcol;
+    settingRowText(tags[i], label, val, vcol);
+    drawSettingRow(SET_Y0 + i * SET_PITCH, label, val, vcol);
+  }
 }
 
 // ── Touch test / orientation validator ────────────────────────────────────────
@@ -1111,6 +1163,7 @@ static void render() {
     case SCR_SIGINT:  drawSigInt();    break;
     case SCR_WFALL:   drawWaterfall(); break;
     case SCR_NETWORK: drawNetwork();   break;
+    case SCR_NETINT:  drawNetInt();    break;
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
@@ -1157,15 +1210,22 @@ static void handleTouch(int16_t px, int16_t py) {
     g_screen = SCR_HOME; g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
-    if (inRect(px, py, 10, SET_Y0, SCR_W - 20, SET_ROWH)) {
-      g_bleEnabled = !g_bleEnabled; saveSettings(); g_needRedraw = true; return;
-    }
-    if (inRect(px, py, 10, SET_Y0 + SET_PITCH, SCR_W - 20, SET_ROWH)) {
-      g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
-      applyBacklight(); saveSettings(); g_needRedraw = true; return;
-    }
-    if (inRect(px, py, 10, SET_Y0 + SET_PITCH * 2, SCR_W - 20, SET_ROWH)) {
-      g_ttX = g_ttY = -1; g_screen = SCR_TOUCHTEST; g_needRedraw = true; return;
+    uint8_t tags[8]; int n = settingsRows(tags);
+    for (int i = 0; i < n; i++) {
+      int16_t ry = SET_Y0 + i * SET_PITCH;
+      if (!inRect(px, py, 10, ry, SCR_W - 20, SET_ROWH)) continue;
+      switch (tags[i]) {
+        case STAG_BLE: g_bleEnabled = !g_bleEnabled; saveSettings(); break;
+        case STAG_BL:  g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
+                       applyBacklight(); saveSettings(); break;
+        case STAG_WDRV:   if (!actionEnqueue("wardrive_toggle")) setStatus("queue full", colRed()); else setStatus("queued: wardrive", colAmber()); break;
+        case STAG_UPDATE: if (!actionEnqueue("ragnar_update"))   setStatus("queue full", colRed()); else setStatus("queued: update", colAmber()); break;
+        case STAG_SVC:    if (!actionEnqueue("service_restart")) setStatus("queue full", colRed()); else setStatus("queued: restart", colAmber()); break;
+        case STAG_PWN:    if (!actionEnqueue("pwn_swap"))        setStatus("queue full", colRed()); else setStatus("queued: pwn swap", colAmber()); break;
+        case STAG_TOUCH:  g_ttX = g_ttY = -1; g_screen = SCR_TOUCHTEST; break;
+      }
+      g_needRedraw = true;
+      return;
     }
     return;
   }
@@ -1191,7 +1251,15 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_NETWORK) {
-    hitActionGrid(g_netActions, N_NET, NET_GRID_Y0, px, py);
+    for (int i = 0; i < N_NET; i++) {
+      int16_t x, gy; gridBtnXY(i, NET_GRID_Y0, x, gy);
+      if (!inRect(px, py, x, gy, GBTN_W, GBTN_H)) continue;
+      if (g_netItems[i].nav) { g_screen = (Screen)g_netItems[i].scr; g_needRedraw = true; }
+      else if (actionEnqueue(g_netItems[i].action))
+        setStatus((String("queued: ") + g_netItems[i].label).c_str(), colAmber());
+      else setStatus("action queue full", colRed());
+      return;
+    }
     return;
   }
 }

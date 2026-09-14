@@ -2698,6 +2698,41 @@ def _cyd_wardrive_state():
         return 'off'
 
 
+# Last on-demand results the CYD triggered, surfaced back in its status feed.
+_cyd_speedtest_result = '-'
+_cyd_captive_result = '-'
+
+
+def _cyd_netint_summary(top=3):
+    """(summary, [worst check lines]) from the passive net-integrity monitor."""
+    try:
+        st = dict(_net_integrity_state)
+    except Exception:
+        return 'off', []
+    if not st.get('enabled'):
+        return 'off', []
+    checks = st.get('checks') or {}
+    bad = [(c.get('label') or k, c.get('verdict') or '?')
+           for k, c in checks.items()
+           if str(c.get('verdict', '')).lower() not in ('', 'ok', 'clean', 'pass', 'good', 'unknown', 'no-traffic')]
+    overall = str(st.get('overall') or 'unknown')
+    summary = overall if not bad else (str(len(bad)) + ' issue' + ('s' if len(bad) != 1 else ''))
+    lines = [(''.join(ch for ch in (lbl + ': ' + vd) if 32 <= ord(ch) < 127 and ch not in '"\\'))[:28]
+             for lbl, vd in bad[:top]]
+    return summary, lines
+
+
+def _cyd_pwn_state():
+    """Pwnagotchi bridge state for the CYD: 'off' when not installed/enabled,
+    else the current mode (e.g. 'ragnar' / 'pwnagotchi')."""
+    try:
+        if not shared_data.config.get('pwnagotchi_installed', False):
+            return 'off'
+        return str(shared_data.config.get('pwnagotchi_mode', 'ragnar'))
+    except Exception:
+        return 'off'
+
+
 def _cyd_alert_summary(top=3):
     """(count, worst, [short titles]) from the Watchtower ring — newest first."""
     try:
@@ -2739,6 +2774,7 @@ def _cyd_build_status_dict():
     nets_24, nets_5 = _cyd_network_band_counts()
     iface, ip = _cyd_active_iface_ip()
     a_count, a_worst, a_titles = _cyd_alert_summary(3)
+    ni_summary, ni_lines = _cyd_netint_summary(3)
     d = {
         'unit': unit,
         'mesh_nodes': _cyd_mesh_node_count(),
@@ -2754,11 +2790,18 @@ def _cyd_build_status_dict():
         'alerts': a_count,
         'worst': a_worst,
         'wids': 1 if _cyd_pick_monitor_iface() else 0,   # monitor-mode WIDS available
+        # NETWORK subpages: net-integrity, on-demand speedtest/captive, pwn bridge.
+        'netint': ni_summary,
+        'speedtest': _cyd_speedtest_result,
+        'captive': _cyd_captive_result,
+        'pwn': _cyd_pwn_state(),
         'ts': int(time.time()),
     }
-    # Flat alert titles (alert1..alert3) — firmware string-matches these keys.
+    # Flat alert titles (alert1..alert3) + net-integrity lines (ni1..ni3) —
+    # firmware string-matches these keys.
     for i in range(3):
         d['alert%d' % (i + 1)] = a_titles[i] if i < len(a_titles) else ''
+        d['ni%d' % (i + 1)] = ni_lines[i] if i < len(ni_lines) else ''
     return d
 
 
@@ -2884,6 +2927,85 @@ def _cyd_dispatch_action(action, node_name):
                 logger.error(f"[cyd] service_restart failed: {exc}")
         threading.Thread(target=_restart, name='cyd-svc-restart', daemon=True).start()
         return 'started', 202
+
+    if action == 'wardrive_toggle':
+        # One button: start if idle, stop if running (needs wardriving enabled).
+        try:
+            if not shared_data.config.get('wardriving_enabled', False):
+                return 'disabled', 409
+            eng = _get_wardriving_engine()
+            if (eng.get_status() or {}).get('running'):
+                eng.stop(); return 'done', 200
+            eng.start(); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] wardrive_toggle failed: {exc}")
+            return 'error', 500
+
+    if action == 'speed_test':
+        def _run():
+            global _cyd_speedtest_result
+            _cyd_speedtest_result = 'running'
+            try:
+                import network_diagnostics as nd
+                r = nd.do_speedtest() or {}
+                if r.get('success') is False:
+                    _cyd_speedtest_result = 'error'
+                else:
+                    dn = r.get('download_mbps') or r.get('download') or r.get('down')
+                    up = r.get('upload_mbps') or r.get('upload') or r.get('up')
+                    _cyd_speedtest_result = (('%.0f/%.0f Mbps' % (float(dn), float(up)))
+                                             if dn is not None and up is not None else 'done')
+                cyd_node.record_action(node_name, action, None, status=_cyd_speedtest_result)
+            except Exception as exc:
+                _cyd_speedtest_result = 'error'
+                logger.warning(f"[cyd] speed_test failed: {exc}")
+        threading.Thread(target=_run, name='cyd-speedtest', daemon=True).start()
+        return 'started', 202
+
+    if action == 'captive_check':
+        def _run():
+            global _cyd_captive_result
+            _cyd_captive_result = 'checking'
+            try:
+                import network_diagnostics as nd
+                r = nd.do_captive_portal() or {}
+                _cyd_captive_result = ('portal!' if r.get('portal')
+                                       else ('error' if r.get('success') is False else 'clear'))
+                cyd_node.record_action(node_name, action, None, status=_cyd_captive_result)
+            except Exception as exc:
+                _cyd_captive_result = 'error'
+                logger.warning(f"[cyd] captive_check failed: {exc}")
+        threading.Thread(target=_run, name='cyd-captive', daemon=True).start()
+        return 'started', 202
+
+    if action == 'ragnar_update':
+        def _run():
+            try:
+                subprocess.run(['sudo', 'systemctl', 'start', 'ragnar-update'],
+                               check=False, timeout=10)
+            except Exception:
+                pass
+            try:
+                import git_updater
+                git_updater.update()          # falls back to the in-process updater
+                cyd_node.record_action(node_name, action, None, status='update-run')
+            except Exception as exc:
+                logger.warning(f"[cyd] ragnar_update failed: {exc}")
+                cyd_node.record_action(node_name, action, None, status='error')
+        threading.Thread(target=_run, name='cyd-update', daemon=True).start()
+        return 'started', 202
+
+    if action == 'pwn_swap':
+        # Toggle the Pwnagotchi<->Ragnar port bridge (only if pwnagotchi installed).
+        if not shared_data.config.get('pwnagotchi_installed', False):
+            return 'disabled', 409
+        try:
+            import requests as _rq
+            _rq.post('http://127.0.0.1:8000/api/pwnagotchi/swap', timeout=8)
+            return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] pwn_swap failed: {exc}")
+            return 'error', 500
 
     return 'unknown', 400
 

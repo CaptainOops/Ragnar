@@ -44,8 +44,13 @@ ALLOWED_ACTIONS = {
     # Network actions (NETWORK screen). Each maps to one Ragnar subsystem call.
     'wardrive_start':    'Start a wardriving session',
     'wardrive_stop':     'Stop the wardriving session',
+    'wardrive_toggle':   'Start/stop wardriving (one button)',
     'network_scan':      'Quick WiFi airspace threat sweep',
     'service_restart':   'Restart the Ragnar service',
+    'speed_test':        'Run an internet speed test',
+    'captive_check':     'Check for a captive portal',
+    'ragnar_update':     'Run a Ragnar self-update',
+    'pwn_swap':          'Toggle the Pwnagotchi bridge',
 }
 
 
