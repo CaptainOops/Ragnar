@@ -29,6 +29,7 @@ except Exception:  # pragma: no cover
 WF_BINS = 120
 _BASE_DBM = -110        # 0 in the quantised row
 _SPAN_DB = 80           # -110..-30 dBm -> 0..255
+_WF_GAMMA = 0.55        # <1 brightens the low/mid waterfall (1.0 = linear)
 _STALE_SEC = 15         # stop the sweep if the CYD stops asking
 # Fixed tuner gain when the CYD starts its OWN sweep (auto-gain lets the floor
 # wander, so contrast breathes). Only applied to a sweep we start — never to one
@@ -194,7 +195,14 @@ def _downsample_quant(power, floor=None):
             b = a + 1
         seg = power[a:b]
         db = max(seg) if seg else base
-        v = int((db - base) / span * 255)
+        t = (db - base) / span
+        if t < 0:
+            t = 0.0
+        elif t > 1:
+            t = 1.0
+        # Gamma < 1 lifts the low/mid range so the waterfall isn't dim, while
+        # keeping 0 = black and 1 = pale-yellow. Tune _WF_GAMMA for brightness.
+        v = int((t ** _WF_GAMMA) * 255)
         out.append(0 if v < 0 else (255 if v > 255 else v))
     return out
 
