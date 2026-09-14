@@ -16,7 +16,8 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 > **Co-authored by [Solarflere](https://www.instagram.com/solarflere).** The
 > Authority Verification suite was designed and built in collaboration with Solarflere.
 
-<img width="2160" height="4326" alt="image" src="https://github.com/user-attachments/assets/43e87003-d04f-4986-83de-3f5574db48f6" />
+<img width="2160" height="4726" alt="3e197ab9-d261-461f-80d4-eefacf31516c" src="https://github.com/user-attachments/assets/17ce0996-55b7-46a3-b8ec-aa5eab7b12ac" />
+
 
 
 
@@ -2805,7 +2806,7 @@ frames, unreachable behind a port-scoped BPF — `tcpdump -x` carries only IP-on
 - CLI: `python3 network_diagnostics.py mikrotik-guard [--iface I] [--seconds N] [--json]`
 
 #### Aruba Guard
-HPE **Aruba** (ArubaOS / InstantOS) — a passive guard ported from the standalone
+HPE **Aruba** (ArubaOS) — a passive guard ported from the standalone
 `arubaguard`. Its core surface is **PAPI**, the Aruba AP↔controller control protocol on
 **UDP/8211**, which is **cleartext and unauthenticated** on the wire; the guard names the
 exploit shapes for the **42 PAPI CVEs**. The primary class is deliberately *exposure*, not
@@ -2827,12 +2828,7 @@ cleartext framing (a parseable magic is proof — an encrypted / cluster-securit
 cannot present one) from **`ARB-005`** opaque framing; key *strength* is not observable
 passively, so both report framing only. **`ARB-202`** inventories the PAPI endpoints seen.
 **Dual-stack** — bare `port` matches v4 and v6, and a narrow `ip6[6]` next-header clause
-admits PAPI behind an extension header (**`ARB-008`**). Three of the standalone's non-PAPI
-codes are deliberately **not** ported, each with a reason: the **L2 malformed-frame / OUI**
-codes (`ARB-201/301/302`, CVE-2025-37148) need native Ethernet frames that `tcpdump -x`'s
-IP-onward hex cannot reconstruct; the **VLAN-leak** codes (`ARB-401/402`, CVE-2025-37165)
-need an operator VLAN-per-interface declaration; and the **trust-boundary** codes
-(`ARB-002/003`) need declared management/tenant prefixes the in-app guard has no config for.
+admits PAPI behind an extension header (**`ARB-008`**).
 - Endpoint: `GET /api/net/aruba-guard` `{interface, seconds}` · binary: `tcpdump`
 - CLI: `python3 network_diagnostics.py aruba-guard [--iface I] [--seconds N] [--json]`
 
