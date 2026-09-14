@@ -2781,6 +2781,34 @@ def _cyd_sanitize(s, n=28):
     return ''.join(c for c in str(s) if 32 <= ord(c) < 127 and c not in '"\\')[:n]
 
 
+# Lifecycle of the most recent action a CYD requested, surfaced in the status
+# feed (act_name/act_state/act_detail) so the node's generic Action subpage can
+# show starting -> running -> done/error with a result, instead of firing blind.
+_cyd_last_action = {'name': '', 'state': '', 'detail': '', 'ts': 0.0}
+# Actions whose real result lands later from a background thread — they stay
+# 'running' on the immediate return and report their own 'done'/'error'.
+_CYD_BG_ACTIONS = {'speed_test', 'captive_check', 'network_scan',
+                   'wifi_defense_scan', 'ragnar_update'}
+
+
+def _cyd_set_action(name, state, detail=''):
+    _cyd_last_action.update(name=str(name or ''), state=str(state or ''),
+                            detail=_cyd_sanitize(detail, 26), ts=time.time())
+
+
+def _cyd_dispatch_tracked(action, node_name):
+    """Dispatch + record the action's lifecycle for the CYD Action subpage."""
+    _cyd_set_action(action, 'running', '')
+    status, code = _cyd_dispatch_action(action, node_name)
+    if action in _CYD_BG_ACTIONS and status == 'started':
+        _cyd_set_action(action, 'running', 'working...')      # thread reports finish
+    elif status in ('done', 'started'):
+        _cyd_set_action(action, 'done', status)
+    else:
+        _cyd_set_action(action, 'error', status)              # disabled/unavailable/etc
+    return status, code
+
+
 def _cyd_mesh_roster():
     """Flat mesh roster for the CYD Mesh screen: {'n':K, 'm0':'name on ip', ...}."""
     rows = []
@@ -2937,6 +2965,10 @@ def _cyd_build_status_dict():
         'speedtest': _cyd_speedtest_result,
         'captive': _cyd_captive_result,
         'pwn': _cyd_pwn_state(),
+        # Last action lifecycle for the CYD Action subpage:
+        'act_name': _cyd_last_action['name'],
+        'act_state': _cyd_last_action['state'],
+        'act_detail': _cyd_last_action['detail'],
         'ts': int(time.time()),
     }
     d.update(_cyd_traffic())          # tf_run / tf_pps / tf_mbps / tf_hosts / ...
@@ -3013,14 +3045,17 @@ def _cyd_dispatch_action(action, node_name):
                 iface = _cyd_pick_monitor_iface()
                 if not iface:
                     cyd_node.record_action(node_name, action, None, status='no-monitor-iface')
+                    _cyd_set_action(action, 'error', 'no monitor iface')
                     logger.info("[cyd] wifi_defense_scan: no monitor-capable interface")
                     return
                 import wifi_defense
                 wifi_defense.do_scan(iface, seconds=15, auto_enable=True)
                 cyd_node.record_action(node_name, action, None, status='completed')
+                _cyd_set_action(action, 'done', 'WIDS complete')
                 logger.info(f"[cyd] wifi_defense_scan completed on {iface}")
             except Exception as exc:
                 cyd_node.record_action(node_name, action, None, status='error')
+                _cyd_set_action(action, 'error', 'error')
                 logger.warning(f"[cyd] wifi_defense_scan failed: {exc}")
         threading.Thread(target=_run, name='cyd-wids-scan', daemon=True).start()
         return 'started', 202
@@ -3055,8 +3090,10 @@ def _cyd_dispatch_action(action, node_name):
                 import wifi_analyzer
                 wifi_analyzer.do_scan(iface, band='2.4')
                 cyd_node.record_action(node_name, action, None, status='completed')
+                _cyd_set_action(action, 'done', 'airspace swept')
             except Exception as exc:
                 cyd_node.record_action(node_name, action, None, status='error')
+                _cyd_set_action(action, 'error', 'error')
                 logger.warning(f"[cyd] network_scan failed: {exc}")
         threading.Thread(target=_sweep, name='cyd-net-scan', daemon=True).start()
         return 'started', 202
@@ -3099,8 +3136,11 @@ def _cyd_dispatch_action(action, node_name):
                     _cyd_speedtest_result = (('%.0f/%.0f Mbps' % (float(dn), float(up)))
                                              if dn is not None and up is not None else 'done')
                 cyd_node.record_action(node_name, action, None, status=_cyd_speedtest_result)
+                _cyd_set_action(action, 'error' if _cyd_speedtest_result == 'error' else 'done',
+                                _cyd_speedtest_result)
             except Exception as exc:
                 _cyd_speedtest_result = 'error'
+                _cyd_set_action(action, 'error', 'error')
                 logger.warning(f"[cyd] speed_test failed: {exc}")
         threading.Thread(target=_run, name='cyd-speedtest', daemon=True).start()
         return 'started', 202
@@ -3115,8 +3155,11 @@ def _cyd_dispatch_action(action, node_name):
                 _cyd_captive_result = ('portal!' if r.get('portal')
                                        else ('error' if r.get('success') is False else 'clear'))
                 cyd_node.record_action(node_name, action, None, status=_cyd_captive_result)
+                _cyd_set_action(action, 'error' if _cyd_captive_result == 'error' else 'done',
+                                _cyd_captive_result)
             except Exception as exc:
                 _cyd_captive_result = 'error'
+                _cyd_set_action(action, 'error', 'error')
                 logger.warning(f"[cyd] captive_check failed: {exc}")
         threading.Thread(target=_run, name='cyd-captive', daemon=True).start()
         return 'started', 202
@@ -3132,9 +3175,11 @@ def _cyd_dispatch_action(action, node_name):
                 import git_updater
                 git_updater.update()          # falls back to the in-process updater
                 cyd_node.record_action(node_name, action, None, status='update-run')
+                _cyd_set_action(action, 'done', 'update run')
             except Exception as exc:
                 logger.warning(f"[cyd] ragnar_update failed: {exc}")
                 cyd_node.record_action(node_name, action, None, status='error')
+                _cyd_set_action(action, 'error', 'error')
         threading.Thread(target=_run, name='cyd-update', daemon=True).start()
         return 'started', 202
 
@@ -3216,7 +3261,7 @@ def cyd_action():
     node_name = data.get('node') or getattr(g, 'cyd_node', None) or 'cyd-node'
     if action not in cyd_node.ALLOWED_ACTIONS:
         return jsonify({'success': False, 'error': 'unknown action'}), 400
-    status, code = _cyd_dispatch_action(action, node_name)
+    status, code = _cyd_dispatch_tracked(action, node_name)
     cyd_node.record_action(node_name, action, request.remote_addr, status=status)
     logger.info(f"[cyd] node {node_name} action '{action}' -> {status}")
     ok = status in ('done', 'started')
@@ -3238,7 +3283,7 @@ def _cyd_serial_on_ingest(payload):
 def _cyd_serial_on_action(node, action):
     if action not in cyd_node.ALLOWED_ACTIONS:
         return
-    status, _code = _cyd_dispatch_action(action, node)
+    status, _code = _cyd_dispatch_tracked(action, node)
     cyd_node.record_action(node, action, 'usb-serial', status=status)
 
 

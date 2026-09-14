@@ -191,7 +191,7 @@ static SPIClass touchSPI(HSPI);
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
               SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_MESH, SCR_NETCONN,
-              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
+              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST, SCR_ACTION };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -232,6 +232,10 @@ struct RagnarStatus {
   int      tfConns          = 0;
   uint32_t tfPkts           = 0;
   int      tfAlerts         = 0;
+  // Last action lifecycle (for the generic Action result subpage):
+  char     actName[24]      = "";
+  char     actState[12]     = "";
+  char     actDetail[28]    = "";
 };
 static RagnarStatus g_rs;
 
@@ -571,6 +575,9 @@ static void applyStatus(const String &body) {
   CYD_CPYS(ni2, "ni2");
   CYD_CPYS(ni3, "ni3");
   CYD_CPYS(tfMbps, "tf_mbps");
+  CYD_CPYS(actName, "act_name");
+  CYD_CPYS(actState, "act_state");
+  CYD_CPYS(actDetail, "act_detail");
   #undef CYD_CPYS
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
   g_rs.tfPps    = jsonInt(body, "tf_pps");
@@ -591,7 +598,8 @@ static void applyStatus(const String &body) {
     + g_rs.netint + '|' + g_rs.speedtest + '|' + g_rs.captive + '|' + g_rs.pwn + '|'
     + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
-    + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts;
+    + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
+    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -1101,26 +1109,74 @@ static int16_t drawActionList(const ActionBtn *items, int n, int16_t y0) {
 }
 
 // Hit-test an action list at y0; enqueues the tapped action. Returns true if hit.
-static bool hitActionList(const ActionBtn *items, int n, int16_t y0,
-                          int16_t px, int16_t py) {
-  int16_t y = y0;
-  for (int i = 0; i < n; i++) {
-    if (inRect(px, py, 10, y, SCR_W - 20, BTN_BH)) {
-      if (actionEnqueue(items[i].action))
-        setStatus((String("queued: ") + items[i].label).c_str(), colAmber());
-      else
-        setStatus("action queue full", colRed());
-      return true;
-    }
-    y += BTN_BH + BTN_GAP;
-  }
-  return false;
-}
 
 static const int16_t CTRL_Y0 = HEAD_H + 10;
 static void drawControls() {
   drawHeader("CONTROLS", false);
   drawActionList(g_ctrlActions, N_CTRL, CTRL_Y0);
+}
+
+// ── Generic Action result subpage ─────────────────────────────────────────────
+// A tap on a one-shot action navigates here and shows starting -> running ->
+// done/error with the result Ragnar reports (act_name/act_state/act_detail),
+// instead of firing blind. requestAction() sends the action immediately (serial)
+// so there's no wait for the sync window.
+static Screen   g_actReturn = SCR_HOME;    // where the tap came from
+static char     g_actLabel[24] = "";       // friendly label of what we asked
+static char     g_actName[24]  = "";       // action id we're tracking
+static uint32_t g_actStartMs   = 0;
+
+static void requestAction(const char *action, const char *label) {
+#if CYD_TRANSPORT_SERIAL
+  serialSendAction(String(action));        // send now, don't wait for SYNC
+#else
+  actionEnqueue(action);
+#endif
+  strncpy(g_actName, action, sizeof(g_actName) - 1);  g_actName[sizeof(g_actName)-1] = 0;
+  strncpy(g_actLabel, label,  sizeof(g_actLabel) - 1); g_actLabel[sizeof(g_actLabel)-1] = 0;
+  // Clear the local copy of the last result so we show "starting..." until Ragnar
+  // reports THIS action (avoids flashing a previous run's result).
+  g_rs.actName[0] = 0; g_rs.actState[0] = 0; g_rs.actDetail[0] = 0;
+  g_actReturn = g_screen;
+  g_actStartMs = millis();
+  g_screen = SCR_ACTION;
+  g_needRedraw = true;
+}
+
+static void drawAction() {
+  drawHeader("ACTION", false);
+  int16_t y = HEAD_H + 20;
+  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
+  // What we asked for
+  gfx->setTextColor(colSky()); gfx->setTextSize(2);
+  gfx->setCursor(12, y); gfx->print(g_actLabel); y += 40;
+
+  // Fresh result only if Ragnar is reporting THIS action; a ~1.2s grace ignores a
+  // stale terminal result carried by an in-flight push right after the tap.
+  bool mine = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
+  bool grace = (millis() - g_actStartMs) < 1200;
+  const char *st = g_rs.actState;
+  if (!mine || (grace && strcmp(st, "running") != 0)) {
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print("starting...");
+    return;
+  }
+  uint16_t c = colAmber(); const char *word = "RUNNING...";
+  if      (strcmp(st, "done")  == 0) { c = colGreen(); word = "DONE"; }
+  else if (strcmp(st, "error") == 0) { c = colRed();   word = "FAILED"; }
+  gfx->setTextColor(c); gfx->setTextSize(3);
+  gfx->setCursor(12, y); gfx->print(word); y += 44;
+  if (g_rs.actDetail[0]) {
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print(g_rs.actDetail); y += 34;
+  }
+  // Actions that take the link down get an explicit heads-up.
+  if (strcmp(g_actName, "service_restart") == 0 || strcmp(g_actName, "ragnar_update") == 0) {
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(12, y + 4); gfx->print("link will drop, reconnects shortly");
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(12, SCR_H - 40); gfx->print("tap < to go back");
 }
 
 // ── Network: compact status header + wardrive/scan action buttons ─────────────
@@ -1479,6 +1535,7 @@ static void render() {
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
+    case SCR_ACTION:  drawAction();    break;
   }
   drawStatusBar();
   g_needRedraw = false;
@@ -1530,7 +1587,9 @@ static void handleTouch(int16_t px, int16_t py) {
   if (back) {
     if (g_screen == SCR_WFALL) g_wfActive = false;
     g_meshActive = false; g_wifiActive = false;   // stop roster/wifi streams
-    g_screen = SCR_HOME; g_needRedraw = true; return;
+    // The Action subpage returns to wherever it was launched from.
+    g_screen = (g_screen == SCR_ACTION) ? g_actReturn : SCR_HOME;
+    g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
     uint8_t tags[8]; int n = settingsRows(tags);
@@ -1541,10 +1600,10 @@ static void handleTouch(int16_t px, int16_t py) {
         case STAG_BLE: g_bleEnabled = !g_bleEnabled; saveSettings(); break;
         case STAG_BL:  g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
                        applyBacklight(); saveSettings(); break;
-        case STAG_WDRV:   if (!actionEnqueue("wardrive_toggle")) setStatus("queue full", colRed()); else setStatus("queued: wardrive", colAmber()); break;
-        case STAG_UPDATE: if (!actionEnqueue("ragnar_update"))   setStatus("queue full", colRed()); else setStatus("queued: update", colAmber()); break;
-        case STAG_SVC:    if (!actionEnqueue("service_restart")) setStatus("queue full", colRed()); else setStatus("queued: restart", colAmber()); break;
-        case STAG_PWN:    if (!actionEnqueue("pwn_swap"))        setStatus("queue full", colRed()); else setStatus("queued: pwn swap", colAmber()); break;
+        case STAG_WDRV:   requestAction("wardrive_toggle", "Wardriving"); return;
+        case STAG_UPDATE: requestAction("ragnar_update", "Ragnar update"); return;
+        case STAG_SVC:    requestAction("service_restart", "Restart service"); return;
+        case STAG_PWN:    requestAction("pwn_swap", "Pwnagotchi swap"); return;
         case STAG_TOUCH:  g_ttX = g_ttY = -1; g_screen = SCR_TOUCHTEST; break;
       }
       g_needRedraw = true;
@@ -1570,7 +1629,13 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_CTRL) {
-    hitActionList(g_ctrlActions, N_CTRL, CTRL_Y0, px, py);
+    int16_t y = CTRL_Y0;
+    for (int i = 0; i < N_CTRL; i++) {
+      if (inRect(px, py, 10, y, SCR_W - 20, BTN_BH)) {
+        requestAction(g_ctrlActions[i].action, g_ctrlActions[i].label); return;
+      }
+      y += BTN_BH + BTN_GAP;
+    }
     return;
   }
   if (g_screen == SCR_TRAFFIC) {
@@ -1594,8 +1659,9 @@ static void handleTouch(int16_t px, int16_t py) {
     // bottom action buttons: AP / Scan+ / Scan-
     if (py >= NC_BTN_Y && py < NC_BTN_Y + 32) {
       int b = -1; for (int i = 0; i < 3; i++) if (px >= 8 + i * 76 && px < 8 + i * 76 + 72) b = i;
-      const char *acts[3] = {"ap_toggle", "scanner_start", "scanner_stop"};
-      if (b >= 0) { if (actionEnqueue(acts[b])) setStatus("queued", colAmber()); else setStatus("queue full", colRed()); }
+      const char *acts[3]   = {"ap_toggle", "scanner_start", "scanner_stop"};
+      const char *labels[3] = {"AP mode", "Scanner on", "Scanner off"};
+      if (b >= 0) requestAction(acts[b], labels[b]);
       return;
     }
     // tap a WiFi row -> pick it and open the password keyboard
@@ -1615,9 +1681,7 @@ static void handleTouch(int16_t px, int16_t py) {
       int16_t x, gy; gridBtnXY(i, NET_GRID_Y0, x, gy);
       if (!inRect(px, py, x, gy, GBTN_W, GBTN_H)) continue;
       if (g_netItems[i].nav) { g_screen = (Screen)g_netItems[i].scr; g_needRedraw = true; }
-      else if (actionEnqueue(g_netItems[i].action))
-        setStatus((String("queued: ") + g_netItems[i].label).c_str(), colAmber());
-      else setStatus("action queue full", colRed());
+      else requestAction(g_netItems[i].action, g_netItems[i].label);
       return;
     }
     return;
