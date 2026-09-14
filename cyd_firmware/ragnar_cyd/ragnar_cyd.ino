@@ -1253,7 +1253,7 @@ static void drawTraffic() {
   kv(y, "THROUGHPUT", String(g_rs.tfMbps) + " Mbps", colSky()); y += 34;
   kv(y, "PACKETS/S", String(g_rs.tfPps), WHITE); y += 34;
   kv(y, "HOSTS / CONNS", String(g_rs.tfHosts) + " / " + String(g_rs.tfConns), WHITE); y += 34;
-  kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colDim()); y += 34;
+  kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colGreen()); y += 34;
   kv(y, "ALERTS", String(g_rs.tfAlerts), g_rs.tfAlerts ? colRed() : colGreen());
   // start/stop button
   uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
