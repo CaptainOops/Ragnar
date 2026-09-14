@@ -128,7 +128,9 @@ static const int16_t SCR_H = 320;
 #define CYD_GIF_BE       0
 static const int16_t GIF_X_OFF = 0;
 static const int16_t GIF_Y_OFF = (SCR_H - 240) / 2;   // 40 px: centre the square
-static AnimatedGIF g_bootGif;
+// AnimatedGIF embeds tens of KB of decode buffers; it's only needed at boot, so
+// it is heap-allocated in playBootAnimation() and freed before WiFi/BLE start —
+// keeping it as a static global permanently starved the WiFi RX buffers.
 
 static void GIFDraw(GIFDRAW *pDraw) {
   uint8_t *s;
@@ -173,15 +175,18 @@ static void GIFDraw(GIFDRAW *pDraw) {
 // Play the embedded GIF for ~durationMs, honouring per-frame delays; loops if the
 // clip is shorter. Blocking by design — it IS the boot delay.
 static void playBootAnimation(uint32_t durationMs) {
-  g_bootGif.begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
-  if (!g_bootGif.open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw))
-    return;                                 // decode unavailable — skip silently
-  uint32_t start = millis();
-  int delayMs = 0;
-  while (millis() - start < durationMs) {
-    if (!g_bootGif.playFrame(true, &delayMs)) g_bootGif.reset();  // end -> loop
+  AnimatedGIF *gif = new AnimatedGIF();       // ~tens of KB, freed below (boot only)
+  if (!gif) return;
+  gif->begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
+  if (gif->open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw)) {
+    uint32_t start = millis();
+    int delayMs = 0;
+    while (millis() - start < durationMs) {
+      if (!gif->playFrame(true, &delayMs)) gif->reset();  // end -> loop
+    }
+    gif->close();
   }
-  g_bootGif.close();
+  delete gif;                                 // reclaim the decode buffers
 }
 
 // ── Touch (XPT2046 on its own SPI bus) ────────────────────────────────────────
@@ -267,8 +272,13 @@ static uint32_t g_apCount = 0;
 // a band and stream one quantised row per frame, which we scroll here.
 #define WF_BINS 120
 #define WF_ROWS 246                          // fills the waterfall area (52..298)
-static uint8_t  g_wfImg[WF_ROWS][WF_BINS];   // ring of rows (0=strong..)
+// ~29.5 KB ring — allocated only WHILE the waterfall screen is open (which pauses
+// the WiFi/BLE duty cycle), so it never competes with the WiFi RX buffers. Keeping
+// it static exhausted DRAM and the sniff phase aborted every cycle (SW_CPU_RESET).
+static uint8_t (*g_wfImg)[WF_BINS] = nullptr;
 static int      g_wfHead = 0;                // next write row
+static void wfAlloc() { if (!g_wfImg) { g_wfImg = (uint8_t(*)[WF_BINS])malloc((size_t)WF_ROWS * WF_BINS); if (g_wfImg) memset(g_wfImg, 0, (size_t)WF_ROWS * WF_BINS); } }
+static void wfFree()  { if (g_wfImg) { free(g_wfImg); g_wfImg = nullptr; } }
 static bool     g_wfHave = false;            // got at least one row
 static uint32_t g_wfSeq  = 0;                // last applied row seq
 static int      g_wfLo = 0, g_wfHi = 0;      // band edges, MHz
@@ -993,7 +1003,7 @@ static void drawWaterfall() {
     gfx->setCursor(16, yTop + 70); gfx->print("attach a HackRF/RTL-SDR to Ragnar");
     return;
   }
-  if (!g_wfHave) {
+  if (!g_wfHave || !g_wfImg) {
     gfx->setTextColor(colDim()); gfx->setTextSize(1);
     gfx->setCursor(16, yTop + 40); gfx->print("waiting for spectrum...");
     return;
@@ -1023,6 +1033,7 @@ static void applyWfRow(const String &body) {
     return;
   }
   g_wfErr[0] = 0;
+  if (!g_wfImg) return;                      // buffer only exists while the screen is open
   // Bail on 'waiting' frames (no bins) BEFORE touching lo/hi/seq, so the band
   // label doesn't flicker to 0-0 and we don't force a needless redraw.
   int i = body.indexOf("\"bins\"");
@@ -1559,6 +1570,7 @@ static void handleTouch(int16_t px, int16_t py) {
       if (!inRect(px, py, x, y, TILE_W, TILE_H)) continue;
       g_screen = g_menu[i].scr;
       if (g_screen == SCR_WFALL) {
+        wfAlloc();                                // ~30KB, freed on exit (see back)
         wfReset();
 #if CYD_TRANSPORT_SERIAL
         g_wfActive = true;                        // stream over the cable
@@ -1585,7 +1597,7 @@ static void handleTouch(int16_t px, int16_t py) {
   // under the header (there, back stays header-only so band-cycling is usable).
   bool back = (g_screen == SCR_WFALL) ? (py < HEAD_H) : inBackZone(px, py);
   if (back) {
-    if (g_screen == SCR_WFALL) g_wfActive = false;
+    if (g_screen == SCR_WFALL) { g_wfActive = false; wfFree(); }  // reclaim ~30KB
     g_meshActive = false; g_wifiActive = false;   // stop roster/wifi streams
     // The Action subpage returns to wherever it was launched from.
     g_screen = (g_screen == SCR_ACTION) ? g_actReturn : SCR_HOME;
