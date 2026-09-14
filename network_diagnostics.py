@@ -20921,6 +20921,55 @@ def _comware_selftest():
     return {'success': passed, 'scenarios': scenarios, 'scapy': scapy_result}
 
 
+def _dell_selftest():
+    """Surface the standalone Dell Guard (dellguard) classifier self-test inside
+    the in-app Detector Self-Test. Dell Guard ships as a standalone daemon — it
+    needs LLDP attribution plus a 24h learned baseline that a bounded on-demand
+    scan can't build, so there is no live in-app classifier — but its offline
+    self-test exercises the very detection code the daemon runs, so we run it here
+    for a complete 'validate every detector' panel. The module lives under python/
+    and is imported lazily; a missing or broken module degrades to one failed
+    scenario rather than taking the whole panel down with an import error.
+
+    dellguard.selftest() prints 'selftest: P/T passed' (+ a 'FAIL <label>' line per
+    failure) and returns 0 on success. We keep that signature untouched (its
+    conformance harness anchors on the literal 'def selftest() -> int:' source
+    line), so we capture stdout and reshape it into the {success, scenarios} shape
+    the panel expects — the return code is the source of truth, the parsed counts
+    are enrichment so the row reads e.g. '256/256' like the other guards."""
+    try:
+        import io as _io
+        import contextlib as _cl
+        pydir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'python')
+        if pydir not in sys.path:
+            sys.path.insert(0, pydir)
+        import dellguard as _dg
+        buf = _io.StringIO()
+        with _cl.redirect_stdout(buf):
+            rc = _dg.selftest()
+        out = buf.getvalue()
+        m = re.search(r'selftest:\s*(\d+)\s*/\s*(\d+)\s+passed', out)
+        passed = int(m.group(1)) if m else 0
+        fails = [ln.strip()[len('FAIL '):].strip()
+                 for ln in out.splitlines() if ln.strip().startswith('FAIL ')]
+        # Passing-row names are never displayed (the panel lists only failing
+        # scenarios), so synthesising them keeps the passed/total count honest.
+        scenarios = [{'name': 'dellguard check %d' % (i + 1), 'pass': True,
+                      'expect': 'pass', 'got': 'pass'} for i in range(passed)]
+        for lbl in fails:
+            scenarios.append({'name': lbl, 'pass': False,
+                              'expect': 'pass', 'got': 'FAIL'})
+        if not scenarios:
+            scenarios = [{'name': 'dellguard offline self-test', 'pass': rc == 0,
+                          'expect': 'pass',
+                          'got': 'ok' if rc == 0 else 'error (rc=%s)' % rc}]
+        return {'success': rc == 0 and not fails, 'scenarios': scenarios}
+    except Exception as e:
+        return {'success': False, 'scenarios': [
+            {'name': 'dellguard import/run failed: %s' % e, 'pass': False,
+             'expect': 'pass', 'got': 'error'}]}
+
+
 def do_routing_selftest():
     """Run the IGMP / OSPF / BGP detector self-tests and report a combined result
     plus whether Scapy is available for the end-to-end packet-crafting leg. Drives
@@ -20946,6 +20995,7 @@ def do_routing_selftest():
               'arista_guard': _arista_selftest(), 'comware_guard': _comware_selftest(),
               'mikrotik_guard': _mikrotik_selftest(),
               'aruba_guard': _aruba_selftest(),
+              'dell_guard': _dell_selftest(),
               'bgp_speaker': bgp_speaker.selftest(), 'path_asymmetry': path_asymmetry.selftest()}
     return {
         'success': all(s['success'] for s in suites.values()),
