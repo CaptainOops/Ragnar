@@ -43,6 +43,10 @@
 
 #include "config.h"
 
+// Defined before the first include-terminated section so Arduino's auto-generated
+// prototypes (inserted after the includes) can reference ActionBtn*.
+struct ActionBtn { const char *label; const char *action; };
+
 #if CYD_ENABLE_BLE
 #include <BLEDevice.h>
 #include <BLEScan.h>
@@ -118,8 +122,9 @@ static SPIClass touchSPI(HSPI);
 
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
-enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_SCAN, SCR_SIGINT, SCR_WFALL,
-              SCR_NETWORK, SCR_SETTINGS, SCR_CTRL };
+enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
+              SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_MESH, SCR_NETCONN,
+              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -134,6 +139,32 @@ struct RagnarStatus {
   char     unitName[24]     = "ragnar";
   uint32_t uptimeSec        = 0;
   uint32_t lastSyncMs       = 0;
+  // Expanded status fields (DASH / NETWORK / ALERTS):
+  char     iface[12]        = "";
+  char     ip[20]           = "";
+  char     wardrive[16]     = "off";
+  char     worst[10]        = "none";
+  int      alerts           = 0;
+  bool     wids             = false;
+  char     alert1[30]       = "";
+  char     alert2[30]       = "";
+  char     alert3[30]       = "";
+  // NETWORK subpages:
+  char     netint[16]       = "off";
+  char     speedtest[16]    = "-";
+  char     captive[16]      = "-";
+  char     pwn[12]          = "off";
+  char     ni1[30]          = "";
+  char     ni2[30]          = "";
+  char     ni3[30]          = "";
+  // Traffic Analysis live capture:
+  bool     tfRun            = false;
+  int      tfPps            = 0;
+  char     tfMbps[10]       = "0";
+  int      tfHosts          = 0;
+  int      tfConns          = 0;
+  uint32_t tfPkts           = 0;
+  int      tfAlerts         = 0;
 };
 static RagnarStatus g_rs;
 
@@ -164,7 +195,7 @@ static uint32_t g_apCount = 0;
 // The CYD has no SDR; when the Waterfall screen is open it asks Ragnar to sweep
 // a band and stream one quantised row per frame, which we scroll here.
 #define WF_BINS 120
-#define WF_ROWS 150
+#define WF_ROWS 246                          // fills the waterfall area (52..298)
 static uint8_t  g_wfImg[WF_ROWS][WF_BINS];   // ring of rows (0=strong..)
 static int      g_wfHead = 0;                // next write row
 static bool     g_wfHave = false;            // got at least one row
@@ -177,6 +208,19 @@ static const int   WF_NBANDS  = 7;
 static int         g_wfBandIdx = 0;
 static bool        g_wfActive  = false;      // screen open -> streaming requested
 static void applyWfRow(const String &body);  // defined in the UI section
+
+// ── Mesh roster + WiFi list (streamed from Ragnar while their screens open) ────
+#define MAX_MESH 24
+#define MAX_WIFI 24
+#define ROW_LEN  40
+static char g_meshRows[MAX_MESH][ROW_LEN];
+static int  g_meshN = 0, g_meshScroll = 0;
+static bool g_meshActive = false;
+static char g_wifiRows[MAX_WIFI][ROW_LEN];
+static int  g_wifiN = 0, g_wifiScroll = 0, g_wifiSel = -1;
+static bool g_wifiActive = false;
+static void applyRoster(const String &body, char rows[][ROW_LEN], int maxr,
+                        int &count, char key);  // defined in the UI section
 
 // ── Pending action queue (taps flushed on next sync window) ───────────────────
 #define MAX_ACTIONS 6
@@ -226,6 +270,9 @@ static uint16_t xptRead(uint8_t cmd) {
   return ((hi << 8) | lo) >> 3;   // 12-bit result
 }
 
+// Last raw ADC sample (exposed for the touch-test screen).
+static uint16_t g_lastRawX = 0, g_lastRawY = 0;
+
 // Returns true and fills px/py (screen coords) when the panel is pressed.
 static bool touchRead(int16_t &px, int16_t &py) {
   if (digitalRead(TOUCH_IRQ) == HIGH) return false;   // IRQ idles HIGH
@@ -239,6 +286,7 @@ static bool touchRead(int16_t &px, int16_t &py) {
   }
   if (n == 0) return false;
   uint16_t rawx = sx / n, rawy = sy / n;
+  g_lastRawX = rawx; g_lastRawY = rawy;
 #if TOUCH_SWAP_XY
   { uint16_t t = rawx; rawx = rawy; rawy = t; }
 #endif
@@ -432,13 +480,53 @@ static void applyStatus(const String &body) {
   g_rs.nets5     = jsonInt(body, "nets_5");
   g_rs.threat    = jsonInt(body, "threat");
   g_rs.uptimeSec = jsonInt(body, "uptime");
-  String bt = jsonStr(body, "bluetooth");
-  String un = jsonStr(body, "unit");
-  if (bt.length()) { strncpy(g_rs.btState, bt.c_str(), sizeof(g_rs.btState) - 1); g_rs.btState[sizeof(g_rs.btState)-1]=0; }
-  if (un.length()) { strncpy(g_rs.unitName, un.c_str(), sizeof(g_rs.unitName) - 1); g_rs.unitName[sizeof(g_rs.unitName)-1]=0; }
+  g_rs.alerts = jsonInt(body, "alerts");
+  g_rs.wids   = jsonInt(body, "wids") != 0;
+  // Copy a string field into a fixed buffer (only if present, so a partial frame
+  // doesn't wipe existing values).
+  #define CYD_CPYS(field, key) do { String _v = jsonStr(body, key); \
+    if (_v.length()) { strncpy(g_rs.field, _v.c_str(), sizeof(g_rs.field) - 1); \
+      g_rs.field[sizeof(g_rs.field)-1] = 0; } } while (0)
+  CYD_CPYS(btState, "bluetooth");
+  CYD_CPYS(unitName, "unit");
+  CYD_CPYS(iface, "iface");
+  CYD_CPYS(ip, "ip");
+  CYD_CPYS(wardrive, "wardrive");
+  CYD_CPYS(worst, "worst");
+  CYD_CPYS(alert1, "alert1");
+  CYD_CPYS(alert2, "alert2");
+  CYD_CPYS(alert3, "alert3");
+  CYD_CPYS(netint, "netint");
+  CYD_CPYS(speedtest, "speedtest");
+  CYD_CPYS(captive, "captive");
+  CYD_CPYS(pwn, "pwn");
+  CYD_CPYS(ni1, "ni1");
+  CYD_CPYS(ni2, "ni2");
+  CYD_CPYS(ni3, "ni3");
+  CYD_CPYS(tfMbps, "tf_mbps");
+  #undef CYD_CPYS
+  g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
+  g_rs.tfPps    = jsonInt(body, "tf_pps");
+  g_rs.tfHosts  = jsonInt(body, "tf_hosts");
+  g_rs.tfConns  = jsonInt(body, "tf_conns");
+  g_rs.tfPkts   = (uint32_t)jsonInt(body, "tf_pkts");
+  g_rs.tfAlerts = jsonInt(body, "tf_alerts");
   g_rs.ok = true;
   g_rs.lastSyncMs = millis();
-  g_needRedraw = true;
+  // Only repaint when a DISPLAYED value actually changed. Ragnar pushes status
+  // ~every 2 s with mostly-identical data; repainting every push is what made the
+  // screen twitch. Build a cheap signature (excluding time-derived fields) and
+  // redraw only on change.
+  String sig = String(g_rs.meshNodes) + '|' + g_rs.nets24 + '|' + g_rs.nets5 + '|'
+    + g_rs.threat + '|' + g_rs.alerts + '|' + g_rs.btState + '|' + g_rs.unitName + '|'
+    + g_rs.iface + '|' + g_rs.ip + '|' + g_rs.wardrive + '|' + g_rs.worst + '|'
+    + g_rs.alert1 + '|' + g_rs.alert2 + '|' + g_rs.alert3 + '|'
+    + g_rs.netint + '|' + g_rs.speedtest + '|' + g_rs.captive + '|' + g_rs.pwn + '|'
+    + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
+    + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
+    + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts;
+  static String lastSig;
+  if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
 
 #if !CYD_TRANSPORT_SERIAL
@@ -512,7 +600,21 @@ static bool wifiConnect() {
 // node -> Pi: {"t":"in", <sensor counts>}   and   {"t":"ac","action":".."}
 static void handleSerialLine(const String &line) {
   if (line.indexOf("\"wf\"") >= 0) { applyWfRow(line); return; }   // waterfall frame
+  if (line.indexOf("\"me\"") >= 0) { applyRoster(line, g_meshRows, MAX_MESH, g_meshN, 'm'); g_needRedraw = true; return; }
+  if (line.indexOf("\"wl\"") >= 0) { applyRoster(line, g_wifiRows, MAX_WIFI, g_wifiN, 'w'); g_needRedraw = true; return; }
   if (line.indexOf("\"st\"") >= 0) applyStatus(line);             // status frame
+}
+
+// Ask Ragnar to (start/stop) streaming the mesh roster / wifi list.
+static void serialSendMeshReq(bool on) {
+  Serial.print("{\"t\":\"mr\",\"on\":"); Serial.print(on ? "1" : "0"); Serial.println("}");
+}
+static void serialSendWifiReq(bool on) {
+  Serial.print("{\"t\":\"wsr\",\"on\":"); Serial.print(on ? "1" : "0"); Serial.println("}");
+}
+static void serialSendConnect(int idx, const String &pw) {
+  Serial.print("{\"t\":\"wc\",\"idx\":"); Serial.print(idx);
+  Serial.print(",\"pw\":\""); Serial.print(pw); Serial.println("\"}");
 }
 
 // Ask Ragnar to (start/stop) streaming the current band's spectrum.
@@ -529,7 +631,7 @@ static void serialDrain() {
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n') { if (buf.length()) handleSerialLine(buf); buf = ""; }
-    else if (c != '\r' && buf.length() < 512) buf += c;
+    else if (c != '\r' && buf.length() < 2048) buf += c;  // roster/wifi frames are large
   }
 }
 
@@ -580,19 +682,23 @@ static uint16_t threatColor(int t) {
 // — the grid lays itself out. Up to 10 items fit without scrolling.
 static const int16_t HEAD_H   = 30;
 static const int16_t TILE_W   = 105;
-static const int16_t TILE_H   = 38;                 // half the old tile height
+static const int16_t TILE_H   = 34;                 // sized so 12 tiles (6 rows) fit
 static const int16_t TILE_XL  = 10, TILE_XR = 125;
-static const int16_t MENU_Y0  = 36;                 // first row top
-static const int16_t MENU_PITCH = TILE_H + 8;       // row stride
+static const int16_t MENU_Y0  = 34;                 // first row top
+static const int16_t MENU_PITCH = TILE_H + 8;       // row stride (42)
 
 struct MenuItem { const char *label; Screen scr; uint8_t r, g, b; };
 static const MenuItem g_menu[] = {
   {"DASH",     SCR_DASH,      40, 120, 200},
   {"DEFEND",   SCR_DEFENSE,   70, 200, 120},
+  {"ALERTS",   SCR_ALERTS,   224,  64,  64},
   {"SCAN",     SCR_SCAN,     150,  90, 210},
   {"SIGINT",   SCR_SIGINT,    60, 190, 190},
   {"WFALL",    SCR_WFALL,    230, 170,  50},
-  {"NETWORK",  SCR_NETWORK,   80, 160, 120},
+  {"NET",      SCR_NETWORK,   80, 160, 120},
+  {"NETCONN",  SCR_NETCONN,   90, 140, 210},
+  {"MESH",     SCR_MESH,     120, 190, 120},
+  {"TRAFFIC",  SCR_TRAFFIC,  210, 130,  90},
   {"SETTINGS", SCR_SETTINGS, 140, 152, 165},
   {"CTRL",     SCR_CTRL,     120, 130, 200},
 };
@@ -628,18 +734,32 @@ static void kv(int16_t y, const char *k, const String &v, uint16_t vc) {
 static void drawHeader(const char *title, bool home) {
   gfx->fillRect(0, 0, SCR_W, HEAD_H, colHead());
   if (home) {
+    // Title = this unit's identity (mesh short-name, or 'Ragnar' when no mesh) —
+    // no fixed 'RAGNAR' brand + name (which read 'RAGNAR Ragnar' off-mesh).
+    String u = g_rs.unitName; if (!u.length()) u = "Ragnar";
+    if (u.length() > 18) u = u.substring(0, 18);
     gfx->setTextColor(colSky()); gfx->setTextSize(2);
-    gfx->setCursor(8, 8); gfx->print("RAGNAR");
-    gfx->setTextColor(colGray()); gfx->setTextSize(1);
-    gfx->setCursor(96, 12);
-    String u = g_rs.unitName; if (u.length() > 20) u = u.substring(0, 20);
-    gfx->print(u);
+    gfx->setCursor(8, 8); gfx->print(u);
   } else {
-    gfx->setTextColor(colSky()); gfx->setTextSize(2);
-    gfx->setCursor(8, 8); gfx->print("<");
+    // Bigger, obvious back target: a rounded chip filling the header-left, with a
+    // large arrow. The touch zone (see handleTouch) is even larger than the chip.
+    gfx->fillRoundRect(2, 2, 58, HEAD_H - 4, 6, gfx->color565(30, 90, 160));
+    gfx->drawRoundRect(2, 2, 58, HEAD_H - 4, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(3);
+    gfx->setCursor(14, 5); gfx->print("<");
+    gfx->setTextSize(2);
     gfx->setTextColor(WHITE);
-    gfx->setCursor(34, 8); gfx->print(title);
+    gfx->setCursor(70, 8); gfx->print(title);
   }
+}
+
+// Back target: the full header, plus a generous top-left zone that extends below
+// the header edge (resistive panels are least sensitive at the very top edge, so
+// a taller/wider hit box makes "back" easy to hit).
+static const int16_t BACK_ZONE_W = 90;
+static const int16_t BACK_ZONE_H = HEAD_H + 12;
+static bool inBackZone(int16_t px, int16_t py) {
+  return (py < HEAD_H) || (px < BACK_ZONE_W && py < BACK_ZONE_H);
 }
 
 // A half-height menu tile: left accent bar + label, with a compact live value
@@ -667,6 +787,7 @@ static String menuValue(int s, uint16_t &vcol) {
     case SCR_DASH:    vcol = threatColor(g_rs.threat); return String(g_rs.threat);
     case SCR_DEFENSE: { bool a = g_sc.deauths > 0; vcol = a ? colRed() : colGreen();
                         return a ? String((uint32_t)g_sc.deauths) : String("ok"); }
+    case SCR_ALERTS:  vcol = g_rs.alerts ? colRed() : colGreen(); return String(g_rs.alerts);
     case SCR_SCAN:    vcol = colSky(); return String(g_sc.bssids);
     case SCR_SIGINT:  vcol = colSky(); return String(g_apCount);
     case SCR_WFALL:   vcol = colAmber(); return String(WF_BANDS[g_wfBandIdx]);
@@ -687,12 +808,17 @@ static void drawHome() {
 
 static void drawDash() {
   drawHeader("DASHBOARD", false);
-  int16_t y = HEAD_H + 8;
-  kv(y, "UNIT", String(g_rs.unitName), colSky()); y += 38;
+  int16_t y = HEAD_H + 8;   // no UNIT row — the name is on HOME already
   kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 38;
-  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE); y += 38;
-  kv(y, "NETWORKS 5G", String(g_rs.nets5), colDim()); y += 38;
-  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE); y += 38;
+  kv(y, "ALERTS", String(g_rs.alerts) + "  " + g_rs.worst,
+     g_rs.alerts ? colRed() : colGreen()); y += 38;
+  kv(y, "NETWORKS", String(g_rs.nets24) + " / " + String(g_rs.nets5) + " (2.4/5G)", WHITE); y += 38;
+  kv(y, "WARDRIVE", String(g_rs.wardrive), WHITE); y += 38;
+  if (strlen(g_rs.iface))
+    kv(y, "LINK", String(g_rs.iface) + " " + g_rs.ip, colSky());
+  else
+    kv(y, "BLUETOOTH", String(g_rs.btState), WHITE);
+  y += 38;
   uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
   kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? colGreen() : colRed());
 }
@@ -755,13 +881,21 @@ static void drawSigInt() {
 }
 
 // ── RF waterfall: palette + a streamed-row renderer ───────────────────────────
+// Inferno colour map (dark → purple → red → orange → yellow), so the noise floor
+// reads near-black instead of the old blue, and signals ramp through warm tones.
 static uint16_t wfColor(uint8_t v) {
-  uint8_t r, g, b;
-  if (v < 64)       { r = 0;             g = v * 4;             b = 128 + v / 2; }
-  else if (v < 128) { r = 0;             g = 255;               b = 255 - (v - 64) * 4; }
-  else if (v < 192) { r = (v - 128) * 4; g = 255;               b = 0; }
-  else              { r = 255;           g = 255 - (v - 192) * 4;b = 0; }
-  return gfx->color565(r, g, b);
+  static const uint8_t stops[9][3] = {
+    {0,0,4},{40,11,84},{101,21,110},{159,42,99},{212,72,66},
+    {245,125,21},{250,193,39},{252,229,120},{252,255,164}
+  };
+  int seg = v * 8 / 255; if (seg > 7) seg = 7;
+  int t0 = seg * 255 / 8, t1 = (seg + 1) * 255 / 8;
+  int f = (t1 > t0) ? (v - t0) * 255 / (t1 - t0) : 0;
+  const uint8_t *a = stops[seg], *b = stops[seg + 1];
+  uint8_t r = a[0] + (b[0] - a[0]) * f / 255;
+  uint8_t g = a[1] + (b[1] - a[1]) * f / 255;
+  uint8_t bl = a[2] + (b[2] - a[2]) * f / 255;
+  return gfx->color565(r, g, bl);
 }
 
 static void drawWaterfall() {
@@ -788,12 +922,18 @@ static void drawWaterfall() {
     gfx->setCursor(16, yTop + 40); gfx->print("waiting for spectrum...");
     return;
   }
+  // Fast path: build one RGB565 line (240px = 120 bins x2) and blit it per row —
+  // one bitmap push per row instead of 120 fillRects (was ~18k fillRects/frame).
+  static uint16_t linebuf[240];
   int rows = hArea < WF_ROWS ? hArea : WF_ROWS;
   for (int r = 0; r < rows; r++) {
     int src = (g_wfHead - 1 - r + WF_ROWS * 2) % WF_ROWS;   // newest at the top
-    int y = yTop + r;
-    for (int c = 0; c < WF_BINS; c++)
-      gfx->fillRect(c * 2, y, 2, 1, wfColor(g_wfImg[src][c]));
+    const uint8_t *row = g_wfImg[src];
+    for (int c = 0; c < WF_BINS; c++) {
+      uint16_t col = wfColor(row[c]);
+      linebuf[c * 2] = col; linebuf[c * 2 + 1] = col;
+    }
+    gfx->draw16bitRGBBitmap(0, yTop + r, linebuf, 240, 1);
   }
 }
 
@@ -807,14 +947,16 @@ static void applyWfRow(const String &body) {
     return;
   }
   g_wfErr[0] = 0;
-  g_wfLo = jsonInt(body, "lo");
-  g_wfHi = jsonInt(body, "hi");
-  g_wfSeq = jsonInt(body, "seq");
+  // Bail on 'waiting' frames (no bins) BEFORE touching lo/hi/seq, so the band
+  // label doesn't flicker to 0-0 and we don't force a needless redraw.
   int i = body.indexOf("\"bins\"");
   if (i < 0) return;
   i = body.indexOf('[', i);
   int end = (i >= 0) ? body.indexOf(']', i) : -1;
   if (i < 0 || end < 0) return;
+  g_wfLo = jsonInt(body, "lo");
+  g_wfHi = jsonInt(body, "hi");
+  g_wfSeq = jsonInt(body, "seq");
   int col = 0, p = i + 1;
   while (p < end && col < WF_BINS) {
     while (p < end && (body[p] == ' ' || body[p] == ',')) p++;
@@ -829,65 +971,421 @@ static void applyWfRow(const String &body) {
   g_needRedraw = true;
 }
 
-struct ActionBtn { const char *label; const char *action; };
-static const ActionBtn g_actions[] = {
+// Parse a roster frame {"t":..,"n":K,"<key>0":"..","<key>1":".."} into rows[].
+static void applyRoster(const String &body, char rows[][ROW_LEN], int maxr,
+                        int &count, char key) {
+  int n = jsonInt(body, "n");
+  if (n < 0) n = 0; if (n > maxr) n = maxr;
+  char k[4] = {key, 0, 0, 0};
+  for (int i = 0; i < n; i++) {
+    if (i < 10) { k[1] = '0' + i; k[2] = 0; }
+    else { k[1] = '0' + (i / 10); k[2] = '0' + (i % 10); k[3] = 0; }
+    String v = jsonStr(body, k);
+    strncpy(rows[i], v.c_str(), ROW_LEN - 1); rows[i][ROW_LEN - 1] = 0;
+  }
+  count = n;
+}
+
+// CONTROLS screen actions.
+static const ActionBtn g_ctrlActions[] = {
   {"WiFi Defense scan", "wifi_defense_scan"},
   {"BLE scan",          "ble_scan"},
   {"Watchtower clear",  "watchtower_clear"},
+  {"Restart Ragnar",    "service_restart"},
 };
-static const int N_ACTIONS = sizeof(g_actions) / sizeof(g_actions[0]);
-static const int16_t CTRL_Y0 = HEAD_H + 12, CTRL_BH = 48, CTRL_GAP = 10;
+static const int N_CTRL = sizeof(g_ctrlActions) / sizeof(g_ctrlActions[0]);
 
+// NETWORK screen items — a dense 2-column grid mixing sub-page navigation and
+// one-tap actions (nav=true opens `scr`; nav=false enqueues `action`).
+struct NetItem { const char *label; bool nav; uint8_t scr; const char *action; };
+static const NetItem g_netItems[] = {
+  {"Net Int",    true,  SCR_NETINT, ""},
+  {"Watchtower", true,  SCR_ALERTS, ""},
+  {"Speed test", false, 0, "speed_test"},
+  {"Captive",    false, 0, "captive_check"},
+  {"Airspace",   false, 0, "network_scan"},
+  {"WIDS scan",  false, 0, "wifi_defense_scan"},
+};
+static const int N_NET = sizeof(g_netItems) / sizeof(g_netItems[0]);
+
+static const int16_t BTN_BH = 40, BTN_GAP = 8;
+
+// Compact 2-column grid geometry (half-height buttons); NETWORK draws its own
+// mixed nav/action tiles using this layout.
+static const int16_t GBTN_W = 105, GBTN_H = 34, GBTN_GAP = 7;
+static void gridBtnXY(int i, int16_t y0, int16_t &x, int16_t &y) {
+  x = (i & 1) ? 125 : 10;
+  y = y0 + (i / 2) * (GBTN_H + GBTN_GAP);
+}
+
+// Draw a vertical list of action buttons from y0; returns the y after the list.
+static int16_t drawActionList(const ActionBtn *items, int n, int16_t y0) {
+  int16_t y = y0;
+  for (int i = 0; i < n; i++) {
+    gfx->fillRoundRect(10, y, SCR_W - 20, BTN_BH, 8, colBlue());
+    gfx->drawRoundRect(10, y, SCR_W - 20, BTN_BH, 8, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(22, y + 12);
+    gfx->print(items[i].label);
+    y += BTN_BH + BTN_GAP;
+  }
+  return y;
+}
+
+// Hit-test an action list at y0; enqueues the tapped action. Returns true if hit.
+static bool hitActionList(const ActionBtn *items, int n, int16_t y0,
+                          int16_t px, int16_t py) {
+  int16_t y = y0;
+  for (int i = 0; i < n; i++) {
+    if (inRect(px, py, 10, y, SCR_W - 20, BTN_BH)) {
+      if (actionEnqueue(items[i].action))
+        setStatus((String("queued: ") + items[i].label).c_str(), colAmber());
+      else
+        setStatus("action queue full", colRed());
+      return true;
+    }
+    y += BTN_BH + BTN_GAP;
+  }
+  return false;
+}
+
+static const int16_t CTRL_Y0 = HEAD_H + 10;
 static void drawControls() {
   drawHeader("CONTROLS", false);
-  int16_t y = CTRL_Y0;
-  for (int i = 0; i < N_ACTIONS; i++) {
-    gfx->fillRoundRect(10, y, SCR_W - 20, CTRL_BH, 8, colBlue());
-    gfx->drawRoundRect(10, y, SCR_W - 20, CTRL_BH, 8, colSky());
-    gfx->setTextColor(WHITE); gfx->setTextSize(2);
-    gfx->setCursor(22, y + 16);
-    gfx->print(g_actions[i].label);
-    y += CTRL_BH + CTRL_GAP;
+  drawActionList(g_ctrlActions, N_CTRL, CTRL_Y0);
+}
+
+// ── Network: compact status header + wardrive/scan action buttons ─────────────
+static const int16_t NET_GRID_Y0 = HEAD_H + 44;
+static void drawNetwork() {
+  drawHeader("NETWORK", false);
+  // Condensed 2-line status header, then a dense grid of subpages + actions.
+  int16_t y = HEAD_H + 6;
+  gfx->fillRect(0, y, SCR_W, 36, colBg());
+  gfx->setTextSize(1);
+  String l1 = (strlen(g_rs.iface) ? (String(g_rs.iface) + " " + g_rs.ip) : String("link --"))
+              + "  " + String(g_rs.nets24) + "/" + String(g_rs.nets5) + "G";
+  gfx->setTextColor(colSky()); gfx->setCursor(12, y); gfx->print(l1);
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 16); gfx->print("netint ");
+  bool niBad = strcmp(g_rs.netint, "ok") && strcmp(g_rs.netint, "off");
+  gfx->setTextColor(niBad ? colRed() : colGreen()); gfx->print(g_rs.netint);
+  gfx->setTextColor(colGray()); gfx->print("  alrt ");
+  gfx->setTextColor(g_rs.alerts ? colRed() : colGreen());
+  gfx->print(String(g_rs.alerts));
+  for (int i = 0; i < N_NET; i++) {
+    int16_t x, gy; gridBtnXY(i, NET_GRID_Y0, x, gy);
+    uint16_t bg = g_netItems[i].nav ? gfx->color565(30, 70, 110) : colBlue();
+    gfx->fillRoundRect(x, gy, GBTN_W, GBTN_H, 6, bg);
+    gfx->drawRoundRect(x, gy, GBTN_W, GBTN_H, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(x + 8, gy + (GBTN_H - 8) / 2); gfx->print(g_netItems[i].label);
+    if (g_netItems[i].nav) { gfx->setTextColor(colSky()); gfx->setCursor(x + GBTN_W - 10, gy + (GBTN_H-8)/2); gfx->print(">"); }
   }
 }
 
-// ── Network: read-only status hub (actions to be wired next) ──────────────────
-static void drawNetwork() {
-  drawHeader("NETWORK", false);
-  int16_t y = HEAD_H + 8;
-  kv(y, "UNIT", String(g_rs.unitName), colSky());              y += 38;
-  kv(y, "MESH NODES", String(g_rs.meshNodes), WHITE);         y += 38;
-  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE);         y += 38;
-  kv(y, "NETWORKS 5G", String(g_rs.nets5), colDim());         y += 38;
-  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE);            y += 38;
-  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat));
+// Net-Integrity Monitor subpage: overall verdict + the worst check lines +
+// on-demand speed-test / captive-portal results (tap NET buttons to run those).
+static void drawNetInt() {
+  drawHeader("NET INTEGRITY", false);
+  int16_t y = HEAD_H + 10;
+  bool bad = strcmp(g_rs.netint, "ok") && strcmp(g_rs.netint, "off");
+  kv(y, "STATUS", String(g_rs.netint), strcmp(g_rs.netint, "off") == 0 ? colDim() : (bad ? colRed() : colGreen())); y += 34;
+  const char *lines[3] = { g_rs.ni1, g_rs.ni2, g_rs.ni3 };
+  for (int i = 0; i < 3; i++) {
+    if (!strlen(lines[i])) continue;
+    gfx->setTextSize(1); gfx->setTextColor(colAmber());
+    gfx->fillRect(0, y, SCR_W, 12, colBg());
+    gfx->setCursor(12, y); gfx->print(lines[i]); y += 14;
+  }
+  if (y < HEAD_H + 44) y = HEAD_H + 44;
+  y += 6;
+  kv(y, "SPEED TEST", String(g_rs.speedtest), colSky()); y += 34;
+  kv(y, "CAPTIVE", String(g_rs.captive),
+     strcmp(g_rs.captive, "portal!") == 0 ? colRed() : WHITE); y += 34;
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  gfx->setCursor(12, y + 4); gfx->print("run tests from the NETWORK buttons");
+}
+
+// Traffic Analysis — live capture stats from Ragnar + a start/stop button.
+static const int16_t TRAF_BTN_Y = SCR_H - 22 - 46;
+static void drawTraffic() {
+  drawHeader("TRAFFIC", false);
+  int16_t y = HEAD_H + 10;
+  gfx->fillRect(0, HEAD_H, SCR_W, TRAF_BTN_Y - HEAD_H, colBg());
+  gfx->setTextSize(2);
+  gfx->setTextColor(g_rs.tfRun ? colGreen() : colGray());
+  gfx->setCursor(12, y); gfx->print(g_rs.tfRun ? "CAPTURING" : "stopped"); y += 30;
+  kv(y, "THROUGHPUT", String(g_rs.tfMbps) + " Mbps", colSky()); y += 34;
+  kv(y, "PACKETS/S", String(g_rs.tfPps), WHITE); y += 34;
+  kv(y, "HOSTS / CONNS", String(g_rs.tfHosts) + " / " + String(g_rs.tfConns), WHITE); y += 34;
+  kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colDim()); y += 34;
+  kv(y, "ALERTS", String(g_rs.tfAlerts), g_rs.tfAlerts ? colRed() : colGreen());
+  // start/stop button
+  uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
+  gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, bc);
+  gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+}
+
+// ── Scrollable list plumbing (Mesh + Net-Conn) ────────────────────────────────
+static const int16_t SB_X = SCR_W - 26, SB_W = 24, SB_H = 26;
+static const int16_t LIST_Y0 = HEAD_H + 4, LIST_ROWH = 26;
+static void drawScrollButtons(int16_t bottomY, int scroll, int n, int vis) {
+  gfx->fillRoundRect(SB_X, LIST_Y0, SB_W, SB_H, 4, scroll > 0 ? colBlue() : gfx->color565(24,30,42));
+  gfx->setTextColor(WHITE); gfx->setTextSize(2); gfx->setCursor(SB_X + 7, LIST_Y0 + 5); gfx->print("^");
+  gfx->fillRoundRect(SB_X, bottomY, SB_W, SB_H, 4, (scroll + vis) < n ? colBlue() : gfx->color565(24,30,42));
+  gfx->setCursor(SB_X + 7, bottomY + 5); gfx->print("v");
+}
+// Draw rows[scroll..] into the list area; colorFn tints by row content.
+static int listVisible(int16_t bottomY) { return (bottomY - LIST_Y0) / LIST_ROWH; }
+
+// ── Mesh: scrollable roster of mesh nodes ─────────────────────────────────────
+static void drawMesh() {
+  drawHeader("MESH", false);
+  int16_t bottomY = SCR_H - 22 - SB_H;
+  int vis = listVisible(SCR_H - 22);
+  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - 22 - HEAD_H, colBg());
+  if (g_meshN == 0) {
+    gfx->setTextSize(1); gfx->setTextColor(colDim());
+    gfx->setCursor(12, LIST_Y0 + 8); gfx->print("no mesh nodes (or mesh off)");
+  }
+  for (int i = 0; i < vis && g_meshScroll + i < g_meshN; i++) {
+    int idx = g_meshScroll + i; int16_t y = LIST_Y0 + i * LIST_ROWH;
+    bool on = strncmp(g_meshRows[idx], "on", 2) == 0;
+    gfx->fillRoundRect(6, y, SB_X - 12, LIST_ROWH - 3, 4, gfx->color565(20, 26, 36));
+    gfx->setTextSize(1); gfx->setTextColor(on ? colGreen() : colGray());
+    gfx->setCursor(12, y + 7); gfx->print(g_meshRows[idx]);
+  }
+  drawScrollButtons(bottomY, g_meshScroll, g_meshN, vis);
+}
+
+// ── Net-Conn: Pi WiFi scan list (tap to connect) + AP / scanner buttons ───────
+static const int16_t NC_BTN_Y = SCR_H - 22 - 34;
+static void drawNetConn() {
+  drawHeader("NET CONN", false);
+  gfx->fillRect(0, HEAD_H, SCR_W, NC_BTN_Y - HEAD_H, colBg());
+  int16_t listBottom = NC_BTN_Y - 4;
+  int vis = (listBottom - LIST_Y0) / LIST_ROWH;
+  if (g_wifiN == 0) {
+    gfx->setTextSize(1); gfx->setTextColor(colDim());
+    gfx->setCursor(12, LIST_Y0 + 8); gfx->print("scanning Pi WiFi...");
+  }
+  for (int i = 0; i < vis && g_wifiScroll + i < g_wifiN; i++) {
+    int idx = g_wifiScroll + i; int16_t y = LIST_Y0 + i * LIST_ROWH;
+    gfx->fillRoundRect(6, y, SB_X - 12, LIST_ROWH - 3, 4, gfx->color565(20, 26, 36));
+    gfx->setTextSize(1); gfx->setTextColor(WHITE);
+    gfx->setCursor(12, y + 7); gfx->print(g_wifiRows[idx]);
+  }
+  drawScrollButtons(listBottom - SB_H, g_wifiScroll, g_wifiN, vis);
+  // bottom action buttons: AP toggle, Scanner start/stop
+  const char *labels[3] = {"AP", "Scan+", "Scan-"};
+  for (int i = 0; i < 3; i++) {
+    int16_t x = 8 + i * 76;
+    gfx->fillRoundRect(x, NC_BTN_Y, 72, 32, 6, colBlue());
+    gfx->drawRoundRect(x, NC_BTN_Y, 72, 32, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(x + 12, NC_BTN_Y + 12); gfx->print(labels[i]);
+  }
+}
+
+// ── On-screen keyboard (WiFi password entry) ──────────────────────────────────
+static String g_kbBuf = "";
+static bool   g_kbShift = false, g_kbSym = false;
+static const char *KB_ABC[3] = {"qwertyuiop", "asdfghjkl", "zxcvbnm"};
+static const char *KB_SYM[3] = {"1234567890", "@#$_&-+()/", "*\"':;!?%="};
+static const int16_t KB_Y0 = 66, KEY_W = 24, KEY_H = 34, KEY_GAP = 2;
+static int16_t kbRowY(int r) { return KB_Y0 + r * (KEY_H + KEY_GAP); }
+static int16_t kbRowStartX(int len) { return (SCR_W - len * KEY_W) / 2; }
+static const int16_t KB_CTRL_Y = KB_Y0 + 3 * (KEY_H + KEY_GAP);
+
+static void drawKeyboard() {
+  drawHeader("WIFI PW", false);
+  // buffer bar
+  gfx->fillRect(0, HEAD_H, SCR_W, KB_Y0 - HEAD_H, gfx->color565(16, 20, 28));
+  gfx->setTextSize(1); gfx->setTextColor(colGray());
+  gfx->setCursor(8, HEAD_H + 4); gfx->print("pw:");
+  gfx->setTextColor(colSky()); gfx->setTextSize(2);
+  String shown = g_kbBuf; if (shown.length() > 18) shown = shown.substring(shown.length() - 18);
+  gfx->setCursor(30, HEAD_H + 6); gfx->print(shown);
+  const char **rows = g_kbSym ? KB_SYM : KB_ABC;
+  for (int r = 0; r < 3; r++) {
+    int len = strlen(rows[r]); int16_t sx = kbRowStartX(len), y = kbRowY(r);
+    for (int c = 0; c < len; c++) {
+      char ch = rows[r][c];
+      if (!g_kbSym && g_kbShift && ch >= 'a' && ch <= 'z') ch -= 32;
+      int16_t x = sx + c * KEY_W;
+      gfx->fillRoundRect(x, y, KEY_W - KEY_GAP, KEY_H - KEY_GAP, 4, gfx->color565(30, 38, 52));
+      gfx->setTextColor(WHITE); gfx->setTextSize(2);
+      gfx->setCursor(x + 6, y + 9); gfx->print(ch);
+    }
+  }
+  // control row: [Shift/abc][space][123/ABC][<-][OK]
+  struct { int16_t x, w; const char *l; uint16_t c; } ctl[5] = {
+    {2,   44, g_kbSym ? "abc" : (g_kbShift ? "SHFT" : "shft"), colGray()},
+    {48,  86, "space", gfx->color565(30,38,52)},
+    {136, 40, g_kbSym ? "ABC" : "123", colGray()},
+    {178, 26, "<-", colAmber()},
+    {206, 32, "OK", colGreen()},
+  };
+  for (int i = 0; i < 5; i++) {
+    gfx->fillRoundRect(ctl[i].x, KB_CTRL_Y, ctl[i].w, KEY_H, 4, ctl[i].c);
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(ctl[i].x + 6, KB_CTRL_Y + 12); gfx->print(ctl[i].l);
+  }
+}
+
+// Handle a keyboard tap. Returns true if the tap was consumed.
+static bool kbHandleTouch(int16_t px, int16_t py) {
+  const char **rows = g_kbSym ? KB_SYM : KB_ABC;
+  for (int r = 0; r < 3; r++) {
+    int16_t y = kbRowY(r);
+    if (py < y || py >= y + KEY_H) continue;
+    int len = strlen(rows[r]); int16_t sx = kbRowStartX(len);
+    int c = (px - sx) / KEY_W;
+    if (c < 0 || c >= len) return true;
+    char ch = rows[r][c];
+    if (!g_kbSym && g_kbShift && ch >= 'a' && ch <= 'z') ch -= 32;
+    if (g_kbBuf.length() < 63) g_kbBuf += ch;
+    g_needRedraw = true; return true;
+  }
+  if (py >= KB_CTRL_Y && py < KB_CTRL_Y + KEY_H) {
+    if (px < 46)        { g_kbShift = !g_kbShift; }
+    else if (px < 134)  { if (g_kbBuf.length() < 63) g_kbBuf += ' '; }
+    else if (px < 176)  { g_kbSym = !g_kbSym; }
+    else if (px < 204)  { if (g_kbBuf.length()) g_kbBuf.remove(g_kbBuf.length() - 1); }
+    else                { // OK -> connect
+#if CYD_TRANSPORT_SERIAL
+      if (g_wifiSel >= 0) serialSendConnect(g_wifiSel, g_kbBuf);
+#endif
+      setStatus("connecting...", colAmber());
+      g_kbBuf = ""; g_kbShift = g_kbSym = false;
+      g_screen = SCR_NETCONN;
+    }
+    g_needRedraw = true; return true;
+  }
+  return true;
+}
+
+// ── Alerts: newest Watchtower findings pushed from Ragnar ─────────────────────
+static void drawAlerts() {
+  drawHeader("ALERTS", false);
+  int16_t y = HEAD_H + 10;
+  gfx->fillRect(0, y, SCR_W, SCR_H - HEAD_H - 32, colBg());
+  gfx->setTextSize(2);
+  uint16_t hc = g_rs.alerts ? colRed() : colGreen();
+  gfx->setTextColor(hc);
+  gfx->setCursor(12, y); gfx->print(String(g_rs.alerts) + " active");
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(150, y + 4); gfx->print("worst: "); gfx->print(g_rs.worst);
+  y += 30;
+  const char *titles[3] = { g_rs.alert1, g_rs.alert2, g_rs.alert3 };
+  bool any = false;
+  for (int i = 0; i < 3; i++) {
+    if (!strlen(titles[i])) continue;
+    any = true;
+    gfx->fillRoundRect(10, y, SCR_W - 20, 40, 6, gfx->color565(30, 22, 26));
+    gfx->drawRoundRect(10, y, SCR_W - 20, 40, 6, gfx->color565(90, 50, 55));
+    gfx->fillRoundRect(10, y + 4, 4, 32, 2, colRed());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(22, y + 15); gfx->print(titles[i]);
+    y += 48;
+  }
+  if (!any) {
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(12, y + 6); gfx->print("no recent alerts");
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(12, SCR_H - 40); gfx->print("tap CTRL to clear the Watchtower pane");
 }
 
 // ── Settings: device-local, tappable rows + info. Persisted to NVS ────────────
-static const char *FW_BUILD = "cyd 0.4 " __DATE__;
-static const int16_t SET_Y0 = HEAD_H + 10, SET_ROWH = 32, SET_PITCH = 40;
+static const char *FW_BUILD = "cyd 0.5 " __DATE__;
+static const int16_t SET_Y0 = HEAD_H + 8, SET_ROWH = 30, SET_PITCH = 34;
 
+// Settings rows, built at draw time (Pwnagotchi row only when the bridge exists).
+enum { STAG_BLE, STAG_BL, STAG_WDRV, STAG_UPDATE, STAG_SVC, STAG_PWN, STAG_TOUCH };
+static int settingsRows(uint8_t *tags) {
+  int n = 0;
+  tags[n++] = STAG_BLE;
+  tags[n++] = STAG_BL;
+  tags[n++] = STAG_WDRV;
+  tags[n++] = STAG_UPDATE;
+  tags[n++] = STAG_SVC;
+  if (strcmp(g_rs.pwn, "off") != 0) tags[n++] = STAG_PWN;
+  tags[n++] = STAG_TOUCH;
+  return n;
+}
+static void settingRowText(uint8_t tag, const char *&label, String &val, uint16_t &vcol) {
+  vcol = colSky();
+  switch (tag) {
+    case STAG_BLE:    label = "BLE scan";  val = g_bleEnabled ? "ON" : "OFF"; vcol = g_bleEnabled ? colGreen() : colGray(); break;
+    case STAG_BL:     label = "Backlight"; val = String(g_backlightPct) + "%"; break;
+    case STAG_WDRV:   label = "Wardriving"; val = String(g_rs.wardrive); vcol = (strcmp(g_rs.wardrive,"off")==0)?colGray():colGreen(); break;
+    case STAG_UPDATE: label = "Ragnar update"; val = "run"; vcol = colAmber(); break;
+    case STAG_SVC:    label = "Restart svc"; val = "go"; vcol = colAmber(); break;
+    case STAG_PWN:    label = "Pwnagotchi"; val = String(g_rs.pwn); break;
+    case STAG_TOUCH:  label = "Touch test"; val = "open"; vcol = colAmber(); break;
+    default:          label = "?"; val = ""; break;
+  }
+}
 static void drawSettingRow(int16_t y, const char *label, const String &val, uint16_t vcol) {
   gfx->fillRoundRect(10, y, SCR_W - 20, SET_ROWH, 6, gfx->color565(28, 34, 48));
   gfx->drawRoundRect(10, y, SCR_W - 20, SET_ROWH, 6, gfx->color565(50, 60, 78));
   gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(20, y + 8); gfx->print(label);
-  gfx->setTextColor(vcol); gfx->setTextSize(2);
-  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 12 - 8;
-  gfx->setCursor(vx, y + 8); gfx->print(val);
+  gfx->setCursor(18, y + 7); gfx->print(label);
+  gfx->setTextColor(vcol); gfx->setTextSize(1);
+  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 6 - 8;
+  gfx->setCursor(vx, y + 11); gfx->print(val);
 }
 
 static void drawSettings() {
   drawHeader("SETTINGS", false);
-  drawSettingRow(SET_Y0, "BLE scan", g_bleEnabled ? "ON" : "OFF",
-                 g_bleEnabled ? colGreen() : colGray());
-  drawSettingRow(SET_Y0 + SET_PITCH, "Backlight", String(g_backlightPct) + "%", colSky());
-  int16_t y = SET_Y0 + SET_PITCH * 2 + 6;
-  kv(y, "NODE", g_cfg.name, colSky());                         y += 34;
-  kv(y, "FIRMWARE", String(FW_BUILD), WHITE);                  y += 34;
-  kv(y, "LINK", String(CYD_TRANSPORT_SERIAL ? "USB-serial" : "WiFi"),
-     g_rs.ok ? colGreen() : colDim());                          y += 34;
-  kv(y, "FREE HEAP", String(ESP.getFreeHeap() / 1024) + " KB", colDim());
+  uint8_t tags[8]; int n = settingsRows(tags);
+  for (int i = 0; i < n; i++) {
+    const char *label; String val; uint16_t vcol;
+    settingRowText(tags[i], label, val, vcol);
+    drawSettingRow(SET_Y0 + i * SET_PITCH, label, val, vcol);
+  }
+}
+
+// ── Touch test / orientation validator ────────────────────────────────────────
+// Hold the board antenna-UP. The banner must read at the TOP (antenna end) — that
+// confirms display orientation. Then tap each labelled corner: the dot must land
+// under your finger — that confirms touch mapping. If a corner is wrong, note
+// which and the TOUCH_INVERT_X/Y / TOUCH_SWAP_XY flags in config.h get set.
+static int16_t g_ttX = -1, g_ttY = -1;
+static void drawTouchTest() {
+  drawHeader("TOUCH TEST", false);
+  int16_t top = HEAD_H, bot = SCR_H - 22;
+  gfx->fillRect(0, top, SCR_W, bot - top, colBg());
+  // TOP banner (antenna end) + corner labels
+  gfx->setTextColor(colAmber()); gfx->setTextSize(1);
+  gfx->setCursor(60, top + 4); gfx->print("^ TOP - antenna up ^");
+  gfx->setTextColor(colDim());
+  gfx->setCursor(6, top + 16);            gfx->print("TL");
+  gfx->setCursor(SCR_W - 20, top + 16);   gfx->print("TR");
+  gfx->setCursor(6, bot - 12);            gfx->print("BL");
+  gfx->setCursor(SCR_W - 20, bot - 12);   gfx->print("BR");
+  // centre crosshair
+  gfx->drawFastHLine(SCR_W/2 - 10, (top+bot)/2, 20, gfx->color565(40,50,64));
+  gfx->drawFastVLine(SCR_W/2, (top+bot)/2 - 10, 20, gfx->color565(40,50,64));
+  // last tap marker + readout
+  if (g_ttX >= 0) {
+    gfx->drawCircle(g_ttX, g_ttY, 8, colSky());
+    gfx->fillCircle(g_ttX, g_ttY, 3, colRed());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(6, (top+bot)/2 + 14);
+    gfx->print("x="); gfx->print(g_ttX); gfx->print(" y="); gfx->print(g_ttY);
+    gfx->setTextColor(colDim());
+    gfx->setCursor(6, (top+bot)/2 + 26);
+    gfx->print("raw "); gfx->print(g_lastRawX); gfx->print(","); gfx->print(g_lastRawY);
+  } else {
+    gfx->setTextColor(colGray()); gfx->setTextSize(1);
+    gfx->setCursor(30, (top+bot)/2 + 20); gfx->print("tap the labelled corners");
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(6, bot + 2); gfx->print("tap < to exit");
 }
 
 static void render() {
@@ -900,12 +1398,19 @@ static void render() {
     case SCR_HOME:    drawHome();      break;
     case SCR_DASH:    drawDash();      break;
     case SCR_DEFENSE: drawDefense();   break;
+    case SCR_ALERTS:  drawAlerts();    break;
     case SCR_SCAN:    drawScan();      break;
     case SCR_SIGINT:  drawSigInt();    break;
     case SCR_WFALL:   drawWaterfall(); break;
     case SCR_NETWORK: drawNetwork();   break;
+    case SCR_NETINT:  drawNetInt();    break;
+    case SCR_TRAFFIC: drawTraffic();   break;
+    case SCR_MESH:    drawMesh();      break;
+    case SCR_NETCONN: drawNetConn();   break;
+    case SCR_KEYBOARD:drawKeyboard();  break;
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
+    case SCR_TOUCHTEST: drawTouchTest(); break;
   }
   drawStatusBar();
   g_needRedraw = false;
@@ -935,24 +1440,56 @@ static void handleTouch(int16_t px, int16_t py) {
 #else
         strncpy(g_wfErr, "USB-serial only", sizeof(g_wfErr) - 1);
 #endif
+      } else if (g_screen == SCR_MESH) {
+        g_meshScroll = 0; g_meshActive = true;    // request roster stream
+      } else if (g_screen == SCR_NETCONN) {
+        g_wifiScroll = 0; g_wifiActive = true;    // request Pi wifi scan stream
       }
       g_needRedraw = true;
       return;
     }
     return;
   }
-  if (py < HEAD_H) {                 // back
+  // Keyboard: header-left cancels back to Net-Conn; everything else is a key.
+  if (g_screen == SCR_KEYBOARD) {
+    if (py < HEAD_H && px < 60) { g_screen = SCR_NETCONN; g_needRedraw = true; return; }
+    kbHandleTouch(px, py);
+    return;
+  }
+  // Back: enlarged hit zone everywhere except WFALL, whose band bar sits right
+  // under the header (there, back stays header-only so band-cycling is usable).
+  bool back = (g_screen == SCR_WFALL) ? (py < HEAD_H) : inBackZone(px, py);
+  if (back) {
     if (g_screen == SCR_WFALL) g_wfActive = false;
+    g_meshActive = false; g_wifiActive = false;   // stop roster/wifi streams
     g_screen = SCR_HOME; g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
-    if (inRect(px, py, 10, SET_Y0, SCR_W - 20, SET_ROWH)) {
-      g_bleEnabled = !g_bleEnabled; saveSettings(); g_needRedraw = true; return;
+    uint8_t tags[8]; int n = settingsRows(tags);
+    for (int i = 0; i < n; i++) {
+      int16_t ry = SET_Y0 + i * SET_PITCH;
+      if (!inRect(px, py, 10, ry, SCR_W - 20, SET_ROWH)) continue;
+      switch (tags[i]) {
+        case STAG_BLE: g_bleEnabled = !g_bleEnabled; saveSettings(); break;
+        case STAG_BL:  g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
+                       applyBacklight(); saveSettings(); break;
+        case STAG_WDRV:   if (!actionEnqueue("wardrive_toggle")) setStatus("queue full", colRed()); else setStatus("queued: wardrive", colAmber()); break;
+        case STAG_UPDATE: if (!actionEnqueue("ragnar_update"))   setStatus("queue full", colRed()); else setStatus("queued: update", colAmber()); break;
+        case STAG_SVC:    if (!actionEnqueue("service_restart")) setStatus("queue full", colRed()); else setStatus("queued: restart", colAmber()); break;
+        case STAG_PWN:    if (!actionEnqueue("pwn_swap"))        setStatus("queue full", colRed()); else setStatus("queued: pwn swap", colAmber()); break;
+        case STAG_TOUCH:  g_ttX = g_ttY = -1; g_screen = SCR_TOUCHTEST; break;
+      }
+      g_needRedraw = true;
+      return;
     }
-    if (inRect(px, py, 10, SET_Y0 + SET_PITCH, SCR_W - 20, SET_ROWH)) {
-      g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
-      applyBacklight(); saveSettings(); g_needRedraw = true; return;
-    }
+    return;
+  }
+  if (g_screen == SCR_TOUCHTEST) {
+    g_ttX = px; g_ttY = py; g_needRedraw = true;            // mark the tap
+    // Diagnostic line for host-side calibration (ignored by the JSON bridge).
+    Serial.print("TT raw="); Serial.print(g_lastRawX); Serial.print(",");
+    Serial.print(g_lastRawY); Serial.print(" map="); Serial.print(px);
+    Serial.print(","); Serial.println(py);
     return;
   }
   if (g_screen == SCR_WFALL) {
@@ -965,17 +1502,57 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_CTRL) {
-    int16_t y = CTRL_Y0;
-    for (int i = 0; i < N_ACTIONS; i++) {
-      if (inRect(px, py, 10, y, SCR_W - 20, CTRL_BH)) {
-        if (actionEnqueue(g_actions[i].action))
-          setStatus((String("queued: ") + g_actions[i].label).c_str(), colAmber());
-        else
-          setStatus("action queue full", colRed());
+    hitActionList(g_ctrlActions, N_CTRL, CTRL_Y0, px, py);
+    return;
+  }
+  if (g_screen == SCR_TRAFFIC) {
+    if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
+      if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
+      else setStatus("queue full", colRed());
+    }
+    return;
+  }
+  if (g_screen == SCR_MESH) {
+    int vis = listVisible(SCR_H - 22);
+    if (inRect(px, py, SB_X, LIST_Y0, SB_W, SB_H)) { if (g_meshScroll > 0) g_meshScroll--; g_needRedraw = true; }
+    else if (inRect(px, py, SB_X, SCR_H - 22 - SB_H, SB_W, SB_H)) { if (g_meshScroll + vis < g_meshN) g_meshScroll++; g_needRedraw = true; }
+    return;
+  }
+  if (g_screen == SCR_NETCONN) {
+    int16_t listBottom = NC_BTN_Y - 4;
+    int vis = (listBottom - LIST_Y0) / LIST_ROWH;
+    if (inRect(px, py, SB_X, LIST_Y0, SB_W, SB_H)) { if (g_wifiScroll > 0) g_wifiScroll--; g_needRedraw = true; return; }
+    if (inRect(px, py, SB_X, listBottom - SB_H, SB_W, SB_H)) { if (g_wifiScroll + vis < g_wifiN) g_wifiScroll++; g_needRedraw = true; return; }
+    // bottom action buttons: AP / Scan+ / Scan-
+    if (py >= NC_BTN_Y && py < NC_BTN_Y + 32) {
+      int b = -1; for (int i = 0; i < 3; i++) if (px >= 8 + i * 76 && px < 8 + i * 76 + 72) b = i;
+      const char *acts[3] = {"ap_toggle", "scanner_start", "scanner_stop"};
+      if (b >= 0) { if (actionEnqueue(acts[b])) setStatus("queued", colAmber()); else setStatus("queue full", colRed()); }
+      return;
+    }
+    // tap a WiFi row -> pick it and open the password keyboard
+    for (int i = 0; i < vis && g_wifiScroll + i < g_wifiN; i++) {
+      int16_t y = LIST_Y0 + i * LIST_ROWH;
+      if (inRect(px, py, 6, y, SB_X - 12, LIST_ROWH - 3)) {
+        g_wifiSel = g_wifiScroll + i;
+        g_kbBuf = ""; g_kbShift = g_kbSym = false;
+        g_screen = SCR_KEYBOARD; g_needRedraw = true;
         return;
       }
-      y += CTRL_BH + CTRL_GAP;
     }
+    return;
+  }
+  if (g_screen == SCR_NETWORK) {
+    for (int i = 0; i < N_NET; i++) {
+      int16_t x, gy; gridBtnXY(i, NET_GRID_Y0, x, gy);
+      if (!inRect(px, py, x, gy, GBTN_W, GBTN_H)) continue;
+      if (g_netItems[i].nav) { g_screen = (Screen)g_netItems[i].scr; g_needRedraw = true; }
+      else if (actionEnqueue(g_netItems[i].action))
+        setStatus((String("queued: ") + g_netItems[i].label).c_str(), colAmber());
+      else setStatus("action queue full", colRed());
+      return;
+    }
+    return;
   }
 }
 
@@ -1152,7 +1729,7 @@ void loop() {
   // While the Waterfall screen is open, dedicate the loop to streaming spectrum
   // (skip the sniff/BLE windows) so it stays live. Tell Ragnar to stop the SDR
   // when the screen closes.
-  static bool wasWf = false;
+  static bool wasWf = false, wasMesh = false, wasWifi = false;
 #if CYD_TRANSPORT_SERIAL
   if (g_wfActive) {
     serialSendWfReq(true);
@@ -1161,6 +1738,16 @@ void loop() {
     return;
   }
   if (wasWf) { serialSendWfReq(false); wasWf = false; }
+  // Mesh roster / WiFi list streams: request while their screen (or the keyboard
+  // launched from Net-Conn) is open, and dedicate the loop to draining them.
+  if (g_meshActive || g_wifiActive) {
+    if (g_meshActive) { serialSendMeshReq(true); wasMesh = true; }
+    if (g_wifiActive) { serialSendWifiReq(true); wasWifi = true; }
+    pollTouchFor(1500);
+    return;
+  }
+  if (wasMesh) { serialSendMeshReq(false); wasMesh = false; }
+  if (wasWifi) { serialSendWifiReq(false); wasWifi = false; }
 #endif
 
   // The LED is a STEADY link indicator, not a per-phase blinker (the old
@@ -1206,4 +1793,13 @@ void loop() {
     }
   }
 #endif
+
+  // Refresh the sensor-driven screens (SCAN/DEFEND/HOME) once per cycle, and only
+  // when the counts actually changed — a real data update (~every sniff cycle),
+  // not the every-2s status-push twitch.
+  static uint32_t lastSensorSig = 0xFFFFFFFFu;
+  uint32_t ss = (uint32_t)g_sc.beacons + ((uint32_t)g_sc.bssids << 9)
+              + ((uint32_t)g_sc.deauths << 16) + ((uint32_t)g_sc.probes << 20)
+              + ((uint32_t)g_sc.bleAdv << 25);
+  if (ss != lastSensorSig) { lastSensorSig = ss; g_needRedraw = true; serviceUI(); }
 }

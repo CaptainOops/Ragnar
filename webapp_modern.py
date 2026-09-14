@@ -2649,36 +2649,273 @@ def _cyd_network_band_counts():
     Best-effort: any failure (no iface, no cached scan, not root) yields 0/0."""
     now = time.time()
     with _cyd_netcount_lock:
-        if now - _cyd_netcount['t'] < 30:
-            return _cyd_netcount['nets_24'], _cyd_netcount['nets_5']
-    nets_24 = nets_5 = 0
+        fresh = now - _cyd_netcount['t'] < 30
+        busy = _cyd_netcount.get('busy')
+        cached = (_cyd_netcount['nets_24'], _cyd_netcount['nets_5'])
+        if not fresh and not busy:
+            _cyd_netcount['busy'] = True   # refresh in the background (see below)
+            _refresh = True
+        else:
+            _refresh = False
+    if _refresh:
+        def _run():
+            n24 = n5 = 0
+            try:
+                import wifi_analyzer
+                iface = _get_wifi_iface()
+                if iface:
+                    iw = getattr(wifi_analyzer, '_IW', 'iw')
+                    out = subprocess.run([iw, 'dev', iface, 'scan', 'dump', '-u'],
+                                         capture_output=True, text=True, timeout=5).stdout
+                    bss = wifi_analyzer.parse_scan(out) or []
+                    n24 = len({b['bssid'] for b in bss if b.get('band') == '2.4' and b.get('bssid')})
+                    n5 = len({b['bssid'] for b in bss if b.get('band') == '5' and b.get('bssid')})
+            except Exception as exc:
+                logger.debug(f"[cyd] band counts failed: {exc}")
+            with _cyd_netcount_lock:
+                _cyd_netcount.update(t=time.time(), nets_24=n24, nets_5=n5, busy=False)
+        threading.Thread(target=_run, name='cyd-bandcount', daemon=True).start()
+    # Always return instantly from cache — never block the status/bridge push.
+    return cached
+
+
+def _cyd_active_iface_ip():
+    """(iface, ip) of the box's default route — cheap, best-effort ('', '')."""
     try:
-        import wifi_analyzer
-        iface = _get_wifi_iface()
-        if iface:
-            iw = getattr(wifi_analyzer, '_IW', 'iw')
-            out = subprocess.run([iw, 'dev', iface, 'scan', 'dump', '-u'],
-                                 capture_output=True, text=True, timeout=5).stdout
-            bss = wifi_analyzer.parse_scan(out) or []
-            nets_24 = len({b['bssid'] for b in bss if b.get('band') == '2.4' and b.get('bssid')})
-            nets_5 = len({b['bssid'] for b in bss if b.get('band') == '5' and b.get('bssid')})
-    except Exception as exc:
-        logger.debug(f"[cyd] band counts failed: {exc}")
-    with _cyd_netcount_lock:
-        _cyd_netcount.update(t=now, nets_24=nets_24, nets_5=nets_5)
-    return nets_24, nets_5
+        import netifaces
+        gw = netifaces.gateways().get('default', {}).get(netifaces.AF_INET)
+        if not gw:
+            return '', ''
+        iface = gw[1]
+        addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET) or [{}]
+        return iface, (addrs[0].get('addr') or '')
+    except Exception:
+        return '', ''
+
+
+_cyd_wardrive_cache = {'v': 'off', 't': 0.0, 'busy': False}
+
+
+def _cyd_wardrive_refresh():
+    """Background refresh of the wardrive state — the engine's get_status() can
+    block/hang on this hardware (GPS/interface probing), and this runs on the
+    serial bridge's single-threaded push loop, so it must NEVER block there.
+    A hung get_status leaks at most one daemon thread; the bridge stays alive."""
+    try:
+        if not shared_data.config.get('wardriving_enabled', False):
+            v = 'off'
+        else:
+            eng = _get_wardriving_engine()
+            st = eng.get_status() or {}
+            if not st.get('running'):
+                v = 'idle'
+            else:
+                n = st.get('networks_found') or st.get('total_networks') or st.get('networks') or 0
+                v = str(int(n)) + ' nets'
+        _cyd_wardrive_cache['v'] = v
+    except Exception:
+        _cyd_wardrive_cache['v'] = 'off'
+    finally:
+        _cyd_wardrive_cache['t'] = time.time()
+        _cyd_wardrive_cache['busy'] = False
+
+
+def _cyd_wardrive_state():
+    """Cached wardrive state; refreshed off the hot path so a hung get_status
+    never stalls the status feed / serial bridge."""
+    c = _cyd_wardrive_cache
+    if not c['busy'] and (time.time() - c['t']) > 8:
+        c['busy'] = True
+        threading.Thread(target=_cyd_wardrive_refresh, name='cyd-wardrive-refresh',
+                         daemon=True).start()
+    return c['v']
+
+
+# Last on-demand results the CYD triggered, surfaced back in its status feed.
+_cyd_speedtest_result = '-'
+_cyd_captive_result = '-'
+
+
+def _cyd_netint_summary(top=3):
+    """(summary, [worst check lines]) from the passive net-integrity monitor."""
+    try:
+        st = dict(_net_integrity_state)
+    except Exception:
+        return 'off', []
+    if not st.get('enabled'):
+        return 'off', []
+    checks = st.get('checks') or {}
+    bad = [(c.get('label') or k, c.get('verdict') or '?')
+           for k, c in checks.items()
+           if str(c.get('verdict', '')).lower() not in ('', 'ok', 'clean', 'pass', 'good', 'unknown', 'no-traffic')]
+    overall = str(st.get('overall') or 'unknown')
+    summary = overall if not bad else (str(len(bad)) + ' issue' + ('s' if len(bad) != 1 else ''))
+    lines = [(''.join(ch for ch in (lbl + ': ' + vd) if 32 <= ord(ch) < 127 and ch not in '"\\'))[:28]
+             for lbl, vd in bad[:top]]
+    return summary, lines
+
+
+def _cyd_traffic():
+    """Compact live-capture stats for the CYD Traffic screen (best-effort)."""
+    out = {'tf_run': 0, 'tf_pps': 0, 'tf_mbps': '0', 'tf_hosts': 0,
+           'tf_conns': 0, 'tf_pkts': 0, 'tf_alerts': 0}
+    try:
+        an = get_traffic_analyzer()
+        if not an:
+            return out
+        s = an.get_summary() or {}
+        out['tf_run'] = 1 if s.get('status') == 'running' else 0
+        out['tf_pps'] = int(s.get('packets_per_second') or 0)
+        out['tf_mbps'] = ('%.2f' % float(s.get('throughput_mbps') or 0))
+        out['tf_hosts'] = int(s.get('unique_hosts') or 0)
+        out['tf_conns'] = int(s.get('active_connections') or 0)
+        out['tf_pkts'] = int(s.get('total_packets') or 0)
+        out['tf_alerts'] = int(s.get('total_alerts') or 0)
+    except Exception:
+        pass
+    return out
+
+
+def _cyd_sanitize(s, n=28):
+    """Strip quotes/backslash/control chars (the firmware's naive parser) + cap."""
+    return ''.join(c for c in str(s) if 32 <= ord(c) < 127 and c not in '"\\')[:n]
+
+
+def _cyd_mesh_roster():
+    """Flat mesh roster for the CYD Mesh screen: {'n':K, 'm0':'name on ip', ...}."""
+    rows = []
+    try:
+        if mesh_available and _mesh_enabled():
+            st = mesh_manager.status() or {}
+            for p in (st.get('peers') or [])[:24]:
+                nm = p.get('short_name') or p.get('viking_name') or p.get('id') or '?'
+                on = 'on ' if p.get('online') else 'off'
+                ip = p.get('ip') or '-'
+                rows.append(_cyd_sanitize('%s %s %s' % (on, nm, ip)))
+    except Exception:
+        pass
+    d = {'n': len(rows)}
+    for i, r in enumerate(rows):
+        d['m%d' % i] = r
+    return d
+
+
+_cyd_wifi_cache = {'t': 0.0, 'rows': [], 'ssids': []}
+
+
+def _cyd_wifi_list():
+    """Flat Pi-WiFi scan for the CYD Net-Conn screen: {'n':K, 'w0':'ssid rssi sec'}.
+    Cached ~20 s — a scan is expensive and disruptive on the station radio. The
+    raw SSIDs are kept in parallel so connect resolves by index (SSIDs may have
+    spaces, so they can't be parsed back out of the display row)."""
+    now = time.time()
+    if now - _cyd_wifi_cache['t'] < 20 and _cyd_wifi_cache['rows']:
+        rows = _cyd_wifi_cache['rows']
+    else:
+        rows, ssids = [], []
+        try:
+            wm = getattr(shared_data, 'wifi_manager', None)
+            nets = (wm.scan_networks() if wm else None) or []
+            seen = set()
+            for net in nets[:24]:
+                ssid = (net.get('ssid') or '').strip()
+                if not ssid or ssid in seen:
+                    continue
+                seen.add(ssid)
+                sig = net.get('signal') or 0
+                sec = 'lock' if (net.get('security') and net.get('security') != 'Open') else 'open'
+                mark = '*' if net.get('known') else ' '
+                rows.append(_cyd_sanitize('%s%s  %sdBm %s' % (mark, ssid, sig, sec), 34))
+                ssids.append(ssid)
+            _cyd_wifi_cache.update(t=now, rows=rows, ssids=ssids)
+        except Exception as exc:
+            logger.debug(f"[cyd] wifi_list failed: {exc}")
+        rows = _cyd_wifi_cache['rows']
+    d = {'n': len(rows)}
+    for i, r in enumerate(rows):
+        d['w%d' % i] = r
+    return d
+
+
+def _cyd_wifi_ssid_by_index(idx):
+    """Resolve a scan-row index back to its raw SSID for connect."""
+    ssids = _cyd_wifi_cache['ssids']
+    return ssids[idx] if 0 <= idx < len(ssids) else ''
+
+
+def _cyd_wifi_connect(idx, pw):
+    """Connect the Pi to the scan-row at `idx` (resolved to its raw SSID)."""
+    try:
+        ssid = _cyd_wifi_ssid_by_index(int(idx))
+    except (TypeError, ValueError):
+        ssid = ''
+    if not ssid:
+        return
+    def _run():
+        try:
+            wm = getattr(shared_data, 'wifi_manager', None)
+            if wm:
+                wm.connect_to_network(ssid, pw or None)
+                logger.info(f"[cyd] wifi connect requested: {ssid}")
+        except Exception as exc:
+            logger.warning(f"[cyd] wifi connect failed: {exc}")
+    threading.Thread(target=_run, name='cyd-wifi-connect', daemon=True).start()
+
+
+def _cyd_pwn_state():
+    """Pwnagotchi bridge state for the CYD: 'off' when not installed/enabled,
+    else the current mode (e.g. 'ragnar' / 'pwnagotchi')."""
+    try:
+        if not shared_data.config.get('pwnagotchi_installed', False):
+            return 'off'
+        return str(shared_data.config.get('pwnagotchi_mode', 'ragnar'))
+    except Exception:
+        return 'off'
+
+
+def _cyd_alert_summary(top=3):
+    """(count, worst, [short titles]) from the Watchtower ring — newest first."""
+    try:
+        with _watchtower_lock:
+            wt = _wt_get()
+            items = wt.recent(limit=top)
+            summ = wt.summary()
+        titles = []
+        for a in items:
+            t = str(a.get('title') or (a.get('codes') or [''])[0] or a.get('source') or '')
+            # The firmware parses status with a naive string matcher, so strip
+            # quotes/backslashes/control chars that would break the next field.
+            t = ''.join(c for c in t if 32 <= ord(c) < 127 and c not in '"\\')
+            titles.append(t[:28])
+        return int(summ.get('total', 0)), (summ.get('worst') or 'none'), titles
+    except Exception:
+        return 0, 'none', []
+
+
+def _cyd_unit_label():
+    """Short identity for the CYD header: the mesh Viking short-name when mesh is
+    enabled, else just 'Ragnar'. No '(Unit N)' suffix — the CYD wants a compact
+    name that fits the 240px header."""
+    try:
+        if _mesh_enabled():
+            n = (_mesh_viking_name() or '').strip()
+            if n:
+                return n
+    except Exception:
+        pass
+    return 'Ragnar'
 
 
 def _cyd_build_status_dict():
     """The compact, flat status a CYD node displays — shared by the HTTP status
     endpoint and the USB-serial bridge. Flat on purpose: the firmware parses it
     with lightweight string matching (no JSON library)."""
-    try:
-        unit = _mesh_unit_name()
-    except Exception:
-        unit = socket.gethostname()
+    unit = _cyd_unit_label()
     nets_24, nets_5 = _cyd_network_band_counts()
-    return {
+    iface, ip = _cyd_active_iface_ip()
+    a_count, a_worst, a_titles = _cyd_alert_summary(3)
+    ni_summary, ni_lines = _cyd_netint_summary(3)
+    d = {
         'unit': unit,
         'mesh_nodes': _cyd_mesh_node_count(),
         'nets_24': nets_24,
@@ -2686,8 +2923,27 @@ def _cyd_build_status_dict():
         'threat': _cyd_threat_score(),
         'bluetooth': _cyd_bluetooth_state(),
         'uptime': _cyd_uptime_sec(),
+        # Expanded status fields for the DASH / NETWORK / ALERTS screens:
+        'iface': iface,
+        'ip': ip,
+        'wardrive': _cyd_wardrive_state(),
+        'alerts': a_count,
+        'worst': a_worst,
+        'wids': 1 if _cyd_pick_monitor_iface() else 0,   # monitor-mode WIDS available
+        # NETWORK subpages: net-integrity, on-demand speedtest/captive, pwn bridge.
+        'netint': ni_summary,
+        'speedtest': _cyd_speedtest_result,
+        'captive': _cyd_captive_result,
+        'pwn': _cyd_pwn_state(),
         'ts': int(time.time()),
     }
+    d.update(_cyd_traffic())          # tf_run / tf_pps / tf_mbps / tf_hosts / ...
+    # Flat alert titles (alert1..alert3) + net-integrity lines (ni1..ni3) —
+    # firmware string-matches these keys.
+    for i in range(3):
+        d['alert%d' % (i + 1)] = a_titles[i] if i < len(a_titles) else ''
+        d['ni%d' % (i + 1)] = ni_lines[i] if i < len(ni_lines) else ''
+    return d
 
 
 @app.route('/api/cyd/status', methods=['GET'])
@@ -2767,6 +3023,172 @@ def _cyd_dispatch_action(action, node_name):
         threading.Thread(target=_run, name='cyd-wids-scan', daemon=True).start()
         return 'started', 202
 
+    if action == 'wardrive_start':
+        try:
+            if not shared_data.config.get('wardriving_enabled', False):
+                return 'disabled', 409          # wardriving must be enabled first
+            eng = _get_wardriving_engine()
+            if (eng.get_status() or {}).get('running'):
+                return 'running', 200
+            eng.start()
+            return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] wardrive_start failed: {exc}")
+            return 'error', 500
+
+    if action == 'wardrive_stop':
+        try:
+            eng = _get_wardriving_engine()
+            eng.stop()
+            return 'done', 200
+        except Exception as exc:
+            logger.warning(f"[cyd] wardrive_stop failed: {exc}")
+            return 'error', 500
+
+    if action == 'network_scan':
+        # Quick WiFi airspace threat sweep, in the background (blocks ~10 s).
+        def _sweep():
+            try:
+                iface = _get_wifi_iface()
+                import wifi_analyzer
+                wifi_analyzer.do_scan(iface, band='2.4')
+                cyd_node.record_action(node_name, action, None, status='completed')
+            except Exception as exc:
+                cyd_node.record_action(node_name, action, None, status='error')
+                logger.warning(f"[cyd] network_scan failed: {exc}")
+        threading.Thread(target=_sweep, name='cyd-net-scan', daemon=True).start()
+        return 'started', 202
+
+    if action == 'service_restart':
+        def _restart():
+            time.sleep(2)
+            try:
+                subprocess.run(['sudo', 'systemctl', 'restart', 'ragnar'], check=True)
+            except Exception as exc:
+                logger.error(f"[cyd] service_restart failed: {exc}")
+        threading.Thread(target=_restart, name='cyd-svc-restart', daemon=True).start()
+        return 'started', 202
+
+    if action == 'wardrive_toggle':
+        # One button: start if idle, stop if running (needs wardriving enabled).
+        try:
+            if not shared_data.config.get('wardriving_enabled', False):
+                return 'disabled', 409
+            eng = _get_wardriving_engine()
+            if (eng.get_status() or {}).get('running'):
+                eng.stop(); return 'done', 200
+            eng.start(); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] wardrive_toggle failed: {exc}")
+            return 'error', 500
+
+    if action == 'speed_test':
+        def _run():
+            global _cyd_speedtest_result
+            _cyd_speedtest_result = 'running'
+            try:
+                import network_diagnostics as nd
+                r = nd.do_speedtest() or {}
+                if r.get('success') is False:
+                    _cyd_speedtest_result = 'error'
+                else:
+                    dn = r.get('download_mbps') or r.get('download') or r.get('down')
+                    up = r.get('upload_mbps') or r.get('upload') or r.get('up')
+                    _cyd_speedtest_result = (('%.0f/%.0f Mbps' % (float(dn), float(up)))
+                                             if dn is not None and up is not None else 'done')
+                cyd_node.record_action(node_name, action, None, status=_cyd_speedtest_result)
+            except Exception as exc:
+                _cyd_speedtest_result = 'error'
+                logger.warning(f"[cyd] speed_test failed: {exc}")
+        threading.Thread(target=_run, name='cyd-speedtest', daemon=True).start()
+        return 'started', 202
+
+    if action == 'captive_check':
+        def _run():
+            global _cyd_captive_result
+            _cyd_captive_result = 'checking'
+            try:
+                import network_diagnostics as nd
+                r = nd.do_captive_portal() or {}
+                _cyd_captive_result = ('portal!' if r.get('portal')
+                                       else ('error' if r.get('success') is False else 'clear'))
+                cyd_node.record_action(node_name, action, None, status=_cyd_captive_result)
+            except Exception as exc:
+                _cyd_captive_result = 'error'
+                logger.warning(f"[cyd] captive_check failed: {exc}")
+        threading.Thread(target=_run, name='cyd-captive', daemon=True).start()
+        return 'started', 202
+
+    if action == 'ragnar_update':
+        def _run():
+            try:
+                subprocess.run(['sudo', 'systemctl', 'start', 'ragnar-update'],
+                               check=False, timeout=10)
+            except Exception:
+                pass
+            try:
+                import git_updater
+                git_updater.update()          # falls back to the in-process updater
+                cyd_node.record_action(node_name, action, None, status='update-run')
+            except Exception as exc:
+                logger.warning(f"[cyd] ragnar_update failed: {exc}")
+                cyd_node.record_action(node_name, action, None, status='error')
+        threading.Thread(target=_run, name='cyd-update', daemon=True).start()
+        return 'started', 202
+
+    if action == 'ap_toggle':
+        try:
+            wm = getattr(shared_data, 'wifi_manager', None)
+            if not wm:
+                return 'unavailable', 503
+            if getattr(wm, 'ap_mode_active', False):
+                wm.stop_ap_mode(); return 'done', 200
+            wm.start_ap_mode(); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] ap_toggle failed: {exc}")
+            return 'error', 500
+
+    if action == 'scanner_start':
+        try:
+            _toggle_scan_interface(True); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] scanner_start failed: {exc}")
+            return 'error', 500
+
+    if action == 'scanner_stop':
+        try:
+            _toggle_scan_interface(False); return 'done', 200
+        except Exception as exc:
+            logger.warning(f"[cyd] scanner_stop failed: {exc}")
+            return 'error', 500
+
+    if action == 'traffic_toggle':
+        try:
+            an = get_traffic_analyzer()
+            if not an:
+                return 'unavailable', 503
+            s = an.get_summary() or {}
+            if s.get('status') == 'running':
+                an.stop(); return 'done', 200
+            if hasattr(an, 'is_available') and not an.is_available():
+                return 'unavailable', 503
+            an.start(); return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] traffic_toggle failed: {exc}")
+            return 'error', 500
+
+    if action == 'pwn_swap':
+        # Toggle the Pwnagotchi<->Ragnar port bridge (only if pwnagotchi installed).
+        if not shared_data.config.get('pwnagotchi_installed', False):
+            return 'disabled', 409
+        try:
+            import requests as _rq
+            _rq.post('http://127.0.0.1:8000/api/pwnagotchi/swap', timeout=8)
+            return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] pwn_swap failed: {exc}")
+            return 'error', 500
+
     return 'unknown', 400
 
 
@@ -2830,6 +3252,12 @@ _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     baud=115200,
     on_wf_request=lambda band, on: cyd_waterfall.request(band, on),
     get_wf=lambda: cyd_waterfall.latest_row() if cyd_waterfall.wants_stream() else None,
+    get_mesh=_cyd_mesh_roster,
+    get_wifi=_cyd_wifi_list,
+    on_wifi_connect=_cyd_wifi_connect,
+    # Publish the CYD's serial port so other probes (e.g. wardriving GPS detect)
+    # skip it instead of stealing its bytes.
+    publish_port=lambda p: setattr(shared_data, 'cyd_serial_active_port', p),
 )
 try:
     _cyd_bridge.start()

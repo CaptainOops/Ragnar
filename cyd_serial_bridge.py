@@ -62,13 +62,23 @@ class CydSerialBridge:
 
     def __init__(self, build_status, on_ingest, on_action, enabled,
                  baud=115200, status_interval=2.0, port=None, get_port=None,
-                 on_wf_request=None, get_wf=None):
+                 on_wf_request=None, get_wf=None,
+                 get_mesh=None, get_wifi=None, on_wifi_connect=None,
+                 publish_port=None):
         self._build_status = build_status
         self._on_ingest = on_ingest
         self._on_action = on_action
         self._enabled = enabled
         self._on_wf_request = on_wf_request   # (band, on) -> None
         self._get_wf = get_wf                  # () -> row dict or None
+        self._get_mesh = get_mesh              # () -> roster dict (pushed while on)
+        self._get_wifi = get_wifi              # () -> wifi-list dict (pushed while on)
+        self._on_wifi_connect = on_wifi_connect  # (ssid, pw) -> None
+        self._publish_port = publish_port        # (port_or_None) -> None
+        self._mesh_on = False
+        self._wifi_on = False
+        self._dbg = {'wr': 0, 'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0,
+                     'wf_err': '', 'in': 0, 'ac': 0}
         self._baud = baud
         self._status_interval = status_interval
         self._forced_port = port          # static override (tests)
@@ -102,6 +112,7 @@ class CydSerialBridge:
             'connected': self.connected,
             'last_rx': int(self.last_rx) if self.last_rx else None,
             'error': self.last_error,
+            'dbg': dict(getattr(self, '_dbg', {})),   # live counters (diagnostics)
         }
 
     # ── internals ────────────────────────────────────────────────────────────
@@ -147,6 +158,7 @@ class CydSerialBridge:
                 time.sleep(2.0)
                 continue
             self.port, self.connected, self.last_error = port, True, None
+            self._publish(port)          # let others (e.g. GPS probe) avoid this port
             try:
                 self._session(ser)
             except Exception as exc:
@@ -157,19 +169,33 @@ class CydSerialBridge:
                 except Exception:
                     pass
                 self.connected = False
+                self._publish(None)
         self._teardown(None)
+
+    def _publish(self, port):
+        if self._publish_port:
+            try:
+                self._publish_port(port)
+            except Exception:
+                pass
 
     def _teardown(self, err):
         self.connected = False
         self.port = None
+        self._publish(None)
         if err is not None:
             self.last_error = err
+
+    def _send(self, ser, frame):
+        ser.write((json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8'))
 
     def _session(self, ser):
         """Read reports + push status until disabled, unplugged, or stopped."""
         buf = bytearray()
         next_status = 0.0
         next_wf = 0.0
+        next_mesh = 0.0
+        next_wifi = 0.0
         opened_on = self.port
         while not self._stop.is_set() and self._safe_enabled():
             # If the operator points us at a different explicit port, drop this
@@ -198,17 +224,31 @@ class CydSerialBridge:
                 self._push_status(ser)
             # ── outbound: waterfall rows while the CYD asks for them ──────────
             if self._get_wf and now >= next_wf:
-                next_wf = now + 0.3
+                next_wf = now + 0.12          # ~8 rows/s (was 0.3 ≈ 3/s)
                 try:
                     row = self._get_wf()
-                except Exception:
-                    row = None
+                except Exception as exc:
+                    row = None; self._dbg['wf_err'] = str(exc)[:40]
                 if row:
-                    frame = dict(row); frame['t'] = 'wf'
-                    try:
-                        ser.write((json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8'))
-                    except Exception:
-                        raise
+                    frame = dict(row, t='wf')
+                    self._send(ser, frame)
+                    self._dbg['wf_sent'] += 1
+                    self._dbg['wf_bytes'] = len(json.dumps(frame, separators=(',', ':')))
+                else:
+                    self._dbg['wf_none'] += 1
+            # ── outbound: mesh roster + wifi list while their screens are open ──
+            if self._mesh_on and self._get_mesh and now >= next_mesh:
+                next_mesh = now + 3.0
+                try:
+                    self._send(ser, dict(self._get_mesh(), t='me'))
+                except Exception:
+                    pass
+            if self._wifi_on and self._get_wifi and now >= next_wifi:
+                next_wifi = now + 3.0
+                try:
+                    self._send(ser, dict(self._get_wifi(), t='wl'))
+                except Exception:
+                    pass
             time.sleep(0.05)
 
     def _handle_line(self, line):
@@ -222,6 +262,12 @@ class CydSerialBridge:
             return
         self.last_rx = time.time()
         t = msg.get('t')
+        if t == 'wr':
+            self._dbg['wr'] += 1
+        elif t == 'in':
+            self._dbg['in'] += 1
+        elif t == 'ac':
+            self._dbg['ac'] += 1
         if t == 'in':
             try:
                 self._on_ingest(msg)
@@ -236,6 +282,16 @@ class CydSerialBridge:
             if self._on_wf_request:
                 try:
                     self._on_wf_request(msg.get('band'), bool(msg.get('on')))
+                except Exception:
+                    pass
+        elif t == 'mr':                       # mesh roster stream request
+            self._mesh_on = bool(msg.get('on'))
+        elif t == 'wsr':                      # wifi-list stream request
+            self._wifi_on = bool(msg.get('on'))
+        elif t == 'wc':                       # wifi connect (scan index + password)
+            if self._on_wifi_connect:
+                try:
+                    self._on_wifi_connect(msg.get('idx'), msg.get('pw') or '')
                 except Exception:
                     pass
 

@@ -2908,16 +2908,38 @@ class WardrivingEngine:
             gps_status = self._gps.get_status()
         else:
             now = time.time()
-            if not hasattr(self, '_gps_probe_cache') or now - self._gps_probe_time > 15:
-                from gps_manager import detect_gps_device
-                try:
-                    companion_ports = set(self._companions.keys())
-                    detected = detect_gps_device(exclude_ports=companion_ports or None)
-                except Exception:
-                    detected = None
-                self._gps_probe_cache = detected
-                self._gps_probe_time = now
-            detected = self._gps_probe_cache
+            # detect_gps_device opens/reads serial ports (up to ~1.5s x 4 bauds
+            # EACH, over every ttyUSB/ttyACM/ttyS/ttyAMA), so it can block the
+            # caller for tens of seconds — which froze this whole get_status (and
+            # the /api/wardriving/status endpoint, and the CYD serial bridge that
+            # calls it). Never run it on the hot path: refresh a 15s cache in a
+            # daemon thread and return the cached value immediately. A probe that
+            # stalls leaks at most one thread; get_status stays responsive.
+            if (now - getattr(self, '_gps_probe_time', 0) > 15
+                    and not getattr(self, '_gps_probe_busy', False)):
+                self._gps_probe_busy = True
+
+                def _probe():
+                    det = None
+                    try:
+                        from gps_manager import detect_gps_device
+                        exclude = set(self._companions.keys())
+                        # Also skip the CYD's serial port (published by its bridge)
+                        # so the NMEA probe doesn't steal the console's bytes.
+                        cyd_port = getattr(self.shared_data, 'cyd_serial_active_port', None)
+                        if cyd_port:
+                            exclude.add(cyd_port)
+                        det = detect_gps_device(exclude_ports=exclude or None)
+                    except Exception:
+                        det = None
+                    finally:
+                        self._gps_probe_cache = det
+                        self._gps_probe_time = time.time()
+                        self._gps_probe_busy = False
+
+                threading.Thread(target=_probe, name='wardrive-gps-probe',
+                                 daemon=True).start()
+            detected = getattr(self, '_gps_probe_cache', None)
             gps_status = {
                 'connected': bool(detected),
                 'port': detected,
