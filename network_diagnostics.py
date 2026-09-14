@@ -19802,22 +19802,13 @@ def _mikrotik_selftest():
 
 
 # ==========================================================================
-# Aruba Guard — passive HPE Aruba (ArubaOS / InstantOS) CVE monitor
+# Aruba Guard — passive HPE Aruba (ArubaOS) CVE monitor
 # ==========================================================================
 # Ported from the standalone arubaguard. The in-app _guard_packets model is the
 # per-packet UDP/PAPI subset: PAPI (UDP/8211) is the module's core — 42 CVEs, all
 # unauthenticated cleartext on the wire — and maps cleanly onto the guard framework
-# (payload signatures + dual-stack via the shared ip6[6] clause). Deliberately NOT
-# ported, each with a reason:
-#   - ARB-002 papi_crosses_trust_boundary / ARB-003 papi_undeclared_peer: need an
-#     operator-declared --mgmt-prefix / --tenant-prefix set the in-app guard has no
-#     config for (the standalone is silent without it too).
-#   - ARB-201 aruba_device_observed / ARB-301 l2_malformed_frame / ARB-302
-#     l2_tag_stack_anomaly: native-L2 / 802.1Q frame structure + Aruba-OUI source MAC —
-#     tcpdump -x carries only IP-onward bytes, so the frame/MAC aren't reconstructable
-#     (CVE-2025-37148, the one L2 CVE).
-#   - ARB-401 / ARB-402 vlan_*: need an operator VLAN-per-interface declaration
-#     (CVE-2025-37165, the one VLAN-topology CVE).
+# (payload signatures + dual-stack via the shared ip6[6] clause). The standalone's
+# non-PAPI L2/VLAN/trust-boundary codes are out of scope for the in-app guard.
 _ARUBA_GUARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  'data', 'aruba_guard.json')
 _aruba_guard_lock = threading.Lock()
@@ -20186,7 +20177,7 @@ def _aruba_analyze(records):
 
 
 def do_aruba_guard(interface=None, seconds=20, learn=True, quick=False):
-    """Passive HPE Aruba (ArubaOS / InstantOS) CVE guard (detection-only). Captures the
+    """Passive HPE Aruba (ArubaOS) CVE guard (detection-only). Captures the
     Aruba PAPI control plane (UDP/8211) for a few seconds and reports EXPOSURE / ATTACK /
     POSTURE findings against the tracked 42-CVE PAPI set. Ported from the standalone
     arubaguard. Never transmits."""
@@ -25242,7 +25233,7 @@ def _cli(argv=None):
                            ('arista', 'Arista EOS switch/router'),
                            ('comware', 'HPE Comware / Huawei VRF-hopping (MPLS)'),
                            ('mikrotik', 'MikroTik RouterOS (CCR/CRS)'),
-                           ('aruba', 'HPE Aruba ArubaOS/InstantOS (PAPI)')):
+                           ('aruba', 'HPE Aruba ArubaOS (PAPI)')):
         gp = sub.add_parser('%s-guard' % _gname,
                             help='passive %s CVE guard (posture/exposure/attack)' % _ghelp)
         gp.add_argument('--iface', '-i', default=None, help='interface (default: route)')

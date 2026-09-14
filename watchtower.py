@@ -113,7 +113,7 @@ DEFAULT_SOURCES = {
                       'paths': ['/var/log/ragnar/comware_guard.jsonl']},
     'mikrotik_guard': {'label': 'MikroTik Guard (RouterOS CCR/CRS)',
                        'paths': ['/var/log/ragnar/mikrotik_guard.jsonl']},
-    'aruba_guard': {'label': 'Aruba Guard (ArubaOS/InstantOS PAPI)',
+    'aruba_guard': {'label': 'Aruba Guard (ArubaOS PAPI)',
                     'paths': ['/var/log/ragnar/aruba_guard.jsonl']},
     # In-app L5-L7 passive observers (ssh_watch / telnet_watch do_*_watch) emit
     # their non-info findings here so the unified pane tails them too.
