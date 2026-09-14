@@ -123,7 +123,7 @@ static SPIClass touchSPI(HSPI);
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
-              SCR_WFALL, SCR_NETWORK, SCR_SETTINGS, SCR_CTRL };
+              SCR_WFALL, SCR_NETWORK, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -240,6 +240,9 @@ static uint16_t xptRead(uint8_t cmd) {
   return ((hi << 8) | lo) >> 3;   // 12-bit result
 }
 
+// Last raw ADC sample (exposed for the touch-test screen).
+static uint16_t g_lastRawX = 0, g_lastRawY = 0;
+
 // Returns true and fills px/py (screen coords) when the panel is pressed.
 static bool touchRead(int16_t &px, int16_t &py) {
   if (digitalRead(TOUCH_IRQ) == HIGH) return false;   // IRQ idles HIGH
@@ -253,6 +256,7 @@ static bool touchRead(int16_t &px, int16_t &py) {
   }
   if (n == 0) return false;
   uint16_t rawx = sx / n, rawy = sy / n;
+  g_lastRawX = rawx; g_lastRawY = rawy;
 #if TOUCH_SWAP_XY
   { uint16_t t = rawx; rawx = rawy; rawy = t; }
 #endif
@@ -993,12 +997,50 @@ static void drawSettings() {
   drawSettingRow(SET_Y0, "BLE scan", g_bleEnabled ? "ON" : "OFF",
                  g_bleEnabled ? colGreen() : colGray());
   drawSettingRow(SET_Y0 + SET_PITCH, "Backlight", String(g_backlightPct) + "%", colSky());
-  int16_t y = SET_Y0 + SET_PITCH * 2 + 6;
-  kv(y, "NODE", g_cfg.name, colSky());                         y += 34;
-  kv(y, "FIRMWARE", String(FW_BUILD), WHITE);                  y += 34;
-  kv(y, "LINK", String(CYD_TRANSPORT_SERIAL ? "USB-serial" : "WiFi"),
-     g_rs.ok ? colGreen() : colDim());                          y += 34;
+  drawSettingRow(SET_Y0 + SET_PITCH * 2, "Touch test", "open", colAmber());
+  int16_t y = SET_Y0 + SET_PITCH * 3 + 4;
+  kv(y, "NODE", g_cfg.name, colSky());                         y += 32;
+  kv(y, "FIRMWARE", String(FW_BUILD), WHITE);                  y += 32;
   kv(y, "FREE HEAP", String(ESP.getFreeHeap() / 1024) + " KB", colDim());
+}
+
+// ── Touch test / orientation validator ────────────────────────────────────────
+// Hold the board antenna-UP. The banner must read at the TOP (antenna end) — that
+// confirms display orientation. Then tap each labelled corner: the dot must land
+// under your finger — that confirms touch mapping. If a corner is wrong, note
+// which and the TOUCH_INVERT_X/Y / TOUCH_SWAP_XY flags in config.h get set.
+static int16_t g_ttX = -1, g_ttY = -1;
+static void drawTouchTest() {
+  drawHeader("TOUCH TEST", false);
+  int16_t top = HEAD_H, bot = SCR_H - 22;
+  gfx->fillRect(0, top, SCR_W, bot - top, colBg());
+  // TOP banner (antenna end) + corner labels
+  gfx->setTextColor(colAmber()); gfx->setTextSize(1);
+  gfx->setCursor(60, top + 4); gfx->print("^ TOP - antenna up ^");
+  gfx->setTextColor(colDim());
+  gfx->setCursor(6, top + 16);            gfx->print("TL");
+  gfx->setCursor(SCR_W - 20, top + 16);   gfx->print("TR");
+  gfx->setCursor(6, bot - 12);            gfx->print("BL");
+  gfx->setCursor(SCR_W - 20, bot - 12);   gfx->print("BR");
+  // centre crosshair
+  gfx->drawFastHLine(SCR_W/2 - 10, (top+bot)/2, 20, gfx->color565(40,50,64));
+  gfx->drawFastVLine(SCR_W/2, (top+bot)/2 - 10, 20, gfx->color565(40,50,64));
+  // last tap marker + readout
+  if (g_ttX >= 0) {
+    gfx->drawCircle(g_ttX, g_ttY, 8, colSky());
+    gfx->fillCircle(g_ttX, g_ttY, 3, colRed());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(6, (top+bot)/2 + 14);
+    gfx->print("x="); gfx->print(g_ttX); gfx->print(" y="); gfx->print(g_ttY);
+    gfx->setTextColor(colDim());
+    gfx->setCursor(6, (top+bot)/2 + 26);
+    gfx->print("raw "); gfx->print(g_lastRawX); gfx->print(","); gfx->print(g_lastRawY);
+  } else {
+    gfx->setTextColor(colGray()); gfx->setTextSize(1);
+    gfx->setCursor(30, (top+bot)/2 + 20); gfx->print("tap the labelled corners");
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(6, bot + 2); gfx->print("tap < to exit");
 }
 
 static void render() {
@@ -1018,6 +1060,7 @@ static void render() {
     case SCR_NETWORK: drawNetwork();   break;
     case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
+    case SCR_TOUCHTEST: drawTouchTest(); break;
   }
   drawStatusBar();
   g_needRedraw = false;
@@ -1065,7 +1108,13 @@ static void handleTouch(int16_t px, int16_t py) {
       g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
       applyBacklight(); saveSettings(); g_needRedraw = true; return;
     }
+    if (inRect(px, py, 10, SET_Y0 + SET_PITCH * 2, SCR_W - 20, SET_ROWH)) {
+      g_ttX = g_ttY = -1; g_screen = SCR_TOUCHTEST; g_needRedraw = true; return;
+    }
     return;
+  }
+  if (g_screen == SCR_TOUCHTEST) {
+    g_ttX = px; g_ttY = py; g_needRedraw = true; return;   // mark the tap
   }
   if (g_screen == SCR_WFALL) {
     // Tap the band bar (top strip) to cycle to the next band.
