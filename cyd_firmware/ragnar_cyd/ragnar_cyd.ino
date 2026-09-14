@@ -40,8 +40,10 @@
 #include <SPI.h>
 #include <esp_wifi.h>
 #include <Arduino_GFX_Library.h>
+#include <AnimatedGIF.h>
 
 #include "config.h"
+#include "ragnar_glitch_gif.h"    // embedded 240x240 boot animation (PROGMEM)
 
 // Defined before the first include-terminated section so Arduino's auto-generated
 // prototypes (inserted after the includes) can reference ActionBtn*.
@@ -116,6 +118,71 @@ static Arduino_GFX *gfx = new Arduino_ILI9341(bus, TFT_RST, 0 /*rotation*/, fals
 
 static const int16_t SCR_W = 240;
 static const int16_t SCR_H = 320;
+
+// ── Boot animation (ragnar-glitch.gif, decoded on-device by AnimatedGIF) ────────
+// A ~5 s splash at power-on that also gives a companion Pi time to finish booting
+// before the node starts talking to it. The 240x240 GIF is centred vertically on
+// the 240x320 panel. Colour byte-order: LE palette + draw16bitRGBBitmap is correct
+// on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE to 1.
+#define CYD_BOOT_ANIM_MS 5000
+#define CYD_GIF_BE       0
+static const int16_t GIF_X_OFF = 0;
+static const int16_t GIF_Y_OFF = (SCR_H - 240) / 2;   // 40 px: centre the square
+static AnimatedGIF g_bootGif;
+
+static void GIFDraw(GIFDRAW *pDraw) {
+  uint8_t *s;
+  uint16_t *d, *usPalette, usTemp[240];
+  int x, y, iWidth;
+  iWidth = pDraw->iWidth;
+  if (iWidth > SCR_W) iWidth = SCR_W;
+  usPalette = pDraw->pPalette;
+  y = pDraw->iY + pDraw->y;                 // absolute line within the image
+  s = pDraw->pPixels;
+  if (pDraw->ucDisposalMethod == 2) {       // restore to background
+    for (x = 0; x < iWidth; x++)
+      if (s[x] == pDraw->ucTransparent) s[x] = pDraw->ucBackground;
+    pDraw->ucHasTransparency = 0;
+  }
+  #define CYD_BLIT(px, py, w, buf) do { \
+    if (CYD_GIF_BE) gfx->draw16bitBeRGBBitmap(GIF_X_OFF + (px), GIF_Y_OFF + (py), (buf), (w), 1); \
+    else            gfx->draw16bitRGBBitmap  (GIF_X_OFF + (px), GIF_Y_OFF + (py), (buf), (w), 1); \
+  } while (0)
+  if (pDraw->ucHasTransparency) {           // draw only opaque runs, skip transparent
+    uint8_t *pEnd, c, ucTransparent = pDraw->ucTransparent;
+    int iCount;
+    pEnd = s + iWidth; x = 0; iCount = 0;
+    while (x < iWidth) {
+      c = ucTransparent - 1; d = usTemp;
+      while (c != ucTransparent && s < pEnd) {
+        c = *s++;
+        if (c == ucTransparent) s--; else { *d++ = usPalette[c]; iCount++; }
+      }
+      if (iCount) { CYD_BLIT(pDraw->iX + x, y, iCount, usTemp); x += iCount; iCount = 0; }
+      c = ucTransparent;
+      while (c == ucTransparent && s < pEnd) { c = *s++; if (c == ucTransparent) iCount++; else s--; }
+      if (iCount) { x += iCount; iCount = 0; }
+    }
+  } else {
+    for (x = 0; x < iWidth; x++) usTemp[x] = usPalette[*s++];
+    CYD_BLIT(pDraw->iX, y, iWidth, usTemp);
+  }
+  #undef CYD_BLIT
+}
+
+// Play the embedded GIF for ~durationMs, honouring per-frame delays; loops if the
+// clip is shorter. Blocking by design — it IS the boot delay.
+static void playBootAnimation(uint32_t durationMs) {
+  g_bootGif.begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
+  if (!g_bootGif.open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw))
+    return;                                 // decode unavailable — skip silently
+  uint32_t start = millis();
+  int delayMs = 0;
+  while (millis() - start < durationMs) {
+    if (!g_bootGif.playFrame(true, &delayMs)) g_bootGif.reset();  // end -> loop
+  }
+  g_bootGif.close();
+}
 
 // ── Touch (XPT2046 on its own SPI bus) ────────────────────────────────────────
 static SPIClass touchSPI(HSPI);
@@ -1679,6 +1746,11 @@ void setup() {
 
   loadConfig();   // node name (+ optional WiFi seeds) + BLE/backlight settings
   applyBacklight();
+
+  // Boot splash: the glitch animation for ~5 s, also giving a companion Pi time
+  // to finish booting before we start the serial/WiFi link.
+  playBootAnimation(CYD_BOOT_ANIM_MS);
+  gfx->fillScreen(BLACK);
 #if CYD_TRANSPORT_SERIAL
   Serial.setTimeout(20);   // cabled to the Pi; cyd_serial_bridge.py is the link
 #else
