@@ -2767,17 +2767,19 @@ def _cyd_mesh_roster():
     return d
 
 
-_cyd_wifi_cache = {'t': 0.0, 'rows': []}
+_cyd_wifi_cache = {'t': 0.0, 'rows': [], 'ssids': []}
 
 
 def _cyd_wifi_list():
     """Flat Pi-WiFi scan for the CYD Net-Conn screen: {'n':K, 'w0':'ssid rssi sec'}.
-    Cached ~20 s — a scan is expensive and disruptive on the station radio."""
+    Cached ~20 s — a scan is expensive and disruptive on the station radio. The
+    raw SSIDs are kept in parallel so connect resolves by index (SSIDs may have
+    spaces, so they can't be parsed back out of the display row)."""
     now = time.time()
     if now - _cyd_wifi_cache['t'] < 20 and _cyd_wifi_cache['rows']:
         rows = _cyd_wifi_cache['rows']
     else:
-        rows = []
+        rows, ssids = [], []
         try:
             wm = getattr(shared_data, 'wifi_manager', None)
             nets = (wm.scan_networks() if wm else None) or []
@@ -2790,24 +2792,22 @@ def _cyd_wifi_list():
                 sig = net.get('signal') or 0
                 sec = 'lock' if (net.get('security') and net.get('security') != 'Open') else 'open'
                 mark = '*' if net.get('known') else ' '
-                rows.append(_cyd_sanitize('%s%s %sdBm %s' % (mark, ssid, sig, sec)))
-            _cyd_wifi_cache.update(t=now, rows=rows)
+                rows.append(_cyd_sanitize('%s%s  %sdBm %s' % (mark, ssid, sig, sec), 34))
+                ssids.append(ssid)
+            _cyd_wifi_cache.update(t=now, rows=rows, ssids=ssids)
         except Exception as exc:
             logger.debug(f"[cyd] wifi_list failed: {exc}")
+        rows = _cyd_wifi_cache['rows']
     d = {'n': len(rows)}
     for i, r in enumerate(rows):
         d['w%d' % i] = r
-    # The raw SSIDs (unmarked) so the node can connect by index.
     return d
 
 
 def _cyd_wifi_ssid_by_index(idx):
     """Resolve a scan-row index back to its raw SSID for connect."""
-    rows = _cyd_wifi_cache['rows']
-    if 0 <= idx < len(rows):
-        r = rows[idx][1:]                    # drop the leading */space mark
-        return r.split(' ')[0] if ' ' in r else r
-    return ''
+    ssids = _cyd_wifi_cache['ssids']
+    return ssids[idx] if 0 <= idx < len(ssids) else ''
 
 
 def _cyd_wifi_connect(idx, pw):
