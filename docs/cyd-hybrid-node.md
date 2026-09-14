@@ -190,6 +190,12 @@ The CYD's screen is a native, Ragnar-themed **touch console** — not the web pa
 (no browser), and not framed as a mesh node. A HOME launcher of tiles drills into
 full screens, each with a back bar:
 
+> **UI stays responsive during sensing.** The 2.4 GHz sniff dwell and the BLE
+> scan (run asynchronously) both service touch + the display cooperatively, so
+> touch never goes dead mid-cycle. The panel repaints per-field (a full wipe only
+> on a screen change), and the LED is a steady link indicator — so there's no
+> per-phase flicker or LED blink.
+
 | Tile | Screen |
 |------|--------|
 | **DASH** | Ragnar status: unit, threat, 2.4/5 GHz counts, Bluetooth, last-sync |

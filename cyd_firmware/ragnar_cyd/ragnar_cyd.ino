@@ -180,7 +180,12 @@ static bool actionDequeue(String &out) {
 // ── Status line shown at the bottom of every page ─────────────────────────────
 static char g_statusLine[40] = "booting";
 static uint16_t g_statusColor = WHITE;
+static void serviceUI();            // defined after render()/handleTouch()
 static void setStatus(const char *s, uint16_t c) {
+  // Only repaint when the text or colour actually changed — a periodic status
+  // set with the same value must not force a redraw (that was part of the
+  // every-few-seconds twitch).
+  if (g_statusColor == c && strncmp(g_statusLine, s, sizeof(g_statusLine) - 1) == 0) return;
   strncpy(g_statusLine, s, sizeof(g_statusLine) - 1);
   g_statusLine[sizeof(g_statusLine) - 1] = 0;
   g_statusColor = c;
@@ -290,11 +295,23 @@ static void sniffWindow(uint32_t durationMs) {
   const uint8_t channels[] = {1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10};
   const int nch = sizeof(channels);
   uint32_t start = millis();
+  uint32_t dwell = durationMs / (nch + 1);           // per-channel dwell
+  if (dwell > 120) dwell = 120;
   int idx = 0;
-  while (millis() - start < durationMs) {
+  bool leave = false;
+  while (millis() - start < durationMs && !leave) {
     esp_wifi_set_channel(channels[idx % nch], WIFI_SECOND_CHAN_NONE);
     idx++;
-    delay(durationMs / (nch + 1) > 60 ? 60 : durationMs / (nch + 1));
+    // Cooperative dwell: keep touch + display alive while the sniffer callback
+    // accumulates in the background (it's an async RX cb, not this loop). This
+    // is what makes touch responsive during the 6 s sweep.
+    uint32_t d0 = millis();
+    while (millis() - d0 < dwell) {
+      serviceUI(); delay(8);
+#if CYD_TRANSPORT_SERIAL
+      if (g_wfActive) { leave = true; break; }   // waterfall opened: end sweep now
+#endif
+    }
   }
   esp_wifi_set_promiscuous(false);
   g_sc.bssids = g_apCount;
@@ -305,18 +322,28 @@ static void sniffWindow(uint32_t durationMs) {
 // ════════════════════════════════════════════════════════════════════════════
 #if CYD_ENABLE_BLE
 static bool g_bleReady = false;
-static void bleWindow(uint32_t durationMs) {
-  if (!g_bleReady) return;
+static volatile bool g_bleBusy = false;
+static void bleDone(BLEScanResults res) {   // completion callback (async)
+  g_sc.bleAdv = res.getCount();
+  g_bleBusy = false;
+}
+// Start a passive BLE advert scan ASYNCHRONOUSLY (returns immediately); bleDone
+// records the count when it finishes. The caller services the UI meanwhile, so
+// BLE no longer blocks touch for its whole window.
+static void bleStart(uint32_t durationMs) {
+  if (!g_bleReady || g_bleBusy) return;
   BLEScan *scan = BLEDevice::getScan();
-  scan->setActiveScan(false);       // passive: just count adverts
+  scan->setActiveScan(false);
   scan->setInterval(100);
   scan->setWindow(99);
-  BLEScanResults *res = scan->start((int)(durationMs / 1000), false);
-  g_sc.bleAdv = res ? res->getCount() : 0;
   scan->clearResults();
+  uint32_t secs = durationMs / 1000; if (secs < 1) secs = 1;
+  g_bleBusy = true;
+  if (!scan->start(secs, bleDone, false)) g_bleBusy = false;
 }
 #else
-static void bleWindow(uint32_t) { g_sc.bleAdv = 0; }
+static void bleStart(uint32_t) { g_sc.bleAdv = 0; }
+static const bool g_bleBusy = false;
 #endif
 
 // Build the "aps":[...] fragment for an ingest payload (shared by both
@@ -531,6 +558,9 @@ static void drawStatusBar() {
 }
 
 static void kv(int16_t y, const char *k, const String &v, uint16_t vc) {
+  // Clear this field's row first so a same-screen refresh needs no full wipe
+  // (that's what removes the flicker) yet leaves no stale pixels behind.
+  gfx->fillRect(0, y - 1, SCR_W, 30, colBg());
   gfx->setTextSize(1);
   gfx->setTextColor(colGray());
   gfx->setCursor(12, y);
@@ -630,6 +660,8 @@ static void drawScan() {
 // ── Signal Intelligence: a radar/dome view of the 2.4 GHz APs we hear ─────────
 static void drawSigInt() {
   drawHeader("SIGINT", false);
+  // Clear the plot area (moving dots would smear without the full-screen wipe).
+  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
   int16_t cx = SCR_W / 2;
   int16_t cy = HEAD_H + 118;
   int16_t rmax = 100;
@@ -751,7 +783,11 @@ static void drawControls() {
 }
 
 static void render() {
-  gfx->fillScreen(colBg());
+  // Only wipe the whole panel when the SCREEN changes; a same-screen refresh
+  // repaints its own field backgrounds (kv/tiles/etc), so a periodic data update
+  // no longer black-flashes the display every few seconds (the "twitch").
+  static Screen g_rendered = (Screen)255;
+  if (g_screen != g_rendered) { gfx->fillScreen(colBg()); g_rendered = g_screen; }
   switch (g_screen) {
     case SCR_HOME:    drawHome();      break;
     case SCR_DASH:    drawDash();      break;
@@ -969,22 +1005,25 @@ void setup() {
   g_needRedraw = true;
 }
 
-// Poll touch between long radio phases so the UI stays responsive.
+// One UI service step: drain serial, read touch, render if dirty. Called from
+// every wait loop (sync, sniff dwell, BLE wait) so touch/display never stall.
+static void serviceUI() {
+#if CYD_TRANSPORT_SERIAL
+  serialDrain();   // keep the display current with the Pi's status pushes
+#endif
+  static uint32_t lastTap = 0;
+  int16_t px, py;
+  if (touchRead(px, py) && millis() - lastTap > 250) {
+    lastTap = millis();
+    handleTouch(px, py);
+  }
+  if (g_needRedraw) render();
+}
+
+// Service the UI for `ms` (touch stays responsive across long radio phases).
 static void pollTouchFor(uint32_t ms) {
   uint32_t start = millis();
-  static uint32_t lastTap = 0;
-  while (millis() - start < ms) {
-#if CYD_TRANSPORT_SERIAL
-    serialDrain();   // keep the display current with the Pi's status pushes
-#endif
-    int16_t px, py;
-    if (touchRead(px, py) && millis() - lastTap > 250) {
-      lastTap = millis();
-      handleTouch(px, py);
-    }
-    if (g_needRedraw) render();
-    delay(20);
-  }
+  while (millis() - start < ms) { serviceUI(); delay(12); }
 }
 
 void loop() {
@@ -1003,69 +1042,47 @@ void loop() {
   if (wasWf) { serialSendWfReq(false); wasWf = false; }
 #endif
 
+  // The LED is a STEADY link indicator, not a per-phase blinker (the old
+  // per-phase toggling was the "LED twitch"). Solid blue = linked/running.
+  digitalWrite(PIN_LED_R, HIGH); digitalWrite(PIN_LED_G, HIGH);
+  digitalWrite(PIN_LED_B, LOW);
+
   // ── 1) SYNC WITH RAGNAR ─────────────────────────────────────────────────────
 #if CYD_TRANSPORT_SERIAL
-  // Cabled transport: push our counts, flush queued actions, and read whatever
-  // status the Pi has sent. serialDrain() also runs inside pollTouchFor so the
-  // display keeps up with the Pi's ~2 s status pushes.
-  digitalWrite(PIN_LED_B, LOW);          // blue = linked
+  // Cabled transport: push counts, flush queued actions, read pushed status.
   serialSendIngest();
   { String a; while (actionDequeue(a)) serialSendAction(a); }
   serialDrain();
-  setStatus("usb-serial", gfx->color565(70,200,120));
-  digitalWrite(PIN_LED_B, HIGH);
-  g_needRedraw = true;
-  render();
-  pollTouchFor(CYD_SYNC_WINDOW_MS);
+  setStatus("usb-serial", colGreen());   // only redraws if the text changed
+  pollTouchFor(CYD_SYNC_WINDOW_MS);       // responsive; renders only on change
 #else
-  setStatus("connecting wifi", gfx->color565(230,170,50));
-  if (g_needRedraw) render();
+  setStatus("connecting wifi", colAmber());
+  serviceUI();
   if (wifiConnect()) {
-    digitalWrite(PIN_LED_B, LOW);   // blue = online
-    setStatus("syncing", gfx->color565(90,180,255));
-    if (g_needRedraw) render();
-
-    httpPostIngest();               // push last window's counts
-    httpGetStatus();                // pull fresh status
-
-    String a;                       // flush any queued operator actions
+    httpPostIngest();
+    httpGetStatus();
+    String a;
     while (actionDequeue(a)) httpPostAction(a);
-
-    setStatus(g_rs.ok ? "online" : "sync failed",
-              g_rs.ok ? gfx->color565(70,200,120) : gfx->color565(220,60,60));
-    digitalWrite(PIN_LED_B, HIGH);
-    g_needRedraw = true;
-    render();
+    setStatus(g_rs.ok ? "online" : "sync failed", g_rs.ok ? colGreen() : colRed());
     pollTouchFor(CYD_SYNC_WINDOW_MS);
   } else {
-    setStatus("wifi unavailable", gfx->color565(220,60,60));
+    setStatus("wifi unavailable", colRed());
     g_rs.ok = false;
-    render();
     pollTouchFor(CYD_SYNC_WINDOW_MS);
   }
 #endif
 
-  // ── 2) WiFi promiscuous sweep (disconnected) ────────────────────────────────
-  setStatus("sniffing 2.4G", gfx->color565(200,120,255));
-  render();
-  digitalWrite(PIN_LED_G, LOW);     // green = sensing
+  // ── 2) WiFi promiscuous sweep — cooperative (services UI throughout) ─────────
   sniffWindow(CYD_SNIFF_WINDOW_MS);
-  digitalWrite(PIN_LED_G, HIGH);
-  g_needRedraw = true;
-  render();
-  pollTouchFor(400);
 
-  // ── 3) BLE advert scan (disconnected) ───────────────────────────────────────
+  // ── 3) BLE advert scan — async; service UI while it runs (never blocks touch)─
 #if CYD_ENABLE_BLE
   if (CYD_BLE_WINDOW_MS > 0) {
-    setStatus("scanning BLE", gfx->color565(200,120,255));
-    render();
-    digitalWrite(PIN_LED_G, LOW);
-    bleWindow(CYD_BLE_WINDOW_MS);
-    digitalWrite(PIN_LED_G, HIGH);
-    g_needRedraw = true;
-    render();
-    pollTouchFor(400);
+    bleStart(CYD_BLE_WINDOW_MS);
+    uint32_t t0 = millis();
+    while (g_bleBusy && millis() - t0 < (uint32_t)CYD_BLE_WINDOW_MS + 1500) {
+      serviceUI(); delay(12);
+    }
   }
 #endif
 }
