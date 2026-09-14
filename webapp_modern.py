@@ -2717,14 +2717,25 @@ def _cyd_alert_summary(top=3):
         return 0, 'none', []
 
 
+def _cyd_unit_label():
+    """Short identity for the CYD header: the mesh Viking short-name when mesh is
+    enabled, else just 'Ragnar'. No '(Unit N)' suffix — the CYD wants a compact
+    name that fits the 240px header."""
+    try:
+        if _mesh_enabled():
+            n = (_mesh_viking_name() or '').strip()
+            if n:
+                return n
+    except Exception:
+        pass
+    return 'Ragnar'
+
+
 def _cyd_build_status_dict():
     """The compact, flat status a CYD node displays — shared by the HTTP status
     endpoint and the USB-serial bridge. Flat on purpose: the firmware parses it
     with lightweight string matching (no JSON library)."""
-    try:
-        unit = _mesh_unit_name()
-    except Exception:
-        unit = socket.gethostname()
+    unit = _cyd_unit_label()
     nets_24, nets_5 = _cyd_network_band_counts()
     iface, ip = _cyd_active_iface_ip()
     a_count, a_worst, a_titles = _cyd_alert_summary(3)

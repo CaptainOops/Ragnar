@@ -633,7 +633,7 @@ static const MenuItem g_menu[] = {
   {"SCAN",     SCR_SCAN,     150,  90, 210},
   {"SIGINT",   SCR_SIGINT,    60, 190, 190},
   {"WFALL",    SCR_WFALL,    230, 170,  50},
-  {"NETWORK",  SCR_NETWORK,   80, 160, 120},
+  {"NET",      SCR_NETWORK,   80, 160, 120},
   {"SETTINGS", SCR_SETTINGS, 140, 152, 165},
   {"CTRL",     SCR_CTRL,     120, 130, 200},
 };
@@ -669,12 +669,12 @@ static void kv(int16_t y, const char *k, const String &v, uint16_t vc) {
 static void drawHeader(const char *title, bool home) {
   gfx->fillRect(0, 0, SCR_W, HEAD_H, colHead());
   if (home) {
+    // Title = this unit's identity (mesh short-name, or 'Ragnar' when no mesh) —
+    // no fixed 'RAGNAR' brand + name (which read 'RAGNAR Ragnar' off-mesh).
+    String u = g_rs.unitName; if (!u.length()) u = "Ragnar";
+    if (u.length() > 18) u = u.substring(0, 18);
     gfx->setTextColor(colSky()); gfx->setTextSize(2);
-    gfx->setCursor(8, 8); gfx->print("RAGNAR");
-    gfx->setTextColor(colGray()); gfx->setTextSize(1);
-    gfx->setCursor(96, 12);
-    String u = g_rs.unitName; if (u.length() > 20) u = u.substring(0, 20);
-    gfx->print(u);
+    gfx->setCursor(8, 8); gfx->print(u);
   } else {
     // Bigger, obvious back target: a rounded chip filling the header-left, with a
     // large arrow. The touch zone (see handleTouch) is even larger than the chip.
@@ -900,15 +900,49 @@ static const ActionBtn g_ctrlActions[] = {
 };
 static const int N_CTRL = sizeof(g_ctrlActions) / sizeof(g_ctrlActions[0]);
 
-// NETWORK screen actions (a compact button strip under the status header).
+// NETWORK screen actions — a dense 2-column grid (fits far more than 3 big
+// buttons; add a row here and it lays itself out).
 static const ActionBtn g_netActions[] = {
-  {"Wardrive start", "wardrive_start"},
-  {"Wardrive stop",  "wardrive_stop"},
-  {"Airspace scan",  "network_scan"},
+  {"Wardrive on",  "wardrive_start"},
+  {"Wardrive off", "wardrive_stop"},
+  {"Airspace",     "network_scan"},
+  {"WIDS scan",    "wifi_defense_scan"},
+  {"BLE scan",     "ble_scan"},
+  {"Clear alerts", "watchtower_clear"},
 };
 static const int N_NET = sizeof(g_netActions) / sizeof(g_netActions[0]);
 
 static const int16_t BTN_BH = 40, BTN_GAP = 8;
+
+// Compact 2-column action grid (half-height buttons, size-1 labels).
+static const int16_t GBTN_W = 105, GBTN_H = 34, GBTN_GAP = 7;
+static void gridBtnXY(int i, int16_t y0, int16_t &x, int16_t &y) {
+  x = (i & 1) ? 125 : 10;
+  y = y0 + (i / 2) * (GBTN_H + GBTN_GAP);
+}
+static void drawActionGrid(const ActionBtn *items, int n, int16_t y0) {
+  for (int i = 0; i < n; i++) {
+    int16_t x, y; gridBtnXY(i, y0, x, y);
+    gfx->fillRoundRect(x, y, GBTN_W, GBTN_H, 6, colBlue());
+    gfx->drawRoundRect(x, y, GBTN_W, GBTN_H, 6, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(x + 8, y + (GBTN_H - 8) / 2); gfx->print(items[i].label);
+  }
+}
+static bool hitActionGrid(const ActionBtn *items, int n, int16_t y0,
+                          int16_t px, int16_t py) {
+  for (int i = 0; i < n; i++) {
+    int16_t x, y; gridBtnXY(i, y0, x, y);
+    if (inRect(px, py, x, y, GBTN_W, GBTN_H)) {
+      if (actionEnqueue(items[i].action))
+        setStatus((String("queued: ") + items[i].label).c_str(), colAmber());
+      else
+        setStatus("action queue full", colRed());
+      return true;
+    }
+  }
+  return false;
+}
 
 // Draw a vertical list of action buttons from y0; returns the y after the list.
 static int16_t drawActionList(const ActionBtn *items, int n, int16_t y0) {
@@ -948,25 +982,22 @@ static void drawControls() {
 }
 
 // ── Network: compact status header + wardrive/scan action buttons ─────────────
-static const int16_t NET_BTN_Y0 = HEAD_H + 92;
+static const int16_t NET_GRID_Y0 = HEAD_H + 44;
 static void drawNetwork() {
   drawHeader("NETWORK", false);
-  // Compact status: iface/ip, nets, wardrive/alerts — three tight rows.
+  // Condensed 2-line status header, then a dense action grid below.
   int16_t y = HEAD_H + 6;
-  gfx->fillRect(0, y, SCR_W, 84, colBg());
+  gfx->fillRect(0, y, SCR_W, 36, colBg());
   gfx->setTextSize(1);
-  String ifc = strlen(g_rs.iface) ? (String(g_rs.iface) + "  " + g_rs.ip) : String("iface --");
-  gfx->setTextColor(colGray()); gfx->setCursor(12, y);     gfx->print("LINK");
-  gfx->setTextColor(colSky());  gfx->setCursor(60, y);     gfx->print(ifc);
-  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 20);gfx->print("NETS");
-  gfx->setTextColor(WHITE);     gfx->setCursor(60, y + 20);
-  gfx->print(String(g_rs.nets24) + " / " + String(g_rs.nets5) + " (2.4/5G)");
-  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 40);gfx->print("WDRV");
-  gfx->setTextColor(WHITE);     gfx->setCursor(60, y + 40);gfx->print(g_rs.wardrive);
-  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 60);gfx->print("ALRT");
+  String l1 = (strlen(g_rs.iface) ? (String(g_rs.iface) + " " + g_rs.ip) : String("link --"))
+              + "  " + String(g_rs.nets24) + "/" + String(g_rs.nets5) + "G";
+  gfx->setTextColor(colSky()); gfx->setCursor(12, y); gfx->print(l1);
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 16); gfx->print("wdrv ");
+  gfx->setTextColor(WHITE); gfx->print(g_rs.wardrive);
+  gfx->setTextColor(colGray()); gfx->print("   alrt ");
   gfx->setTextColor(g_rs.alerts ? colRed() : colGreen());
-  gfx->setCursor(60, y + 60); gfx->print(String(g_rs.alerts) + "  " + g_rs.worst);
-  drawActionList(g_netActions, N_NET, NET_BTN_Y0);
+  gfx->print(String(g_rs.alerts) + " " + g_rs.worst);
+  drawActionGrid(g_netActions, N_NET, NET_GRID_Y0);
 }
 
 // ── Alerts: newest Watchtower findings pushed from Ragnar ─────────────────────
@@ -1161,7 +1192,7 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_NETWORK) {
-    hitActionList(g_netActions, N_NET, NET_BTN_Y0, px, py);
+    hitActionGrid(g_netActions, N_NET, NET_GRID_Y0, px, py);
     return;
   }
 }
