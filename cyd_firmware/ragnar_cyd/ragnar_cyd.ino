@@ -56,6 +56,10 @@ static RuntimeConfig g_cfg;
 static Preferences g_prefs;
 
 // Load config from NVS, falling back to the (optional) compile-time seeds.
+// Device settings (Settings screen), persisted in NVS.
+static bool    g_bleEnabled   = true;    // BLE scanning on/off
+static uint8_t g_backlightPct = 100;     // backlight brightness 0..100
+
 static void loadConfig() {
   g_prefs.begin("ragnarcyd", true);
   g_cfg.ssid  = g_prefs.getString("ssid",  CYD_WIFI_SSID);
@@ -63,8 +67,23 @@ static void loadConfig() {
   g_cfg.url   = g_prefs.getString("url",   CYD_RAGNAR_URL);
   g_cfg.token = g_prefs.getString("token", CYD_DEVICE_TOKEN);
   g_cfg.name  = g_prefs.getString("name",  CYD_NODE_NAME);
+  g_bleEnabled   = g_prefs.getBool("ble", true);
+  g_backlightPct = g_prefs.getUChar("bl", 100);
   g_prefs.end();
   if (g_cfg.name.length() == 0) g_cfg.name = "cyd-node";
+  if (g_backlightPct < 10) g_backlightPct = 10;
+}
+
+static void saveSettings() {
+  g_prefs.begin("ragnarcyd", false);
+  g_prefs.putBool("ble", g_bleEnabled);
+  g_prefs.putUChar("bl", g_backlightPct);
+  g_prefs.end();
+}
+
+// Apply the backlight brightness (LEDC PWM; keep a floor so it never goes black).
+static void applyBacklight() {
+  analogWrite(TFT_BL, map(g_backlightPct, 0, 100, 26, 255));
 }
 
 static void saveConfig(const RuntimeConfig &c) {
@@ -99,7 +118,8 @@ static SPIClass touchSPI(HSPI);
 
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
-enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_SCAN, SCR_SIGINT, SCR_WFALL, SCR_CTRL };
+enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_SCAN, SCR_SIGINT, SCR_WFALL,
+              SCR_NETWORK, SCR_SETTINGS, SCR_CTRL };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -343,7 +363,7 @@ static void bleDone(BLEScanResults res) {   // completion callback (async)
 // records the count when it finishes. The caller services the UI meanwhile, so
 // BLE no longer blocks touch for its whole window.
 static void bleStart(uint32_t durationMs) {
-  if (!g_bleReady || g_bleBusy) return;
+  if (!g_bleReady || g_bleBusy || !g_bleEnabled) return;   // Settings can disable BLE
   BLEScan *scan = BLEDevice::getScan();
   scan->setActiveScan(false);
   scan->setInterval(100);
@@ -555,11 +575,32 @@ static uint16_t threatColor(int t) {
   return colGreen();
 }
 
-// ── Tile geometry (2x3 launcher grid) ─────────────────────────────────────────
-static const int16_t HEAD_H  = 30;
-static const int16_t TILE_W  = 105, TILE_H = 76;
-static const int16_t TILE_XL = 10,  TILE_XR = 125;
-static const int16_t TILE_R0 = 38, TILE_R1 = 122, TILE_R2 = 206;
+// ── Launcher: a dense, data-driven 2-column menu (half-height tiles) ──────────
+// Add a feature by adding one row to g_menu[] (and a case in render()/drawScreen)
+// — the grid lays itself out. Up to 10 items fit without scrolling.
+static const int16_t HEAD_H   = 30;
+static const int16_t TILE_W   = 105;
+static const int16_t TILE_H   = 38;                 // half the old tile height
+static const int16_t TILE_XL  = 10, TILE_XR = 125;
+static const int16_t MENU_Y0  = 36;                 // first row top
+static const int16_t MENU_PITCH = TILE_H + 8;       // row stride
+
+struct MenuItem { const char *label; Screen scr; uint8_t r, g, b; };
+static const MenuItem g_menu[] = {
+  {"DASH",     SCR_DASH,      40, 120, 200},
+  {"DEFEND",   SCR_DEFENSE,   70, 200, 120},
+  {"SCAN",     SCR_SCAN,     150,  90, 210},
+  {"SIGINT",   SCR_SIGINT,    60, 190, 190},
+  {"WFALL",    SCR_WFALL,    230, 170,  50},
+  {"NETWORK",  SCR_NETWORK,   80, 160, 120},
+  {"SETTINGS", SCR_SETTINGS, 140, 152, 165},
+  {"CTRL",     SCR_CTRL,     120, 130, 200},
+};
+static const int N_MENU = sizeof(g_menu) / sizeof(g_menu[0]);
+static void menuItemXY(int i, int16_t &x, int16_t &y) {
+  x = (i & 1) ? TILE_XR : TILE_XL;
+  y = MENU_Y0 + (i / 2) * MENU_PITCH;
+}
 
 static void drawStatusBar() {
   gfx->fillRect(0, SCR_H - 22, SCR_W, 22, colHead());
@@ -601,31 +642,47 @@ static void drawHeader(const char *title, bool home) {
   }
 }
 
-static void drawTile(int16_t x, int16_t y, const char *title,
-                     const String &sub, uint16_t accent, uint16_t subCol) {
-  gfx->fillRoundRect(x, y, TILE_W, TILE_H, 10, gfx->color565(22, 28, 40));
-  gfx->drawRoundRect(x, y, TILE_W, TILE_H, 10, accent);
-  gfx->fillRoundRect(x, y, TILE_W, 5, 3, accent);        // accent cap
+// A half-height menu tile: left accent bar + label, with a compact live value
+// on the right where one is useful. Label stays legible up to ~8 chars.
+static void drawMenuTile(int16_t x, int16_t y, const char *label,
+                         const String &val, uint16_t accent, uint16_t vcol) {
+  gfx->fillRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(22, 28, 40));
+  gfx->drawRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(45, 55, 70));
+  gfx->fillRoundRect(x, y + 4, 4, TILE_H - 8, 2, accent);   // left accent bar
   gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(x + 10, y + 18); gfx->print(title);
-  gfx->setTextColor(subCol); gfx->setTextSize(2);
-  gfx->setCursor(x + 10, y + 46); gfx->print(sub);
+  gfx->setCursor(x + 12, y + (TILE_H - 16) / 2); gfx->print(label);
+  if (val.length()) {
+    gfx->setTextColor(vcol); gfx->setTextSize(1);
+    int16_t vx = x + TILE_W - (int16_t)val.length() * 6 - 6;
+    gfx->setCursor(vx, y + (TILE_H - 8) / 2); gfx->print(val);
+  }
+}
+
+// Compact per-tile live value (empty where none is useful). Takes an int (not
+// Screen) so Arduino's auto-prototype doesn't reference the enum before it's
+// declared.
+static String menuValue(int s, uint16_t &vcol) {
+  vcol = colGray();
+  switch (s) {
+    case SCR_DASH:    vcol = threatColor(g_rs.threat); return String(g_rs.threat);
+    case SCR_DEFENSE: { bool a = g_sc.deauths > 0; vcol = a ? colRed() : colGreen();
+                        return a ? String((uint32_t)g_sc.deauths) : String("ok"); }
+    case SCR_SCAN:    vcol = colSky(); return String(g_sc.bssids);
+    case SCR_SIGINT:  vcol = colSky(); return String(g_apCount);
+    case SCR_WFALL:   vcol = colAmber(); return String(WF_BANDS[g_wfBandIdx]);
+    case SCR_NETWORK: vcol = colSky(); return String(g_rs.nets24) + "/" + String(g_rs.nets5);
+    default:          return String("");
+  }
 }
 
 static void drawHome() {
   drawHeader(nullptr, true);
-  bool attack = g_sc.deauths > 0;
-  // Row 0
-  drawTile(TILE_XL, TILE_R0, "DASH",  String(g_rs.threat), colBlue(), threatColor(g_rs.threat));
-  drawTile(TILE_XR, TILE_R0, "DEFEND",
-           attack ? String("!") + String((uint32_t)g_sc.deauths) : String("ok"),
-           attack ? colRed() : colGreen(), attack ? colRed() : colGreen());
-  // Row 1
-  drawTile(TILE_XL, TILE_R1, "SCAN",   String(g_sc.bssids), gfx->color565(150, 90, 210), colSky());
-  drawTile(TILE_XR, TILE_R1, "SIGINT", String(g_apCount) + "ap", gfx->color565(60, 190, 190), colSky());
-  // Row 2
-  drawTile(TILE_XL, TILE_R2, "WFALL",  String(WF_BANDS[g_wfBandIdx]), colAmber(), colAmber());
-  drawTile(TILE_XR, TILE_R2, "CTRL",   String("tap"), colGray(), colGray());
+  for (int i = 0; i < N_MENU; i++) {
+    int16_t x, y; menuItemXY(i, x, y);
+    uint16_t vcol; String val = menuValue(g_menu[i].scr, vcol);
+    drawMenuTile(x, y, g_menu[i].label, val,
+                 gfx->color565(g_menu[i].r, g_menu[i].g, g_menu[i].b), vcol);
+  }
 }
 
 static void drawDash() {
@@ -794,6 +851,45 @@ static void drawControls() {
   }
 }
 
+// ── Network: read-only status hub (actions to be wired next) ──────────────────
+static void drawNetwork() {
+  drawHeader("NETWORK", false);
+  int16_t y = HEAD_H + 8;
+  kv(y, "UNIT", String(g_rs.unitName), colSky());              y += 38;
+  kv(y, "MESH NODES", String(g_rs.meshNodes), WHITE);         y += 38;
+  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE);         y += 38;
+  kv(y, "NETWORKS 5G", String(g_rs.nets5), colDim());         y += 38;
+  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE);            y += 38;
+  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat));
+}
+
+// ── Settings: device-local, tappable rows + info. Persisted to NVS ────────────
+static const char *FW_BUILD = "cyd 0.4 " __DATE__;
+static const int16_t SET_Y0 = HEAD_H + 10, SET_ROWH = 32, SET_PITCH = 40;
+
+static void drawSettingRow(int16_t y, const char *label, const String &val, uint16_t vcol) {
+  gfx->fillRoundRect(10, y, SCR_W - 20, SET_ROWH, 6, gfx->color565(28, 34, 48));
+  gfx->drawRoundRect(10, y, SCR_W - 20, SET_ROWH, 6, gfx->color565(50, 60, 78));
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(20, y + 8); gfx->print(label);
+  gfx->setTextColor(vcol); gfx->setTextSize(2);
+  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 12 - 8;
+  gfx->setCursor(vx, y + 8); gfx->print(val);
+}
+
+static void drawSettings() {
+  drawHeader("SETTINGS", false);
+  drawSettingRow(SET_Y0, "BLE scan", g_bleEnabled ? "ON" : "OFF",
+                 g_bleEnabled ? colGreen() : colGray());
+  drawSettingRow(SET_Y0 + SET_PITCH, "Backlight", String(g_backlightPct) + "%", colSky());
+  int16_t y = SET_Y0 + SET_PITCH * 2 + 6;
+  kv(y, "NODE", g_cfg.name, colSky());                         y += 34;
+  kv(y, "FIRMWARE", String(FW_BUILD), WHITE);                  y += 34;
+  kv(y, "LINK", String(CYD_TRANSPORT_SERIAL ? "USB-serial" : "WiFi"),
+     g_rs.ok ? colGreen() : colDim());                          y += 34;
+  kv(y, "FREE HEAP", String(ESP.getFreeHeap() / 1024) + " KB", colDim());
+}
+
 static void render() {
   // Only wipe the whole panel when the SCREEN changes; a same-screen refresh
   // repaints its own field backgrounds (kv/tiles/etc), so a periodic data update
@@ -807,6 +903,8 @@ static void render() {
     case SCR_SCAN:    drawScan();      break;
     case SCR_SIGINT:  drawSigInt();    break;
     case SCR_WFALL:   drawWaterfall(); break;
+    case SCR_NETWORK: drawNetwork();   break;
+    case SCR_SETTINGS:drawSettings();  break;
     case SCR_CTRL:    drawControls();  break;
   }
   drawStatusBar();
@@ -826,26 +924,36 @@ static void wfReset() {
 // buttons enqueue an action; WATERFALL's band bar cycles the band.
 static void handleTouch(int16_t px, int16_t py) {
   if (g_screen == SCR_HOME) {
-    if      (inRect(px, py, TILE_XL, TILE_R0, TILE_W, TILE_H)) g_screen = SCR_DASH;
-    else if (inRect(px, py, TILE_XR, TILE_R0, TILE_W, TILE_H)) g_screen = SCR_DEFENSE;
-    else if (inRect(px, py, TILE_XL, TILE_R1, TILE_W, TILE_H)) g_screen = SCR_SCAN;
-    else if (inRect(px, py, TILE_XR, TILE_R1, TILE_W, TILE_H)) g_screen = SCR_SIGINT;
-    else if (inRect(px, py, TILE_XL, TILE_R2, TILE_W, TILE_H)) {
-      g_screen = SCR_WFALL; wfReset();
+    for (int i = 0; i < N_MENU; i++) {
+      int16_t x, y; menuItemXY(i, x, y);
+      if (!inRect(px, py, x, y, TILE_W, TILE_H)) continue;
+      g_screen = g_menu[i].scr;
+      if (g_screen == SCR_WFALL) {
+        wfReset();
 #if CYD_TRANSPORT_SERIAL
-      g_wfActive = true;                          // stream over the cable
+        g_wfActive = true;                        // stream over the cable
 #else
-      strncpy(g_wfErr, "USB-serial only", sizeof(g_wfErr) - 1);
+        strncpy(g_wfErr, "USB-serial only", sizeof(g_wfErr) - 1);
 #endif
+      }
+      g_needRedraw = true;
+      return;
     }
-    else if (inRect(px, py, TILE_XR, TILE_R2, TILE_W, TILE_H)) g_screen = SCR_CTRL;
-    else return;
-    g_needRedraw = true;
     return;
   }
   if (py < HEAD_H) {                 // back
     if (g_screen == SCR_WFALL) g_wfActive = false;
     g_screen = SCR_HOME; g_needRedraw = true; return;
+  }
+  if (g_screen == SCR_SETTINGS) {
+    if (inRect(px, py, 10, SET_Y0, SCR_W - 20, SET_ROWH)) {
+      g_bleEnabled = !g_bleEnabled; saveSettings(); g_needRedraw = true; return;
+    }
+    if (inRect(px, py, 10, SET_Y0 + SET_PITCH, SCR_W - 20, SET_ROWH)) {
+      g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
+      applyBacklight(); saveSettings(); g_needRedraw = true; return;
+    }
+    return;
   }
   if (g_screen == SCR_WFALL) {
     // Tap the band bar (top strip) to cycle to the next band.
@@ -992,7 +1100,8 @@ void setup() {
   pinMode(TOUCH_IRQ, INPUT);
   touchSPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
 
-  loadConfig();   // node name (+ optional WiFi seeds)
+  loadConfig();   // node name (+ optional WiFi seeds) + BLE/backlight settings
+  applyBacklight();
 #if CYD_TRANSPORT_SERIAL
   Serial.setTimeout(20);   // cabled to the Pi; cyd_serial_bridge.py is the link
 #else
