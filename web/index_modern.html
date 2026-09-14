@@ -940,7 +940,7 @@
                 <div class="flex items-center justify-between gap-4 mb-3">
                     <div class="min-w-0">
                         <h3 class="text-lg font-semibold">Watchtower</h3>
-                        <p class="text-xs text-gray-400">Live findings from the passive watcher daemons — ARP Guard · NDP (IPv6) · Wi-Fi · Legacy Wi-Fi · WPS · Cert · SNMP · IS-IS · IGMP · Dell Guard (OS10 SSRF) · Cisco/Juniper/Arista/Comware/MikroTik guards (plus any other watcher writing JSONL)</p>
+                        <p class="text-xs text-gray-400">Live findings from the passive watcher daemons — ARP Guard · NDP (IPv6) · Wi-Fi · Legacy Wi-Fi · WPS · Cert · SNMP · IS-IS · IGMP · Dell Guard (OS10 SSRF) · Cisco/Juniper/Arista/Comware/MikroTik/Aruba guards (plus any other watcher writing JSONL)</p>
                     </div>
                     <div class="shrink-0 flex items-center gap-2">
                         <button onclick="watchtowerClear()" title="Clear the alerts shown here. The watchers keep their place in each log, so only genuinely new findings re-appear." class="bg-slate-700 hover:bg-slate-600 text-gray-200 px-3 py-1.5 rounded text-xs whitespace-nowrap">Clear</button>
@@ -1752,7 +1752,7 @@
                     <div class="flex items-center justify-between gap-4">
                         <div class="min-w-0">
                             <h3 class="text-lg font-semibold">Watchtower <span class="text-xs font-normal text-gray-500">— unified watcher alerts</span></h3>
-                            <p class="text-sm text-gray-400">One pane for the deep standalone watchers that each run as their own daemon — <strong>ARP&nbsp;Guard</strong>, <strong>NDP&nbsp;Watch</strong> (IPv6), <strong>Wi-Fi&nbsp;Watch</strong>, <strong>Legacy&nbsp;Wi-Fi</strong>, <strong>WPS&nbsp;Watch</strong>, <strong>Cert&nbsp;Watch</strong>, <strong>SNMP</strong>, <strong>IS-IS</strong>, <strong>IGMP</strong> and <strong>Dell&nbsp;Guard</strong> (OS10 SSRF-egress, <code>CVE-2025-22474</code>) — <strong>plus the in-app vendor CVE guards</strong> (<strong>Cisco</strong>, <strong>Juniper</strong>, <strong>Arista</strong>, <strong>Comware/VRF-hop</strong> and <strong>MikroTik/RouterOS</strong>), which now stream their findings into the same feed (any other watcher dropping a JSONL log in the watched dir is picked up automatically too). Watchtower tails each one's JSON-lines log, normalizes them into a single feed, and pages new <strong>high/critical</strong> findings through one deduped Pushover path. Read-only over the logs — it captures nothing itself. The standalone watchers each need their systemd unit running to appear here; the in-app guards feed it automatically whenever Extended Monitoring is on.</p>
+                            <p class="text-sm text-gray-400">One pane for the deep standalone watchers that each run as their own daemon — <strong>ARP&nbsp;Guard</strong>, <strong>NDP&nbsp;Watch</strong> (IPv6), <strong>Wi-Fi&nbsp;Watch</strong>, <strong>Legacy&nbsp;Wi-Fi</strong>, <strong>WPS&nbsp;Watch</strong>, <strong>Cert&nbsp;Watch</strong>, <strong>SNMP</strong>, <strong>IS-IS</strong>, <strong>IGMP</strong> and <strong>Dell&nbsp;Guard</strong> (OS10 SSRF-egress, <code>CVE-2025-22474</code>) — <strong>plus the in-app vendor CVE guards</strong> (<strong>Cisco</strong>, <strong>Juniper</strong>, <strong>Arista</strong>, <strong>Comware/VRF-hop</strong>, <strong>MikroTik/RouterOS</strong> and <strong>Aruba/PAPI</strong>), which now stream their findings into the same feed (any other watcher dropping a JSONL log in the watched dir is picked up automatically too). Watchtower tails each one's JSON-lines log, normalizes them into a single feed, and pages new <strong>high/critical</strong> findings through one deduped Pushover path. Read-only over the logs — it captures nothing itself. The standalone watchers each need their systemd unit running to appear here; the in-app guards feed it automatically whenever Extended Monitoring is on.</p>
                         </div>
                         <label class="toggle-switch relative inline-flex items-center cursor-pointer shrink-0">
                             <input type="checkbox" id="watchtower-enabled" class="sr-only peer" onchange="onWatchtowerToggled(this)">
@@ -2565,6 +2565,20 @@
                         <button onclick="runMikroTikGuard()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan MikroTik</button>
                     </div>
                     <div id="mikrotik-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
+                </div>
+                <!-- Aruba Guard (HPE Aruba PAPI) -->
+                <div class="glass rounded-xl p-4 sm:p-6 mt-6">
+                    <h3 class="text-lg font-semibold mb-1">Aruba Guard <span class="text-xs font-normal text-gray-500">(HPE Aruba · ArubaOS / InstantOS · PAPI)</span></h3>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive HPE Aruba CVE guard — <strong>detection-only</strong>, never transmits. Watches the Aruba control protocol <strong>PAPI</strong> (UDP/8211), which is <strong>cleartext and unauthenticated</strong> on the wire, and names the exploit shapes for <strong>42 PAPI CVEs</strong>. Because 8 of the 2023 CVEs are <strong>permanently unpatched</strong> on InstantOS 6.4/6.5/8.6 and ArubaOS 10.3 (HPE's only mitigation, <span class="font-mono">cluster-security</span>, doesn't exist on ArubaOS 10), <strong>reachability itself is the finding</strong> — <strong>ARB-001</strong> fires on any PAPI datagram. Flags the attack shapes: <strong>oversized datagram</strong> (ARB-101) and <strong>declared-length overrun</strong> (ARB-102) for the buffer-overflow CVEs, <strong>shell metacharacters + a command token</strong> (ARB-103, critical) and <strong>format strings</strong> (ARB-107) for the injection CVEs, <strong>path traversal</strong> (ARB-104, critical — CVE-2024-31474/31475 unauth file deletion), a <strong>long unterminated run</strong> (ARB-105), a <strong>source flood</strong> (ARB-106, the DoS shape), and <strong>service attribution</strong> (ARB-109) when a datagram is addressed to a PAPI service the advisories name (CLI service, Soft AP Daemon, Cert Management, …). Reads the <strong>PAPI header</strong> (magic <span class="font-mono">0x4972</span>) to prove <strong>cleartext framing</strong> (ARB-004) vs <strong>opaque</strong> / cluster-security (ARB-005) — key strength is <em>not</em> observable passively, so it reports framing only. <strong>Dual-stack</strong> (bare <span class="font-mono">port</span> matches v4 and v6; a narrow <span class="font-mono">ip6[6]</span> clause admits PAPI behind an extension header — ARB-008).</p>
+                    <p class="text-sm text-gray-400 mb-3">One short passive capture on the segment (needs a SPAN/mirror to see the AP↔controller PAPI plane). The three non-PAPI codes in the standalone are <strong>not</strong> ported: the L2 malformed-frame / OUI codes (CVE-2025-37148) need native Ethernet frames the guard's IP-onward capture can't reconstruct, the VLAN-leak code (CVE-2025-37165) needs an operator VLAN-per-interface declaration, and the trust-boundary codes (ARB-002/003) need declared management/tenant prefixes — none of which a bounded on-demand scan has.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <select id="aruba-guard-iface" title="Interface for the capture — LAN-only: pick the LAN/uplink NIC or a SPAN/mirror port (Wi-Fi is ignored)" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                            <option value="">Auto (LAN connections)</option>
+                        </select>
+                        <input id="aruba-guard-secs" type="number" min="5" max="40" value="20" title="capture seconds" class="w-20 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+                        <button onclick="runArubaGuard()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan Aruba</button>
+                    </div>
+                    <div id="aruba-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                 </div>
                 <!-- Dell SmartFabric OS10 Guard (standalone daemon — enable/disable switch) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
@@ -8619,7 +8633,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260913-dell-switch2"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260914-aruba-guard"></script>
 
 
 
