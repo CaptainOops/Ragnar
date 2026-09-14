@@ -77,8 +77,9 @@ class CydSerialBridge:
         self._publish_port = publish_port        # (port_or_None) -> None
         self._mesh_on = False
         self._wifi_on = False
-        self._dbg = {'wr': 0, 'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0,
-                     'wf_err': '', 'in': 0, 'ac': 0}
+        self._dbg = {'in': 0, 'ac': 0, 'wr': 0, 'mr': 0, 'wsr': 0, 'wc': 0,
+                     'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0, 'wf_err': '',
+                     'me_sent': 0, 'wl_sent': 0}
         self._baud = baud
         self._status_interval = status_interval
         self._forced_port = port          # static override (tests)
@@ -241,12 +242,14 @@ class CydSerialBridge:
                 next_mesh = now + 3.0
                 try:
                     self._send(ser, dict(self._get_mesh(), t='me'))
+                    self._dbg['me_sent'] += 1
                 except Exception:
                     pass
             if self._wifi_on and self._get_wifi and now >= next_wifi:
                 next_wifi = now + 3.0
                 try:
                     self._send(ser, dict(self._get_wifi(), t='wl'))
+                    self._dbg['wl_sent'] += 1
                 except Exception:
                     pass
             time.sleep(0.05)
@@ -262,12 +265,8 @@ class CydSerialBridge:
             return
         self.last_rx = time.time()
         t = msg.get('t')
-        if t == 'wr':
-            self._dbg['wr'] += 1
-        elif t == 'in':
-            self._dbg['in'] += 1
-        elif t == 'ac':
-            self._dbg['ac'] += 1
+        if t in self._dbg:                 # count every known inbound frame type
+            self._dbg[t] += 1
         if t == 'in':
             try:
                 self._on_ingest(msg)

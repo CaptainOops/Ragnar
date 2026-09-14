@@ -30,6 +30,12 @@ WF_BINS = 120
 _BASE_DBM = -110        # 0 in the quantised row
 _SPAN_DB = 80           # -110..-30 dBm -> 0..255
 _STALE_SEC = 15         # stop the sweep if the CYD stops asking
+# Fixed tuner gain when the CYD starts its OWN sweep (auto-gain lets the floor
+# wander, so contrast breathes). Only applied to a sweep we start — never to one
+# we piggyback (e.g. the web RF-waterfall keeps the operator's chosen gain).
+_RTL_GAIN_DB = 30
+_HACKRF_LNA = 32
+_HACKRF_VGA = 20
 
 _LOCK = threading.RLock()
 _band = None
@@ -143,13 +149,17 @@ def request(band, on):
             elif (not _active) or _we_started:      # our sweep isn't up — (re)start it
                 try:
                     rtl_sdr.power_start(band=_RTL_BAND_FALLBACK.get(band, band))
+                    try:
+                        rtl_sdr.set_tuning(gain=_RTL_GAIN_DB)   # fixed gain, steady floor
+                    except Exception:
+                        pass
                     _band, _backend, _active, _we_started, _since = band, 'rtl', True, True, 0
                 except Exception:
                     _active = False
         else:  # hackrf
             if not _active or _backend != 'hackrf' or (band != _band and _we_started):
                 try:
-                    sdr_spectrum.start(band=band)
+                    sdr_spectrum.start(band=band, lna=_HACKRF_LNA, vga=_HACKRF_VGA)
                     _band, _backend, _active, _we_started, _since = band, 'hackrf', True, True, 0
                 except Exception:
                     _active = False
