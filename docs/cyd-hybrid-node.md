@@ -196,14 +196,36 @@ full screens, each with a back bar:
 > on a screen change), and the LED is a steady link indicator — so there's no
 > per-phase flicker or LED blink.
 
+The launcher is a **dense, data-driven grid** of half-height tiles (add one row
+to `g_menu[]` to add a feature); each tile shows a compact live value.
+
 | Tile | Screen |
 |------|--------|
-| **DASH** | Ragnar status: unit, threat, 2.4/5 GHz counts, Bluetooth, last-sync |
+| **DASH** | Ragnar status: unit, threat, alerts+worst, 2.4/5 GHz counts, wardrive, link (iface/IP), last-sync |
 | **DEFEND** | this node's live 2.4 GHz Defense view (deauth/APs/probes/BLE) — what it reports to WiFi Defense |
+| **ALERTS** | count + worst severity + the latest Watchtower findings, pushed from Ragnar |
 | **SCAN** | raw 2.4 GHz counters (beacons/APs/probes/deauth/BLE/frames) |
 | **SIGINT** | a native **radar/dome** of the APs it hears — centre = the node, radius ∝ RSSI, colour by strength |
 | **WFALL** | **RF waterfall** streamed from Ragnar's SDR (see below) |
-| **CTRL** | the allowlisted action buttons |
+| **NETWORK** | link/nets/wardrive/alerts status + action buttons (wardrive start/stop, airspace scan) |
+| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight, plus node/firmware/link/heap info |
+| **CTRL** | the allowlisted action buttons (WIDS scan, BLE scan, Watchtower clear, restart Ragnar) |
+
+### Network actions
+
+The **NETWORK** and **CTRL** screens have tappable action buttons; each maps to
+one entry in `cyd_node.ALLOWED_ACTIONS` and one Ragnar subsystem call in
+`_cyd_dispatch_action` (a queued tap → `POST /api/cyd/action`). Current set:
+`wifi_defense_scan`, `ble_scan`, `watchtower_clear`, `wardrive_start`,
+`wardrive_stop`, `network_scan` (WiFi airspace sweep), `service_restart`. A
+spoofed node can still only ever request these — never arbitrary ops.
+
+### Expanded status fields
+
+The Pi → CYD status now also carries `iface`/`ip` (default-route interface),
+`wardrive` (off/idle/`N nets`), `alerts`+`worst` (Watchtower summary), `wids`
+(monitor-mode WIDS available), and `alert1..3` (latest finding titles, sanitised
+for the firmware's lightweight parser).
 
 ### RF waterfall (streamed, SDR-gated)
 

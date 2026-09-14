@@ -2669,6 +2669,54 @@ def _cyd_network_band_counts():
     return nets_24, nets_5
 
 
+def _cyd_active_iface_ip():
+    """(iface, ip) of the box's default route — cheap, best-effort ('', '')."""
+    try:
+        import netifaces
+        gw = netifaces.gateways().get('default', {}).get(netifaces.AF_INET)
+        if not gw:
+            return '', ''
+        iface = gw[1]
+        addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET) or [{}]
+        return iface, (addrs[0].get('addr') or '')
+    except Exception:
+        return '', ''
+
+
+def _cyd_wardrive_state():
+    """Compact wardrive state for the display: 'off' or 'N nets'."""
+    try:
+        if not shared_data.config.get('wardriving_enabled', False):
+            return 'off'
+        eng = _get_wardriving_engine()
+        st = eng.get_status() or {}
+        if not st.get('running'):
+            return 'idle'
+        n = st.get('networks_found') or st.get('total_networks') or st.get('networks') or 0
+        return str(int(n)) + ' nets'
+    except Exception:
+        return 'off'
+
+
+def _cyd_alert_summary(top=3):
+    """(count, worst, [short titles]) from the Watchtower ring — newest first."""
+    try:
+        with _watchtower_lock:
+            wt = _wt_get()
+            items = wt.recent(limit=top)
+            summ = wt.summary()
+        titles = []
+        for a in items:
+            t = str(a.get('title') or (a.get('codes') or [''])[0] or a.get('source') or '')
+            # The firmware parses status with a naive string matcher, so strip
+            # quotes/backslashes/control chars that would break the next field.
+            t = ''.join(c for c in t if 32 <= ord(c) < 127 and c not in '"\\')
+            titles.append(t[:28])
+        return int(summ.get('total', 0)), (summ.get('worst') or 'none'), titles
+    except Exception:
+        return 0, 'none', []
+
+
 def _cyd_build_status_dict():
     """The compact, flat status a CYD node displays — shared by the HTTP status
     endpoint and the USB-serial bridge. Flat on purpose: the firmware parses it
@@ -2678,7 +2726,9 @@ def _cyd_build_status_dict():
     except Exception:
         unit = socket.gethostname()
     nets_24, nets_5 = _cyd_network_band_counts()
-    return {
+    iface, ip = _cyd_active_iface_ip()
+    a_count, a_worst, a_titles = _cyd_alert_summary(3)
+    d = {
         'unit': unit,
         'mesh_nodes': _cyd_mesh_node_count(),
         'nets_24': nets_24,
@@ -2686,8 +2736,19 @@ def _cyd_build_status_dict():
         'threat': _cyd_threat_score(),
         'bluetooth': _cyd_bluetooth_state(),
         'uptime': _cyd_uptime_sec(),
+        # Expanded status fields for the DASH / NETWORK / ALERTS screens:
+        'iface': iface,
+        'ip': ip,
+        'wardrive': _cyd_wardrive_state(),
+        'alerts': a_count,
+        'worst': a_worst,
+        'wids': 1 if _cyd_pick_monitor_iface() else 0,   # monitor-mode WIDS available
         'ts': int(time.time()),
     }
+    # Flat alert titles (alert1..alert3) — firmware string-matches these keys.
+    for i in range(3):
+        d['alert%d' % (i + 1)] = a_titles[i] if i < len(a_titles) else ''
+    return d
 
 
 @app.route('/api/cyd/status', methods=['GET'])
@@ -2765,6 +2826,52 @@ def _cyd_dispatch_action(action, node_name):
                 cyd_node.record_action(node_name, action, None, status='error')
                 logger.warning(f"[cyd] wifi_defense_scan failed: {exc}")
         threading.Thread(target=_run, name='cyd-wids-scan', daemon=True).start()
+        return 'started', 202
+
+    if action == 'wardrive_start':
+        try:
+            if not shared_data.config.get('wardriving_enabled', False):
+                return 'disabled', 409          # wardriving must be enabled first
+            eng = _get_wardriving_engine()
+            if (eng.get_status() or {}).get('running'):
+                return 'running', 200
+            eng.start()
+            return 'started', 202
+        except Exception as exc:
+            logger.warning(f"[cyd] wardrive_start failed: {exc}")
+            return 'error', 500
+
+    if action == 'wardrive_stop':
+        try:
+            eng = _get_wardriving_engine()
+            eng.stop()
+            return 'done', 200
+        except Exception as exc:
+            logger.warning(f"[cyd] wardrive_stop failed: {exc}")
+            return 'error', 500
+
+    if action == 'network_scan':
+        # Quick WiFi airspace threat sweep, in the background (blocks ~10 s).
+        def _sweep():
+            try:
+                iface = _get_wifi_iface()
+                import wifi_analyzer
+                wifi_analyzer.do_scan(iface, band='2.4')
+                cyd_node.record_action(node_name, action, None, status='completed')
+            except Exception as exc:
+                cyd_node.record_action(node_name, action, None, status='error')
+                logger.warning(f"[cyd] network_scan failed: {exc}")
+        threading.Thread(target=_sweep, name='cyd-net-scan', daemon=True).start()
+        return 'started', 202
+
+    if action == 'service_restart':
+        def _restart():
+            time.sleep(2)
+            try:
+                subprocess.run(['sudo', 'systemctl', 'restart', 'ragnar'], check=True)
+            except Exception as exc:
+                logger.error(f"[cyd] service_restart failed: {exc}")
+        threading.Thread(target=_restart, name='cyd-svc-restart', daemon=True).start()
         return 'started', 202
 
     return 'unknown', 400

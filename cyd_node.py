@@ -41,6 +41,11 @@ ALLOWED_ACTIONS = {
     'wifi_defense_scan': 'Run a WiFi Defense (WIDS) scan',
     'ble_scan':          'Start a Bluetooth scan',
     'watchtower_clear':  'Clear the Watchtower alert pane',
+    # Network actions (NETWORK screen). Each maps to one Ragnar subsystem call.
+    'wardrive_start':    'Start a wardriving session',
+    'wardrive_stop':     'Stop the wardriving session',
+    'network_scan':      'Quick WiFi airspace threat sweep',
+    'service_restart':   'Restart the Ragnar service',
 }
 
 

@@ -43,6 +43,10 @@
 
 #include "config.h"
 
+// Defined before the first include-terminated section so Arduino's auto-generated
+// prototypes (inserted after the includes) can reference ActionBtn*.
+struct ActionBtn { const char *label; const char *action; };
+
 #if CYD_ENABLE_BLE
 #include <BLEDevice.h>
 #include <BLEScan.h>
@@ -118,8 +122,8 @@ static SPIClass touchSPI(HSPI);
 
 // ── UI state ──────────────────────────────────────────────────────────────────
 // App-launcher model: a HOME grid of tiles that drill into full screens.
-enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_SCAN, SCR_SIGINT, SCR_WFALL,
-              SCR_NETWORK, SCR_SETTINGS, SCR_CTRL };
+enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
+              SCR_WFALL, SCR_NETWORK, SCR_SETTINGS, SCR_CTRL };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -134,6 +138,16 @@ struct RagnarStatus {
   char     unitName[24]     = "ragnar";
   uint32_t uptimeSec        = 0;
   uint32_t lastSyncMs       = 0;
+  // Expanded status fields (DASH / NETWORK / ALERTS):
+  char     iface[12]        = "";
+  char     ip[20]           = "";
+  char     wardrive[16]     = "off";
+  char     worst[10]        = "none";
+  int      alerts           = 0;
+  bool     wids             = false;
+  char     alert1[30]       = "";
+  char     alert2[30]       = "";
+  char     alert3[30]       = "";
 };
 static RagnarStatus g_rs;
 
@@ -432,10 +446,23 @@ static void applyStatus(const String &body) {
   g_rs.nets5     = jsonInt(body, "nets_5");
   g_rs.threat    = jsonInt(body, "threat");
   g_rs.uptimeSec = jsonInt(body, "uptime");
-  String bt = jsonStr(body, "bluetooth");
-  String un = jsonStr(body, "unit");
-  if (bt.length()) { strncpy(g_rs.btState, bt.c_str(), sizeof(g_rs.btState) - 1); g_rs.btState[sizeof(g_rs.btState)-1]=0; }
-  if (un.length()) { strncpy(g_rs.unitName, un.c_str(), sizeof(g_rs.unitName) - 1); g_rs.unitName[sizeof(g_rs.unitName)-1]=0; }
+  g_rs.alerts = jsonInt(body, "alerts");
+  g_rs.wids   = jsonInt(body, "wids") != 0;
+  // Copy a string field into a fixed buffer (only if present, so a partial frame
+  // doesn't wipe existing values).
+  #define CYD_CPYS(field, key) do { String _v = jsonStr(body, key); \
+    if (_v.length()) { strncpy(g_rs.field, _v.c_str(), sizeof(g_rs.field) - 1); \
+      g_rs.field[sizeof(g_rs.field)-1] = 0; } } while (0)
+  CYD_CPYS(btState, "bluetooth");
+  CYD_CPYS(unitName, "unit");
+  CYD_CPYS(iface, "iface");
+  CYD_CPYS(ip, "ip");
+  CYD_CPYS(wardrive, "wardrive");
+  CYD_CPYS(worst, "worst");
+  CYD_CPYS(alert1, "alert1");
+  CYD_CPYS(alert2, "alert2");
+  CYD_CPYS(alert3, "alert3");
+  #undef CYD_CPYS
   g_rs.ok = true;
   g_rs.lastSyncMs = millis();
   g_needRedraw = true;
@@ -589,6 +616,7 @@ struct MenuItem { const char *label; Screen scr; uint8_t r, g, b; };
 static const MenuItem g_menu[] = {
   {"DASH",     SCR_DASH,      40, 120, 200},
   {"DEFEND",   SCR_DEFENSE,   70, 200, 120},
+  {"ALERTS",   SCR_ALERTS,   224,  64,  64},
   {"SCAN",     SCR_SCAN,     150,  90, 210},
   {"SIGINT",   SCR_SIGINT,    60, 190, 190},
   {"WFALL",    SCR_WFALL,    230, 170,  50},
@@ -667,6 +695,7 @@ static String menuValue(int s, uint16_t &vcol) {
     case SCR_DASH:    vcol = threatColor(g_rs.threat); return String(g_rs.threat);
     case SCR_DEFENSE: { bool a = g_sc.deauths > 0; vcol = a ? colRed() : colGreen();
                         return a ? String((uint32_t)g_sc.deauths) : String("ok"); }
+    case SCR_ALERTS:  vcol = g_rs.alerts ? colRed() : colGreen(); return String(g_rs.alerts);
     case SCR_SCAN:    vcol = colSky(); return String(g_sc.bssids);
     case SCR_SIGINT:  vcol = colSky(); return String(g_apCount);
     case SCR_WFALL:   vcol = colAmber(); return String(WF_BANDS[g_wfBandIdx]);
@@ -687,12 +716,18 @@ static void drawHome() {
 
 static void drawDash() {
   drawHeader("DASHBOARD", false);
-  int16_t y = HEAD_H + 8;
-  kv(y, "UNIT", String(g_rs.unitName), colSky()); y += 38;
-  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 38;
-  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE); y += 38;
-  kv(y, "NETWORKS 5G", String(g_rs.nets5), colDim()); y += 38;
-  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE); y += 38;
+  int16_t y = HEAD_H + 6;
+  kv(y, "UNIT", String(g_rs.unitName), colSky()); y += 34;
+  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 34;
+  kv(y, "ALERTS", String(g_rs.alerts) + "  " + g_rs.worst,
+     g_rs.alerts ? colRed() : colGreen()); y += 34;
+  kv(y, "NETWORKS", String(g_rs.nets24) + " / " + String(g_rs.nets5) + " (2.4/5G)", WHITE); y += 34;
+  kv(y, "WARDRIVE", String(g_rs.wardrive), WHITE); y += 34;
+  if (strlen(g_rs.iface))
+    kv(y, "LINK", String(g_rs.iface) + " " + g_rs.ip, colSky());
+  else
+    kv(y, "BLUETOOTH", String(g_rs.btState), WHITE);
+  y += 34;
   uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
   kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? colGreen() : colRed());
 }
@@ -829,42 +864,118 @@ static void applyWfRow(const String &body) {
   g_needRedraw = true;
 }
 
-struct ActionBtn { const char *label; const char *action; };
-static const ActionBtn g_actions[] = {
+// CONTROLS screen actions.
+static const ActionBtn g_ctrlActions[] = {
   {"WiFi Defense scan", "wifi_defense_scan"},
   {"BLE scan",          "ble_scan"},
   {"Watchtower clear",  "watchtower_clear"},
+  {"Restart Ragnar",    "service_restart"},
 };
-static const int N_ACTIONS = sizeof(g_actions) / sizeof(g_actions[0]);
-static const int16_t CTRL_Y0 = HEAD_H + 12, CTRL_BH = 48, CTRL_GAP = 10;
+static const int N_CTRL = sizeof(g_ctrlActions) / sizeof(g_ctrlActions[0]);
 
-static void drawControls() {
-  drawHeader("CONTROLS", false);
-  int16_t y = CTRL_Y0;
-  for (int i = 0; i < N_ACTIONS; i++) {
-    gfx->fillRoundRect(10, y, SCR_W - 20, CTRL_BH, 8, colBlue());
-    gfx->drawRoundRect(10, y, SCR_W - 20, CTRL_BH, 8, colSky());
+// NETWORK screen actions (a compact button strip under the status header).
+static const ActionBtn g_netActions[] = {
+  {"Wardrive start", "wardrive_start"},
+  {"Wardrive stop",  "wardrive_stop"},
+  {"Airspace scan",  "network_scan"},
+};
+static const int N_NET = sizeof(g_netActions) / sizeof(g_netActions[0]);
+
+static const int16_t BTN_BH = 40, BTN_GAP = 8;
+
+// Draw a vertical list of action buttons from y0; returns the y after the list.
+static int16_t drawActionList(const ActionBtn *items, int n, int16_t y0) {
+  int16_t y = y0;
+  for (int i = 0; i < n; i++) {
+    gfx->fillRoundRect(10, y, SCR_W - 20, BTN_BH, 8, colBlue());
+    gfx->drawRoundRect(10, y, SCR_W - 20, BTN_BH, 8, colSky());
     gfx->setTextColor(WHITE); gfx->setTextSize(2);
-    gfx->setCursor(22, y + 16);
-    gfx->print(g_actions[i].label);
-    y += CTRL_BH + CTRL_GAP;
+    gfx->setCursor(22, y + 12);
+    gfx->print(items[i].label);
+    y += BTN_BH + BTN_GAP;
   }
+  return y;
 }
 
-// ── Network: read-only status hub (actions to be wired next) ──────────────────
+// Hit-test an action list at y0; enqueues the tapped action. Returns true if hit.
+static bool hitActionList(const ActionBtn *items, int n, int16_t y0,
+                          int16_t px, int16_t py) {
+  int16_t y = y0;
+  for (int i = 0; i < n; i++) {
+    if (inRect(px, py, 10, y, SCR_W - 20, BTN_BH)) {
+      if (actionEnqueue(items[i].action))
+        setStatus((String("queued: ") + items[i].label).c_str(), colAmber());
+      else
+        setStatus("action queue full", colRed());
+      return true;
+    }
+    y += BTN_BH + BTN_GAP;
+  }
+  return false;
+}
+
+static const int16_t CTRL_Y0 = HEAD_H + 10;
+static void drawControls() {
+  drawHeader("CONTROLS", false);
+  drawActionList(g_ctrlActions, N_CTRL, CTRL_Y0);
+}
+
+// ── Network: compact status header + wardrive/scan action buttons ─────────────
+static const int16_t NET_BTN_Y0 = HEAD_H + 92;
 static void drawNetwork() {
   drawHeader("NETWORK", false);
-  int16_t y = HEAD_H + 8;
-  kv(y, "UNIT", String(g_rs.unitName), colSky());              y += 38;
-  kv(y, "MESH NODES", String(g_rs.meshNodes), WHITE);         y += 38;
-  kv(y, "NETWORKS 2.4G", String(g_rs.nets24), WHITE);         y += 38;
-  kv(y, "NETWORKS 5G", String(g_rs.nets5), colDim());         y += 38;
-  kv(y, "BLUETOOTH", String(g_rs.btState), WHITE);            y += 38;
-  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat));
+  // Compact status: iface/ip, nets, wardrive/alerts — three tight rows.
+  int16_t y = HEAD_H + 6;
+  gfx->fillRect(0, y, SCR_W, 84, colBg());
+  gfx->setTextSize(1);
+  String ifc = strlen(g_rs.iface) ? (String(g_rs.iface) + "  " + g_rs.ip) : String("iface --");
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y);     gfx->print("LINK");
+  gfx->setTextColor(colSky());  gfx->setCursor(60, y);     gfx->print(ifc);
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 20);gfx->print("NETS");
+  gfx->setTextColor(WHITE);     gfx->setCursor(60, y + 20);
+  gfx->print(String(g_rs.nets24) + " / " + String(g_rs.nets5) + " (2.4/5G)");
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 40);gfx->print("WDRV");
+  gfx->setTextColor(WHITE);     gfx->setCursor(60, y + 40);gfx->print(g_rs.wardrive);
+  gfx->setTextColor(colGray()); gfx->setCursor(12, y + 60);gfx->print("ALRT");
+  gfx->setTextColor(g_rs.alerts ? colRed() : colGreen());
+  gfx->setCursor(60, y + 60); gfx->print(String(g_rs.alerts) + "  " + g_rs.worst);
+  drawActionList(g_netActions, N_NET, NET_BTN_Y0);
+}
+
+// ── Alerts: newest Watchtower findings pushed from Ragnar ─────────────────────
+static void drawAlerts() {
+  drawHeader("ALERTS", false);
+  int16_t y = HEAD_H + 10;
+  gfx->fillRect(0, y, SCR_W, SCR_H - HEAD_H - 32, colBg());
+  gfx->setTextSize(2);
+  uint16_t hc = g_rs.alerts ? colRed() : colGreen();
+  gfx->setTextColor(hc);
+  gfx->setCursor(12, y); gfx->print(String(g_rs.alerts) + " active");
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(150, y + 4); gfx->print("worst: "); gfx->print(g_rs.worst);
+  y += 30;
+  const char *titles[3] = { g_rs.alert1, g_rs.alert2, g_rs.alert3 };
+  bool any = false;
+  for (int i = 0; i < 3; i++) {
+    if (!strlen(titles[i])) continue;
+    any = true;
+    gfx->fillRoundRect(10, y, SCR_W - 20, 40, 6, gfx->color565(30, 22, 26));
+    gfx->drawRoundRect(10, y, SCR_W - 20, 40, 6, gfx->color565(90, 50, 55));
+    gfx->fillRoundRect(10, y + 4, 4, 32, 2, colRed());
+    gfx->setTextColor(WHITE); gfx->setTextSize(1);
+    gfx->setCursor(22, y + 15); gfx->print(titles[i]);
+    y += 48;
+  }
+  if (!any) {
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(12, y + 6); gfx->print("no recent alerts");
+  }
+  gfx->setTextColor(colDim()); gfx->setTextSize(1);
+  gfx->setCursor(12, SCR_H - 40); gfx->print("tap CTRL to clear the Watchtower pane");
 }
 
 // ── Settings: device-local, tappable rows + info. Persisted to NVS ────────────
-static const char *FW_BUILD = "cyd 0.4 " __DATE__;
+static const char *FW_BUILD = "cyd 0.5 " __DATE__;
 static const int16_t SET_Y0 = HEAD_H + 10, SET_ROWH = 32, SET_PITCH = 40;
 
 static void drawSettingRow(int16_t y, const char *label, const String &val, uint16_t vcol) {
@@ -900,6 +1011,7 @@ static void render() {
     case SCR_HOME:    drawHome();      break;
     case SCR_DASH:    drawDash();      break;
     case SCR_DEFENSE: drawDefense();   break;
+    case SCR_ALERTS:  drawAlerts();    break;
     case SCR_SCAN:    drawScan();      break;
     case SCR_SIGINT:  drawSigInt();    break;
     case SCR_WFALL:   drawWaterfall(); break;
@@ -965,17 +1077,12 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_CTRL) {
-    int16_t y = CTRL_Y0;
-    for (int i = 0; i < N_ACTIONS; i++) {
-      if (inRect(px, py, 10, y, SCR_W - 20, CTRL_BH)) {
-        if (actionEnqueue(g_actions[i].action))
-          setStatus((String("queued: ") + g_actions[i].label).c_str(), colAmber());
-        else
-          setStatus("action queue full", colRed());
-        return;
-      }
-      y += CTRL_BH + CTRL_GAP;
-    }
+    hitActionList(g_ctrlActions, N_CTRL, CTRL_Y0, px, py);
+    return;
+  }
+  if (g_screen == SCR_NETWORK) {
+    hitActionList(g_netActions, N_NET, NET_BTN_Y0, px, py);
+    return;
   }
 }
 
