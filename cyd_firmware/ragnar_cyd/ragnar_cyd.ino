@@ -743,18 +743,17 @@ static void drawHome() {
 
 static void drawDash() {
   drawHeader("DASHBOARD", false);
-  int16_t y = HEAD_H + 6;
-  kv(y, "UNIT", String(g_rs.unitName), colSky()); y += 34;
-  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 34;
+  int16_t y = HEAD_H + 8;   // no UNIT row — the name is on HOME already
+  kv(y, "THREAT", String(g_rs.threat) + " / 100", threatColor(g_rs.threat)); y += 38;
   kv(y, "ALERTS", String(g_rs.alerts) + "  " + g_rs.worst,
-     g_rs.alerts ? colRed() : colGreen()); y += 34;
-  kv(y, "NETWORKS", String(g_rs.nets24) + " / " + String(g_rs.nets5) + " (2.4/5G)", WHITE); y += 34;
-  kv(y, "WARDRIVE", String(g_rs.wardrive), WHITE); y += 34;
+     g_rs.alerts ? colRed() : colGreen()); y += 38;
+  kv(y, "NETWORKS", String(g_rs.nets24) + " / " + String(g_rs.nets5) + " (2.4/5G)", WHITE); y += 38;
+  kv(y, "WARDRIVE", String(g_rs.wardrive), WHITE); y += 38;
   if (strlen(g_rs.iface))
     kv(y, "LINK", String(g_rs.iface) + " " + g_rs.ip, colSky());
   else
     kv(y, "BLUETOOTH", String(g_rs.btState), WHITE);
-  y += 34;
+  y += 38;
   uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
   kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? colGreen() : colRed());
 }

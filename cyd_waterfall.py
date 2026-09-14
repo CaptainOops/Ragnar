@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """cyd_waterfall.py — stream a downsampled SDR spectrum row to a CYD console.
 
-The CYD has no SDR. When its Waterfall screen is open it asks Ragnar (over the
-serial/HTTP link) to sweep a band; this module drives Ragnar's real SDR
-(sdr_spectrum.py — hackrf_sweep) on that band and hands back a compact,
-quantised row (WF_BINS bins, 0..255) the ESP32 scrolls into a low-res waterfall.
+The CYD has no SDR. When its Waterfall screen is open it asks Ragnar to sweep a
+band; this module drives Ragnar's real SDR and hands back a compact, quantised
+row (WF_BINS bins, 0..255) the ESP32 scrolls into a low-res waterfall.
 
-It is deliberately coarse — a 120-bin postage-stamp of a band, a few frames a
-second — not the full web waterfall. It only produces data when a HackRF/RTL-SDR
-is actually attached (else `{'err': 'no SDR'}`), and it auto-stops the sweep when
-the CYD stops asking (`_STALE_SEC`), so the shared radio is freed on screen exit.
+Ragnar has two SDR stacks and either may be attached:
+  * HackRF  → sdr_spectrum.py (hackrf_sweep), bands 1 MHz-6 GHz incl. 2.4/5/6.
+  * RTL-SDR → rtl_sdr.py (rtl_power / IQ FFT), sub-GHz + fm/air (no 2.4/5/6).
+This module auto-selects whichever is present (HackRF preferred), so a plain
+RTL-SDR on the Pi now feeds the waterfall (the earlier HackRF-only path reported
+'no SDR' with an RTL dongle attached). Coarse by design; auto-stops the sweep
+when the CYD stops asking, freeing the shared radio.
 """
 
 import time
 import threading
 
 try:
-    import sdr_spectrum
-except Exception:  # pragma: no cover - SDR stack optional
+    import sdr_spectrum          # HackRF
+except Exception:  # pragma: no cover
     sdr_spectrum = None
+try:
+    import rtl_sdr               # RTL-SDR
+except Exception:  # pragma: no cover
+    rtl_sdr = None
 
 WF_BINS = 120
 _BASE_DBM = -110        # 0 in the quantised row
@@ -27,63 +33,97 @@ _STALE_SEC = 15         # stop the sweep if the CYD stops asking
 
 _LOCK = threading.RLock()
 _band = None
+_backend = None         # 'hackrf' | 'rtl' | None
 _active = False
 _since = 0
 _last_req = 0.0
-_avail_cache = (0.0, False)   # (checked_at, available) — probing opens the USB bus
+_avail_cache = (0.0, None)   # (checked_at, backend) — probing opens the USB bus
 
 
-def _available():
+def _detect_backend():
+    """Return 'hackrf', 'rtl', or None — memoised 5 s (probes open the USB bus)."""
     global _avail_cache
-    if sdr_spectrum is None:
-        return False
     now = time.time()
     if now - _avail_cache[0] < 5.0:
         return _avail_cache[1]
-    ok = False
+    backend = None
+    if sdr_spectrum is not None:
+        try:
+            if bool((sdr_spectrum.status().get('detect') or {}).get('available')):
+                backend = 'hackrf'
+        except Exception:
+            pass
+    if backend is None and rtl_sdr is not None:
+        try:
+            if bool(rtl_sdr.detect().get('available')):
+                backend = 'rtl'
+        except Exception:
+            pass
+    _avail_cache = (now, backend)
+    return backend
+
+
+# RTL-SDR can't reach 2.4/5/6 GHz; remap those requests to a sub-GHz ISM band so
+# the screen shows something useful instead of an error on an RTL-only box.
+_RTL_BAND_FALLBACK = {'2.4': '433', '5': '433', '6': '433'}
+
+
+def _start(backend, band):
+    if backend == 'hackrf':
+        sdr_spectrum.start(band=band)
+    else:
+        band = _RTL_BAND_FALLBACK.get(band, band)
+        rtl_sdr.power_start(band=band)
+
+
+def _stop_backend(backend):
     try:
-        st = sdr_spectrum.status() or {}
-        ok = bool((st.get('detect') or {}).get('available'))
+        if backend == 'hackrf':
+            sdr_spectrum.stop()
+        elif backend == 'rtl':
+            rtl_sdr.power_stop()
     except Exception:
-        ok = False
-    _avail_cache = (now, ok)
-    return ok
+        pass
+
+
+def _frames(backend, since):
+    if backend == 'hackrf':
+        return sdr_spectrum.get_frames(since=since) or {}
+    return rtl_sdr.power_frames(since=since) or {}
 
 
 def _stop():
     global _active
-    if _active and sdr_spectrum is not None:
-        try:
-            sdr_spectrum.stop()
-        except Exception:
-            pass
+    if _active and _backend:
+        _stop_backend(_backend)
     _active = False
 
 
 def request(band, on):
     """The CYD opened (`on`) or closed the waterfall on `band`. Start/stop the
-    sweep accordingly. Safe to call repeatedly (it's the keep-alive)."""
-    global _band, _active, _since, _last_req
+    sweep on whichever SDR is present. Safe to call repeatedly (keep-alive)."""
+    global _band, _backend, _active, _since, _last_req
     band = (str(band or '').strip() or '433')
     with _LOCK:
         _last_req = time.time()
         if not on:
             _stop()
             return
-        if not _available():
-            _active = False          # requested, but nothing to sweep with
+        backend = _detect_backend()
+        if not backend:
+            _active = False
             return
-        if not _active or band != _band:
+        if not _active or band != _band or backend != _backend:
+            if _active and _backend and _backend != backend:
+                _stop_backend(_backend)
             try:
-                sdr_spectrum.start(band=band)
-                _band, _active, _since = band, True, 0
+                _start(backend, band)
+                _band, _backend, _active, _since = band, backend, True, 0
             except Exception:
                 _active = False
 
 
 def wants_stream():
-    """True while the CYD is (recently) asking — the bridge should keep sending
-    rows (data, waiting, or the no-SDR error) so the screen reflects reality."""
     with _LOCK:
         return (time.time() - _last_req) < _STALE_SEC
 
@@ -105,17 +145,15 @@ def _downsample_quant(power):
 
 def latest_row():
     """The current waterfall row for the CYD: a data row, `{'waiting':1}`, or
-    `{'err': 'no SDR'}`. Also enforces the idle auto-stop."""
+    `{'err': 'no SDR'}`. Enforces the idle auto-stop."""
     global _since
     with _LOCK:
         if _active and (time.time() - _last_req) > _STALE_SEC:
             _stop()
-        if not _available():
-            return {'err': 'no SDR'}
-        if not _active:
+        if not _detect_backend() or not _active:
             return {'err': 'no SDR'}
         try:
-            res = sdr_spectrum.get_frames(since=_since) or {}
+            res = _frames(_backend, _since)
         except Exception:
             return {'band': _band, 'waiting': 1}
         frames = res.get('frames') or []
@@ -123,7 +161,11 @@ def latest_row():
             return {'band': _band, 'waiting': 1}
         _since = res.get('seq', _since)
         latest = frames[-1]
-        bm = res.get('band_mhz') or [0, 0]
+        # HackRF reports band_mhz; RTL reports band_hz.
+        bm = res.get('band_mhz')
+        if not bm:
+            bh = res.get('band_hz') or [0, 0]
+            bm = [(bh[0] or 0) / 1e6, (bh[1] or 0) / 1e6]
         return {
             'seq': int(latest.get('seq', 0)),
             'band': _band,
