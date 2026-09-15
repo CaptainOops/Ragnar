@@ -119,15 +119,25 @@ static Arduino_GFX *gfx = new Arduino_ILI9341(bus, TFT_RST, 0 /*rotation*/, fals
 static const int16_t SCR_W = 240;
 static const int16_t SCR_H = 320;
 
-// ── Boot animation (ragnar-glitch.gif, decoded on-device by AnimatedGIF) ────────
-// A ~5 s splash at power-on that also gives a companion Pi time to finish booting
-// before the node starts talking to it. The 240x320 GIF fills the whole panel
-// (no centring offset). Colour byte-order: LE palette + draw16bitRGBBitmap is
-// correct on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE.
-#define CYD_BOOT_ANIM_MS 5000
+// ── Boot animation (ragnar-240x320-tools.gif, decoded on-device by AnimatedGIF) ──
+// The 15 s clip plays at natural speed and LOOPS until Ragnar is up (its first
+// status frame lands over serial). If Ragnar is already up when the node boots
+// (it reset while the Pi was running), it stops after just the 5 s minimum. A hard
+// cap keeps a Pi-less node from looping forever. The 240x320 GIF fills the whole
+// panel (no centring offset). Colour byte-order: LE palette + draw16bitRGBBitmap
+// is correct on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE.
+#define CYD_BOOT_ANIM_MS     5000     // minimum splash (and the whole splash if Ragnar's already up)
+#define CYD_BOOT_ANIM_MAX_MS 90000    // hard cap: give up waiting for Ragnar after this
 #define CYD_GIF_BE       0
 static const int16_t GIF_X_OFF = 0;
 static const int16_t GIF_Y_OFF = (SCR_H - 320) / 2;   // 0 px: full-screen 240x320
+// Set true the moment the first Ragnar status frame is parsed (applyStatus) — the
+// boot loop watches it to know the Pi's service is up. Declared here (before
+// playBootAnimation) because g_rs itself is defined much further down.
+static volatile bool g_bootRagnarUp = false;
+#if CYD_TRANSPORT_SERIAL
+static void serialDrain();            // defined in the serial section far below
+#endif
 // AnimatedGIF embeds tens of KB of decode buffers; it's only needed at boot, so
 // it is heap-allocated in playBootAnimation() and freed before WiFi/BLE start —
 // keeping it as a static global permanently starved the WiFi RX buffers.
@@ -172,17 +182,28 @@ static void GIFDraw(GIFDRAW *pDraw) {
   #undef CYD_BLIT
 }
 
-// Play the embedded GIF for ~durationMs, honouring per-frame delays; loops if the
-// clip is shorter. Blocking by design — it IS the boot delay.
-static void playBootAnimation(uint32_t durationMs) {
+// Play the embedded GIF at its NATURAL speed (honouring per-frame delays), looping
+// at the end. Stops once Ragnar is up (a status frame has arrived -> g_rs.ok) AND
+// at least minMs has elapsed; if Ragnar never shows, gives up at maxMs. Passing
+// minMs==maxMs makes it a plain fixed-length splash (the WiFi transport, which has
+// no serial readiness signal during boot). Blocking by design — it IS the boot
+// wait, and it drains serial each frame so the readiness signal can land.
+static void playBootAnimation(uint32_t minMs, uint32_t maxMs) {
   AnimatedGIF *gif = new AnimatedGIF();       // ~tens of KB, freed below (boot only)
   if (!gif) return;
   gif->begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
   if (gif->open((uint8_t *)ragnar_boot_gif, ragnar_boot_gif_len, GIFDraw)) {
     uint32_t start = millis();
     int delayMs = 0;
-    while (millis() - start < durationMs) {
-      if (!gif->playFrame(true, &delayMs)) gif->reset();  // end -> loop
+    for (;;) {
+      if (!gif->playFrame(true, &delayMs)) gif->reset();  // end -> loop the clip
+#if CYD_TRANSPORT_SERIAL
+      serialDrain();          // read the Pi's status pushes while animating; the
+                              // first one flips g_rs.ok = "Ragnar service is up"
+#endif
+      uint32_t elapsed = millis() - start;
+      if (elapsed < minMs) continue;              // always show at least the minimum
+      if (g_bootRagnarUp || elapsed >= maxMs) break;  // Ragnar up (or gave up waiting)
     }
     gif->close();
   }
@@ -634,6 +655,7 @@ static void applyStatus(const String &body) {
   g_rs.tfPkts   = (uint32_t)jsonInt(body, "tf_pkts");
   g_rs.tfAlerts = jsonInt(body, "tf_alerts");
   g_rs.ok = true;
+  g_bootRagnarUp = true;          // signals the boot animation that the Pi is up
   g_rs.lastSyncMs = millis();
   // Only repaint when a DISPLAYED value actually changed. Ragnar pushes status
   // ~every 2 s with mostly-identical data; repainting every push is what made the
@@ -1969,9 +1991,15 @@ void setup() {
   loadConfig();   // node name (+ optional WiFi seeds) + BLE/backlight settings
   applyBacklight();
 
-  // Boot splash: the glitch animation for ~5 s, also giving a companion Pi time
-  // to finish booting before we start the serial/WiFi link.
-  playBootAnimation(CYD_BOOT_ANIM_MS);
+  // Boot splash. Over serial it plays the full 15 s clip and LOOPS until the Pi's
+  // Ragnar service is up (first status frame), so a co-booting Pi gets covered; if
+  // the Pi is already up it stops after the 5 s minimum. Over WiFi there's no
+  // readiness signal yet, so it's a fixed 5 s splash (min==max).
+#if CYD_TRANSPORT_SERIAL
+  playBootAnimation(CYD_BOOT_ANIM_MS, CYD_BOOT_ANIM_MAX_MS);
+#else
+  playBootAnimation(CYD_BOOT_ANIM_MS, CYD_BOOT_ANIM_MS);
+#endif
   gfx->fillScreen(BLACK);
 #if CYD_TRANSPORT_SERIAL
   Serial.setTimeout(20);   // cabled to the Pi; cyd_serial_bridge.py is the link

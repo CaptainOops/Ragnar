@@ -206,24 +206,34 @@ still owns real monitor-mode WIDS, PMKID/handshake analysis, and 5/6 GHz.
 
 ## Boot animation
 
-At power-on the node plays a ~5 s **full-screen splash** (`ragnar-240x320-tools.gif`)
-before the console starts — it also gives a companion Pi time to finish booting
-before the node opens the serial/WiFi link. The GIF is decoded **on-device** by the
+At power-on the node plays the full-screen splash (`ragnar-240x320-tools.gif`) at
+its **natural 15 s speed and loops it until the Pi's Ragnar service is up** — the
+first status frame over serial flips the `g_bootRagnarUp` flag and the loop ends
+(after a 5 s minimum). If the node reset while the Pi was already up, the first
+status arrives almost immediately, so it stops after just the 5 s minimum — a
+quick splash instead of the full clip. A hard cap (`CYD_BOOT_ANIM_MAX_MS`, 90 s)
+keeps a Pi-less node from looping forever. The GIF is decoded **on-device** by the
 `AnimatedGIF` library from a compact copy embedded in the firmware
-(`ragnar_boot_gif.h`, ~855 KB) — the ESP32 cannot read the Pi's web `.gif`.
+(`ragnar_boot_gif.h`, ~1 MB) — the ESP32 cannot read the Pi's web `.gif`.
 
-Tunables in `config.h`/the sketch: `CYD_BOOT_ANIM_MS` (duration, default 5000),
-`CYD_GIF_BE` (flip 0↔1 if colours look byte-swapped). The clip is 240×320 and
-fills the panel, so `GIF_Y_OFF` is 0 (a 240-wide *square* clip would be centred).
+Tunables in the sketch: `CYD_BOOT_ANIM_MS` (minimum splash, default 5000),
+`CYD_BOOT_ANIM_MAX_MS` (give-up cap, default 90000), `CYD_GIF_BE` (flip 0↔1 if
+colours look byte-swapped). The clip is 240×320 and fills the panel, so
+`GIF_Y_OFF` is 0 (a 240-wide *square* clip would be centred). Over the WiFi
+transport there's no serial readiness signal during boot, so it's a plain fixed
+`CYD_BOOT_ANIM_MS` splash (`playBootAnimation` is called with min==max).
 
-**Regenerating the embedded animation** from a source GIF (needs `ffmpeg`):
+**Regenerating the embedded animation** from a source GIF (needs `ffmpeg`). Note a
+GIF's *size* is driven by frame COUNT, not playback duration — `fps` sets both the
+number of frames sampled and the per-frame delay, so `fps=4` over a 15 s clip is
+60 frames that also play back over 15 s at natural speed (no `setpts` needed):
 
 ```bash
 IN=web/images/ragnar-240x320-tools.gif     # 240x320 / 300f / 15 s / 6.5 MB source
-# native 240x320; speed 3x (15s->~5s) + 8 fps (=> 40 frames); 64-colour palette,
+# native 240x320, fps=4 (=> 60 frames @ 250ms = 15.0s natural), 32-colour palette,
 # dither=none (compresses graphic content far better than bayer); 2-pass:
-ffmpeg -y -i "$IN" -vf "setpts=PTS/3,fps=8,palettegen=max_colors=64:stats_mode=diff" pal.png
-ffmpeg -y -i "$IN" -i pal.png -lavfi "setpts=PTS/3,fps=8 [x];[x][1:v] paletteuse=dither=none" small.gif
+ffmpeg -y -i "$IN" -vf "fps=4,palettegen=max_colors=32:stats_mode=diff" pal.png
+ffmpeg -y -i "$IN" -i pal.png -lavfi "fps=4 [x];[x][1:v] paletteuse=dither=none" small.gif
 # embed as a PROGMEM byte array (keep it under the flash headroom — see below):
 python3 - small.gif cyd_firmware/ragnar_cyd/ragnar_boot_gif.h <<'PY'
 import sys; d=open(sys.argv[1],'rb').read(); o=open(sys.argv[2],'w')
@@ -235,9 +245,10 @@ PY
 ```
 
 Keep the embedded size modest — the app partition is 3 MB and the firmware sits
-at ~83 % with this splash. For a smaller build, drop frames (lower `fps`), cut
-colours (`max_colors=48`), or shorten the clip (`setpts=PTS/4`); for smoother
-motion, raise `fps` and watch the flash %.
+at ~88 % with this splash. It's a trade of frames×colours against flash: for a
+smaller build cut colours (`max_colors=24`) or frames (`fps=3`); for smoother
+motion raise `fps` and watch the flash %. Playback length is independent — the
+`fps` value already sets it (natural timing), so leave `setpts` out.
 
 ## On-screen console (app launcher)
 
