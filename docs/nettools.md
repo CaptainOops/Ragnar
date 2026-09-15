@@ -2738,12 +2738,25 @@ across the vendor guards (Cisco and Juniper carry it today).
 #### Arista Guard
 Arista **EOS** switches, routers and edge/core devices. Non-EOS Arista products
 (CloudVision / VeloCloud / DANZ / Awake) are **screened out of scope** (`AG-009`).
-Reads the EOS version/platform from **LLDP** (`AG-001`/`AG-005`), parses **RADIUS**
-(1812/1813/1645/1646) for the **BlastRADIUS** (**CVE-2024-3596**) conditions —
-**`AG-101`** cleartext, **`AG-102`** a missing Message-Authenticator, **`AG-202`** an
-unauthenticated response, and **`AG-201`** an oversized attribute (the forgery shape)
-— screens **SSH banners** (22) for the **regreSSHion** window (**`AG-104`**,
-CVE-2024-6387/6409), and flags management listeners **`AG-103`** gNMI/gNOI
+Reads the EOS version/platform from **LLDP** (`AG-001`/`AG-005`), and runs a full
+**BlastRADIUS** (**CVE-2024-3596**) engine over **RADIUS** (1812/1813/1645/1646):
+**`AG-101`** cleartext exposure, **`AG-102`** an Access-Request with no
+Message-Authenticator, **`AG-110`** an unauthenticated response — either missing the
+Message-Authenticator *or* carrying it after the first attribute (the mitigation
+requires it **first** in Access-Accept/Reject), **`AG-201`** a Proxy-State
+collision-block (bytes **summed** across the packet so splitting the block can't evade
+the bound; EAP-Message fragments are deliberately never counted), **`AG-212`**
+Proxy-State **injected on the NAS-side leg** (request↔response correlated on the socket
+4-tuple + RADIUS Identifier — a conforming server echoes Proxy-State back byte-for-byte,
+so a response whose set differs is the forged-Access-Accept shape; compared by digest,
+values never retained), and collision data smuggled *outside* Proxy-State in a malformed
+**Reply-Message** (**`AG-213`**, invalid UTF-8 where RFC 2865 requires displayable text)
+or an opaque **Vendor-Specific** attribute (**`AG-214`**, long/high-entropy/non-printable
+vs. real AV-pair strings). It also flags **`AG-211`** a gNOI **TransferToRemote**
+credential marker in a cleartext accounting record (**CVE-2025-0936**). Thresholds are
+structural anomaly bounds measured against real vendor AV-pairs, **not** published
+exploit constants. It further screens **SSH banners** (22) for the **regreSSHion** window
+(**`AG-104`**, CVE-2024-6387/6409), and flags management listeners **`AG-103`** gNMI/gNOI
 (6030/9339/50051), **`AG-108`** CVX (9979), **`AG-106`** VXLAN decap (4789/8472), plus
 **`AG-205`** a VLAN tag-stack CPU-punt anomaly (**CVE-2024-5872**).
 - Endpoint: `GET /api/net/arista-guard` `{interface, seconds}` · binary: `tcpdump`
