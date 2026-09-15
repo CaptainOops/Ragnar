@@ -2693,8 +2693,10 @@ def _cyd_active_iface_ip():
         return '', ''
 
 
-_cyd_wardrive_cache = {'v': 'off', 'run': 0, 'nets': 0, 'gps': '-', 'enabled': 0,
-                       't': 0.0, 'busy': False}
+_cyd_wardrive_cache = {'v': 'off', 'run': 0, 'nets': 0, 'scan': 0, 'ble': 0,
+                       'cell': 0, 'zig': 0, 'comp': 0, 'gps': '-', 'band': '-',
+                       'c1': '', 'c2': '', 'enabled': 0, 't': 0.0, 'busy': False}
+_CYD_WARDRIVE_TTL = 3.0     # snappy live-ish refresh (still off the hot path)
 
 
 def _cyd_wardrive_refresh():
@@ -2703,39 +2705,68 @@ def _cyd_wardrive_refresh():
     serial bridge's single-threaded push loop, so it must NEVER block there.
     A hung get_status leaks at most one daemon thread; the bridge stays alive."""
     c = _cyd_wardrive_cache
-    v, run, nets, gps, enabled = 'off', 0, 0, '-', 0
+    d = {'v': 'off', 'run': 0, 'nets': 0, 'scan': 0, 'ble': 0, 'cell': 0,
+         'zig': 0, 'comp': 0, 'gps': '-', 'band': '-', 'c1': '', 'c2': '', 'enabled': 0}
     try:
         if shared_data.config.get('wardriving_enabled', False):
-            enabled = 1
-            eng = _get_wardriving_engine()
-            st = eng.get_status() or {}
-            nets = int(st.get('total_networks') or st.get('networks_found') or st.get('networks') or 0)
-            run = 1 if st.get('running') else 0
-            v = (str(nets) + ' nets') if run else 'idle'
+            d['enabled'] = 1
+            st = _get_wardriving_engine().get_status() or {}
+            d['run'] = 1 if st.get('running') else 0
+            d['nets'] = int(st.get('total_networks') or st.get('networks_found') or 0)
+            d['scan'] = int(st.get('networks_this_scan') or 0)
+            d['ble'] = int(st.get('bluetooth_count') or 0) + int(st.get('esp_ble_count') or 0)
+            d['cell'] = int(st.get('cell_count') or 0)
+            d['zig'] = int(st.get('zigbee_count') or 0) + int(st.get('esp_zigbee_count') or 0)
+            d['band'] = _cyd_sanitize(st.get('band_mode') or '-', 10)
+            d['v'] = (str(d['nets']) + ' nets') if d['run'] else 'idle'
             g = st.get('gps') or {}
             if g.get('has_fix'):
                 sats = g.get('satellites') or g.get('sats')
-                gps = ('fix ' + str(int(sats)) + 'sat') if sats else 'fix'
+                d['gps'] = ('fix ' + str(int(sats)) + 'sat') if sats else 'fix'
             elif g.get('connected'):
-                gps = 'no fix'
+                d['gps'] = 'no fix'
             else:
-                gps = 'no gps'
+                d['gps'] = 'no gps'
+            comps = st.get('companions') or []
+            d['comp'] = len(comps)
+            for i, cp in enumerate(comps[:2]):
+                nm = cp.get('name') or cp.get('short_name') or cp.get('device_name') or cp.get('port') or '?'
+                cn = cp.get('networks') or cp.get('serial_networks') or 0
+                on = 'on' if cp.get('connected', True) else 'off'
+                d['c%d' % (i + 1)] = _cyd_sanitize('%s %s %snet' % (on, nm, cn), 28)
     except Exception:
-        v, run, nets, gps, enabled = 'off', 0, 0, '-', 0
+        d = {'v': 'off', 'run': 0, 'nets': 0, 'scan': 0, 'ble': 0, 'cell': 0,
+             'zig': 0, 'comp': 0, 'gps': '-', 'band': '-', 'c1': '', 'c2': '', 'enabled': 0}
     finally:
-        c.update(v=v, run=run, nets=nets, gps=gps, enabled=enabled,
-                 t=time.time(), busy=False)
+        d['t'] = time.time(); d['busy'] = False
+        c.update(d)
 
 
 def _cyd_wardrive_state():
     """Cached wardrive summary string; refreshed off the hot path so a hung
     get_status never stalls the status feed / serial bridge."""
     c = _cyd_wardrive_cache
-    if not c['busy'] and (time.time() - c['t']) > 8:
+    if not c['busy'] and (time.time() - c['t']) > _CYD_WARDRIVE_TTL:
         c['busy'] = True
         threading.Thread(target=_cyd_wardrive_refresh, name='cyd-wardrive-refresh',
                          daemon=True).start()
     return c['v']
+
+
+def _cyd_wardrive_optimistic(run):
+    """Flip the cached run-state the instant the operator taps Start/Stop on the
+    CYD, so the screen updates on the very next status push instead of waiting for
+    the engine to catch up. eng.stop()/start() lag (get_status keeps reporting the
+    old state for a beat), so we hold this value for one TTL: push the cache
+    timestamp forward so the background refresh doesn't immediately overwrite it
+    with a stale reading, then let the next real refresh reconcile the counts."""
+    c = _cyd_wardrive_cache
+    c['run'] = 1 if run else 0
+    if not run:
+        c['v'] = 'idle'
+    else:
+        c['v'] = (str(c.get('nets') or 0) + ' nets')
+    c['t'] = time.time()      # defer the next refresh past the engine's settle lag
 
 
 # Last on-demand results the CYD triggered, surfaced back in its status feed.
@@ -2966,6 +2997,14 @@ def _cyd_build_status_dict():
         'wardrive': _cyd_wardrive_state(),   # refreshes the cache read just below
         'wd_run': _cyd_wardrive_cache['run'],
         'wd_nets': _cyd_wardrive_cache['nets'],
+        'wd_scan': _cyd_wardrive_cache['scan'],
+        'wd_ble': _cyd_wardrive_cache['ble'],
+        'wd_cell': _cyd_wardrive_cache['cell'],
+        'wd_zig': _cyd_wardrive_cache['zig'],
+        'wd_comp': _cyd_wardrive_cache['comp'],
+        'wd_band': _cyd_wardrive_cache['band'],
+        'wd_c1': _cyd_wardrive_cache['c1'],
+        'wd_c2': _cyd_wardrive_cache['c2'],
         'wd_gps': _cyd_wardrive_cache['gps'],
         'wd_enabled': _cyd_wardrive_cache['enabled'],
         'alerts': a_count,
@@ -3079,6 +3118,7 @@ def _cyd_dispatch_action(action, node_name):
             if (eng.get_status() or {}).get('running'):
                 return 'running', 200
             eng.start()
+            _cyd_wardrive_optimistic(True)   # flip the CYD to running immediately
             return 'started', 202
         except Exception as exc:
             logger.warning(f"[cyd] wardrive_start failed: {exc}")
@@ -3088,6 +3128,7 @@ def _cyd_dispatch_action(action, node_name):
         try:
             eng = _get_wardriving_engine()
             eng.stop()
+            _cyd_wardrive_optimistic(False)  # flip the CYD to idle immediately
             return 'done', 200
         except Exception as exc:
             logger.warning(f"[cyd] wardrive_stop failed: {exc}")
@@ -3126,8 +3167,8 @@ def _cyd_dispatch_action(action, node_name):
                 return 'disabled', 409
             eng = _get_wardriving_engine()
             if (eng.get_status() or {}).get('running'):
-                eng.stop(); return 'done', 200
-            eng.start(); return 'started', 202
+                eng.stop(); _cyd_wardrive_optimistic(False); return 'done', 200
+            eng.start(); _cyd_wardrive_optimistic(True); return 'started', 202
         except Exception as exc:
             logger.warning(f"[cyd] wardrive_toggle failed: {exc}")
             return 'error', 500
