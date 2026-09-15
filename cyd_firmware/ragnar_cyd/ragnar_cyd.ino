@@ -43,7 +43,7 @@
 #include <AnimatedGIF.h>
 
 #include "config.h"
-#include "ragnar_glitch_gif.h"    // embedded 240x240 boot animation (PROGMEM)
+#include "ragnar_boot_gif.h"      // embedded 240x320 full-screen boot animation (PROGMEM)
 
 // Defined before the first include-terminated section so Arduino's auto-generated
 // prototypes (inserted after the includes) can reference ActionBtn*.
@@ -121,13 +121,13 @@ static const int16_t SCR_H = 320;
 
 // ── Boot animation (ragnar-glitch.gif, decoded on-device by AnimatedGIF) ────────
 // A ~5 s splash at power-on that also gives a companion Pi time to finish booting
-// before the node starts talking to it. The 240x240 GIF is centred vertically on
-// the 240x320 panel. Colour byte-order: LE palette + draw16bitRGBBitmap is correct
-// on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE to 1.
+// before the node starts talking to it. The 240x320 GIF fills the whole panel
+// (no centring offset). Colour byte-order: LE palette + draw16bitRGBBitmap is
+// correct on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE.
 #define CYD_BOOT_ANIM_MS 5000
 #define CYD_GIF_BE       0
 static const int16_t GIF_X_OFF = 0;
-static const int16_t GIF_Y_OFF = (SCR_H - 240) / 2;   // 40 px: centre the square
+static const int16_t GIF_Y_OFF = (SCR_H - 320) / 2;   // 0 px: full-screen 240x320
 // AnimatedGIF embeds tens of KB of decode buffers; it's only needed at boot, so
 // it is heap-allocated in playBootAnimation() and freed before WiFi/BLE start —
 // keeping it as a static global permanently starved the WiFi RX buffers.
@@ -178,7 +178,7 @@ static void playBootAnimation(uint32_t durationMs) {
   AnimatedGIF *gif = new AnimatedGIF();       // ~tens of KB, freed below (boot only)
   if (!gif) return;
   gif->begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
-  if (gif->open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw)) {
+  if (gif->open((uint8_t *)ragnar_boot_gif, ragnar_boot_gif_len, GIFDraw)) {
     uint32_t start = millis();
     int delayMs = 0;
     while (millis() - start < durationMs) {
