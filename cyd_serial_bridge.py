@@ -77,6 +77,8 @@ class CydSerialBridge:
         self._publish_port = publish_port        # (port_or_None) -> None
         self._mesh_on = False
         self._wifi_on = False
+        self._mesh_kick = False   # push a mesh frame ASAP after an 'mr on' request
+        self._wifi_kick = False   # push a wifi frame ASAP after a 'wsr on' request
         self._dbg = {'in': 0, 'ac': 0, 'wr': 0, 'mr': 0, 'wsr': 0, 'wc': 0,
                      'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0, 'wf_err': '',
                      'me_sent': 0, 'wl_sent': 0, 'tx_drop': 0}
@@ -274,6 +276,10 @@ class CydSerialBridge:
                 else:
                     self._dbg['wf_none'] += 1
             # ── outbound: mesh roster + wifi list while their screens are open ──
+            if self._mesh_kick:
+                self._mesh_kick = False; next_mesh = 0.0
+            if self._wifi_kick:
+                self._wifi_kick = False; next_wifi = 0.0
             if self._mesh_on and self._get_mesh and now >= next_mesh:
                 next_mesh = now + 3.0
                 try:
@@ -320,9 +326,15 @@ class CydSerialBridge:
                 except Exception:
                     pass
         elif t == 'mr':                       # mesh roster stream request
-            self._mesh_on = bool(msg.get('on'))
+            on = bool(msg.get('on'))
+            if on and not self._mesh_on:
+                self._mesh_kick = True         # first frame goes out immediately
+            self._mesh_on = on
         elif t == 'wsr':                      # wifi-list stream request
-            self._wifi_on = bool(msg.get('on'))
+            on = bool(msg.get('on'))
+            if on and not self._wifi_on:
+                self._wifi_kick = True
+            self._wifi_on = on
         elif t == 'wc':                       # wifi connect (scan index + password)
             if self._on_wifi_connect:
                 try:
