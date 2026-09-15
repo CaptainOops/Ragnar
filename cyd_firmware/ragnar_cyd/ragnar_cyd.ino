@@ -201,6 +201,15 @@ enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIG
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
+// Wardrive Start/Stop is a ~5s round-trip (Ragnar dispatches, then confirms via
+// the pushed status). Latch a "processing" state on tap so the button greys out
+// and ignores further taps until the confirmed run-state matches what we asked
+// for (or a safety timeout fires, in case the action failed / no reply arrives).
+static bool     g_wdPending = false;
+static bool     g_wdTarget  = false;   // run-state we asked Ragnar to reach
+static uint32_t g_wdPendMs  = 0;
+static const uint32_t WD_PEND_TIMEOUT_MS = 9000;
+
 // ── Live model: last status synced from Ragnar ────────────────────────────────
 struct RagnarStatus {
   bool     ok        = false;
@@ -615,6 +624,9 @@ static void applyStatus(const String &body) {
   g_rs.wdZig     = jsonInt(body, "wd_zig");
   g_rs.wdComp    = jsonInt(body, "wd_comp");
   g_rs.wdEnabled = jsonInt(body, "wd_enabled") != 0;
+  // Clear the Start/Stop "processing" latch once Ragnar confirms the run-state we
+  // asked for (the pushed wd_run now matches the target), so the button un-greys.
+  if (g_wdPending && g_rs.wdRun == g_wdTarget) { g_wdPending = false; g_needRedraw = true; }
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
   g_rs.tfPps    = jsonInt(body, "tf_pps");
   g_rs.tfHosts  = jsonInt(body, "tf_hosts");
@@ -1356,11 +1368,21 @@ static void drawWardrive() {
     if (g_rs.wdC2[0]) { gfx->setTextColor(WHITE); gfx->setCursor(16, y); gfx->print(g_rs.wdC2); y += 14; }
   }
   // Start/Stop button — toggles and STAYS on the page so the status stays live.
-  uint16_t bc = g_rs.wdRun ? colRed() : colGreen();
-  gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, bc);
-  gfx->drawRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colSky());
-  gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(30, WD_BTN_Y + 14); gfx->print(g_rs.wdRun ? "STOP wardrive" : "START wardrive");
+  // While a tap is in flight (~5s round-trip) it greys out and shows the pending
+  // verb so the operator gets instant feedback and can't double-fire the toggle.
+  gfx->setTextSize(2);
+  if (g_wdPending) {
+    gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colDim());
+    gfx->drawRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colGray());
+    gfx->setTextColor(colAmber());
+    gfx->setCursor(40, WD_BTN_Y + 14); gfx->print(g_wdTarget ? "starting..." : "stopping...");
+  } else {
+    uint16_t bc = g_rs.wdRun ? colRed() : colGreen();
+    gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, bc);
+    gfx->drawRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colSky());
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(30, WD_BTN_Y + 14); gfx->print(g_rs.wdRun ? "STOP wardrive" : "START wardrive");
+  }
 }
 
 // ── Scrollable list plumbing (Mesh + Net-Conn) ────────────────────────────────
@@ -1760,14 +1782,18 @@ static void handleTouch(int16_t px, int16_t py) {
   }
   if (g_screen == SCR_WARDRIVE) {
     // Start/Stop toggles in place; status updates live from the feed (no nav away).
-    if (g_rs.wdEnabled && inRect(px, py, 10, WD_BTN_Y, SCR_W - 20, 44)) {
+    // Ignore taps while one is already in flight (the button is greyed/pending).
+    if (g_rs.wdEnabled && !g_wdPending && inRect(px, py, 10, WD_BTN_Y, SCR_W - 20, 44)) {
       const char *a = g_rs.wdRun ? "wardrive_stop" : "wardrive_start";
+      g_wdTarget = !g_rs.wdRun;               // run-state we expect to reach
+      g_wdPending = true; g_wdPendMs = millis();
 #if CYD_TRANSPORT_SERIAL
       serialSendAction(String(a));   // send now — don't wait for the sync window
 #else
       actionEnqueue(a);
 #endif
-      setStatus(g_rs.wdRun ? "stopping..." : "starting...", colAmber());
+      setStatus(g_wdTarget ? "starting..." : "stopping...", colAmber());
+      g_needRedraw = true;                    // repaint into the processing state
     }
     return;
   }
@@ -1972,6 +1998,11 @@ static void serviceUI() {
 #if CYD_TRANSPORT_SERIAL
   serialDrain();   // keep the display current with the Pi's status pushes
 #endif
+  // Safety net: if the Start/Stop confirmation never arrives (action failed, or no
+  // status push), drop the "processing" latch so the button can't get stuck greyed.
+  if (g_wdPending && millis() - g_wdPendMs > WD_PEND_TIMEOUT_MS) {
+    g_wdPending = false; g_needRedraw = true;
+  }
   static uint32_t lastTap = 0;
   int16_t px, py;
   if (touchRead(px, py) && millis() - lastTap > 250) {
