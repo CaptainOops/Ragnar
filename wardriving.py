@@ -2769,6 +2769,23 @@ class WardrivingEngine:
         while self._running:
             try:
                 present = self._enumerate_serial_devices()
+                # Never touch the CYD's own serial-bridge port. The CYD is an
+                # ESP32 on a CH340/CP2102 bridge, so it classifies as a
+                # 'companion' and this monitor would open /dev/ttyUSB0 in
+                # parallel with the CYD serial bridge — the two readers then
+                # split the CYD's byte stream, so status frames (wardrive
+                # running/stopped etc.) reach the screen garbled or not at all.
+                # Drop it here: if it was already attached, it drops out of
+                # `present` and the removal path below stops that listener,
+                # handing the port back to the bridge.
+                cyd_port = getattr(self.shared_data, 'cyd_serial_active_port', None)
+                if cyd_port:
+                    try:
+                        cyd_real = os.path.realpath(cyd_port)
+                        present = {k: v for k, v in present.items()
+                                   if os.path.realpath(v) != cyd_real}
+                    except Exception:
+                        pass
                 managed = self._managed_devices
 
                 # Removals: a managed device id is no longer present.

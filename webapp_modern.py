@@ -2753,6 +2753,22 @@ def _cyd_wardrive_state():
     return c['v']
 
 
+def _cyd_wardrive_optimistic(run):
+    """Flip the cached run-state the instant the operator taps Start/Stop on the
+    CYD, so the screen updates on the very next status push instead of waiting for
+    the engine to catch up. eng.stop()/start() lag (get_status keeps reporting the
+    old state for a beat), so we hold this value for one TTL: push the cache
+    timestamp forward so the background refresh doesn't immediately overwrite it
+    with a stale reading, then let the next real refresh reconcile the counts."""
+    c = _cyd_wardrive_cache
+    c['run'] = 1 if run else 0
+    if not run:
+        c['v'] = 'idle'
+    else:
+        c['v'] = (str(c.get('nets') or 0) + ' nets')
+    c['t'] = time.time()      # defer the next refresh past the engine's settle lag
+
+
 # Last on-demand results the CYD triggered, surfaced back in its status feed.
 _cyd_speedtest_result = '-'
 _cyd_captive_result = '-'
@@ -3102,6 +3118,7 @@ def _cyd_dispatch_action(action, node_name):
             if (eng.get_status() or {}).get('running'):
                 return 'running', 200
             eng.start()
+            _cyd_wardrive_optimistic(True)   # flip the CYD to running immediately
             return 'started', 202
         except Exception as exc:
             logger.warning(f"[cyd] wardrive_start failed: {exc}")
@@ -3111,6 +3128,7 @@ def _cyd_dispatch_action(action, node_name):
         try:
             eng = _get_wardriving_engine()
             eng.stop()
+            _cyd_wardrive_optimistic(False)  # flip the CYD to idle immediately
             return 'done', 200
         except Exception as exc:
             logger.warning(f"[cyd] wardrive_stop failed: {exc}")
@@ -3149,8 +3167,8 @@ def _cyd_dispatch_action(action, node_name):
                 return 'disabled', 409
             eng = _get_wardriving_engine()
             if (eng.get_status() or {}).get('running'):
-                eng.stop(); return 'done', 200
-            eng.start(); return 'started', 202
+                eng.stop(); _cyd_wardrive_optimistic(False); return 'done', 200
+            eng.start(); _cyd_wardrive_optimistic(True); return 'started', 202
         except Exception as exc:
             logger.warning(f"[cyd] wardrive_toggle failed: {exc}")
             return 'error', 500
