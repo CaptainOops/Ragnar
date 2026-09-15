@@ -1946,6 +1946,11 @@ static void runConfigPortal() {
 //  Lifecycle
 // ════════════════════════════════════════════════════════════════════════════
 void setup() {
+  // Enlarge the UART RX buffer BEFORE begin(). The default is 256 B, which the
+  // direct GPIO UART (no flow control) can overflow during a long render() or
+  // radio window when we're not draining — lost bytes = corrupt frames = a screen
+  // that never updates. Over USB the CH340 hides this; on the P1 header it bites.
+  Serial.setRxBufferSize(4096);
   Serial.begin(CYD_SERIAL_BAUD);
 
   pinMode(PIN_LED_R, OUTPUT); pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_B, OUTPUT);
@@ -2009,7 +2014,13 @@ static void serviceUI() {
     lastTap = millis();
     handleTouch(px, py);
   }
-  if (g_needRedraw) render();
+  if (g_needRedraw) {
+    render();
+#if CYD_TRANSPORT_SERIAL
+    serialDrain();   // render() can take 50-100ms of SPI; drain the bytes that
+                     // piled up during it so the UART RX buffer doesn't overflow
+#endif
+  }
 }
 
 // Service the UI for `ms` (touch stays responsive across long radio phases).
