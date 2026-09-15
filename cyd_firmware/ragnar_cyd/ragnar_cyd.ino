@@ -494,7 +494,12 @@ static void sniffReset() {
 
 static void sniffWindow(uint32_t durationMs) {
   sniffReset();
-  WiFi.disconnect(true, false);
+  // Keep the radio STARTED: WiFi.disconnect(true,...) powers it OFF, after which
+  // esp_wifi_set_promiscuous() returns NOT_STARTED and the RX callback never fires
+  // (all sniff counts stay 0 — SCAN/DEFENSE/SIGINT looked dead). disconnect(false)
+  // just leaves any AP (a no-op over serial) and leaves the radio running.
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, false);
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_promiscuous_rx_cb(&snifferCb);
   const uint8_t channels[] = {1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10};
@@ -1351,6 +1356,15 @@ static void drawTraffic() {
 
 // ── Wardrive: own page with live status + Start/Stop (stays on the page) ───────
 static const int16_t WD_BTN_Y = SCR_H - 22 - 46;
+// One centered stat: a small dim label with a bigger coloured value under it.
+static void wdStat(int16_t y, const char *label, const String &val,
+                   uint8_t vsize, uint16_t vcol) {
+  int16_t cx = SCR_W / 2;
+  gfx->setTextSize(1); gfx->setTextColor(colGray());
+  gfx->setCursor(cx - (int16_t)strlen(label) * 3, y); gfx->print(label);
+  gfx->setTextSize(vsize); gfx->setTextColor(vcol);
+  gfx->setCursor(cx - (int16_t)(val.length() * 3 * vsize), y + 11); gfx->print(val);
+}
 static void drawWardrive() {
   drawHeader("WARDRIVE", false);
   int16_t y = HEAD_H + 10;
@@ -1362,33 +1376,24 @@ static void drawWardrive() {
     gfx->setCursor(12, y); gfx->print("enable wardriving in Ragnar first");
     return;
   }
-  // header status line
-  gfx->setTextSize(2);
-  gfx->setTextColor(g_rs.wdRun ? colGreen() : colGray());
-  gfx->setCursor(12, y); gfx->print(g_rs.wdRun ? "WARDRIVING" : "idle");
+  // ── Single centered column, larger fonts (readable at a glance) ────────────
+  int16_t cx = SCR_W / 2;
+  // Status headline (big).
+  const char *stx = g_rs.wdRun ? "WARDRIVING" : "IDLE";
+  gfx->setTextSize(3); gfx->setTextColor(g_rs.wdRun ? colGreen() : colGray());
+  gfx->setCursor(cx - (int16_t)strlen(stx) * 9, y); gfx->print(stx);
+  y += 30;
+  // Band, centered under the status.
+  String bnd = String("band ") + g_rs.wdBand;
   gfx->setTextSize(1); gfx->setTextColor(colDim());
-  gfx->setCursor(150, y + 6); gfx->print("band "); gfx->print(g_rs.wdBand);
-  y += 28;
-  // compact live counters (two per row to fit)
-  gfx->setTextSize(1);
-  #define WDKV(lx, k, v, c) do { gfx->setTextColor(colGray()); gfx->setCursor(lx, y); gfx->print(k); \
-    gfx->setTextColor(c); gfx->setCursor((lx)+58, y); gfx->print(v); } while (0)
-  WDKV(12, "NETS", String(g_rs.wdNets), colSky());
-  WDKV(128, "scan", String(g_rs.wdScan), WHITE); y += 18;
-  WDKV(12, "BLE", String(g_rs.wdBle), WHITE);
-  WDKV(128, "cell", String(g_rs.wdCell), WHITE); y += 18;
-  WDKV(12, "ZIG", String(g_rs.wdZig), WHITE);
-  WDKV(128, "comp", String(g_rs.wdComp), colSky()); y += 18;
-  WDKV(12, "GPS", String(g_rs.wdGps), strncmp(g_rs.wdGps, "fix", 3) == 0 ? colGreen() : colDim());
-  uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
-  WDKV(128, "sync", String(since) + "s", g_rs.ok ? colGreen() : colRed()); y += 22;
-  #undef WDKV
-  // companions (Huginn nodes), if any
-  if (g_rs.wdComp > 0) {
-    gfx->setTextColor(colDim()); gfx->setCursor(12, y); gfx->print("companions:"); y += 14;
-    if (g_rs.wdC1[0]) { gfx->setTextColor(WHITE); gfx->setCursor(16, y); gfx->print(g_rs.wdC1); y += 14; }
-    if (g_rs.wdC2[0]) { gfx->setTextColor(WHITE); gfx->setCursor(16, y); gfx->print(g_rs.wdC2); y += 14; }
-  }
+  gfx->setCursor(cx - (int16_t)(bnd.length() * 3), y); gfx->print(bnd);
+  y += 22;
+  // Headline metric first (networks), then the rest — one centered column.
+  wdStat(y, "NETWORKS", String(g_rs.wdNets), 3, colSky());  y += 44;
+  wdStat(y, "BLE DEVICES", String(g_rs.wdBle), 2, WHITE);   y += 38;
+  wdStat(y, "COMPANIONS", String(g_rs.wdComp), 2, colSky()); y += 38;
+  wdStat(y, "GPS", String(g_rs.wdGps), 2,
+         strncmp(g_rs.wdGps, "fix", 3) == 0 ? colGreen() : colDim());
   // Start/Stop button — toggles and STAYS on the page so the status stays live.
   // While a tap is in flight (~5s round-trip) it greys out and shows the pending
   // verb so the operator gets instant feedback and can't double-fire the toggle.

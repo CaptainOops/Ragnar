@@ -80,7 +80,7 @@ joined to an AP while sniffing other channels**. The firmware therefore
 | Phase | State | Does |
 |------|-------|------|
 | SYNC (~2.5 s) | linked to the Pi (cable) | read pushed status, send counts, flush queued actions |
-| SNIFF (~6 s) | disconnected, promiscuous | hop ch 1..13, count beacons/probes/deauths, unique BSSIDs |
+| SNIFF (~6 s) | radio started, promiscuous | hop ch 1..13, count beacons/probes/deauths, unique BSSIDs (feeds SCAN/DEFENSE/SIGINT). NB: use `WiFi.disconnect(false,...)` — `disconnect(true)` powers the radio OFF and promiscuous then captures nothing (all counts 0). |
 | BLE (~3 s) | disconnected | passive advertisement scan (count) |
 
 Consequences: the display shows the **last‑synced** values (near‑real‑time, not
@@ -274,7 +274,7 @@ to `g_menu[]` to add a feature); each tile shows a compact live value.
 | **SIGINT** | a native **radar/dome** of the APs it hears — centre = the node, radius ∝ RSSI, colour by strength |
 | **WFALL** | **RF waterfall** streamed from Ragnar's SDR (see below) |
 | **NET** | status header + a grid of subpages/actions: **Net Int** (integrity monitor detail), **Watchtower** (→ ALERTS), **Wardrive** (live wardriving page), Speed test, Captive check, Airspace sweep, WIDS |
-| **WARDRIVE** | own page (NET → Wardrive) with **live** status: running/idle, networks (total + this-scan), BLE, cell, Zigbee, companion (Huginn) count + rows, GPS fix, band mode, last-sync + a Start/Stop button that toggles in place. Refreshed ~3 s off the hot path; disabled unless wardriving is enabled in Ragnar |
+| **WARDRIVE** | own page (NET → Wardrive) with **live** status in a single centred column, large fonts: RUNNING/IDLE + band, then NETWORKS (headline), BLE, COMPANIONS, GPS, and a Start/Stop button that toggles in place (greys to `starting…`/`stopping…` until confirmed). Refreshed off the hot path; disabled unless wardriving is enabled in Ragnar |
 | **NETCONN** | drive the **Pi's** WiFi: scrollable scan list → tap an SSID → on-screen keyboard for the password → connect; plus AP-mode toggle and scanner start/stop |
 | **MESH** | scrollable roster of mesh nodes (online dot · name · IP), streamed from `mesh_manager` |
 | **TRAFFIC** | live capture stats (throughput/pps/hosts/conns/alerts) + a start/stop button |
