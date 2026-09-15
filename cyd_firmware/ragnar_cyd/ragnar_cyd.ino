@@ -245,7 +245,15 @@ struct RagnarStatus {
   // Wardrive live status (own page):
   bool     wdRun            = false;
   int      wdNets           = 0;
+  int      wdScan           = 0;
+  int      wdBle            = 0;
+  int      wdCell           = 0;
+  int      wdZig            = 0;
+  int      wdComp           = 0;
   char     wdGps[16]        = "-";
+  char     wdBand[12]       = "-";
+  char     wdC1[28]         = "";
+  char     wdC2[28]         = "";
   bool     wdEnabled        = false;
 };
 static RagnarStatus g_rs;
@@ -595,9 +603,17 @@ static void applyStatus(const String &body) {
   CYD_CPYS(actState, "act_state");
   CYD_CPYS(actDetail, "act_detail");
   CYD_CPYS(wdGps, "wd_gps");
+  CYD_CPYS(wdBand, "wd_band");
+  CYD_CPYS(wdC1, "wd_c1");
+  CYD_CPYS(wdC2, "wd_c2");
   #undef CYD_CPYS
   g_rs.wdRun     = jsonInt(body, "wd_run") != 0;
   g_rs.wdNets    = jsonInt(body, "wd_nets");
+  g_rs.wdScan    = jsonInt(body, "wd_scan");
+  g_rs.wdBle     = jsonInt(body, "wd_ble");
+  g_rs.wdCell    = jsonInt(body, "wd_cell");
+  g_rs.wdZig     = jsonInt(body, "wd_zig");
+  g_rs.wdComp    = jsonInt(body, "wd_comp");
   g_rs.wdEnabled = jsonInt(body, "wd_enabled") != 0;
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
   g_rs.tfPps    = jsonInt(body, "tf_pps");
@@ -620,7 +636,9 @@ static void applyStatus(const String &body) {
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
     + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
     + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|'
-    + g_rs.wdRun + '|' + g_rs.wdNets + '|' + g_rs.wdGps + '|' + g_rs.wdEnabled;
+    + g_rs.wdRun + '|' + g_rs.wdNets + '|' + g_rs.wdScan + '|' + g_rs.wdBle + '|'
+    + g_rs.wdCell + '|' + g_rs.wdZig + '|' + g_rs.wdComp + '|' + g_rs.wdGps + '|'
+    + g_rs.wdBand + '|' + g_rs.wdC1 + '|' + g_rs.wdC2 + '|' + g_rs.wdEnabled;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -1310,14 +1328,33 @@ static void drawWardrive() {
     gfx->setCursor(12, y); gfx->print("enable wardriving in Ragnar first");
     return;
   }
+  // header status line
   gfx->setTextSize(2);
   gfx->setTextColor(g_rs.wdRun ? colGreen() : colGray());
-  gfx->setCursor(12, y); gfx->print(g_rs.wdRun ? "WARDRIVING" : "idle"); y += 32;
-  kv(y, "NETWORKS", String(g_rs.wdNets), colSky()); y += 36;
-  kv(y, "GPS", String(g_rs.wdGps),
-     strncmp(g_rs.wdGps, "fix", 3) == 0 ? colGreen() : colDim()); y += 36;
+  gfx->setCursor(12, y); gfx->print(g_rs.wdRun ? "WARDRIVING" : "idle");
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  gfx->setCursor(150, y + 6); gfx->print("band "); gfx->print(g_rs.wdBand);
+  y += 28;
+  // compact live counters (two per row to fit)
+  gfx->setTextSize(1);
+  #define WDKV(lx, k, v, c) do { gfx->setTextColor(colGray()); gfx->setCursor(lx, y); gfx->print(k); \
+    gfx->setTextColor(c); gfx->setCursor((lx)+58, y); gfx->print(v); } while (0)
+  WDKV(12, "NETS", String(g_rs.wdNets), colSky());
+  WDKV(128, "scan", String(g_rs.wdScan), WHITE); y += 18;
+  WDKV(12, "BLE", String(g_rs.wdBle), WHITE);
+  WDKV(128, "cell", String(g_rs.wdCell), WHITE); y += 18;
+  WDKV(12, "ZIG", String(g_rs.wdZig), WHITE);
+  WDKV(128, "comp", String(g_rs.wdComp), colSky()); y += 18;
+  WDKV(12, "GPS", String(g_rs.wdGps), strncmp(g_rs.wdGps, "fix", 3) == 0 ? colGreen() : colDim());
   uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
-  kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? colGreen() : colRed());
+  WDKV(128, "sync", String(since) + "s", g_rs.ok ? colGreen() : colRed()); y += 22;
+  #undef WDKV
+  // companions (Huginn nodes), if any
+  if (g_rs.wdComp > 0) {
+    gfx->setTextColor(colDim()); gfx->setCursor(12, y); gfx->print("companions:"); y += 14;
+    if (g_rs.wdC1[0]) { gfx->setTextColor(WHITE); gfx->setCursor(16, y); gfx->print(g_rs.wdC1); y += 14; }
+    if (g_rs.wdC2[0]) { gfx->setTextColor(WHITE); gfx->setCursor(16, y); gfx->print(g_rs.wdC2); y += 14; }
+  }
   // Start/Stop button — toggles and STAYS on the page so the status stays live.
   uint16_t bc = g_rs.wdRun ? colRed() : colGreen();
   gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, bc);
@@ -1725,8 +1762,12 @@ static void handleTouch(int16_t px, int16_t py) {
     // Start/Stop toggles in place; status updates live from the feed (no nav away).
     if (g_rs.wdEnabled && inRect(px, py, 10, WD_BTN_Y, SCR_W - 20, 44)) {
       const char *a = g_rs.wdRun ? "wardrive_stop" : "wardrive_start";
-      if (actionEnqueue(a)) setStatus(g_rs.wdRun ? "queued: stop" : "queued: start", colAmber());
-      else setStatus("queue full", colRed());
+#if CYD_TRANSPORT_SERIAL
+      serialSendAction(String(a));   // send now — don't wait for the sync window
+#else
+      actionEnqueue(a);
+#endif
+      setStatus(g_rs.wdRun ? "stopping..." : "starting...", colAmber());
     }
     return;
   }

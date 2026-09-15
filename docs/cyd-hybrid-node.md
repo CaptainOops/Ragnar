@@ -260,7 +260,7 @@ to `g_menu[]` to add a feature); each tile shows a compact live value.
 | **SIGINT** | a native **radar/dome** of the APs it hears — centre = the node, radius ∝ RSSI, colour by strength |
 | **WFALL** | **RF waterfall** streamed from Ragnar's SDR (see below) |
 | **NET** | status header + a grid of subpages/actions: **Net Int** (integrity monitor detail), **Watchtower** (→ ALERTS), **Wardrive** (live wardriving page), Speed test, Captive check, Airspace sweep, WIDS |
-| **WARDRIVE** | own page (NET → Wardrive): live status (running/idle, networks found, GPS fix) + a Start/Stop button that toggles in place; disabled unless wardriving is enabled in Ragnar |
+| **WARDRIVE** | own page (NET → Wardrive) with **live** status: running/idle, networks (total + this-scan), BLE, cell, Zigbee, companion (Huginn) count + rows, GPS fix, band mode, last-sync + a Start/Stop button that toggles in place. Refreshed ~3 s off the hot path; disabled unless wardriving is enabled in Ragnar |
 | **NETCONN** | drive the **Pi's** WiFi: scrollable scan list → tap an SSID → on-screen keyboard for the password → connect; plus AP-mode toggle and scanner start/stop |
 | **MESH** | scrollable roster of mesh nodes (online dot · name · IP), streamed from `mesh_manager` |
 | **TRAFFIC** | live capture stats (throughput/pps/hosts/conns/alerts) + a start/stop button |
