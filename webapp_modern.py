@@ -2693,7 +2693,8 @@ def _cyd_active_iface_ip():
         return '', ''
 
 
-_cyd_wardrive_cache = {'v': 'off', 't': 0.0, 'busy': False}
+_cyd_wardrive_cache = {'v': 'off', 'run': 0, 'nets': 0, 'gps': '-', 'enabled': 0,
+                       't': 0.0, 'busy': False}
 
 
 def _cyd_wardrive_refresh():
@@ -2701,28 +2702,34 @@ def _cyd_wardrive_refresh():
     block/hang on this hardware (GPS/interface probing), and this runs on the
     serial bridge's single-threaded push loop, so it must NEVER block there.
     A hung get_status leaks at most one daemon thread; the bridge stays alive."""
+    c = _cyd_wardrive_cache
+    v, run, nets, gps, enabled = 'off', 0, 0, '-', 0
     try:
-        if not shared_data.config.get('wardriving_enabled', False):
-            v = 'off'
-        else:
+        if shared_data.config.get('wardriving_enabled', False):
+            enabled = 1
             eng = _get_wardriving_engine()
             st = eng.get_status() or {}
-            if not st.get('running'):
-                v = 'idle'
+            nets = int(st.get('total_networks') or st.get('networks_found') or st.get('networks') or 0)
+            run = 1 if st.get('running') else 0
+            v = (str(nets) + ' nets') if run else 'idle'
+            g = st.get('gps') or {}
+            if g.get('has_fix'):
+                sats = g.get('satellites') or g.get('sats')
+                gps = ('fix ' + str(int(sats)) + 'sat') if sats else 'fix'
+            elif g.get('connected'):
+                gps = 'no fix'
             else:
-                n = st.get('networks_found') or st.get('total_networks') or st.get('networks') or 0
-                v = str(int(n)) + ' nets'
-        _cyd_wardrive_cache['v'] = v
+                gps = 'no gps'
     except Exception:
-        _cyd_wardrive_cache['v'] = 'off'
+        v, run, nets, gps, enabled = 'off', 0, 0, '-', 0
     finally:
-        _cyd_wardrive_cache['t'] = time.time()
-        _cyd_wardrive_cache['busy'] = False
+        c.update(v=v, run=run, nets=nets, gps=gps, enabled=enabled,
+                 t=time.time(), busy=False)
 
 
 def _cyd_wardrive_state():
-    """Cached wardrive state; refreshed off the hot path so a hung get_status
-    never stalls the status feed / serial bridge."""
+    """Cached wardrive summary string; refreshed off the hot path so a hung
+    get_status never stalls the status feed / serial bridge."""
     c = _cyd_wardrive_cache
     if not c['busy'] and (time.time() - c['t']) > 8:
         c['busy'] = True
@@ -2956,7 +2963,11 @@ def _cyd_build_status_dict():
         # Expanded status fields for the DASH / NETWORK / ALERTS screens:
         'iface': iface,
         'ip': ip,
-        'wardrive': _cyd_wardrive_state(),
+        'wardrive': _cyd_wardrive_state(),   # refreshes the cache read just below
+        'wd_run': _cyd_wardrive_cache['run'],
+        'wd_nets': _cyd_wardrive_cache['nets'],
+        'wd_gps': _cyd_wardrive_cache['gps'],
+        'wd_enabled': _cyd_wardrive_cache['enabled'],
         'alerts': a_count,
         'worst': a_worst,
         'wids': 1 if _cyd_pick_monitor_iface() else 0,   # monitor-mode WIDS available

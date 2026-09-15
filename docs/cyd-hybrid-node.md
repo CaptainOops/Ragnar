@@ -259,11 +259,12 @@ to `g_menu[]` to add a feature); each tile shows a compact live value.
 | **SCAN** | raw 2.4 GHz counters (beacons/APs/probes/deauth/BLE/frames) |
 | **SIGINT** | a native **radar/dome** of the APs it hears — centre = the node, radius ∝ RSSI, colour by strength |
 | **WFALL** | **RF waterfall** streamed from Ragnar's SDR (see below) |
-| **NET** | status header + a grid of subpages/actions: **Net Int** (integrity monitor detail), **Watchtower** (→ ALERTS), Speed test, Captive check, Airspace sweep, WIDS |
+| **NET** | status header + a grid of subpages/actions: **Net Int** (integrity monitor detail), **Watchtower** (→ ALERTS), **Wardrive** (live wardriving page), Speed test, Captive check, Airspace sweep, WIDS |
+| **WARDRIVE** | own page (NET → Wardrive): live status (running/idle, networks found, GPS fix) + a Start/Stop button that toggles in place; disabled unless wardriving is enabled in Ragnar |
 | **NETCONN** | drive the **Pi's** WiFi: scrollable scan list → tap an SSID → on-screen keyboard for the password → connect; plus AP-mode toggle and scanner start/stop |
 | **MESH** | scrollable roster of mesh nodes (online dot · name · IP), streamed from `mesh_manager` |
 | **TRAFFIC** | live capture stats (throughput/pps/hosts/conns/alerts) + a start/stop button |
-| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight; plus one-tap Wardriving toggle, Ragnar update, Restart service, Pwnagotchi swap (shown only when installed), and a touch-test/orientation screen |
+| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight; plus Ragnar update, Restart service, Pwnagotchi swap (shown only when installed), and a touch-test/orientation screen |
 | **CTRL** | the allowlisted action buttons (WIDS scan, BLE scan, Watchtower clear, restart Ragnar) |
 
 The header shows the unit's identity — its mesh Viking short-name (e.g.

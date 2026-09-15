@@ -196,7 +196,8 @@ static SPIClass touchSPI(HSPI);
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
               SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_MESH, SCR_NETCONN,
-              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST, SCR_ACTION };
+              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST, SCR_ACTION,
+              SCR_WARDRIVE };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
 
@@ -241,6 +242,11 @@ struct RagnarStatus {
   char     actName[24]      = "";
   char     actState[12]     = "";
   char     actDetail[28]    = "";
+  // Wardrive live status (own page):
+  bool     wdRun            = false;
+  int      wdNets           = 0;
+  char     wdGps[16]        = "-";
+  bool     wdEnabled        = false;
 };
 static RagnarStatus g_rs;
 
@@ -588,7 +594,11 @@ static void applyStatus(const String &body) {
   CYD_CPYS(actName, "act_name");
   CYD_CPYS(actState, "act_state");
   CYD_CPYS(actDetail, "act_detail");
+  CYD_CPYS(wdGps, "wd_gps");
   #undef CYD_CPYS
+  g_rs.wdRun     = jsonInt(body, "wd_run") != 0;
+  g_rs.wdNets    = jsonInt(body, "wd_nets");
+  g_rs.wdEnabled = jsonInt(body, "wd_enabled") != 0;
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
   g_rs.tfPps    = jsonInt(body, "tf_pps");
   g_rs.tfHosts  = jsonInt(body, "tf_hosts");
@@ -609,7 +619,8 @@ static void applyStatus(const String &body) {
     + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
     + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
-    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail;
+    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|'
+    + g_rs.wdRun + '|' + g_rs.wdNets + '|' + g_rs.wdGps + '|' + g_rs.wdEnabled;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -1108,8 +1119,9 @@ static const int N_CTRL = sizeof(g_ctrlActions) / sizeof(g_ctrlActions[0]);
 // one-tap actions (nav=true opens `scr`; nav=false enqueues `action`).
 struct NetItem { const char *label; bool nav; uint8_t scr; const char *action; };
 static const NetItem g_netItems[] = {
-  {"Net Int",    true,  SCR_NETINT, ""},
-  {"Watchtower", true,  SCR_ALERTS, ""},
+  {"Net Int",    true,  SCR_NETINT,   ""},
+  {"Watchtower", true,  SCR_ALERTS,   ""},
+  {"Wardrive",   true,  SCR_WARDRIVE, ""},
   {"Speed test", false, 0, "speed_test"},
   {"Captive",    false, 0, "captive_check"},
   {"Airspace",   false, 0, "network_scan"},
@@ -1283,6 +1295,35 @@ static void drawTraffic() {
   gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
   gfx->setTextColor(WHITE); gfx->setTextSize(2);
   gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+}
+
+// ── Wardrive: own page with live status + Start/Stop (stays on the page) ───────
+static const int16_t WD_BTN_Y = SCR_H - 22 - 46;
+static void drawWardrive() {
+  drawHeader("WARDRIVE", false);
+  int16_t y = HEAD_H + 10;
+  gfx->fillRect(0, HEAD_H, SCR_W, WD_BTN_Y - HEAD_H, colBg());
+  if (!g_rs.wdEnabled) {
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print("DISABLED"); y += 30;
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(12, y); gfx->print("enable wardriving in Ragnar first");
+    return;
+  }
+  gfx->setTextSize(2);
+  gfx->setTextColor(g_rs.wdRun ? colGreen() : colGray());
+  gfx->setCursor(12, y); gfx->print(g_rs.wdRun ? "WARDRIVING" : "idle"); y += 32;
+  kv(y, "NETWORKS", String(g_rs.wdNets), colSky()); y += 36;
+  kv(y, "GPS", String(g_rs.wdGps),
+     strncmp(g_rs.wdGps, "fix", 3) == 0 ? colGreen() : colDim()); y += 36;
+  uint32_t since = g_rs.lastSyncMs ? (millis() - g_rs.lastSyncMs) / 1000 : 0;
+  kv(y, "LAST SYNC", String(since) + "s ago", g_rs.ok ? colGreen() : colRed());
+  // Start/Stop button — toggles and STAYS on the page so the status stays live.
+  uint16_t bc = g_rs.wdRun ? colRed() : colGreen();
+  gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, bc);
+  gfx->drawRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colSky());
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(30, WD_BTN_Y + 14); gfx->print(g_rs.wdRun ? "STOP wardrive" : "START wardrive");
 }
 
 // ── Scrollable list plumbing (Mesh + Net-Conn) ────────────────────────────────
@@ -1466,7 +1507,7 @@ static int settingsRows(uint8_t *tags) {
   int n = 0;
   tags[n++] = STAG_BLE;
   tags[n++] = STAG_BL;
-  tags[n++] = STAG_WDRV;
+  // Wardriving moved to its own page (NET -> Wardrive) with live status.
   tags[n++] = STAG_UPDATE;
   tags[n++] = STAG_SVC;
   if (strcmp(g_rs.pwn, "off") != 0) tags[n++] = STAG_PWN;
@@ -1569,6 +1610,7 @@ static void render() {
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
     case SCR_ACTION:  drawAction();    break;
+    case SCR_WARDRIVE:drawWardrive();  break;
   }
   drawStatusBar();
   g_needRedraw = false;
@@ -1675,6 +1717,15 @@ static void handleTouch(int16_t px, int16_t py) {
   if (g_screen == SCR_TRAFFIC) {
     if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
       if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
+      else setStatus("queue full", colRed());
+    }
+    return;
+  }
+  if (g_screen == SCR_WARDRIVE) {
+    // Start/Stop toggles in place; status updates live from the feed (no nav away).
+    if (g_rs.wdEnabled && inRect(px, py, 10, WD_BTN_Y, SCR_W - 20, 44)) {
+      const char *a = g_rs.wdRun ? "wardrive_stop" : "wardrive_start";
+      if (actionEnqueue(a)) setStatus(g_rs.wdRun ? "queued: stop" : "queued: start", colAmber());
       else setStatus("queue full", colRed());
     }
     return;
