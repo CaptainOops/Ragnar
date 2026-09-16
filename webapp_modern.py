@@ -3099,9 +3099,13 @@ def _cyd_dispatch_action(action, node_name):
                     logger.info("[cyd] wifi_defense_scan: no monitor-capable interface")
                     return
                 import wifi_defense
-                wifi_defense.do_scan(iface, seconds=15, auto_enable=True)
+                # deep=True also captures EAPOL and folds in wifiwatch's client/
+                # handshake-layer detectors (PMKID harvest, deauth-and-capture
+                # handshakes, PNL leak) — the attacks a mgmt-only scan can't see.
+                res = wifi_defense.do_scan(iface, seconds=15, auto_enable=True, deep=True)
+                threat = (res or {}).get('threat', '?') if isinstance(res, dict) else '?'
                 cyd_node.record_action(node_name, action, None, status='completed')
-                _cyd_set_action(action, 'done', 'WIDS complete')
+                _cyd_set_action(action, 'done', 'deep WIDS: ' + str(threat))
                 logger.info(f"[cyd] wifi_defense_scan completed on {iface}")
             except Exception as exc:
                 cyd_node.record_action(node_name, action, None, status='error')
