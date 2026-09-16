@@ -1638,9 +1638,13 @@ it to another service and act as the victim (`ntlmrelayx`). **Detection-only**
   relayable in the first place.
 
 The BPF is `tcp port 445 or tcp port 139 or tcp port 135`, captured at snaplen 1024 so
-the RPC bind/opnum and NTLMSSP messages stay intact; **Scapy** dissects it. The first
-scan **learns** the accepted unsigned servers as the baseline
-(`data/relay_watch.json`); coercion and relay signals are **never** baselined away.
+the RPC bind/opnum and NTLMSSP messages stay intact; **Scapy** dissects it. The watch is
+**dual-stack (IPv4 + IPv6)**: those port primitives make libpcap capture SMB/MSRPC over
+both families, the parser reads either IP layer, and coercion/relay/signing detection is
+payload-based and address-family-agnostic — so every finding fires identically over IPv6
+(covered by dedicated IPv6 self-test legs). The first scan **learns** the accepted
+unsigned servers as the baseline (`data/relay_watch.json`); coercion and relay signals
+are **never** baselined away.
 The hardening it drives: enforce **SMB signing** everywhere, enable **LDAP signing +
 channel binding** on DCs, turn on **Extended Protection for Authentication (EPA)**,
 disable the Print Spooler on DCs, and patch (or RPC-filter) the coercion vectors.
