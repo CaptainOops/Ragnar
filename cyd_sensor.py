@@ -36,7 +36,7 @@ _STATE = {}
 
 # Defaults; overridable via the config getter passed to configure().
 _DEFAULTS = {
-    'deauth_flood_threshold': 8,     # deauth/disassoc frames in one report window
+    'deauth_flood_threshold': 15,    # deauth/disassoc frames in one report window
     'deauth_realert_sec': 60,        # don't re-alert the same flood more often
     'rogue_ap_enabled': True,        # alert on new BSSIDs after baseline
 }
