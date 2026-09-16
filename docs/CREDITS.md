@@ -1,6 +1,6 @@
 # Credits & Attribution
 
-Ragnar stands on a lot of other people's work. This file records, in more detail than the
+Ragnar is supported by people's work. This file records, in more detail than the
 [README credits table](../README.md#-credits--attribution), the people whose research and
 engineering make Ragnar possible.
 
