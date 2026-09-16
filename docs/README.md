@@ -37,8 +37,7 @@ browse than search.
 
 ## Sensing & smart home
 - [RuSense](rusense.md) — camera-free WiFi-CSI presence / motion / vitals sensing
-- [Home Assistant integration](homeassistant.md) — native HA entities
-- [Home Assistant integration — component README](homeassistant-integration.md) — the `custom_components/ragnar` integration's own readme
+- [Home Assistant integration](homeassistant.md) — native HA entities, HACS install, dashboard card & automations (the `custom_components/ragnar` integration guide)
 
 ## Mesh & fleet
 - [Ragnar Mesh](mesh.md) — controller-free Tailscale unit mesh
