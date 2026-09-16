@@ -156,5 +156,5 @@ scoped and fail‑closed in `webapp_modern.py`'s `check_authentication()`.
 - ✅ On-device captive-portal provisioning for the WiFi build (no secrets in `config.h`).
 - ✅ ESP Web Tools flasher page (`flasher/index.html`) + committed bins (serial build).
 
-See [docs/cyd-hybrid-node.md](../docs/cyd-hybrid-node.md) for the full design
+See [cyd-hybrid-node.md](cyd-hybrid-node.md) for the full design
 and API reference.

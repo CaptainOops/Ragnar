@@ -180,7 +180,7 @@ and upload with `arduino-cli`.
 (password `ragnarcyd`) + a captive form for WiFi SSID/password, Ragnar URL,
 device token and node name. Values persist in NVS (`Preferences`), the node
 reboots, connects, and appears under `/api/cyd/nodes`. Hold **BOOT** at power-on
-to re-provision. See [`cyd_firmware/README.md`](../cyd_firmware/README.md).
+to re-provision. See [`cyd-firmware.md`](cyd-firmware.md).
 
 ## WiFi-Defense sensor (2.4 GHz offload)
 
