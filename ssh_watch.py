@@ -82,6 +82,35 @@ CVE_CATALOG = {
         "cwe": "CWE-321",
         "refs": ("https://nvd.nist.gov/vuln/detail/CVE-2025-38741",),
     },
+    "CVE-2016-2183": {
+        "title": "SWEET32: birthday attack on 64-bit block ciphers (DES/3DES) in CBC mode",
+        "cvss": 7.5,
+        "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+        "cvss_source": "NVD and CISA-ADP both score 7.5; IBM X-Force scores the same CVE "
+                       "3.7 LOW (AC:H, C:L) reflecting the volume required",
+        "score_confidence": "disputed",
+        "score_note": "The dissenting 3.7 is IBM X-Force. The NVD figure is carried here, "
+                      "as it is in tlswatch, with the disagreement recorded rather than "
+                      "silently resolved.",
+        "affected": "Any SSH session negotiating a DES or Triple DES cipher. The CVE names "
+                    "SSH explicitly: 'The DES and Triple DES ciphers, as used in the TLS, "
+                    "SSH, and IPSec protocols and other protocols and products'.",
+        "detect": "exposure",
+        "detect_note": (
+            "Carried by the existing ssh_weak_cipher finding: the negotiated cipher IS the "
+            "vulnerable condition, read from the two cleartext KEXINIT messages, so a "
+            "separate finding code would be the same observation reported twice. NO VOLUME "
+            "TIER, DELIBERATELY — RFC 4344 s3.2 requires rekeying after 2^(L/4) blocks "
+            "(2^16 blocks / 512 KiB for a 64-bit cipher), far below the 2^32-block "
+            "birthday bound, and OpenSSH derives its RekeyLimit from the block size; a "
+            "conforming peer rekeys long before the bound. The rekey is also invisible to "
+            "a passive observer (KEXINIT after NEWKEYS travels inside the encrypted "
+            "stream, like TLS 1.2 renegotiation), so a 32 GiB volume tier cannot be "
+            "relied on the way tlswatch's can for TLS."),
+        "cwe": "CWE-327",
+        "refs": ("https://sweet32.info/",
+                 "https://nvd.nist.gov/vuln/detail/CVE-2016-2183"),
+    },
     "CVE-2024-6387": {
         "title": "regreSSHion: signal-handler race in OpenSSH sshd leading to "
                  "unauthenticated RCE as root",
@@ -190,9 +219,24 @@ WEAK_CIPHER = {
     "arcfour128": ("warn", "RC4"),
     "arcfour256": ("warn", "RC4"),
     "3des-cbc": ("warn", "64-bit block in CBC; the SWEET32 birthday bound applies"),
+    "3des-ctr": ("warn", "64-bit block cipher (RFC 4344); not SWEET32, which is a CBC "
+                         "analysis, but the block size is still short of current practice"),
+    "des-cbc@ssh.com": ("high", "single DES, 56-bit key"),
     "blowfish-cbc": ("warn", "64-bit block in CBC"),
     "cast128-cbc": ("warn", "64-bit block in CBC"),
     "rijndael-cbc@lysator.liu.se": ("notice", "superseded non-standard AES-CBC name"),
+}
+# The ciphers CVE-2016-2183 (SWEET32) names, by their SSH algorithm names. Explicit
+# rather than derived from the WEAK_CIPHER reason string: des-cbc is categorised there by
+# its 56-bit KEY, not its 64-bit block, so a reason-string test would miss it. The CVE
+# names "DES and Triple DES", so this is exactly those — blowfish-cbc/cast128-cbc are the
+# same 64-bit-block weakness but are NOT named by the CVE, and 3des-ctr is deliberately
+# excluded because SWEET32's collision result is a CBC analysis (counter mode fails
+# differently — keystream reuse, not a block collision).
+SWEET32_SSH_CIPHERS = {
+    "3des-cbc": "Triple DES in CBC (RFC 4253)",
+    "des-cbc": "single DES in CBC",
+    "des-cbc@ssh.com": "single DES in CBC (ssh.com vendor name)",
 }
 WEAK_MAC = {
     "none": ("high", "no integrity protection"),
@@ -640,19 +684,45 @@ def evaluate_findings(sess, cfg=None):
                                skex["encryption_algorithms_c2s"])
         for cfield, sfield, table, code, label in checks:
             chosen = negotiate(ckex[cfield], skex[sfield])
+            # SWEET32 attribution. The CVE names SSH explicitly and the negotiated cipher
+            # IS its vulnerable condition, so it rides on this finding rather than getting
+            # a code of its own — the same treatment tlswatch gives the two RC4 CVEs.
+            sweet32 = {}
+            if code == "ssh_weak_cipher" and chosen in SWEET32_SSH_CIPHERS:
+                m32 = CVE_CATALOG["CVE-2016-2183"]
+                sweet32 = {
+                    "cve": "CVE-2016-2183",
+                    "cve_title": m32["title"],
+                    "cvss": m32["cvss"],
+                    "cvss_source": m32["cvss_source"],
+                    "score_confidence": m32["score_confidence"],
+                    "detect_class": "exposure",
+                    "cipher_description": SWEET32_SSH_CIPHERS[chosen],
+                    "rekey_note": (
+                        "RFC 4344 requires rekeying after 2^16 blocks (512 KiB) for a "
+                        "64-bit cipher, far below the 2^32-block birthday bound, and the "
+                        "rekey is not visible to a passive observer — so exposure depends "
+                        "on whether this peer honours that, which cannot be read from the "
+                        "wire. No volume count is reported for that reason."),
+                }
             if code == "ssh_weak_mac" and neg_cipher in AEAD_CIPHERS:
                 # No separate MAC is negotiated under an AEAD cipher; whatever the MAC
                 # name-lists happen to agree on is never used.
                 continue
             if chosen in table:
                 sev, reason = table[chosen]
-                findings.append(_finding(
-                    sev, code,
-                    "Negotiated %s %s: %s" % (label, chosen, reason),
-                    algorithm=chosen, kind=label, detect_class="posture",
-                    confidence="high",
-                    confidence_reason="the negotiated algorithm follows deterministically "
-                                      "from both cleartext KEXINIT messages"))
+                extra = dict(algorithm=chosen, kind=label, detect_class="posture",
+                             confidence="high",
+                             confidence_reason="the negotiated algorithm follows "
+                                               "deterministically from both cleartext "
+                                               "KEXINIT messages")
+                extra.update(sweet32)
+                msg = "Negotiated %s %s: %s" % (label, chosen, reason)
+                if sweet32:
+                    msg += (" — CVE-2016-2183 (SWEET32) names SSH directly; whether this "
+                            "session is actually exposed depends on rekeying, which a "
+                            "passive observer cannot see")
+                findings.append(_finding(sev, code, msg, **extra))
 
     # ---- duplicate host key across addresses (CVE-2025-38741 family) ----
     dup = sess.get("duplicate_host_key")
@@ -1874,6 +1944,36 @@ def _run_selftest_checks(t):
     # ---- weak algorithm posture, on the NEGOTIATED choice ----
     f = evaluate_findings(kx_pair(True, True, "3des-cbc", "hmac-sha2-256"))
     t.ok("ssh_weak_cipher" in codes(f), "weak_cipher_3des")
+
+    # ---- CVE-2016-2183 (SWEET32) attribution rides on ssh_weak_cipher ----
+    def cipher_finding(enc):
+        hits = [x for x in evaluate_findings(kx_pair(True, True, enc, "hmac-sha2-256"))
+                if x["code"] == "ssh_weak_cipher"]
+        return hits[0] if hits else None
+    for enc in ("3des-cbc", "des-cbc", "des-cbc@ssh.com"):
+        f = cipher_finding(enc)
+        t.ok(f is not None, "sweet32_cipher_flagged_%s" % enc)
+        if f:
+            t.eq(f["cve"], "CVE-2016-2183", "sweet32_cve_attributed_%s" % enc)
+            t.eq(f["cvss"], 7.5, "sweet32_cvss_%s" % enc)
+            t.eq(f["score_confidence"], "disputed", "sweet32_score_disputed_%s" % enc)
+            t.eq(f["detect_class"], "exposure", "sweet32_detect_class_%s" % enc)
+            t.ok("RFC 4344" in f["rekey_note"], "sweet32_rekey_caveat_%s" % enc)
+            t.ok("SWEET32" in f["message"], "sweet32_message_names_it_%s" % enc)
+    # 3des-ctr is a 64-bit block cipher and IS weak, but SWEET32's result is a CBC
+    # analysis, so it must be flagged WITHOUT the CVE (counter mode fails differently).
+    f = cipher_finding("3des-ctr")
+    t.ok(f is not None, "3des_ctr_still_flagged_weak")
+    if f:
+        t.ok("cve" not in f, "3des_ctr_carries_no_sweet32_attribution")
+    # blowfish/cast are the same 64-bit weakness but are NOT named by the CVE.
+    for enc in ("blowfish-cbc", "cast128-cbc"):
+        f = cipher_finding(enc)
+        t.ok(f is not None, "other_64bit_flagged_%s" % enc)
+        if f:
+            t.ok("cve" not in f, "other_64bit_no_cve_%s" % enc)
+    f = evaluate_findings(kx_pair(True, True, "aes128-ctr", "hmac-sha2-256"))
+    t.ok("ssh_weak_cipher" not in codes(f), "modern_cipher_no_weak_finding")
     f = evaluate_findings(kx_pair(True, True, "aes128-ctr", "hmac-md5"))
     t.ok("ssh_weak_mac" in codes(f), "weak_mac_md5")
     c = parse_kexinit(parse_packets(build_kexinit(
