@@ -23,11 +23,13 @@ browse than search.
 - [Asset Inventory](asset-inventory.md) · [SIEM Forwarding](siem.md) · [Incident Correlation](incident-correlation.md)
 - Standalone watcher daemons: [arp_guard](arp_guard.md) · [ndpwatch](ndpwatch.md) · [snmpwatch](snmpwatch.md) · [isiswatch](isiswatch.md) · [igmpwatch](igmpwatch.md) · [certwatch](certwatch.md) · [wifiwatch](wifiwatch.md) · [wpswatch](wpswatch.md) · [legacywatch](legacywatch.md)
 - [EIGRP lab](eigrp_lab.md) — attack/adjacency test harness
+- [legacywatch / wpswatch lab](lab.md) — hwsim validation harness for the two standalone watch modules
 
 ## Wireless & RF
 - [WiFi Analyzer](wifi-analyzer.md) — passive tri-band spectrum analyzer + coverage heatmap
 - [RoomScan](roomscan.md) — touchscreen floor-plan tracer for the coverage heatmap
 - [CYD hybrid node](cyd-hybrid-node.md) — ESP32 "Cheap Yellow Display" companion: touch dashboard + 2.4 GHz sniff/BLE sensor
+- [CYD firmware & flashing](cyd-firmware.md) — build and flash the ESP32 CYD companion node firmware
 - [WiFi Defense (WIDS)](wifi-defense.md) — passive 802.11 intrusion detection
 - [Wardriving](wardriving.md) — WiFi/BLE/cell logging with GPS recovery
 - [Diagnostics panel](diagnostics.md) — radios / power / GPS sky view + Starview observatory
@@ -36,6 +38,7 @@ browse than search.
 ## Sensing & smart home
 - [RuSense](rusense.md) — camera-free WiFi-CSI presence / motion / vitals sensing
 - [Home Assistant integration](homeassistant.md) — native HA entities
+- [Home Assistant integration — component README](homeassistant-integration.md) — the `custom_components/ragnar` integration's own readme
 
 ## Mesh & fleet
 - [Ragnar Mesh](mesh.md) — controller-free Tailscale unit mesh

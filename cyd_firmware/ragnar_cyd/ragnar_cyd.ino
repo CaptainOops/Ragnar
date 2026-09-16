@@ -28,7 +28,7 @@
  * Required library (already used elsewhere in Ragnar):
  *   "GFX Library for Arduino" by moononournation
  *
- * See cyd_firmware/README.md for flashing and Ragnar-side setup.
+ * See docs/cyd-firmware.md for flashing and Ragnar-side setup.
  */
 
 #include <Arduino.h>
