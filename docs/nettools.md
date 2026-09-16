@@ -1807,8 +1807,17 @@ What it flags:
   / ssh_weak_cipher / ssh_weak_mac** — 1024-bit MODP + SHA-1 KEX, `ssh-dss` / SHA-1 RSA host
   keys, `none` / single-DES / RC4 / 64-bit-block ciphers, `none` / MD5 MACs. Tiered per
   algorithm so a feed doesn't warn on OpenSSH's default `umac-64-etm` first preference.
-  *(notice → suspicious by severity)* · **ssh_strict_kex_absent** — strict KEX not offered by
-  both sides, but the negotiated mode isn't vulnerable. *(info)*
+  *(notice → suspicious by severity)* When the negotiated cipher is DES or Triple-DES in
+  **CBC** (`3des-cbc` / `des-cbc` / `des-cbc@ssh.com`), `ssh_weak_cipher` additionally carries
+  **`CVE-2016-2183` (SWEET32)** — CVSS 7.5, *disputed* (IBM X-Force scores it 3.7), `exposure`
+  class — since the CVE names SSH explicitly and the negotiated cipher *is* the vulnerable
+  condition, so it rides on this finding rather than a code of its own (as `tls_watch` does for
+  RC4). **There is deliberately no volume tier:** RFC 4344 mandates rekeying after 2^16 blocks
+  (512 KiB) for a 64-bit cipher — far below the 2^32-block birthday bound — and that rekey is
+  invisible to a passive observer, so exposure hinges on whether the peer honours it (unreadable
+  from the wire). `3des-ctr` and `blowfish-cbc` / `cast128-cbc` stay weak-cipher findings **without**
+  the CVE (CTR is a different failure mode; the CVE names only DES/3DES). · **ssh_strict_kex_absent**
+  — strict KEX not offered by both sides, but the negotiated mode isn't vulnerable. *(info)*
 - **ssh_duplicate_host_key** — one host key presented by **two or more addresses**. The
   server's host key travels in cleartext in the key-exchange reply (before NEWKEYS, the same
   window this reads); its OpenSSH SHA-256 fingerprint is compared across addresses. Identical
