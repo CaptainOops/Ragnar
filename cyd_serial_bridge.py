@@ -64,7 +64,7 @@ class CydSerialBridge:
                  baud=115200, status_interval=2.0, port=None, get_port=None,
                  on_wf_request=None, get_wf=None,
                  get_mesh=None, get_wifi=None, on_wifi_connect=None,
-                 publish_port=None):
+                 publish_port=None, write_timeout=1.5):
         self._build_status = build_status
         self._on_ingest = on_ingest
         self._on_action = on_action
@@ -77,10 +77,19 @@ class CydSerialBridge:
         self._publish_port = publish_port        # (port_or_None) -> None
         self._mesh_on = False
         self._wifi_on = False
+        self._mesh_kick = False   # push a mesh frame ASAP after an 'mr on' request
+        self._wifi_kick = False   # push a wifi frame ASAP after a 'wsr on' request
         self._dbg = {'in': 0, 'ac': 0, 'wr': 0, 'mr': 0, 'wsr': 0, 'wc': 0,
                      'wf_sent': 0, 'wf_none': 0, 'wf_bytes': 0, 'wf_err': '',
-                     'me_sent': 0, 'wl_sent': 0}
+                     'me_sent': 0, 'wl_sent': 0, 'tx_drop': 0}
         self._baud = baud
+        # Bound every write. Over USB the CH340 + usb-serial driver buffer deeply,
+        # so a write never blocks; over the direct GPIO UART (a ~32-byte FIFO, no
+        # flow control) a write STALLS the whole single-threaded loop whenever the
+        # ESP is mid-sniff/BLE/render and not draining — that's the "GPIO gets
+        # stuck, statuses don't update". A finite write_timeout turns that stall
+        # into a dropped frame we recover from instead of a hang.
+        self._write_timeout = write_timeout
         self._status_interval = status_interval
         self._forced_port = port          # static override (tests)
         self._get_port = get_port          # dynamic override (a config getter)
@@ -153,7 +162,8 @@ class CydSerialBridge:
                 time.sleep(2.0)
                 continue
             try:
-                ser = pyserial.Serial(port, self._baud, timeout=0)
+                ser = pyserial.Serial(port, self._baud, timeout=0,
+                                      write_timeout=self._write_timeout)
             except Exception as exc:
                 self._teardown(f'open failed: {exc}')
                 time.sleep(2.0)
@@ -188,7 +198,33 @@ class CydSerialBridge:
             self.last_error = err
 
     def _send(self, ser, frame):
-        ser.write((json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8'))
+        """Write one frame; NEVER hang the loop on a slow link. A write that
+        exceeds write_timeout (a backed-up GPIO UART) raises — we clear the
+        partially-queued bytes and drop this frame; the next interval retries.
+        Returns True if the frame went out, False if it was dropped."""
+        data = (json.dumps(frame, separators=(',', ':')) + '\n').encode('utf-8')
+        try:
+            ser.write(data)
+            return True
+        except Exception:
+            # Timeout / transient: flush the half-written frame so the next one
+            # starts clean, and keep looping (reading stays alive). A truly dead
+            # device is caught by the read side (in_waiting raises -> reconnect).
+            try:
+                ser.reset_output_buffer()
+            except Exception:
+                pass
+            self._dbg['tx_drop'] = self._dbg.get('tx_drop', 0) + 1
+            return False
+
+    def _link_backed_up(self, ser):
+        """True if the output buffer is piling up (the far end isn't draining).
+        Used to skip the heavy waterfall stream instead of queueing rows that
+        can't go out — on USB out_waiting stays ~0 so this never trips."""
+        try:
+            return ser.out_waiting > 512
+        except Exception:
+            return False
 
     def _session(self, ser):
         """Read reports + push status until disabled, unplugged, or stopped."""
@@ -224,7 +260,9 @@ class CydSerialBridge:
                 next_status = now + self._status_interval
                 self._push_status(ser)
             # ── outbound: waterfall rows while the CYD asks for them ──────────
-            if self._get_wf and now >= next_wf:
+            # Skip a row if the link is already backed up (slow GPIO UART) — piling
+            # 8 rows/s onto a stalled buffer is what starves the status frames.
+            if self._get_wf and now >= next_wf and not self._link_backed_up(ser):
                 next_wf = now + 0.12          # ~8 rows/s (was 0.3 ≈ 3/s)
                 try:
                     row = self._get_wf()
@@ -238,6 +276,10 @@ class CydSerialBridge:
                 else:
                     self._dbg['wf_none'] += 1
             # ── outbound: mesh roster + wifi list while their screens are open ──
+            if self._mesh_kick:
+                self._mesh_kick = False; next_mesh = 0.0
+            if self._wifi_kick:
+                self._wifi_kick = False; next_wifi = 0.0
             if self._mesh_on and self._get_mesh and now >= next_mesh:
                 next_mesh = now + 3.0
                 try:
@@ -284,9 +326,15 @@ class CydSerialBridge:
                 except Exception:
                     pass
         elif t == 'mr':                       # mesh roster stream request
-            self._mesh_on = bool(msg.get('on'))
+            on = bool(msg.get('on'))
+            if on and not self._mesh_on:
+                self._mesh_kick = True         # first frame goes out immediately
+            self._mesh_on = on
         elif t == 'wsr':                      # wifi-list stream request
-            self._wifi_on = bool(msg.get('on'))
+            on = bool(msg.get('on'))
+            if on and not self._wifi_on:
+                self._wifi_kick = True
+            self._wifi_on = on
         elif t == 'wc':                       # wifi connect (scan index + password)
             if self._on_wifi_connect:
                 try:
@@ -300,7 +348,6 @@ class CydSerialBridge:
         except Exception:
             return
         st['t'] = 'st'
-        try:
-            ser.write((json.dumps(st, separators=(',', ':')) + '\n').encode('utf-8'))
-        except Exception:
-            raise  # surfaces as a session error -> reconnect
+        # Drop-on-stall (see _send): a slow GPIO UART must never hang the push
+        # loop. Device-gone is detected on the read side instead of here.
+        self._send(ser, st)

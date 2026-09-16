@@ -28,7 +28,7 @@
  * Required library (already used elsewhere in Ragnar):
  *   "GFX Library for Arduino" by moononournation
  *
- * See cyd_firmware/README.md for flashing and Ragnar-side setup.
+ * See docs/cyd-firmware.md for flashing and Ragnar-side setup.
  */
 
 #include <Arduino.h>
@@ -43,7 +43,7 @@
 #include <AnimatedGIF.h>
 
 #include "config.h"
-#include "ragnar_glitch_gif.h"    // embedded 240x240 boot animation (PROGMEM)
+#include "ragnar_boot_gif.h"      // embedded 240x320 full-screen boot animation (PROGMEM)
 
 // Defined before the first include-terminated section so Arduino's auto-generated
 // prototypes (inserted after the includes) can reference ActionBtn*.
@@ -119,15 +119,25 @@ static Arduino_GFX *gfx = new Arduino_ILI9341(bus, TFT_RST, 0 /*rotation*/, fals
 static const int16_t SCR_W = 240;
 static const int16_t SCR_H = 320;
 
-// ── Boot animation (ragnar-glitch.gif, decoded on-device by AnimatedGIF) ────────
-// A ~5 s splash at power-on that also gives a companion Pi time to finish booting
-// before the node starts talking to it. The 240x240 GIF is centred vertically on
-// the 240x320 panel. Colour byte-order: LE palette + draw16bitRGBBitmap is correct
-// on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE to 1.
-#define CYD_BOOT_ANIM_MS 5000
+// ── Boot animation (ragnar-240x320-tools.gif, decoded on-device by AnimatedGIF) ──
+// The 15 s clip plays at natural speed and LOOPS until Ragnar is up (its first
+// status frame lands over serial). If Ragnar is already up when the node boots
+// (it reset while the Pi was running), it stops after just the 5 s minimum. A hard
+// cap keeps a Pi-less node from looping forever. The 240x320 GIF fills the whole
+// panel (no centring offset). Colour byte-order: LE palette + draw16bitRGBBitmap
+// is correct on the (little-endian) ESP32; if colours look swapped, flip CYD_GIF_BE.
+#define CYD_BOOT_ANIM_MS     5000     // minimum splash (and the whole splash if Ragnar's already up)
+#define CYD_BOOT_ANIM_MAX_MS 90000    // hard cap: give up waiting for Ragnar after this
 #define CYD_GIF_BE       0
 static const int16_t GIF_X_OFF = 0;
-static const int16_t GIF_Y_OFF = (SCR_H - 240) / 2;   // 40 px: centre the square
+static const int16_t GIF_Y_OFF = (SCR_H - 320) / 2;   // 0 px: full-screen 240x320
+// Set true the moment the first Ragnar status frame is parsed (applyStatus) — the
+// boot loop watches it to know the Pi's service is up. Declared here (before
+// playBootAnimation) because g_rs itself is defined much further down.
+static volatile bool g_bootRagnarUp = false;
+#if CYD_TRANSPORT_SERIAL
+static void serialDrain();            // defined in the serial section far below
+#endif
 // AnimatedGIF embeds tens of KB of decode buffers; it's only needed at boot, so
 // it is heap-allocated in playBootAnimation() and freed before WiFi/BLE start —
 // keeping it as a static global permanently starved the WiFi RX buffers.
@@ -172,17 +182,28 @@ static void GIFDraw(GIFDRAW *pDraw) {
   #undef CYD_BLIT
 }
 
-// Play the embedded GIF for ~durationMs, honouring per-frame delays; loops if the
-// clip is shorter. Blocking by design — it IS the boot delay.
-static void playBootAnimation(uint32_t durationMs) {
+// Play the embedded GIF at its NATURAL speed (honouring per-frame delays), looping
+// at the end. Stops once Ragnar is up (a status frame has arrived -> g_rs.ok) AND
+// at least minMs has elapsed; if Ragnar never shows, gives up at maxMs. Passing
+// minMs==maxMs makes it a plain fixed-length splash (the WiFi transport, which has
+// no serial readiness signal during boot). Blocking by design — it IS the boot
+// wait, and it drains serial each frame so the readiness signal can land.
+static void playBootAnimation(uint32_t minMs, uint32_t maxMs) {
   AnimatedGIF *gif = new AnimatedGIF();       // ~tens of KB, freed below (boot only)
   if (!gif) return;
   gif->begin(CYD_GIF_BE ? GIF_PALETTE_RGB565_BE : GIF_PALETTE_RGB565_LE);
-  if (gif->open((uint8_t *)ragnar_glitch_gif, ragnar_glitch_gif_len, GIFDraw)) {
+  if (gif->open((uint8_t *)ragnar_boot_gif, ragnar_boot_gif_len, GIFDraw)) {
     uint32_t start = millis();
     int delayMs = 0;
-    while (millis() - start < durationMs) {
-      if (!gif->playFrame(true, &delayMs)) gif->reset();  // end -> loop
+    for (;;) {
+      if (!gif->playFrame(true, &delayMs)) gif->reset();  // end -> loop the clip
+#if CYD_TRANSPORT_SERIAL
+      serialDrain();          // read the Pi's status pushes while animating; the
+                              // first one flips g_rs.ok = "Ragnar service is up"
+#endif
+      uint32_t elapsed = millis() - start;
+      if (elapsed < minMs) continue;              // always show at least the minimum
+      if (g_bootRagnarUp || elapsed >= maxMs) break;  // Ragnar up (or gave up waiting)
     }
     gif->close();
   }
@@ -196,9 +217,19 @@ static SPIClass touchSPI(HSPI);
 // App-launcher model: a HOME grid of tiles that drill into full screens.
 enum Screen { SCR_HOME = 0, SCR_DASH, SCR_DEFENSE, SCR_ALERTS, SCR_SCAN, SCR_SIGINT,
               SCR_WFALL, SCR_NETWORK, SCR_NETINT, SCR_TRAFFIC, SCR_MESH, SCR_NETCONN,
-              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST, SCR_ACTION };
+              SCR_KEYBOARD, SCR_SETTINGS, SCR_CTRL, SCR_TOUCHTEST, SCR_ACTION,
+              SCR_WARDRIVE };
 static Screen g_screen     = SCR_HOME;
 static bool   g_needRedraw = true;
+
+// Wardrive Start/Stop is a ~5s round-trip (Ragnar dispatches, then confirms via
+// the pushed status). Latch a "processing" state on tap so the button greys out
+// and ignores further taps until the confirmed run-state matches what we asked
+// for (or a safety timeout fires, in case the action failed / no reply arrives).
+static bool     g_wdPending = false;
+static bool     g_wdTarget  = false;   // run-state we asked Ragnar to reach
+static uint32_t g_wdPendMs  = 0;
+static const uint32_t WD_PEND_TIMEOUT_MS = 9000;
 
 // ── Live model: last status synced from Ragnar ────────────────────────────────
 struct RagnarStatus {
@@ -241,6 +272,19 @@ struct RagnarStatus {
   char     actName[24]      = "";
   char     actState[12]     = "";
   char     actDetail[28]    = "";
+  // Wardrive live status (own page):
+  bool     wdRun            = false;
+  int      wdNets           = 0;
+  int      wdScan           = 0;
+  int      wdBle            = 0;
+  int      wdCell           = 0;
+  int      wdZig            = 0;
+  int      wdComp           = 0;
+  char     wdGps[16]        = "-";
+  char     wdBand[12]       = "-";
+  char     wdC1[28]         = "";
+  char     wdC2[28]         = "";
+  bool     wdEnabled        = false;
 };
 static RagnarStatus g_rs;
 
@@ -450,7 +494,12 @@ static void sniffReset() {
 
 static void sniffWindow(uint32_t durationMs) {
   sniffReset();
-  WiFi.disconnect(true, false);
+  // Keep the radio STARTED: WiFi.disconnect(true,...) powers it OFF, after which
+  // esp_wifi_set_promiscuous() returns NOT_STARTED and the RX callback never fires
+  // (all sniff counts stay 0 — SCAN/DEFENSE/SIGINT looked dead). disconnect(false)
+  // just leaves any AP (a no-op over serial) and leaves the radio running.
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, false);
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_promiscuous_rx_cb(&snifferCb);
   const uint8_t channels[] = {1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10};
@@ -588,7 +637,22 @@ static void applyStatus(const String &body) {
   CYD_CPYS(actName, "act_name");
   CYD_CPYS(actState, "act_state");
   CYD_CPYS(actDetail, "act_detail");
+  CYD_CPYS(wdGps, "wd_gps");
+  CYD_CPYS(wdBand, "wd_band");
+  CYD_CPYS(wdC1, "wd_c1");
+  CYD_CPYS(wdC2, "wd_c2");
   #undef CYD_CPYS
+  g_rs.wdRun     = jsonInt(body, "wd_run") != 0;
+  g_rs.wdNets    = jsonInt(body, "wd_nets");
+  g_rs.wdScan    = jsonInt(body, "wd_scan");
+  g_rs.wdBle     = jsonInt(body, "wd_ble");
+  g_rs.wdCell    = jsonInt(body, "wd_cell");
+  g_rs.wdZig     = jsonInt(body, "wd_zig");
+  g_rs.wdComp    = jsonInt(body, "wd_comp");
+  g_rs.wdEnabled = jsonInt(body, "wd_enabled") != 0;
+  // Clear the Start/Stop "processing" latch once Ragnar confirms the run-state we
+  // asked for (the pushed wd_run now matches the target), so the button un-greys.
+  if (g_wdPending && g_rs.wdRun == g_wdTarget) { g_wdPending = false; g_needRedraw = true; }
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
   g_rs.tfPps    = jsonInt(body, "tf_pps");
   g_rs.tfHosts  = jsonInt(body, "tf_hosts");
@@ -596,6 +660,7 @@ static void applyStatus(const String &body) {
   g_rs.tfPkts   = (uint32_t)jsonInt(body, "tf_pkts");
   g_rs.tfAlerts = jsonInt(body, "tf_alerts");
   g_rs.ok = true;
+  g_bootRagnarUp = true;          // signals the boot animation that the Pi is up
   g_rs.lastSyncMs = millis();
   // Only repaint when a DISPLAYED value actually changed. Ragnar pushes status
   // ~every 2 s with mostly-identical data; repainting every push is what made the
@@ -609,7 +674,10 @@ static void applyStatus(const String &body) {
     + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
     + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
-    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail;
+    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|'
+    + g_rs.wdRun + '|' + g_rs.wdNets + '|' + g_rs.wdScan + '|' + g_rs.wdBle + '|'
+    + g_rs.wdCell + '|' + g_rs.wdZig + '|' + g_rs.wdComp + '|' + g_rs.wdGps + '|'
+    + g_rs.wdBand + '|' + g_rs.wdC1 + '|' + g_rs.wdC2 + '|' + g_rs.wdEnabled;
   static String lastSig;
   if (sig != lastSig) { lastSig = sig; g_needRedraw = true; }
 }
@@ -1108,8 +1176,9 @@ static const int N_CTRL = sizeof(g_ctrlActions) / sizeof(g_ctrlActions[0]);
 // one-tap actions (nav=true opens `scr`; nav=false enqueues `action`).
 struct NetItem { const char *label; bool nav; uint8_t scr; const char *action; };
 static const NetItem g_netItems[] = {
-  {"Net Int",    true,  SCR_NETINT, ""},
-  {"Watchtower", true,  SCR_ALERTS, ""},
+  {"Net Int",    true,  SCR_NETINT,   ""},
+  {"Watchtower", true,  SCR_ALERTS,   ""},
+  {"Wardrive",   true,  SCR_WARDRIVE, ""},
   {"Speed test", false, 0, "speed_test"},
   {"Captive",    false, 0, "captive_check"},
   {"Airspace",   false, 0, "network_scan"},
@@ -1283,6 +1352,64 @@ static void drawTraffic() {
   gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
   gfx->setTextColor(WHITE); gfx->setTextSize(2);
   gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+}
+
+// ── Wardrive: own page with live status + Start/Stop (stays on the page) ───────
+static const int16_t WD_BTN_Y = SCR_H - 22 - 46;
+// One centered stat: a small dim label with a bigger coloured value under it.
+static void wdStat(int16_t y, const char *label, const String &val,
+                   uint8_t vsize, uint16_t vcol) {
+  int16_t cx = SCR_W / 2;
+  gfx->setTextSize(1); gfx->setTextColor(colGray());
+  gfx->setCursor(cx - (int16_t)strlen(label) * 3, y); gfx->print(label);
+  gfx->setTextSize(vsize); gfx->setTextColor(vcol);
+  gfx->setCursor(cx - (int16_t)(val.length() * 3 * vsize), y + 11); gfx->print(val);
+}
+static void drawWardrive() {
+  drawHeader("WARDRIVE", false);
+  int16_t y = HEAD_H + 10;
+  gfx->fillRect(0, HEAD_H, SCR_W, WD_BTN_Y - HEAD_H, colBg());
+  if (!g_rs.wdEnabled) {
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print("DISABLED"); y += 30;
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(12, y); gfx->print("enable wardriving in Ragnar first");
+    return;
+  }
+  // ── Single centered column, larger fonts (readable at a glance) ────────────
+  int16_t cx = SCR_W / 2;
+  // Status headline (big).
+  const char *stx = g_rs.wdRun ? "WARDRIVING" : "IDLE";
+  gfx->setTextSize(3); gfx->setTextColor(g_rs.wdRun ? colGreen() : colGray());
+  gfx->setCursor(cx - (int16_t)strlen(stx) * 9, y); gfx->print(stx);
+  y += 30;
+  // Band, centered under the status.
+  String bnd = String("band ") + g_rs.wdBand;
+  gfx->setTextSize(1); gfx->setTextColor(colDim());
+  gfx->setCursor(cx - (int16_t)(bnd.length() * 3), y); gfx->print(bnd);
+  y += 22;
+  // Headline metric first (networks), then the rest — one centered column.
+  wdStat(y, "NETWORKS", String(g_rs.wdNets), 3, colSky());  y += 44;
+  wdStat(y, "BLE DEVICES", String(g_rs.wdBle), 2, WHITE);   y += 38;
+  wdStat(y, "COMPANIONS", String(g_rs.wdComp), 2, colSky()); y += 38;
+  wdStat(y, "GPS", String(g_rs.wdGps), 2,
+         strncmp(g_rs.wdGps, "fix", 3) == 0 ? colGreen() : colDim());
+  // Start/Stop button — toggles and STAYS on the page so the status stays live.
+  // While a tap is in flight (~5s round-trip) it greys out and shows the pending
+  // verb so the operator gets instant feedback and can't double-fire the toggle.
+  gfx->setTextSize(2);
+  if (g_wdPending) {
+    gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colDim());
+    gfx->drawRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colGray());
+    gfx->setTextColor(colAmber());
+    gfx->setCursor(40, WD_BTN_Y + 14); gfx->print(g_wdTarget ? "starting..." : "stopping...");
+  } else {
+    uint16_t bc = g_rs.wdRun ? colRed() : colGreen();
+    gfx->fillRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, bc);
+    gfx->drawRoundRect(10, WD_BTN_Y, SCR_W - 20, 44, 8, colSky());
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(30, WD_BTN_Y + 14); gfx->print(g_rs.wdRun ? "STOP wardrive" : "START wardrive");
+  }
 }
 
 // ── Scrollable list plumbing (Mesh + Net-Conn) ────────────────────────────────
@@ -1466,7 +1593,7 @@ static int settingsRows(uint8_t *tags) {
   int n = 0;
   tags[n++] = STAG_BLE;
   tags[n++] = STAG_BL;
-  tags[n++] = STAG_WDRV;
+  // Wardriving moved to its own page (NET -> Wardrive) with live status.
   tags[n++] = STAG_UPDATE;
   tags[n++] = STAG_SVC;
   if (strcmp(g_rs.pwn, "off") != 0) tags[n++] = STAG_PWN;
@@ -1569,6 +1696,7 @@ static void render() {
     case SCR_CTRL:    drawControls();  break;
     case SCR_TOUCHTEST: drawTouchTest(); break;
     case SCR_ACTION:  drawAction();    break;
+    case SCR_WARDRIVE:drawWardrive();  break;
   }
   drawStatusBar();
   g_needRedraw = false;
@@ -1676,6 +1804,23 @@ static void handleTouch(int16_t px, int16_t py) {
     if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
       if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
       else setStatus("queue full", colRed());
+    }
+    return;
+  }
+  if (g_screen == SCR_WARDRIVE) {
+    // Start/Stop toggles in place; status updates live from the feed (no nav away).
+    // Ignore taps while one is already in flight (the button is greyed/pending).
+    if (g_rs.wdEnabled && !g_wdPending && inRect(px, py, 10, WD_BTN_Y, SCR_W - 20, 44)) {
+      const char *a = g_rs.wdRun ? "wardrive_stop" : "wardrive_start";
+      g_wdTarget = !g_rs.wdRun;               // run-state we expect to reach
+      g_wdPending = true; g_wdPendMs = millis();
+#if CYD_TRANSPORT_SERIAL
+      serialSendAction(String(a));   // send now — don't wait for the sync window
+#else
+      actionEnqueue(a);
+#endif
+      setStatus(g_wdTarget ? "starting..." : "stopping...", colAmber());
+      g_needRedraw = true;                    // repaint into the processing state
     }
     return;
   }
@@ -1828,6 +1973,11 @@ static void runConfigPortal() {
 //  Lifecycle
 // ════════════════════════════════════════════════════════════════════════════
 void setup() {
+  // Enlarge the UART RX buffer BEFORE begin(). The default is 256 B, which the
+  // direct GPIO UART (no flow control) can overflow during a long render() or
+  // radio window when we're not draining — lost bytes = corrupt frames = a screen
+  // that never updates. Over USB the CH340 hides this; on the P1 header it bites.
+  Serial.setRxBufferSize(4096);
   Serial.begin(CYD_SERIAL_BAUD);
 
   pinMode(PIN_LED_R, OUTPUT); pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_B, OUTPUT);
@@ -1846,9 +1996,15 @@ void setup() {
   loadConfig();   // node name (+ optional WiFi seeds) + BLE/backlight settings
   applyBacklight();
 
-  // Boot splash: the glitch animation for ~5 s, also giving a companion Pi time
-  // to finish booting before we start the serial/WiFi link.
-  playBootAnimation(CYD_BOOT_ANIM_MS);
+  // Boot splash. Over serial it plays the full 15 s clip and LOOPS until the Pi's
+  // Ragnar service is up (first status frame), so a co-booting Pi gets covered; if
+  // the Pi is already up it stops after the 5 s minimum. Over WiFi there's no
+  // readiness signal yet, so it's a fixed 5 s splash (min==max).
+#if CYD_TRANSPORT_SERIAL
+  playBootAnimation(CYD_BOOT_ANIM_MS, CYD_BOOT_ANIM_MAX_MS);
+#else
+  playBootAnimation(CYD_BOOT_ANIM_MS, CYD_BOOT_ANIM_MS);
+#endif
   gfx->fillScreen(BLACK);
 #if CYD_TRANSPORT_SERIAL
   Serial.setTimeout(20);   // cabled to the Pi; cyd_serial_bridge.py is the link
@@ -1880,13 +2036,24 @@ static void serviceUI() {
 #if CYD_TRANSPORT_SERIAL
   serialDrain();   // keep the display current with the Pi's status pushes
 #endif
+  // Safety net: if the Start/Stop confirmation never arrives (action failed, or no
+  // status push), drop the "processing" latch so the button can't get stuck greyed.
+  if (g_wdPending && millis() - g_wdPendMs > WD_PEND_TIMEOUT_MS) {
+    g_wdPending = false; g_needRedraw = true;
+  }
   static uint32_t lastTap = 0;
   int16_t px, py;
   if (touchRead(px, py) && millis() - lastTap > 250) {
     lastTap = millis();
     handleTouch(px, py);
   }
-  if (g_needRedraw) render();
+  if (g_needRedraw) {
+    render();
+#if CYD_TRANSPORT_SERIAL
+    serialDrain();   // render() can take 50-100ms of SPI; drain the bytes that
+                     // piled up during it so the UART RX buffer doesn't overflow
+#endif
+  }
 }
 
 // Service the UI for `ms` (touch stays responsive across long radio phases).
