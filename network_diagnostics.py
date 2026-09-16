@@ -9973,6 +9973,10 @@ def _relay_capture(interface, seconds):
     if not _have_scapy():
         return None, ('python3-scapy is required to parse MSRPC / NTLM traffic — '
                       'install Scapy (Detector Self-Test → Install Scapy).')
+    # Pure port primitives, so the capture is dual-stack: libpcap compiles
+    # `tcp port N` to both an IPv4 and an IPv6 branch, so SMB/MSRPC over IPv6 is
+    # captured too. The parser (_parse_relay_packets) and the payload-based
+    # detection are address-family-agnostic — see the IPv6 self-test legs.
     bpf = 'tcp port 445 or tcp port 139 or tcp port 135'
     import tempfile
     fd, path = tempfile.mkstemp(suffix='.pcap')
@@ -10046,7 +10050,7 @@ def _relay_selftest():
     scenarios = []
     try:
         import tempfile
-        from scapy.all import Ether, IP, TCP, Raw, wrpcap, rdpcap
+        from scapy.all import Ether, IP, IPv6, TCP, Raw, wrpcap, rdpcap
     except Exception as e:
         return {'success': True, 'scenarios': [],
                 'scapy': {'ran': False, 'reason': f'{type(e).__name__}: {e}'}}
@@ -10054,6 +10058,12 @@ def _relay_selftest():
     def pkt(src, dst, raw, sport=50000, dport=445):
         return Ether() / IP(src=src, dst=dst) / TCP(sport=sport, dport=dport,
                                                     flags='PA') / Raw(raw)
+
+    def pkt6(src, dst, raw, sport=50000, dport=445):
+        # IPv6 variant — exercises the parser's getlayer(IPv6) branch so the
+        # dual-stack behaviour of the live path is proven, not just asserted.
+        return Ether() / IPv6(src=src, dst=dst) / TCP(sport=sport, dport=dport,
+                                                      flags='PA') / Raw(raw)
 
     def rpc_bind(uuid_hex):
         return b'\x05\x00\x0b\x03' + b'\x00' * 20 + bytes.fromhex(uuid_hex)
@@ -10138,6 +10148,42 @@ def _relay_selftest():
     scenarios.append({'name': 'relay-parse', 'expect': 'petitpotam+unsigned',
                       'got': f"coercion={len(co)} unsigned={sg.get('10.0.0.8')}",
                       'pass': p_ok})
+
+    # --- IPv6 parity ---------------------------------------------------------
+    # The live path is dual-stack (port-based BPF + the parser's getlayer(IPv6)
+    # branch), and coercion/relay/signing detection is payload-based and
+    # address-family-agnostic. These legs drive the IPv6 branch so that parity
+    # is proven and guarded against regression.
+    run('coercion-petitpotam-v6',
+        [pkt6('2001:db8::66', '2001:db8::5',
+              rpc_bind('88d481c650d8d0118c5200c04fd90f7e'))],
+        base, 'coercion-attempt')
+    ch6 = b'\xaa\xbb\xcc\xdd\xee\xff\x00\x11'
+    run('relay-suspected-v6',
+        [pkt6('2001:db8::5', '2001:db8::9', ntlm_challenge(ch6), sport=445, dport=50000),
+         pkt6('fe80::aa', '2001:db8::9', ntlm_challenge(ch6), sport=445, dport=50001)],
+        base, 'relay-suspected')
+    run('signing-not-required-v6',
+        [pkt6('2001:db8::8', '2001:db8::9', smb2_negotiate_resp(0x01),
+              sport=445, dport=50000)],
+        base, 'signing-not-required')
+    # v6 parse: coercion + unsigned-server fields land off IPv6 addresses.
+    with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tf:
+        path6 = tf.name
+    wrpcap(path6, [pkt6('2001:db8::66', '2001:db8::5',
+                        rpc_bind('88d481c650d8d0118c5200c04fd90f7e')),
+                   pkt6('2001:db8::8', '2001:db8::9', smb2_negotiate_resp(0x01),
+                        sport=445, dport=50000)])
+    co6, _ch6, sg6 = _parse_relay_packets(rdpcap(path6))
+    try:
+        os.remove(path6)
+    except OSError:
+        pass
+    p6_ok = (any(c['technique'] == 'PetitPotam' and c['victim'] == '2001:db8::5'
+                 for c in co6) and sg6.get('2001:db8::8') is False)
+    scenarios.append({'name': 'relay-parse-v6', 'expect': 'petitpotam+unsigned (v6)',
+                      'got': f"coercion={len(co6)} unsigned={sg6.get('2001:db8::8')}",
+                      'pass': p6_ok})
 
     passed = all(s['pass'] for s in scenarios)
     return {'success': passed, 'scenarios': scenarios,
