@@ -278,7 +278,7 @@ to `g_menu[]` to add a feature); each tile shows a compact live value.
 | **NETCONN** | drive the **Pi's** WiFi: scrollable scan list → tap an SSID → on-screen keyboard for the password → connect; plus AP-mode toggle and scanner start/stop |
 | **MESH** | scrollable roster of mesh nodes (online dot · name · IP), streamed from `mesh_manager` |
 | **TRAFFIC** | live capture stats (throughput/pps/hosts/conns/alerts) + a start/stop button |
-| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight; plus Ragnar update, Restart service, Pwnagotchi swap (shown only when installed), and a touch-test/orientation screen |
+| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight, **Invert colors** (INVON/INVOFF), **Flip 180** (rotation 2 + touch axes XOR'd to match); plus Ragnar update, Restart service, Pwnagotchi swap (shown only when installed), and a touch-test/orientation screen |
 | **CTRL** | the allowlisted action buttons (WIDS scan, BLE scan, Watchtower clear, restart Ragnar) |
 
 The header shows the unit's identity — its mesh Viking short-name (e.g.
@@ -334,7 +334,7 @@ Tailscale mesh itself is running.
 - [x] App-launcher console (dense data-driven tile grid).
 - [x] RF waterfall streamed from the Pi's SDR — HackRF or RTL-SDR, piggybacking a running sweep.
 - [x] NET subpages (Net Integrity, Watchtower detail) + Speed test / Captive / Airspace / WIDS.
-- [x] SETTINGS: BLE, backlight, wardriving toggle, Ragnar update, restart, Pwnagotchi swap.
+- [x] SETTINGS: BLE, backlight, invert colors, flip 180, Ragnar update, restart, Pwnagotchi swap.
 - [x] Traffic Analysis live-capture screen.
 - [x] MESH roster (scrollable) streamed from `mesh_manager`.
 - [x] Net-Conn: scan + connect the **Pi's** WiFi via an on-screen keyboard; AP + scanner toggles.

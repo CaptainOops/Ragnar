@@ -65,6 +65,8 @@ static Preferences g_prefs;
 // Device settings (Settings screen), persisted in NVS.
 static bool    g_bleEnabled   = true;    // BLE scanning on/off
 static uint8_t g_backlightPct = 100;     // backlight brightness 0..100
+static bool    g_invert       = false;   // invert display colours (INVON/INVOFF)
+static bool    g_flip180      = false;   // rotate display + touch 180 degrees
 
 static void loadConfig() {
   g_prefs.begin("ragnarcyd", true);
@@ -75,6 +77,8 @@ static void loadConfig() {
   g_cfg.name  = g_prefs.getString("name",  CYD_NODE_NAME);
   g_bleEnabled   = g_prefs.getBool("ble", true);
   g_backlightPct = g_prefs.getUChar("bl", 100);
+  g_invert       = g_prefs.getBool("inv", false);
+  g_flip180      = g_prefs.getBool("flip", false);
   g_prefs.end();
   if (g_cfg.name.length() == 0) g_cfg.name = "cyd-node";
   if (g_backlightPct < 10) g_backlightPct = 10;
@@ -84,6 +88,8 @@ static void saveSettings() {
   g_prefs.begin("ragnarcyd", false);
   g_prefs.putBool("ble", g_bleEnabled);
   g_prefs.putUChar("bl", g_backlightPct);
+  g_prefs.putBool("inv", g_invert);
+  g_prefs.putBool("flip", g_flip180);
   g_prefs.end();
 }
 
@@ -115,6 +121,13 @@ static bool haveConfig() {
 static Arduino_DataBus *bus = new Arduino_ESP32SPI(
     TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI, TFT_MISO, VSPI);
 static Arduino_GFX *gfx = new Arduino_ILI9341(bus, TFT_RST, 0 /*rotation*/, false /*IPS*/);
+
+// Apply display orientation + colour inversion (both persisted). Rotation 2 flips
+// the panel 180 degrees; touchRead XORs its invert flags with g_flip180 to match.
+static void applyDisplayOpts() {
+  gfx->setRotation(g_flip180 ? 2 : 0);
+  gfx->invertDisplay(g_invert);
+}
 
 static const int16_t SCR_W = 240;
 static const int16_t SCR_H = 320;
@@ -417,16 +430,14 @@ static bool touchRead(int16_t &px, int16_t &py) {
 #endif
   // Map raw ADC -> pixels (portrait), honouring the orientation flags so touch
   // lines up with the display. Clamp to screen.
-#if TOUCH_INVERT_X
-  long mx = map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, SCR_W - 1, 0);
-#else
-  long mx = map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, 0, SCR_W - 1);
-#endif
-#if TOUCH_INVERT_Y
-  long my = map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, SCR_H - 1, 0);
-#else
-  long my = map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, 0, SCR_H - 1);
-#endif
+  // Orientation flags are compile-time; XOR with g_flip180 so a runtime 180 deg
+  // flip (rotation 2) inverts touch on both axes to line up with the display.
+  bool invX = (TOUCH_INVERT_X != 0) ^ g_flip180;
+  bool invY = (TOUCH_INVERT_Y != 0) ^ g_flip180;
+  long mx = invX ? map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, SCR_W - 1, 0)
+                 : map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, 0, SCR_W - 1);
+  long my = invY ? map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, SCR_H - 1, 0)
+                 : map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, 0, SCR_H - 1);
   px = (int16_t)constrain(mx, 0, SCR_W - 1);
   py = (int16_t)constrain(my, 0, SCR_H - 1);
   return true;
@@ -1585,14 +1596,16 @@ static void drawAlerts() {
 
 // ── Settings: device-local, tappable rows + info. Persisted to NVS ────────────
 static const char *FW_BUILD = "cyd 0.5 " __DATE__;
-static const int16_t SET_Y0 = HEAD_H + 8, SET_ROWH = 30, SET_PITCH = 34;
+static const int16_t SET_Y0 = HEAD_H + 8, SET_ROWH = 28, SET_PITCH = 32;
 
 // Settings rows, built at draw time (Pwnagotchi row only when the bridge exists).
-enum { STAG_BLE, STAG_BL, STAG_WDRV, STAG_UPDATE, STAG_SVC, STAG_PWN, STAG_TOUCH };
+enum { STAG_BLE, STAG_BL, STAG_INV, STAG_FLIP, STAG_WDRV, STAG_UPDATE, STAG_SVC, STAG_PWN, STAG_TOUCH };
 static int settingsRows(uint8_t *tags) {
   int n = 0;
   tags[n++] = STAG_BLE;
   tags[n++] = STAG_BL;
+  tags[n++] = STAG_INV;
+  tags[n++] = STAG_FLIP;
   // Wardriving moved to its own page (NET -> Wardrive) with live status.
   tags[n++] = STAG_UPDATE;
   tags[n++] = STAG_SVC;
@@ -1605,6 +1618,8 @@ static void settingRowText(uint8_t tag, const char *&label, String &val, uint16_
   switch (tag) {
     case STAG_BLE:    label = "BLE scan";  val = g_bleEnabled ? "ON" : "OFF"; vcol = g_bleEnabled ? colGreen() : colGray(); break;
     case STAG_BL:     label = "Backlight"; val = String(g_backlightPct) + "%"; break;
+    case STAG_INV:    label = "Invert colors"; val = g_invert ? "ON" : "OFF"; vcol = g_invert ? colGreen() : colGray(); break;
+    case STAG_FLIP:   label = "Flip 180"; val = g_flip180 ? "ON" : "OFF"; vcol = g_flip180 ? colGreen() : colGray(); break;
     case STAG_WDRV:   label = "Wardriving"; val = String(g_rs.wardrive); vcol = (strcmp(g_rs.wardrive,"off")==0)?colGray():colGreen(); break;
     case STAG_UPDATE: label = "Ragnar update"; val = "run"; vcol = colAmber(); break;
     case STAG_SVC:    label = "Restart svc"; val = "go"; vcol = colAmber(); break;
@@ -1625,7 +1640,7 @@ static void drawSettingRow(int16_t y, const char *label, const String &val, uint
 
 static void drawSettings() {
   drawHeader("SETTINGS", false);
-  uint8_t tags[8]; int n = settingsRows(tags);
+  uint8_t tags[10]; int n = settingsRows(tags);
   for (int i = 0; i < n; i++) {
     const char *label; String val; uint16_t vcol;
     settingRowText(tags[i], label, val, vcol);
@@ -1754,7 +1769,7 @@ static void handleTouch(int16_t px, int16_t py) {
     g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
-    uint8_t tags[8]; int n = settingsRows(tags);
+    uint8_t tags[10]; int n = settingsRows(tags);
     for (int i = 0; i < n; i++) {
       int16_t ry = SET_Y0 + i * SET_PITCH;
       if (!inRect(px, py, 10, ry, SCR_W - 20, SET_ROWH)) continue;
@@ -1762,6 +1777,9 @@ static void handleTouch(int16_t px, int16_t py) {
         case STAG_BLE: g_bleEnabled = !g_bleEnabled; saveSettings(); break;
         case STAG_BL:  g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
                        applyBacklight(); saveSettings(); break;
+        case STAG_INV: g_invert = !g_invert; applyDisplayOpts(); saveSettings(); break;
+        case STAG_FLIP: g_flip180 = !g_flip180; applyDisplayOpts(); saveSettings();
+                        gfx->fillScreen(colBg()); break;
         case STAG_WDRV:   requestAction("wardrive_toggle", "Wardriving"); return;
         case STAG_UPDATE: requestAction("ragnar_update", "Ragnar update"); return;
         case STAG_SVC:    requestAction("service_restart", "Restart service"); return;
@@ -1995,6 +2013,7 @@ void setup() {
 
   loadConfig();   // node name (+ optional WiFi seeds) + BLE/backlight settings
   applyBacklight();
+  applyDisplayOpts();   // orientation + colour inversion (persisted)
 
   // Boot splash. Over serial it plays the full 15 s clip and LOOPS until the Pi's
   // Ragnar service is up (first status frame), so a co-booting Pi gets covered; if
