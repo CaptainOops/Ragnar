@@ -5224,6 +5224,10 @@
                     <p id="lc-add-msg" class="text-xs sm:col-span-2"></p>
                 </div>
 
+                <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                    <div id="lc-filters" class="flex gap-1 flex-wrap text-xs"></div>
+                    <button onclick="lcVideoWall()" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-xs flex-shrink-0">🧱 Video Wall</button>
+                </div>
                 <div id="livecams-grid" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     <p class="text-gray-400 text-sm">Loading…</p>
                 </div>
@@ -5236,6 +5240,12 @@
                     <div id="lc-modal-label" class="text-center text-sm text-gray-300 mt-2"></div>
                 </div>
             </div>
+            <!-- video wall (fullscreen, all cams) -->
+            <div id="lc-wall" class="hidden fixed inset-0 z-50 bg-black">
+                <button onclick="lcCloseWall()" class="absolute top-2 right-2 z-10 bg-black/60 hover:bg-black/80 text-white text-sm rounded px-3 py-1">✕ Close</button>
+                <div id="lc-wall-body" class="w-full h-full grid gap-0.5" style="grid-template-columns:repeat(2,minmax(0,1fr))"></div>
+            </div>
+            <div id="lc-toast" class="hidden"></div>
         </div>
         <script>
         (function(){
@@ -5253,13 +5263,23 @@
                 var src = '/api/livecams/snapshot/' + encodeURIComponent(cam.id);
                 return '<img data-lc-type="snapshot" data-lc-proxy="'+src+'" src="'+src+'" class="w-full h-full object-cover" loading="lazy" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
             }
+            window._lcFilter = window._lcFilter || 'All';
             window.lcRender = function(cams){
                 var grid = el('livecams-grid'); if (!grid) return;
                 window._lcCams = cams || [];
-                if (!cams || !cams.length){ grid.innerHTML = '<p class="text-gray-400 text-sm">No cameras yet. Click &ldquo;+ Add Camera&rdquo; to add a public feed URL.</p>'; return; }
-                grid.innerHTML = cams.map(function(cam){
-                    return '<div class="bg-slate-800/60 rounded-lg overflow-hidden">'
-                        + '<div class="aspect-video bg-black overflow-hidden relative">' + camMediaHTML(cam)
+                var cats = ['All']; (cams||[]).forEach(function(c){ if (cats.indexOf(c.category)<0) cats.push(c.category); });
+                if (cats.indexOf(window._lcFilter)<0) window._lcFilter = 'All';
+                var fbar = el('lc-filters');
+                if (fbar){ fbar.innerHTML = (cats.length>1 ? cats.map(function(cat){
+                    var a = (window._lcFilter===cat);
+                    return '<button onclick="lcSetFilter(\''+esc(cat)+'\')" class="px-2 py-1 rounded '+(a?'bg-Ragnar-600 text-white':'bg-slate-700 text-gray-300 hover:bg-slate-600')+'">'+esc(cat)+'</button>';
+                }).join('') : ''); }
+                var shown = (cams||[]).filter(function(c){ return window._lcFilter==='All' || c.category===window._lcFilter; });
+                if (!shown.length){ grid.innerHTML = '<p class="text-gray-400 text-sm">'+((cams&&cams.length)?'No cameras in this category.':'No cameras yet. Click &ldquo;+ Add Camera&rdquo; to add a public feed URL.')+'</p>'; return; }
+                grid.innerHTML = shown.map(function(cam){
+                    var snap = cam.type==='snapshot' ? '<button onclick="lcSnapshot(\''+esc(cam.id)+'\')" class="absolute top-1 right-10 bg-black/50 hover:bg-black/70 text-white text-sm rounded px-2 py-0.5" title="Save snapshot to loot">📸</button>' : '';
+                    return '<div class="bg-slate-800/60 rounded-lg overflow-hidden" draggable="true" ondragstart="lcDragStart(event,\''+esc(cam.id)+'\')" ondragover="event.preventDefault()" ondrop="lcDrop(event,\''+esc(cam.id)+'\')">'
+                        + '<div class="aspect-video bg-black overflow-hidden relative">' + camMediaHTML(cam) + snap
                         + '<button onclick="lcOpen(\''+esc(cam.id)+'\')" class="absolute top-1 right-1 bg-black/50 hover:bg-black/70 text-white text-sm rounded px-2 py-0.5" title="Expand">⤢</button></div>'
                         + '<div class="flex items-center justify-between px-3 py-2">'
                         + '<div class="min-w-0"><div class="text-sm font-medium truncate">' + esc(cam.label) + '</div>'
@@ -5296,7 +5316,41 @@
                 var m = el('lc-modal'); if (m) m.classList.add('hidden');
                 var body = el('lc-modal-body'); if (body) body.innerHTML = ''; // stop the stream
             };
-            document.addEventListener('keydown', function(e){ if (e.key === 'Escape') window.lcClose(); });
+            window.lcSetFilter = function(cat){ window._lcFilter = cat; window.lcRender(window._lcCams); };
+            var _lcDragId = null;
+            window.lcDragStart = function(ev, id){ _lcDragId = id; if (ev.dataTransfer){ ev.dataTransfer.effectAllowed='move'; } };
+            window.lcDrop = function(ev, targetId){
+                ev.preventDefault();
+                if (!_lcDragId || _lcDragId===targetId){ _lcDragId=null; return; }
+                var cams = window._lcCams || [];
+                var ids = cams.map(function(c){ return c.id; });
+                var from = ids.indexOf(_lcDragId), to = ids.indexOf(targetId);
+                if (from<0 || to<0){ _lcDragId=null; return; }
+                var moved = cams.splice(from,1)[0]; cams.splice(to,0,moved); _lcDragId=null;
+                window.lcRender(cams);
+                fetch('/api/livecams/reorder', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({order: cams.map(function(c){return c.id;})})}).catch(function(){});
+            };
+            window.lcVideoWall = function(){
+                var cams = (window._lcCams||[]).filter(function(c){ return window._lcFilter==='All' || c.category===window._lcFilter; });
+                if (!cams.length) return;
+                var wall = el('lc-wall'), body = el('lc-wall-body'); if (!wall || !body) return;
+                var cols = cams.length<=1?1:(cams.length<=4?2:(cams.length<=9?3:4));
+                body.style.gridTemplateColumns = 'repeat('+cols+',minmax(0,1fr))';
+                body.innerHTML = cams.map(function(cam){ return '<div class="bg-black overflow-hidden relative">'+camMediaHTML(cam)+'<span class="absolute bottom-0 left-0 bg-black/60 text-white text-xs px-1">'+esc(cam.label)+'</span></div>'; }).join('');
+                wall.classList.remove('hidden');
+            };
+            window.lcCloseWall = function(){ var w=el('lc-wall'); if(w) w.classList.add('hidden'); var b=el('lc-wall-body'); if(b) b.innerHTML=''; };
+            function lcToast(msg, ok){
+                var t = el('lc-toast'); if(!t) return;
+                t.textContent = msg; t.className = 'fixed bottom-4 right-4 z-50 text-sm px-3 py-2 rounded shadow-lg text-white '+(ok?'bg-emerald-600':'bg-red-600');
+                setTimeout(function(){ t.className='hidden'; }, 2500);
+            }
+            window.lcSnapshot = function(id){
+                fetch('/api/livecams/save-snapshot', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:id})})
+                    .then(function(r){return r.json();}).then(function(d){ lcToast(d&&d.success?'📸 Snapshot saved to loot':((d&&d.error)||'Snapshot failed'), d&&d.success); })
+                    .catch(function(){ lcToast('Snapshot failed', false); });
+            };
+            document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ window.lcClose(); window.lcCloseWall(); } });
             function refreshSnapshots(){
                 var tab = el('livecams-tab');
                 if (!tab || tab.classList.contains('hidden')) return;

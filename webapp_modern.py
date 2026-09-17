@@ -3604,6 +3604,51 @@ def livecams_snapshot(cam_id):
         return jsonify({'success': False, 'error': 'fetch failed'}), 502
 
 
+@app.route('/api/livecams/reorder', methods=['POST'])
+def livecams_reorder():
+    body = request.get_json(silent=True) or {}
+    order = body.get('order') or []
+    cams = _livecams_list()
+    by_id = {c.get('id'): c for c in cams}
+    new = [by_id[i] for i in order if i in by_id]
+    inset = set(order)
+    new += [c for c in cams if c.get('id') not in inset]
+    shared_data.config['livecams'] = new
+    try:
+        shared_data.save_config()
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] save_config failed: {exc}")
+    return jsonify({'success': True, 'cams': new})
+
+
+@app.route('/api/livecams/save-snapshot', methods=['POST'])
+def livecams_save_snapshot():
+    """Grab the current still from a Snapshot-type cam and file it into loot."""
+    body = request.get_json(silent=True) or {}
+    cam = next((c for c in _livecams_list() if c.get('id') == (body.get('id') or '').strip()), None)
+    if not cam:
+        return jsonify({'success': False, 'error': 'not found'}), 404
+    if cam.get('type') != 'snapshot':
+        return jsonify({'success': False, 'error': 'snapshot capture works for Snapshot-type cams only'}), 400
+    url = cam.get('url', '')
+    try:
+        import requests
+        r = requests.get(url, timeout=(5, 10), verify=False)
+        r.raise_for_status()
+        if not str(r.headers.get('Content-Type', '')).lower().startswith('image/'):
+            return jsonify({'success': False, 'error': 'feed did not return an image'}), 415
+        d = os.path.join(_camera_recon_loot_dir(), 'snapshots')
+        os.makedirs(d, exist_ok=True)
+        safe = ''.join(ch if (ch.isalnum() or ch in '-_') else '_' for ch in cam.get('label', 'cam'))[:40] or 'cam'
+        fn = os.path.join(d, '%s_%s.jpg' % (safe, datetime.now().strftime('%Y%m%d-%H%M%S')))
+        with open(fn, 'wb') as f:
+            f.write(r.content)
+        return jsonify({'success': True, 'path': fn})
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] save-snapshot failed: {exc}")
+        return jsonify({'success': False, 'error': 'fetch failed'}), 502
+
+
 # ---------------------------------------------------------------------------
 # Camera Recon -- headless CCTV/IP-camera discovery on the operator's own /
 # authorized network (see camera_recon.py). Findings file into the scan-results
