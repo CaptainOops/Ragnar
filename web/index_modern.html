@@ -2415,6 +2415,19 @@
                     </div>
                     <div id="ipsec-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                 </div>
+                <!-- DNS Watch (passive DNS-response threat detector) -->
+                <div class="glass rounded-xl p-4 sm:p-6 mt-6">
+                    <h3 class="text-lg font-semibold mb-1">DNS Watch <span class="text-xs font-normal text-gray-500">(passive · port 53 · DNSSEC-CVE / cache-poisoning)</span></h3>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive DNS-response threat detector — <strong>detection-only</strong>, never transmits (unlike the active <strong>DNS Doctor</strong> above, which queries resolvers). Observes DNS answers on port 53 and flags weaknesses in the record structure: <strong>KeyTrap</strong> (<code>CVE-2023-50387</code> — colliding DNSKEY key-tags / RRSIG bursts that force a validator into quadratic crypto), <strong>NSEC3</strong> over-iteration (<code>CVE-2023-50868</code>), <strong>NXNSAttack</strong> referral amplification (<code>CVE-2020-8616</code>), <strong>MaginotDNS</strong> out-of-bailiwick cache-poisoning (<code>CVE-2021-25220</code>), <strong>DNSBomb</strong> pulsing DoS (<code>CVE-2024-33655</code>), and <strong>SAD&nbsp;DNS</strong> off-path race / low source-port entropy (<code>CVE-2020-25705</code>). <strong>Dual-stack</strong> (A + AAAA, byte-identical logic). Pure-Python parser; the rate/baseline-gated detectors (DNSBomb, NXNS burst, NSEC3-encloser) accumulate best over a longer capture. AST-enforced no-transmit.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <select id="dnswatch-iface" title="Interface for the capture — a segment carrying DNS, or a SPAN/mirror of one" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                            <option value="">Auto (wired first)</option>
+                        </select>
+                        <input id="dnswatch-secs" type="number" min="5" max="60" value="20" title="capture seconds" class="w-20 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+                        <button onclick="runDnsWatch()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan DNS</button>
+                    </div>
+                    <div id="dnswatch-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
+                </div>
                 <!-- LDAP Watch (Active Directory / LDAP) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">LDAP Watch <span class="text-xs font-normal text-gray-500">(Active Directory / LDAP)</span></h3>
@@ -2675,7 +2688,7 @@
                 <!-- Routing-scanner self-test + Scapy -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                        <h3 class="text-lg font-semibold">Detector Self-Test <span class="text-xs font-normal text-gray-500">(IGMP · IPv6 · NDP · RA Guard · NTP · ICMP · SNMP · TLS · Cert · STP · SMB · Relay · LDAP · SSH · Telnet · DTP · CDP · VTP · EIGRP · IS-IS · FHRP · OSPF · ARP · MAC · DHCP · DNS · BGP · LACP · RPC · BFD · PTP · SR-MPLS · IPsec/IKE · Cisco · Juniper · Arista · Comware · MikroTik · Aruba · Dell · speaker · OWD)</span></h3>
+                        <h3 class="text-lg font-semibold">Detector Self-Test <span class="text-xs font-normal text-gray-500">(IGMP · IPv6 · NDP · RA Guard · NTP · ICMP · SNMP · TLS · Cert · STP · SMB · Relay · LDAP · SSH · Telnet · DTP · CDP · VTP · EIGRP · IS-IS · FHRP · OSPF · ARP · MAC · DHCP · DNS · BGP · LACP · RPC · BFD · PTP · SR-MPLS · IPsec/IKE · DNS-Watch · Cisco · Juniper · Arista · Comware · MikroTik · Aruba · Dell · speaker · OWD)</span></h3>
                         <div id="scapy-status" class="text-xs text-gray-400"></div>
                     </div>
                     <p class="text-sm text-gray-400 mb-3 mt-1">Validates every passive detector by running each classifier against crafted attack captures — no root, no live traffic. Covers the routing/L2 scanners (IGMP, IPv6 first-hop, NDP, STP, DTP, CDP incl. <strong>CDPwn</strong> CVE screening, VTP, EIGRP, IS-IS, FHRP, OSPF), the host/AD detectors (SNMP, TLS, Cert, SMB, LDAP, Relay, <strong>SSH</strong> regreSSHion/Terrapin, <strong>Telnet</strong>, <strong>RPC/NetLogon</strong> incl. <strong>Zerologon</strong> / DCSync / WinRM), the link-aggregation integrity monitor (<strong>LACP</strong> LAG-hijack / flapping), the timing- and forwarding-plane watchers (<strong>BFD</strong> failover manipulation, <strong>PTP</strong> grandmaster takeover, <strong>SR-MPLS</strong> segment injection), the <strong>IPsec/IKE</strong> key-exchange posture detector (D(HE)at / weak DH groups, SWEET32, Aggressive Mode) — part of the cross-protocol <strong>D(HE)at</strong> (CVE-2002-20001) coverage that also names finite-field DH exposure in <strong>TLS</strong> and <strong>SSH</strong>, the vendor CVE guards (<strong>Cisco</strong>, <strong>Juniper</strong>, <strong>Arista</strong>, <strong>Comware</strong>, <strong>MikroTik</strong>, <strong>Aruba</strong> and <strong>Dell</strong> — Dell Guard runs as a standalone daemon, so the panel exercises its offline classifier self-test), and the poisoning / rogue-device checks (<strong>ARP</strong> incl. HSRP/VRRP virtual-MAC awareness, <strong>MAC</strong> spoof/vendor-OUI/randomization incl. HSRP/VRRP virtual-MAC awareness, <strong>DHCP</strong> rogue-server/starvation, <strong>DNS</strong> poison parser/anchors). Installing <strong>Scapy</strong> adds an end-to-end leg that builds real packets, writes a pcap and parses it back through <span class="font-mono">tcpdump</span> (and Cert Watch grades a real local handshake), so the whole capture→parse→classify path is exercised. Recommended for a fully-validated security tool.</p>
@@ -8669,7 +8682,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260917-dheater-ipsec"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260917-dns-passive"></script>
 
 
 
