@@ -44,6 +44,7 @@
 
 #include "config.h"
 #include "ragnar_boot_gif.h"      // embedded 240x320 full-screen boot animation (PROGMEM)
+#include "ragnar_compact_font.h"  // compact 4x6 fixed-width font (~25% smaller UI text)
 
 // Defined before the first include-terminated section so Arduino's auto-generated
 // prototypes (inserted after the includes) can reference ActionBtn*.
@@ -938,7 +939,7 @@ static void drawMenuTile(int16_t x, int16_t y, const char *label,
   gfx->setCursor(x + 12, y + (TILE_H - 16) / 2); gfx->print(label);
   if (val.length()) {
     gfx->setTextColor(vcol); gfx->setTextSize(1);
-    int16_t vx = x + TILE_W - (int16_t)val.length() * 6 - 6;
+    int16_t vx = x + TILE_W - (int16_t)val.length() * 5 - 6;
     gfx->setCursor(vx, y + (TILE_H - 8) / 2); gfx->print(val);
   }
 }
@@ -1120,7 +1121,7 @@ static void drawWaterfall() {
     String loS = String(g_wfLo), midS = String((g_wfLo + g_wfHi) / 2), hiS = String(g_wfHi);
     gfx->setCursor(2, sBot + 1);                             gfx->print(loS);
     gfx->setCursor(SCR_W / 2 - midS.length() * 3, sBot + 1); gfx->print(midS);
-    gfx->setCursor(SCR_W - hiS.length() * 6 - 2, sBot + 1);  gfx->print(hiS);
+    gfx->setCursor(SCR_W - hiS.length() * 5 - 2, sBot + 1);  gfx->print(hiS);
   }
 }
 
@@ -1372,9 +1373,9 @@ static void wdStat(int16_t y, const char *label, const String &val,
                    uint8_t vsize, uint16_t vcol) {
   int16_t cx = SCR_W / 2;
   gfx->setTextSize(1); gfx->setTextColor(colGray());
-  gfx->setCursor(cx - (int16_t)strlen(label) * 3, y); gfx->print(label);
+  gfx->setCursor(cx - (int16_t)strlen(label) * 5 / 2, y); gfx->print(label);
   gfx->setTextSize(vsize); gfx->setTextColor(vcol);
-  gfx->setCursor(cx - (int16_t)(val.length() * 3 * vsize), y + 11); gfx->print(val);
+  gfx->setCursor(cx - (int16_t)(val.length() * 5 * vsize / 2), y + 11); gfx->print(val);
 }
 static void drawWardrive() {
   drawHeader("WARDRIVE", false);
@@ -1392,7 +1393,7 @@ static void drawWardrive() {
   // Status headline (big).
   const char *stx = g_rs.wdRun ? "WARDRIVING" : "IDLE";
   gfx->setTextSize(3); gfx->setTextColor(g_rs.wdRun ? colGreen() : colGray());
-  gfx->setCursor(cx - (int16_t)strlen(stx) * 9, y); gfx->print(stx);
+  gfx->setCursor(cx - (int16_t)strlen(stx) * 15 / 2, y); gfx->print(stx);
   y += 30;
   // Band, centered under the status.
   String bnd = String("band ") + g_rs.wdBand;
@@ -1634,7 +1635,7 @@ static void drawSettingRow(int16_t y, const char *label, const String &val, uint
   gfx->setTextColor(WHITE); gfx->setTextSize(2);
   gfx->setCursor(18, y + 7); gfx->print(label);
   gfx->setTextColor(vcol); gfx->setTextSize(1);
-  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 6 - 8;
+  int16_t vx = SCR_W - 20 - (int16_t)val.length() * 5 - 8;
   gfx->setCursor(vx, y + 11); gfx->print(val);
 }
 
@@ -2004,6 +2005,7 @@ void setup() {
   pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, HIGH);
 
   gfx->begin();
+  gfx->setFont(&RagnarCompact);   // compact 4x6 font: ~25% smaller text everywhere
   gfx->fillScreen(BLACK);
 
   // Touch bus + CS/IRQ
