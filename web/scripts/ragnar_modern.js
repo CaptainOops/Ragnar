@@ -30019,10 +30019,16 @@ function _bleProvPollUntilSettled(tries) {
     }, 1500);
 }
 
+let _btPanInstalling = false;
+
 function _btPanStatusText(d) {
     if (!d) return '—';
     if (d.error) return '⚠ ' + d.error;
-    if (!d.available) return 'Unavailable — install bluez-tools (bt-network, bt-agent).';
+    if (!d.available) {
+        const pkgs = (d.missing_packages && d.missing_packages.length)
+            ? d.missing_packages.join(', ') : 'bluez-tools, dnsmasq';
+        return 'Dependencies not installed (' + pkgs + '). Tap “Install dependencies”, or just turn it on and it installs them for you.';
+    }
     if (!d.enabled) return 'Off. Turn on, then pair the box in your phone’s Bluetooth settings.';
     if (d.running) {
         const n = d.connected_devices || 0;
@@ -30038,9 +30044,58 @@ async function loadBtPan() {
         const d = await res.json();
         const cb = document.getElementById('bt-pan-enabled');
         if (cb) cb.checked = !!d.enabled;
+        const btn = document.getElementById('bt-pan-install');
+        // Offer the install button whenever the tools are missing (and we're not
+        // already mid-install).
+        if (btn) btn.classList.toggle('hidden', !!d.available || _btPanInstalling);
         const st = document.getElementById('bt-pan-status');
-        if (st) st.textContent = _btPanStatusText(d);
+        if (st && !_btPanInstalling) st.textContent = _btPanStatusText(d);
     } catch (e) { /* silent */ }
+}
+
+// Poll the install log until it finishes; optionally enable the NAP after.
+function _btPanPollInstall(thenEnable) {
+    _btPanInstalling = true;
+    const st = document.getElementById('bt-pan-status');
+    const log = document.getElementById('bt-pan-log');
+    const btn = document.getElementById('bt-pan-install');
+    if (btn) btn.classList.add('hidden');
+    if (log) log.classList.remove('hidden');
+    const timer = setInterval(async () => {
+        try {
+            const res = await fetch('/api/bt/pan/install-log');
+            const d = await res.json();
+            if (log && d.log) { log.textContent = d.log; log.scrollTop = log.scrollHeight; }
+            if (st) st.textContent = d.running ? 'Installing dependencies…' : (st.textContent || '');
+            if (!d.running && d.done) {
+                clearInterval(timer);
+                _btPanInstalling = false;
+                if (d.ok) {
+                    addConsoleMessage('Bluetooth access-point dependencies installed', 'success');
+                    if (thenEnable) {
+                        try { await postAPI('/api/bt/pan/toggle', { enabled: true }); } catch (e) { /* handled by reload */ }
+                    }
+                } else {
+                    addConsoleMessage('Dependency install failed — see the log', 'error');
+                    if (st) st.textContent = '⚠ ' + (d.error || 'install failed');
+                    const cb = document.getElementById('bt-pan-enabled');
+                    if (cb) cb.checked = false;
+                }
+                loadBtPan();
+            }
+        } catch (e) { /* keep polling */ }
+    }, 1500);
+}
+
+async function installBtPanDeps(thenEnable) {
+    try {
+        await postAPI('/api/bt/pan/install', {});
+        addConsoleMessage('Installing Bluetooth access-point dependencies…', 'info');
+        _btPanPollInstall(!!thenEnable);
+    } catch (e) {
+        console.error('[BTPAN] install error:', e);
+        addConsoleMessage('Failed to start dependency install', 'error');
+    }
 }
 
 async function toggleBtPan(checkbox) {
@@ -30049,6 +30104,12 @@ async function toggleBtPan(checkbox) {
     if (st) st.textContent = enabled ? 'Enabling…' : 'Disabling…';
     try {
         const res = await postAPI('/api/bt/pan/toggle', { enabled });
+        // Turning it on with missing deps: the server started the install; drive
+        // the progress UI and enable once it lands.
+        if (enabled && res && res.installing) {
+            _btPanPollInstall(true);
+            return;
+        }
         addConsoleMessage('Bluetooth access point ' + (enabled ? 'enabled' : 'disabled'),
             (res && res.error) ? 'error' : 'success');
         if (st) st.textContent = _btPanStatusText(Object.assign({ enabled: enabled }, res || {}));

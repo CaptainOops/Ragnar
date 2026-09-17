@@ -51,7 +51,23 @@ DHCP_HI = "192.168.44.50"
 DNSMASQ_CONF = "/tmp/ragnar/btpan-dnsmasq.conf"
 DNSMASQ_PID = "/tmp/ragnar/btpan-dnsmasq.pid"
 
+# What the phone sees when it scans for the box. Set as the adapter Alias while
+# the NAP is up; cleared (reverts to the hostname) when it comes down.
+ADAPTER_ALIAS = "Ragnar"
+
 _CMD_TIMEOUT = 8.0
+_DBUS_TIMEOUT = 5.0
+
+# Which apt package provides each runtime tool the NAP needs. `ip` comes from
+# iproute2, which is always present, so it is not part of the installable set.
+_TOOL_PKG = {
+    "bt-network": "bluez-tools",
+    "bt-agent": "bluez-tools",
+    "dnsmasq": "dnsmasq",
+}
+# bridge-utils is not strictly required (we bring the bridge up with `ip link`),
+# but installing it alongside is harmless and matches what other setups expect.
+_INSTALL_PACKAGES = ["bluez-tools", "dnsmasq", "bridge-utils"]
 
 
 def _priv(cmd: list[str]) -> list[str]:
@@ -88,6 +104,8 @@ class BtPanServer:
         self._procs: dict[str, subprocess.Popen] = {}
         self._error: str | None = None
         self._started_at: float | None = None
+        self._trust_thread: threading.Thread | None = None
+        self._trust_stop = threading.Event()
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> dict:
@@ -103,7 +121,8 @@ class BtPanServer:
                 self._start_dnsmasq()
                 self._start_agent()
                 self._start_nap()
-                self._set_discoverable(True)
+                self._configure_adapters(True)
+                self._start_trust_loop()
                 self._error = None
                 self._started_at = time.time()
                 logger.info("[btpan] NAP up on %s (%s)", BRIDGE, GATEWAY)
@@ -123,8 +142,9 @@ class BtPanServer:
     # -- steps ---------------------------------------------------------------
     def _bring_up_adapter(self) -> None:
         # New BT dongles can boot rfkill-blocked; unblock before touching them.
+        # Powering + naming + discoverability are done over D-Bus in
+        # _configure_adapters (bluetoothctl hangs on a busy stack here).
         _ok(["rfkill", "unblock", "bluetooth"])
-        _ok(["bluetoothctl", "power", "on"])
 
     def _bring_up_bridge(self) -> None:
         # Idempotent: leave an existing bridge in place, just ensure addr + up.
@@ -190,13 +210,97 @@ class BtPanServer:
         if self._procs["nap"].poll() is not None:
             raise RuntimeError("bt-network exited immediately (NAP registration failed)")
 
-    def _set_discoverable(self, on: bool) -> None:
-        state = "on" if on else "off"
-        _ok(["bluetoothctl", "discoverable", state])
-        _ok(["bluetoothctl", "pairable", state])
+    def _configure_adapters(self, on: bool) -> None:
+        """Power, name and (un)advertise every BlueZ adapter — over D-Bus.
+
+        bluetoothctl is unreliable on a busy stack (it can block indefinitely and
+        silently no-op, which is exactly why the box never showed up), so drive
+        the adapter properties directly with bounded calls. Setting ``on`` names
+        the box "Ragnar", makes it discoverable with no timeout, and pairable;
+        clearing it reverts the name to the hostname and hides the box again.
+        Never raises — a missing dbus or a wedged bluetoothd degrades to a log
+        line, not a failed start.
+        """
+        try:
+            import dbus
+        except Exception:
+            logger.warning("[btpan] python3-dbus unavailable; cannot set discoverable/name")
+            return
+        try:
+            bus = dbus.SystemBus()
+            om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                                "org.freedesktop.DBus.ObjectManager")
+            objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[btpan] could not reach bluetoothd over D-Bus: %s", exc)
+            return
+        found = False
+        for path, ifaces in objs.items():
+            if "org.bluez.Adapter1" not in ifaces:
+                continue
+            found = True
+            try:
+                props = dbus.Interface(bus.get_object("org.bluez", path),
+                                       "org.freedesktop.DBus.Properties")
+                props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "Alias",
+                          dbus.String(ADAPTER_ALIAS if on else ""), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "DiscoverableTimeout", dbus.UInt32(0), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "PairableTimeout", dbus.UInt32(0), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(on), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(on), timeout=_DBUS_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[btpan] adapter %s config failed: %s", path, exc)
+        if on and not found:
+            logger.warning("[btpan] bluetoothd exposes no adapters — is a controller present?")
+
+    def _start_trust_loop(self) -> None:
+        """Keep paired devices marked Trusted while the NAP is up.
+
+        On a box whose Bluetooth stack is also running audio (pipewire /
+        wireplumber register their own agent), an incoming PAN connection is sent
+        to *that* agent for authorization and gets cancelled — the phone pairs
+        but the tether never forms. A Trusted device is auto-authorized by
+        bluetoothd with no agent prompt, so trusting paired devices (a phone can
+        pair at any time, so poll rather than trust once) is what lets the PAN
+        actually connect.
+        """
+        if self._trust_thread and self._trust_thread.is_alive():
+            return
+        self._trust_stop.clear()
+        self._trust_thread = threading.Thread(target=self._trust_loop, daemon=True,
+                                              name="btpan-trust")
+        self._trust_thread.start()
+
+    def _trust_loop(self) -> None:
+        self._trust_paired()  # immediately, then on a slow poll
+        while not self._trust_stop.wait(8.0):
+            self._trust_paired()
+
+    def _trust_paired(self) -> None:
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                                "org.freedesktop.DBus.ObjectManager")
+            objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+        except Exception:  # noqa: BLE001
+            return
+        for path, ifaces in objs.items():
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev or not dev.get("Paired") or dev.get("Trusted"):
+                continue
+            try:
+                props = dbus.Interface(bus.get_object("org.bluez", path),
+                                       "org.freedesktop.DBus.Properties")
+                props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True), timeout=_DBUS_TIMEOUT)
+                logger.info("[btpan] trusted paired device %s", path)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _teardown_locked(self) -> None:
-        self._set_discoverable(False)
+        self._trust_stop.set()
+        self._configure_adapters(False)
         for name in ("nap", "agent"):
             proc = self._procs.pop(name, None)
             if not proc:
@@ -246,10 +350,15 @@ class BtPanServer:
 
     def _status_locked(self) -> dict:
         running = self._running()
+        missing = missing_tools()
         return {
             "success": True,
             "running": running,
-            "available": _tool("bt-network") and _tool("bt-agent"),
+            # Available only when every runtime tool is present; the UI shows an
+            # "Install dependencies" action from `missing_packages` otherwise.
+            "available": not missing,
+            "missing_tools": missing,
+            "missing_packages": missing_packages(),
             "bridge": BRIDGE if self._bridge_present() else None,
             "address": GATEWAY if running else None,
             "port": 8000,
@@ -286,3 +395,83 @@ def stop() -> dict:
 
 def status() -> dict:
     return _instance().status()
+
+
+# --- On-demand dependency install -------------------------------------------
+# The NAP needs bluez-tools (bt-network, bt-agent) + dnsmasq, which a lean image
+# may not ship. Rather than fail with a raw package error, the UI offers an
+# "Install dependencies" action that drives this — apt in the background, with a
+# streamed log the page polls, exactly like the other on-demand installers.
+
+
+def missing_tools() -> list[str]:
+    """Runtime tools the NAP needs that are not on PATH."""
+    return [t for t in _TOOL_PKG if not _tool(t)]
+
+
+def missing_packages() -> list[str]:
+    """apt packages to install to satisfy the missing tools."""
+    return sorted({_TOOL_PKG[t] for t in missing_tools()})
+
+
+_install_lock = threading.Lock()
+_install_state = {"running": False, "log": "", "done": False, "ok": None, "error": None}
+
+
+def _install_append(text: str) -> None:
+    with _install_lock:
+        # Keep the tail bounded — the page only shows the last lines.
+        _install_state["log"] = (_install_state["log"] + text)[-8000:]
+
+
+def install_status() -> dict:
+    with _install_lock:
+        snap = dict(_install_state)
+    snap["missing_tools"] = missing_tools()
+    snap["missing_packages"] = missing_packages()
+    return snap
+
+
+def install_deps() -> dict:
+    """Kick off (once) a background apt install of the missing packages."""
+    with _install_lock:
+        if _install_state["running"]:
+            already = True
+        else:
+            already = False
+            _install_state.update(running=True, log="", done=False, ok=None, error=None)
+    if not already:
+        threading.Thread(target=_do_install, daemon=True, name="btpan-install").start()
+    return install_status()
+
+
+def _do_install() -> None:
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    try:
+        _install_append("Updating package lists…\n")
+        up = subprocess.run(_priv(["apt-get", "update"]), capture_output=True, text=True,
+                            timeout=180, env=env)
+        _install_append((up.stdout or "")[-1500:] + (up.stderr or "")[-1500:])
+        _install_append(f"\nInstalling: {' '.join(_INSTALL_PACKAGES)}\n")
+        proc = subprocess.Popen(
+            _priv(["apt-get", "install", "-y", "--no-install-recommends"] + _INSTALL_PACKAGES),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                _install_append(line)
+        proc.wait(timeout=600)
+        ok = proc.returncode == 0 and not missing_tools()
+        with _install_lock:
+            _install_state.update(done=True, ok=ok,
+                                  error=None if ok else "Install finished but some tools are still missing.")
+        _install_append("\nDone — dependencies installed.\n" if ok
+                        else "\nInstall did not complete cleanly.\n")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[btpan] dependency install failed: %s", exc)
+        with _install_lock:
+            _install_state.update(done=True, ok=False, error=str(exc))
+        _install_append(f"\nError: {exc}\n")
+    finally:
+        with _install_lock:
+            _install_state["running"] = False

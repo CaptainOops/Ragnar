@@ -25,6 +25,14 @@ On the box: **Config → Bluetooth access point → on** (or `POST /api/bt/pan/t
 {"enabled": true}`). The setting is persisted (`bt_pan_enabled`) and comes back
 up on boot.
 
+**Dependencies.** The NAP needs `bluez-tools` (`bt-network`, `bt-agent`) and
+`dnsmasq`. A lean image may not ship them; if they are missing the card shows an
+**Install dependencies** button, and turning the toggle on installs them for you
+first (apt in the background, with a streamed log). `POST /api/bt/pan/install`
+starts it and `GET /api/bt/pan/install-log` reports progress; the NAP comes up
+once they land. Nothing is persisted until it actually starts, so a box that
+can't install the packages never boot-loops trying.
+
 On the phone (**Android only** — iOS does not support Bluetooth PAN to a device
 like this):
 
@@ -46,7 +54,25 @@ and the **Fleet** view while on it and shows a **BT** badge in the header.
   never bridge onto the box's other networks;
 - `bt-agent -c NoInputNoOutput` for "just works" pairing on a headless box;
 - `bt-network -s nap pan0` for the NAP server, which enslaves each incoming
-  `bnep` link to the bridge.
+  `bnep` link to the bridge;
+- the adapter is named **"Ragnar"**, powered, discoverable and pairable via
+  **D-Bus** (bounded calls — `bluetoothctl` hangs on a busy stack and even wedges
+  bluetoothd);
+- paired devices are kept **Trusted** (a background poll). On a box that also
+  runs Bluetooth audio (pipewire/wireplumber register their own agent), an
+  incoming PAN connection is otherwise sent to *that* agent and cancelled
+  (`Access denied`), so the phone pairs but never tethers — a Trusted device is
+  auto-authorized with no agent prompt.
+
+## Troubleshooting
+
+- **"Ragnar" doesn't appear when scanning** — the NAP isn't up; enable it in
+  Config, and check a Bluetooth controller is present and unblocked (`rfkill`).
+- **Pairs, but the app won't connect** — first, is it an **iPhone**? iOS does not
+  support connecting to a Bluetooth NAP, so it pairs but never forms the PAN
+  link; use Android. On Android, open the paired device and turn on **Internet
+  access / tethering** — that is what actually establishes the link. A `bnep0`
+  interface appearing under `ip link show master pan0` confirms it connected.
 
 It is **opt-in** and **fully reversible**: turning it off removes the NAP server,
 the agent, dnsmasq, and the bridge, leaving networking exactly as before. The

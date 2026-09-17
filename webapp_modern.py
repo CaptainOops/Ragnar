@@ -462,22 +462,53 @@ def bt_pan_status():
 def bt_pan_toggle():
     payload = request.get_json(silent=True) or {}
     enable = bool(payload.get('enabled', not shared_data.config.get('bt_pan_enabled', False)))
-    shared_data.config['bt_pan_enabled'] = enable
-    shared_data.save_config()
     if enable:
+        import bt_pan
+        # Dependencies missing? Kick off the install in the background and tell
+        # the UI to show progress; it re-issues enable once they are present.
+        # Don't persist bt_pan_enabled yet — a lean box would then try (and fail)
+        # to start the NAP on every boot until the packages actually land.
+        if bt_pan.missing_tools():
+            inst = bt_pan.install_deps()
+            resp = {'enabled': False, 'running': False, 'installing': True}
+            resp.update(inst)
+            return jsonify(resp), 200
+        shared_data.config['bt_pan_enabled'] = True
+        shared_data.save_config()
         ok = _start_bt_pan()
         try:
-            import bt_pan
             st = bt_pan.status()
         except Exception:
             st = {}
         st['enabled'] = True
         if not ok and not st.get('error'):
-            st['error'] = ('NAP did not come up — check that bluez-tools (bt-network, '
-                           'bt-agent) is installed and a Bluetooth controller is present.')
+            st['error'] = ('NAP did not come up — is a Bluetooth controller present '
+                           'and unblocked?')
         return jsonify(st), 200
+    shared_data.config['bt_pan_enabled'] = False
+    shared_data.save_config()
     _stop_bt_pan()
     return jsonify({'enabled': False, 'running': False})
+
+
+@app.route('/api/bt/pan/install', methods=['POST'])
+def bt_pan_install():
+    """Install the NAP's missing apt dependencies in the background."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.install_deps())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'running': False, 'done': True, 'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bt/pan/install-log', methods=['GET'])
+def bt_pan_install_log():
+    """Progress + streamed log for the dependency install (polled by the UI)."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.install_status())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'running': False, 'done': True, 'ok': False, 'error': str(e)}), 500
 
 # ============================================================================
 # AUTHENTICATION MIDDLEWARE
