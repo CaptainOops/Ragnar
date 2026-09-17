@@ -14,8 +14,8 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~144 CVEs actively detected.** 146 distinct CVE IDs are named across the detector code;
-  144 are actively detected.
+- **~145 CVEs actively detected.** 147 distinct CVE IDs are named across the detector code;
+  145 are actively detected.
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
 - Weighted to the current threat wave: **29 CVEs from 2023, 37 from 2024, 22 from 2025, and
   7 already from 2026.**

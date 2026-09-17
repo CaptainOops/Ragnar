@@ -7881,6 +7881,111 @@ def _decode_icmp6_redirect_frames(frames):
     return events
 
 
+_ICMP6_RA = 134            # Router Advertisement
+_ND_OPT_RDNSS = 25         # RFC 8106 Recursive DNS Server option
+
+
+def _decode_icmp6_ra_findings(frames):
+    """Parse raw ICMPv6 Router Advertisements (type 134) out of Ethernet frames for
+    CVE-2020-16898 'Bad Neighbor' and malformed ND-option lengths. The RDNSS option
+    (type 25) carries N addresses, so RFC 8106 fixes its length field at 1+2N 8-byte
+    units — always ODD; an EVEN value is the Windows TCP/IP stack buffer-overflow trigger.
+    Pure bytes in, findings out — no scapy, unit-testable. Findings are shaped like the
+    redirect layer's (check/severity/src/message/details) so _emit_icmp_jsonl feeds them
+    to Watchtower unchanged."""
+    out = []
+    for _ts, frame in frames:
+        try:
+            if len(frame) < 14:
+                continue
+            src_mac = ':'.join('%02x' % b for b in frame[6:12])
+            off = 12
+            etype = (frame[off] << 8) | frame[off + 1]
+            off += 2
+            while etype in (0x8100, 0x88a8) and len(frame) >= off + 4:
+                etype = (frame[off + 2] << 8) | frame[off + 3]
+                off += 4
+            if etype != 0x86dd or len(frame) < off + 40:
+                continue
+            ip6 = frame[off:]
+            plen = (ip6[4] << 8) | ip6[5]
+            nxt = ip6[6]
+            src = _v6(ip6[8:24])
+            p = 40
+            hops = 0
+            while nxt in (0, 43, 60) and len(ip6) >= p + 2 and hops < 8:
+                nxt = ip6[p]
+                p += (ip6[p + 1] + 1) * 8
+                hops += 1
+            if nxt != 58 or len(ip6) < p + 16:      # 58 = ICMPv6; RA header is 16 bytes
+                continue
+            icmp = ip6[p:]
+            if icmp[0] != _ICMP6_RA:
+                continue
+            # Bound the option walk by the IPv6 payload length so trailing Ethernet
+            # padding is never misparsed as an option (a false-positive source).
+            end = min(len(icmp), max(16, plen - (p - 40)))
+            o = 16                                    # options follow the 16-byte RA header
+            while o + 2 <= end:
+                otype = icmp[o]
+                ounits = icmp[o + 1]
+                if ounits == 0:
+                    out.append({'check': 'nd_option_length_zero', 'severity': 'HIGH',
+                                'src': src, 'src_mac': src_mac,
+                                'message': ('Router Advertisement from %s carries an ND '
+                                            'option with a zero length field — a parser that '
+                                            'trusts it never advances and can loop' % src),
+                                'details': {'option_type': otype}})
+                    break
+                olen = ounits * 8
+                if o + olen > end:
+                    out.append({'check': 'nd_option_length_invalid', 'severity': 'HIGH',
+                                'src': src, 'src_mac': src_mac,
+                                'message': ('Router Advertisement from %s: an ND option '
+                                            'declares %d bytes but the message holds fewer — '
+                                            'malformed, stack-overflow shaped' % (src, olen)),
+                                'details': {'option_type': otype, 'declared_len': olen}})
+                    break
+                if otype == _ND_OPT_RDNSS and (ounits % 2) == 0:
+                    out.append({'check': 'nd_ra_rdnss_malformed', 'severity': 'CRITICAL',
+                                'src': src, 'src_mac': src_mac, 'cve': 'CVE-2020-16898',
+                                'message': ('CVE-2020-16898 "Bad Neighbor": Router '
+                                            'Advertisement from %s carries an RDNSS option '
+                                            'with an EVEN length (%d 8-byte units) — RFC 8106 '
+                                            'fixes it at an odd 1+2N, so this is the Windows '
+                                            'TCP/IP stack buffer-overflow trigger'
+                                            % (src, ounits)),
+                                'details': {'rdnss_length_units': ounits}})
+                o += olen
+        except Exception:
+            continue
+    return out
+
+
+def _icmp6_ra_capture(interface, seconds):
+    """Capture one ICMPv6 Router-Advertisement (type 134) window to a temp pcap and return
+    CVE-2020-16898 / malformed-ND-option findings. Best-effort: [] on any failure."""
+    if not _have('tcpdump'):
+        return []
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(suffix='.pcap')
+    os.close(fd)
+    try:
+        _run(['timeout', str(seconds), 'tcpdump', '-i', interface, '-nn', '-p',
+              '-s', '1600', '-c', '20000', '-w', path,
+              'icmp6 and ip6[40] == 134'], timeout=seconds + 8)
+        try:
+            from bfdwatch import read_pcap as _read_pcap
+            return _decode_icmp6_ra_findings(_read_pcap(path))
+        except Exception:
+            return []
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _icmp6_redirect_capture(interface, seconds):
     """Capture one ICMPv6-Redirect window to a temp pcap and return the decoded
     family=6 redirect events. Best-effort: returns [] on any capture/parse failure
@@ -8333,8 +8438,11 @@ def do_icmp_watch(interface=None, seconds=12, learn=True, quick=False):
     vendored v3 engine is present, IPv4 redirects get the RFC 1122 acceptance checks,
     gateway-MAC-spoof detection and ARP-poison correlation, and IPv6 redirects get
     the RFC 4861 §8.1 MUSTs (Hop Limit 255, link-local source, valid Target/code)
-    plus Target-LLA poisoning detection. HIGH/CRITICAL findings on either stack are
-    streamed to Watchtower."""
+    plus Target-LLA poisoning detection. It also captures Router Advertisements
+    (type 134) and flags **CVE-2020-16898 "Bad Neighbor"** — an RDNSS option with an
+    even length field (RFC 8106 fixes it at an odd 1+2N; even is the Windows TCP/IP
+    overflow trigger) — and malformed ND option lengths. HIGH/CRITICAL findings on
+    either stack are streamed to Watchtower."""
     iface = interface if _valid_iface(interface or '') else _capture_iface()
     if not iface:
         return {'success': False, 'error': 'no interface to capture on'}
@@ -8353,6 +8461,18 @@ def do_icmp_watch(interface=None, seconds=12, learn=True, quick=False):
             v6_box['events'] = []
     v6_thread = threading.Thread(target=_grab_v6, daemon=True)
     v6_thread.start()
+
+    # CVE-2020-16898 "Bad Neighbor" + malformed ND options: capture Router
+    # Advertisements (type 134) in a second thread — same one-window cost.
+    ra_box = {'findings': []}
+
+    def _grab_ra():
+        try:
+            ra_box['findings'] = _icmp6_ra_capture(iface, seconds)
+        except Exception:
+            ra_box['findings'] = []
+    ra_thread = threading.Thread(target=_grab_ra, daemon=True)
+    ra_thread.start()
 
     text, err = _icmp_capture(iface, seconds)
     if err:
@@ -8392,6 +8512,21 @@ def do_icmp_watch(interface=None, seconds=12, learn=True, quick=False):
                         'reasons': result['reasons'][:6]})
             b['events'] = evs[-_ICMP_EVENTS_CAP:]
             _icmp_watch_save(b)
+
+    # Merge Router-Advertisement findings (CVE-2020-16898 Bad Neighbor, malformed ND
+    # options) into the redirect-findings list so they escalate the verdict and stream to
+    # Watchtower through the same path.
+    ra_thread.join(timeout=seconds + 10)
+    ra_findings = ra_box['findings'] or []
+    if ra_findings:
+        result.setdefault('redirect_findings', []).extend(ra_findings)
+        result['ra_findings'] = ra_findings
+        crit = [f for f in ra_findings if f['severity'] in ('CRITICAL', 'HIGH')]
+        if crit:
+            result['reasons'] = (result.get('reasons') or []) + \
+                [f['message'] for f in crit[:4]]
+            if result.get('verdict') == 'clean':
+                result['verdict'] = 'ra-attack'
 
     result['interface'] = iface
     result['seconds'] = seconds
@@ -8621,6 +8756,48 @@ def _icmp_selftest():
             and dec[0]['target_lla'] == '02:aa:bb:cc:dd:ee')
     scenarios.append({'name': 'v6-decode', 'expect': 'target+dest+hop+tlla',
                       'got': str(dec[0] if dec else None)[:110], 'pass': d_ok})
+
+    # 20. CVE-2020-16898 "Bad Neighbor": build an Ethernet/IPv6/ICMPv6 Router
+    #     Advertisement carrying one ND option and confirm the RDNSS even-length trigger.
+    def _v6_ra_frame(opt_type, units, src='fe80::1',
+                     src_mac='02:00:00:00:00:01', dst_mac='33:33:00:00:00:01'):
+        def _mac(s):
+            return bytes(int(x, 16) for x in s.split(':'))
+        icmp = bytearray()
+        icmp += bytes([_ICMP6_RA, 0, 0, 0])                   # type, code, cksum
+        icmp += bytes([64, 0]) + (1800).to_bytes(2, 'big')    # cur-hop, flags, lifetime
+        icmp += bytes(8)                                      # reachable + retrans timers
+        icmp += bytes([opt_type, units])                     # ND option: type, length-units
+        if units:
+            icmp += bytes(units * 8 - 2)                      # option filler to length
+        ip6 = bytearray()
+        ip6 += bytes([0x60, 0, 0, 0])
+        ip6 += len(icmp).to_bytes(2, 'big')
+        ip6 += bytes([58, 255])
+        ip6 += ipaddress.IPv6Address(src).packed
+        ip6 += ipaddress.IPv6Address('ff02::1').packed
+        ip6 += icmp
+        return _mac(dst_mac) + _mac(src_mac) + bytes([0x86, 0xdd]) + bytes(ip6)
+
+    even = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(_ND_OPT_RDNSS, 2))])
+    scenarios.append({'name': 'bad-neighbor-rdnss-even',
+                      'expect': 'nd_ra_rdnss_malformed/CVE-2020-16898',
+                      'got': str([f['check'] for f in even]),
+                      'pass': any(f['check'] == 'nd_ra_rdnss_malformed'
+                                  and f.get('cve') == 'CVE-2020-16898' for f in even)})
+    odd = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(_ND_OPT_RDNSS, 3))])
+    scenarios.append({'name': 'rdnss-odd-clean', 'expect': 'no bad-neighbor',
+                      'got': str([f['check'] for f in odd]),
+                      'pass': not any(f['check'] == 'nd_ra_rdnss_malformed' for f in odd)})
+    zero = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(1, 0))])
+    scenarios.append({'name': 'nd-option-length-zero',
+                      'expect': 'nd_option_length_zero',
+                      'got': str([f['check'] for f in zero]),
+                      'pass': any(f['check'] == 'nd_option_length_zero' for f in zero)})
+    clean_ra = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(1, 1))])
+    scenarios.append({'name': 'clean-ra-silent', 'expect': 'no findings',
+                      'got': str([f['check'] for f in clean_ra]),
+                      'pass': clean_ra == []})
 
     # Optional Scapy end-to-end: craft a real Redirect -> pcap -> tcpdump -> parse.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}

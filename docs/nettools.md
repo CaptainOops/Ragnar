@@ -1534,6 +1534,14 @@ when [Scapy](https://scapy.net) is installed — crafts a real ICMP Redirect int
 pcap and parses it back through `tcpdump`, exercising the capture→parse path end to
 end.
 
+**CVE-2020-16898 "Bad Neighbor" (v4).** Alongside redirects it captures **Router
+Advertisements** (type 134) and reads the raw ND options: an **RDNSS** option (type 25) whose
+length field is **even** is flagged CRITICAL — RFC 8106 fixes that length at an odd `1+2N`, so
+an even value is the Windows TCP/IP stack buffer-overflow trigger (CVSS 8.8, `nd_ra_rdnss_malformed`).
+It also flags a **zero-length** ND option (`nd_option_length_zero`, a parser-loop trap) and an
+option that **overruns** the message (`nd_option_length_invalid`). These fold into the same
+verdict and [Watchtower](watchtower.md) path as the redirect findings.
+
 - Endpoint: `GET /api/net/icmp-watch` `{interface, seconds}`,
   `POST /api/net/icmp-baseline` `{action: reset}` · binary: `tcpdump`
 
