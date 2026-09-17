@@ -104,6 +104,8 @@ class BtPanServer:
         self._procs: dict[str, subprocess.Popen] = {}
         self._error: str | None = None
         self._started_at: float | None = None
+        self._trust_thread: threading.Thread | None = None
+        self._trust_stop = threading.Event()
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> dict:
@@ -120,6 +122,7 @@ class BtPanServer:
                 self._start_agent()
                 self._start_nap()
                 self._configure_adapters(True)
+                self._start_trust_loop()
                 self._error = None
                 self._started_at = time.time()
                 logger.info("[btpan] NAP up on %s (%s)", BRIDGE, GATEWAY)
@@ -251,7 +254,52 @@ class BtPanServer:
         if on and not found:
             logger.warning("[btpan] bluetoothd exposes no adapters — is a controller present?")
 
+    def _start_trust_loop(self) -> None:
+        """Keep paired devices marked Trusted while the NAP is up.
+
+        On a box whose Bluetooth stack is also running audio (pipewire /
+        wireplumber register their own agent), an incoming PAN connection is sent
+        to *that* agent for authorization and gets cancelled — the phone pairs
+        but the tether never forms. A Trusted device is auto-authorized by
+        bluetoothd with no agent prompt, so trusting paired devices (a phone can
+        pair at any time, so poll rather than trust once) is what lets the PAN
+        actually connect.
+        """
+        if self._trust_thread and self._trust_thread.is_alive():
+            return
+        self._trust_stop.clear()
+        self._trust_thread = threading.Thread(target=self._trust_loop, daemon=True,
+                                              name="btpan-trust")
+        self._trust_thread.start()
+
+    def _trust_loop(self) -> None:
+        self._trust_paired()  # immediately, then on a slow poll
+        while not self._trust_stop.wait(8.0):
+            self._trust_paired()
+
+    def _trust_paired(self) -> None:
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                                "org.freedesktop.DBus.ObjectManager")
+            objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+        except Exception:  # noqa: BLE001
+            return
+        for path, ifaces in objs.items():
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev or not dev.get("Paired") or dev.get("Trusted"):
+                continue
+            try:
+                props = dbus.Interface(bus.get_object("org.bluez", path),
+                                       "org.freedesktop.DBus.Properties")
+                props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True), timeout=_DBUS_TIMEOUT)
+                logger.info("[btpan] trusted paired device %s", path)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _teardown_locked(self) -> None:
+        self._trust_stop.set()
         self._configure_adapters(False)
         for name in ("nap", "agent"):
             proc = self._procs.pop(name, None)
