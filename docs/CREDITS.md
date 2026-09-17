@@ -14,14 +14,19 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~132 CVEs actively detected.** 134 distinct CVE IDs are named across the detector code;
-  132 are actively detected.
-- **23 years of coverage** — from **CVE-2003-0001** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **27 CVEs from 2023, 35 from 2024, 22 from 2025, and
+- **~138 CVEs actively detected.** 140 distinct CVE IDs are named across the detector code;
+  138 are actively detected.
+- **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
+- Weighted to the current threat wave: **27 CVEs from 2023, 36 from 2024, 22 from 2025, and
   7 already from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
-  watchers (BFD, PTP, SR-MPLS), **six in-app vendor CVE guards** (Cisco, Juniper, Arista,
-  Comware, MikroTik, Aruba) and **Dell Guard** as a standalone daemon.
+  watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
+  in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba) and **Dell
+  Guard** as a standalone daemon.
+- **Cross-protocol crypto-attack coverage** — the same cryptographic weaknesses are named
+  everywhere they appear: **SWEET32** (CVE-2016-2183) in TLS, SSH and IKE; **D(HE)at**
+  (CVE-2002-20001 / CVE-2022-40735 / CVE-2024-41996) across TLS, SSH and IPsec; and
+  **Logjam / weak-DH** (CVE-2015-4000) in IKE.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
@@ -46,7 +51,7 @@ _(Counts reflect the detector code as of September 2026 and grow as new modules 
 - **Privacy by design.** Credential material is never logged — for example, RADIUS
   Proxy-State is compared by digest and the values are discarded.
 
-Every classifier is validated offline by the 41-suite **Detector Self-Test**, which runs each
+Every classifier is validated offline by the 42-suite **Detector Self-Test**, which runs each
 detector against crafted attack captures with no root and no live traffic.
 
 Thank you, Solarflere. 🙏
