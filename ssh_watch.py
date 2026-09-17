@@ -111,6 +111,31 @@ CVE_CATALOG = {
         "refs": ("https://sweet32.info/",
                  "https://nvd.nist.gov/vuln/detail/CVE-2016-2183"),
     },
+    "CVE-2002-20001": {
+        "title": "D(HE)at: DoS on the finite-field Diffie-Hellman key exchange",
+        "cvss": 7.5,
+        "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+        "cvss_source": "NVD",
+        "score_confidence": "agreed",
+        "affected": "Any SSH server offering a finite-field diffie-hellman-group* or "
+                    "group-exchange key exchange. A PROTOCOL FLAW, not a library bug: the "
+                    "server cannot tell a random number from a real public key without "
+                    "first doing the expensive modular exponentiation. Mitigation is to "
+                    "prefer curve key exchange or cap the group size.",
+        "detect": "exposure",
+        "detect_note": (
+            "The standalone sshwatch daemon detects D(HE)at as a per-source VOLUME flood "
+            "(abandoned finite-field DH exchanges), because a single one means nothing and "
+            "group14 (2048-bit) is OpenSSH's ubiquitous default. The in-app watcher instead "
+            "flags only a LARGE negotiated group (>=4096-bit: group16/17/18) as a low-"
+            "severity per-session exposure: those are uncommon, Logjam-safe, but force an "
+            "expensive modexp per handshake, which is exactly the work D(HE)at abuses."),
+        "related": ("CVE-2022-40735 (long exponents)",
+                    "CVE-2024-41996 (unnecessary peer-key validation)"),
+        "cwe": "CWE-400",
+        "refs": ("https://dheatattack.com/",
+                 "https://nvd.nist.gov/vuln/detail/CVE-2002-20001"),
+    },
     "CVE-2024-6387": {
         "title": "regreSSHion: signal-handler race in OpenSSH sshd leading to "
                  "unauthenticated RCE as root",
@@ -578,6 +603,26 @@ def _finding(sev, code, msg, **extra):
     return d
 
 
+# CVE-2002-20001 — D(HE)at. SSH finite-field Diffie-Hellman key exchanges → modulus bits.
+# A large group is Logjam-safe but forces an expensive server modexp per handshake, which
+# is the D(HE)at exposure. group-exchange negotiates its modulus at runtime (not readable
+# from KEXINIT), so it is not sized here.
+FFDH_KEX = {
+    "diffie-hellman-group1-sha1": 1024,
+    "diffie-hellman-group14-sha1": 2048,
+    "diffie-hellman-group14-sha256": 2048,
+    "diffie-hellman-group15-sha512": 3072,
+    "diffie-hellman-group16-sha512": 4096,
+    "diffie-hellman-group17-sha512": 6144,
+    "diffie-hellman-group18-sha512": 8192,
+    "gss-group1-sha1-": 1024,
+    "gss-group14-sha1-": 2048,
+    "gss-group14-sha256-": 2048,
+    "gss-group16-sha512-": 4096,
+}
+DHEAT_LARGE_GROUP_BITS = 4096
+
+
 def evaluate_findings(sess, cfg=None):
     """Score one observed SSH session. `sess` carries whatever has been seen so far;
     every check tolerates the pieces it needs being absent."""
@@ -723,6 +768,30 @@ def evaluate_findings(sess, cfg=None):
                             "session is actually exposed depends on rekeying, which a "
                             "passive observer cannot see")
                 findings.append(_finding(sev, code, msg, **extra))
+
+        # ---- CVE-2002-20001 D(HE)at exposure: a LARGE finite-field DH group ----
+        # Only large groups (>=4096-bit: group16/17/18) are flagged, at low severity:
+        # group14 (2048) is OpenSSH's ubiquitous default, so per-session flagging would be
+        # noise (the standalone daemon instead detects D(HE)at as a per-source VOLUME
+        # flood). A large FFDH group is Logjam-safe but forces an expensive modexp per
+        # handshake — the work D(HE)at abuses.
+        neg_kex = negotiate(ckex["kex_algorithms"], skex["kex_algorithms"])
+        dh_bits = FFDH_KEX.get(neg_kex)
+        if dh_bits and dh_bits >= DHEAT_LARGE_GROUP_BITS:
+            meta = CVE_CATALOG["CVE-2002-20001"]
+            findings.append(_finding(
+                "notice", "cve_2002_20001_dhe_large_group",
+                "Negotiated %s: a %d-bit finite-field DH group. It is Logjam-safe, but the "
+                "server performs an expensive modular exponentiation on every handshake — "
+                "the work D(HE)at (CVE-2002-20001) forces cheaply. Prefer a curve key "
+                "exchange (curve25519 / ecdh) or accept the cost knowingly."
+                % (neg_kex, dh_bits),
+                cve="CVE-2002-20001", cvss=meta["cvss"], cvss_source=meta["cvss_source"],
+                detect_class="exposure", confidence="high",
+                confidence_reason="the negotiated key exchange follows deterministically "
+                                  "from both cleartext KEXINIT messages",
+                related_cve=["CVE-2022-40735", "CVE-2024-41996"],
+                algorithm=neg_kex, group_bits=dh_bits))
 
     # ---- duplicate host key across addresses (CVE-2025-38741 family) ----
     dup = sess.get("duplicate_host_key")
@@ -1974,6 +2043,26 @@ def _run_selftest_checks(t):
             t.ok("cve" not in f, "other_64bit_no_cve_%s" % enc)
     f = evaluate_findings(kx_pair(True, True, "aes128-ctr", "hmac-sha2-256"))
     t.ok("ssh_weak_cipher" not in codes(f), "modern_cipher_no_weak_finding")
+
+    # ---- CVE-2002-20001 D(HE)at: large finite-field DH group exposure ----
+    def kex_dheat_finding(kexname):
+        c = parse_kexinit(parse_packets(build_kexinit(
+            kex=(kexname,), hostkey=("ssh-ed25519",),
+            enc=("aes128-ctr",), mac=("hmac-sha2-256",)))[0][0])
+        fs = evaluate_findings({"client_kexinit": c, "server_kexinit": c})
+        return next((x for x in fs if x["code"] == "cve_2002_20001_dhe_large_group"), None)
+    for kx in ("diffie-hellman-group16-sha512", "diffie-hellman-group18-sha512"):
+        f = kex_dheat_finding(kx)
+        t.ok(f is not None, "dheat_large_dh_flagged_%s" % kx)
+        if f:
+            t.eq(f["cve"], "CVE-2002-20001", "dheat_cve_%s" % kx)
+            t.eq(f["detect_class"], "exposure", "dheat_exposure_%s" % kx)
+            t.eq(f["group_bits"], FFDH_KEX[kx], "dheat_bits_%s" % kx)
+    # group14 (2048, the common default) must NOT be flagged — that would be noise.
+    t.ok(kex_dheat_finding("diffie-hellman-group14-sha256") is None,
+         "dheat_group14_not_flagged")
+    # curve key exchange must NOT be flagged.
+    t.ok(kex_dheat_finding("curve25519-sha256") is None, "dheat_curve_not_flagged")
     f = evaluate_findings(kx_pair(True, True, "aes128-ctr", "hmac-md5"))
     t.ok("ssh_weak_mac" in codes(f), "weak_mac_md5")
     c = parse_kexinit(parse_packets(build_kexinit(

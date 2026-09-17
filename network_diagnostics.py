@@ -21232,6 +21232,157 @@ def _dell_selftest():
              'expect': 'pass', 'got': 'error'}]}
 
 
+# ==========================================================================
+# IPsec / IKE Watch — passive IKEv1/IKEv2 key-exchange posture detector
+# ==========================================================================
+# Adapts the vendored ipsecwatch package (python/ipsecwatch/): a passive IKE posture
+# detector on UDP/500 and UDP/4500. Nine findings — SWEET32 (64-bit IKE ciphers, the same
+# attack the TLS/SSH watchers name), D(HE)at / weak DH groups (CVE-2022-40735 /
+# CVE-2015-4000), IKEv1 Aggressive Mode, weak PSK-hash / PRF, a DES/3DES legacy-cipher
+# flag, and a stateful DH-downgrade correlator. Dual-stack by construction: the address
+# family is a report label, never a branch. Protocol structure only — no ESP payload, no
+# active probing.
+_IPSEC_PKG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'python', 'ipsecwatch')
+
+
+def _ipsec_import():
+    """Lazily import the vendored ipsecwatch modules (their dir must be on sys.path so
+    their bare cross-imports resolve). Returns (ipsecwatch, ike_detectors, ike_parser)."""
+    if _IPSEC_PKG_DIR not in sys.path:
+        sys.path.insert(0, _IPSEC_PKG_DIR)
+    import ipsecwatch as _iw
+    import ike_detectors as _det
+    import ike_parser as _par
+    return _iw, _det, _par
+
+
+def _ipsec_verdict(findings):
+    """clean < observed < exposure < attack. A high-severity weak proposal is an EXPOSURE
+    (a weak option is offered on the wire); an actual DH downgrade or an extracted PSK hash
+    is an ATTACK (something bad is happening, not merely offered)."""
+    if not findings:
+        return 'clean'
+    codes = {f.get('code') for f in findings}
+    if codes & {'DHEATER-DOWNGRADE-DETECTED', 'IKEV1-AGGRESSIVE-MODE-PSK-HASH-EXTRACTED'}:
+        return 'attack'
+    sevs = {f.get('severity') for f in findings}
+    if 'high' in sevs or 'medium' in sevs:
+        return 'exposure'
+    return 'observed'
+
+
+def do_ipsec_watch(interface=None, seconds=20, learn=True, quick=False):
+    """Passive IKEv1/IKEv2 (IPsec key-exchange) security-posture watcher on UDP 500/4500
+    (detection-only, never transmits). Reports weak DH groups (D(HE)at / Logjam), 64-bit
+    IKE ciphers (SWEET32), IKEv1 Aggressive Mode, weak PSK-hash / PRF and DH downgrades.
+    Dual-stack (IPv4 + IPv6)."""
+    iface, iface_error = _lan_guard_iface(interface, 'IPsec Watch')
+    if iface_error:
+        return iface_error
+    seconds = _clamp_int(seconds, 20, 5, 40)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    import tempfile
+    fd, pcap = tempfile.mkstemp(suffix='.pcap')
+    os.close(fd)
+    res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-p',
+                '-s', '2048', '-c', '20000', '-w', pcap,
+                'udp port 500 or udp port 4500'], timeout=seconds + 8)
+    if (os.path.getsize(pcap) <= 24 and res['err'] and any(
+            k in res['err'].lower() for k in ('permission', "couldn't",
+                                              'no such device', 'syntax error'))):
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+        return {'success': False, 'interface': iface, 'error': res['err'].strip()[:200]}
+    stats = {}
+    try:
+        _iw, det, _par = _ipsec_import()
+        watch = det.IPSecWatch()
+        findings = []
+        runner = _iw.IPSecWatchRunner(watch, emit=lambda j: findings.append(json.loads(j)))
+        _iw._read_pcap_raw(pcap, runner)
+        stats = runner.stats
+    except Exception as e:
+        return {'success': False, 'interface': iface,
+                'error': 'ipsec analysis failed: %s: %s' % (type(e).__name__, e)}
+    finally:
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+    result = {'success': True, 'module': 'ipsec_watch', 'interface': iface,
+              'seconds': seconds, 'verdict': _ipsec_verdict(findings),
+              'finding_count': len(findings), 'findings': findings,
+              'ike_msgs': stats.get('ike_msgs', 0),
+              'packet_count': stats.get('packets', 0)}
+    if not quick:
+        _guard_emit_jsonl('ipsec_watch', result)
+    return result
+
+
+def _ipsec_selftest():
+    """Self-test the vendored IPsec/IKE detectors against crafted IKEv1 messages — no
+    capture, no root. Proves SWEET32 / D(HE)at-weak-DH / weak-DH / Aggressive-Mode /
+    weak-PSK-hash detection, dual-stack parity, and a strong-proposal clean case."""
+    try:
+        _iw, det, par = _ipsec_import()
+        import ike_forge as F
+    except Exception as e:
+        return {'success': False, 'scenarios': [
+            {'name': 'ipsecwatch import failed: %s' % e, 'pass': False,
+             'expect': 'import', 'got': 'error'}]}
+    scenarios = []
+    ISPI = bytes.fromhex('1111111111111111')
+    RSPI = bytes.fromhex('0000000000000000')
+
+    def v1_codes(enc, hsh, auth, dh, exch=2, family='IPv4'):
+        # attr types: 1=encryption 2=hash 3=auth-method 4=DH-group (RFC 2409).
+        a = (F.v1_attr_tv(1, enc) + F.v1_attr_tv(2, hsh)
+             + F.v1_attr_tv(3, auth) + F.v1_attr_tv(4, dh))
+        tf = F.v1_transform(1, 1, a, True)
+        sa = F.v1_sa_payload([F.v1_proposal(1, 1, [tf], True)], 0)
+        pkt = F.build_ikev1(ISPI, RSPI, exch, 1, sa)
+        msg = par.parse_ike(pkt, src='10.0.0.9', dst='10.0.0.1',
+                            sport=500, dport=500, family=family)
+        return {json.loads(f.to_json())['code'] for f in det.IPSecWatch().analyze(msg)} \
+            if msg else set()
+
+    def check(name, codes, want, present=True):
+        ok = (want in codes) if present else (want not in codes)
+        scenarios.append({'name': name, 'pass': ok,
+                          'expect': ('has ' if present else 'no ') + want,
+                          'got': sorted(codes)})
+
+    # 3DES (enc=5) + strong DH(14) + SHA2(4) -> SWEET32 + LEGACY, isolated.
+    c = v1_codes(5, 4, 1, 14)
+    check('ipsec-sweet32-3des', c, 'SWEET32-VULNERABLE-CIPHER-PROPOSAL')
+    check('ipsec-legacy-3des', c, 'LEGACY-CIPHER-PROPOSAL')
+    # AES(7) + MODP-1024(2) -> D(HE)at weak-DH + weak-DH.
+    c = v1_codes(7, 4, 1, 2)
+    check('ipsec-dheater-weak-dh', c, 'DHEATER-WEAK-DH-GROUP-OFFERED')
+    check('ipsec-weak-dh-group', c, 'WEAK-DH-GROUP-OFFERED')
+    # MD5(1) hash + PSK(1) auth -> weak-hash-psk.
+    check('ipsec-weak-hash-psk', v1_codes(7, 1, 1, 14), 'WEAK-HASH-PSK-AUTHENTICATION')
+    # IKEv1 Aggressive Mode (exchange type 4).
+    check('ipsec-aggressive-mode', v1_codes(7, 4, 1, 14, exch=4),
+          'IKEV1-AGGRESSIVE-MODE-DETECTED')
+    # Dual-stack: the same weak proposal over IPv6 fires identically (family is a label).
+    check('ipsec-dualstack-ipv6', v1_codes(5, 4, 1, 2, family='IPv6'),
+          'SWEET32-VULNERABLE-CIPHER-PROPOSAL')
+    # Strong proposal (AES + MODP-2048 + SHA2 + Main Mode) -> no weak findings.
+    strong = v1_codes(7, 4, 1, 14)
+    check('ipsec-strong-no-sweet32', strong, 'SWEET32-VULNERABLE-CIPHER-PROPOSAL',
+          present=False)
+    check('ipsec-strong-no-weak-dh', strong, 'WEAK-DH-GROUP-OFFERED', present=False)
+
+    return {'success': all(s['pass'] for s in scenarios), 'scenarios': scenarios}
+
+
 def do_routing_selftest():
     """Run the IGMP / OSPF / BGP detector self-tests and report a combined result
     plus whether Scapy is available for the end-to-end packet-crafting leg. Drives
@@ -21249,7 +21400,7 @@ def do_routing_selftest():
               'ssh': _ssh_selftest(), 'telnet': _telnet_selftest(),
               'lacp': _lacp_selftest(), 'rpc': _rpc_selftest(),
               'bfd': _bfd_selftest(), 'ptp': _ptp_selftest(),
-              'srmpls': _srmpls_selftest(),
+              'srmpls': _srmpls_selftest(), 'ipsec': _ipsec_selftest(),
               'ospf': _ospf_selftest(), 'bgp': _bgp_selftest(),
               'arp': _arp_selftest(), 'dns': _dns_selftest(),
               'mac': _mac_selftest(), 'dhcp': _dhcp_selftest(),
@@ -23092,6 +23243,15 @@ def register_network_diagnostics(app, logger=None):
             role = 'unknown'
         _log(f"net/srmpls-watch iface={iface or 'default-route'} secs={secs} role={role}")
         return jsonify(do_sr_mpls_watch(interface=iface, seconds=secs, role=role))
+
+    @app.route('/api/net/ipsec-watch', methods=['GET'])
+    def net_ipsec_watch():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
+        _log(f"net/ipsec-watch iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_ipsec_watch(interface=iface, seconds=secs))
 
     @app.route('/api/net/isis-watch', methods=['GET'])
     def net_isis_watch():
@@ -25466,6 +25626,15 @@ def _cli(argv=None):
     rlst = sub.add_parser('relay-selftest', help='self-test the relay/coercion detectors (no root)')
     rlst.add_argument('--json', action='store_true', help='emit JSON')
 
+    iw_ = sub.add_parser('ipsec-watch',
+                         help='passive IKEv1/IKEv2 posture scan (D(HE)at / weak-DH / SWEET32)')
+    iw_.add_argument('--iface', '-i', default=None, help='interface (default: route)')
+    iw_.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-40)')
+    iw_.add_argument('--json', action='store_true', help='emit JSON')
+
+    iwst = sub.add_parser('ipsec-selftest', help='self-test the IPsec/IKE detectors (no root)')
+    iwst.add_argument('--json', action='store_true', help='emit JSON')
+
     sm = sub.add_parser('smb-watch',
                         help='passive SMBv1 + LLMNR/NBT-NS/mDNS poisoning + Kerberos downgrade scan')
     sm.add_argument('--iface', '-i', default=None, help='interface (default: route)')
@@ -26071,6 +26240,31 @@ def _cli(argv=None):
             else:
                 print(f"  [skip] scapy: {sc.get('reason')}")
             print(f"Relay self-test: {'OK' if r['success'] else 'FAILED'}")
+        return 0 if r['success'] else 1
+
+    if args.cmd == 'ipsec-watch':
+        r = do_ipsec_watch(interface=args.iface, seconds=args.seconds)
+        if args.json:
+            print(json.dumps(r, indent=2))
+        elif not r.get('success'):
+            print(f"error: {r.get('error')}")
+        else:
+            print(f"IPsec/IKE Watch [{r['interface']}] {r['seconds']}s: {r['verdict'].upper()}  "
+                  f"({r.get('ike_msgs', 0)} IKE msgs, {r['finding_count']} findings)")
+            for f in r.get('findings', []):
+                print(f"  [{str(f.get('severity', '?')).upper()}] {f.get('code')}: "
+                      f"{f.get('detail', '')}")
+        return 0 if r.get('success') else 1
+
+    if args.cmd == 'ipsec-selftest':
+        r = _ipsec_selftest()
+        if args.json:
+            print(json.dumps(r, indent=2))
+        else:
+            for s in r['scenarios']:
+                print(f"  [{'PASS' if s['pass'] else 'FAIL'}] {s['name']}: expect={s['expect']}")
+            print(f"IPsec/IKE self-test: {'OK' if r['success'] else 'FAILED'} "
+                  f"({sum(1 for s in r['scenarios'] if s['pass'])}/{len(r['scenarios'])})")
         return 0 if r['success'] else 1
 
     if args.cmd == 'smb-watch':

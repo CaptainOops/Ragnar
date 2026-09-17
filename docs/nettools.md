@@ -73,6 +73,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 | [BFD Watch](#bfd-watch) | Switch & L2/L3 | `GET /api/net/bfd-watch` |
 | [PTP Watch](#ptp-watch) | Switch & L2/L3 | `GET /api/net/ptp-watch` |
 | [SR-MPLS Watch](#sr-mpls-watch) | Switch & L2/L3 | `GET /api/net/srmpls-watch` |
+| [IPsec / IKE Watch](#ipsec--ike-watch) | Switch & L2/L3 | `GET /api/net/ipsec-watch` |
 | [LDAP Watch](#ldap-watch) | Switch & L2/L3 | `GET /api/net/ldap-watch` |
 | [SSH Watch](#ssh-watch) | Switch & L2/L3 | `GET /api/net/ssh-watch` |
 | [Telnet Watch](#telnet-watch) | Switch & L2/L3 | `GET /api/net/telnet-watch` |
@@ -123,7 +124,7 @@ capture path.
 
 ### Detector Self-Test (Switch & L2/L3)
 A one-click **Run self-test** that validates the IGMP, **IPv6 first-hop**, **NDP**, **RA Guard**,
-**NTP**, **ICMP**, **SNMP**, **TLS-cert**, **STP**, **DTP**, **CDP**, **VTP**, **SMB**, **Relay/Coercion**, **SSH** (regreSSHion/Terrapin), **Telnet**, **RPC/NetLogon** (Zerologon/DCSync/WinRM), **LACP** (LAG hijack), **BFD** (failover manipulation), **PTP** (grandmaster takeover), **SR-MPLS** (label/segment injection), **EIGRP**, **IS-IS**, **FHRP**, OSPF and BGP detectors, the vendor CVE guards (**Cisco**, **Juniper**, **Arista**, **Comware**, **MikroTik**, **Aruba** and **Dell** — Dell Guard is a standalone daemon, so the panel runs its offline classifier self-test) — plus the **BGP speaker** (codec/framer/FSM/RIB) and
+**NTP**, **ICMP**, **SNMP**, **TLS-cert**, **STP**, **DTP**, **CDP**, **VTP**, **SMB**, **Relay/Coercion**, **SSH** (regreSSHion/Terrapin), **Telnet**, **RPC/NetLogon** (Zerologon/DCSync/WinRM), **LACP** (LAG hijack), **BFD** (failover manipulation), **PTP** (grandmaster takeover), **SR-MPLS** (label/segment injection), **IPsec/IKE** (D(HE)at / weak-DH / SWEET32 / Aggressive-Mode), **EIGRP**, **IS-IS**, **FHRP**, OSPF and BGP detectors — plus the cross-protocol **D(HE)at** (CVE-2002-20001) coverage that also names finite-field-DH exposure in TLS and SSH — the vendor CVE guards (**Cisco**, **Juniper**, **Arista**, **Comware**, **MikroTik**, **Aruba** and **Dell** — Dell Guard is a standalone daemon, so the panel runs its offline classifier self-test) — plus the **BGP speaker** (codec/framer/FSM/RIB) and
 **path-asymmetry / OWD** engine — by running each classifier against crafted attack
 captures (no root, no external network) and reports per-suite pass/fail. With Scapy
 installed it also runs the end-to-end packet-crafting leg for the capture-based
@@ -1258,6 +1259,15 @@ the BSD/MIT that covers the rest, so it lives in a separate, clearly identified
 file (`ja4s.py`) and is **off by default** — Ragnar never computes it unless the
 operator sets both `tls_watch.ENABLE_JA4S` and `tls_watch.ACKNOWLEDGE_JA4S_LICENSE`.
 
+**D(HE)at (CVE-2002-20001).** A finite-field DHE key exchange makes the server perform a
+modular exponentiation per handshake, and it cannot tell a real DH public key from a random
+number without first paying that cost — so a client can force the work cheaply. TLS Watch
+flags a negotiated DHE cipher suite or a TLS 1.3 **ffdhe** group as a
+`cve_2002_20001_dhe_offered` exposure (warn for a large group — OpenSSL 3.x and OpenJDK
+default to **ffdhe8192**), and a single source repeating DHE handshakes across the capture as
+a `cve_2002_20001_dheat_flood` attack, tiered by group size (larger groups need far fewer
+requests). ECDHE is never flagged (cheap, not this CVE). Related: CVE-2022-40735, CVE-2024-41996.
+
 There is also a small **CLI**:
 
 ```
@@ -1840,7 +1850,11 @@ chain and the replay path already walks it via Scapy. The parse+detect path is p
 self-tests without root (`ssh_watch.py --selftest`, 204 checks; fixtures are bytes captured
 from a real OpenSSH server). Hardening
 it drives: upgrade sshd to **9.8p1+**, enable **strict KEX** and drop CBC-EtM / ChaCha where
-Terrapin matters, and remove SSH-1 / weak KEX / host-key / cipher / MAC offers. **API:**
+Terrapin matters, and remove SSH-1 / weak KEX / host-key / cipher / MAC offers. It also flags
+a **large finite-field DH group** (group16/17/18, ≥4096-bit) as a `cve_2002_20001_dhe_large_group`
+**D(HE)at** exposure (**CVE-2002-20001**) — Logjam-safe but an expensive modexp per handshake;
+group14 (2048, the common default) is deliberately *not* flagged, and the per-source D(HE)at
+flood tier lives in the standalone `sshwatch` daemon. **API:**
 `GET /api/net/ssh-watch` (`seconds`, `grace_seconds`). **CLI:** `ssh-watch`, `ssh-selftest`.
 
 > **Watchtower feed.** Each non-`info` finding is appended as a JSON-lines record to
@@ -2231,6 +2245,40 @@ watcher uses (scapy is never imported). **API:** `GET /api/net/srmpls-watch` (qu
 > LDP/RSVP/BGP-SR/IS-IS-SR/OSPF-SR control-plane tells) are appended as JSON-lines to
 > `/var/log/ragnar/sr_mpls_watch.jsonl`, so they fold into the unified pane + single
 > Pushover path.
+
+### IPsec / IKE Watch
+A **passive** IKEv1/IKEv2 (IPsec key-exchange) **security-posture** detector on UDP **500**
+and **4500** — **detection-only**, it never transmits, never probes, and never touches ESP
+payload. It parses the plaintext IKE handshake and reports what peers are *willing to
+negotiate*. The findings:
+
+- **`SWEET32-VULNERABLE-CIPHER-PROPOSAL`** (high, **CVE-2016-2183**) — a 64-bit block cipher
+  (**3DES / Blowfish**) offered in an IKE proposal. The same SWEET32 the [TLS](#tls-watch)
+  and [SSH](#ssh-watch) watchers name, now on the IKE layer.
+- **`DHEATER-WEAK-DH-GROUP-OFFERED`** (high, **CVE-2022-40735**) — **MODP-768 / MODP-1024**
+  offered: DoS- and downgrade-prone (**D(HE)at**).
+- **`WEAK-DH-GROUP-OFFERED`** (high, **CVE-2015-4000** Logjam) — a DH group below current
+  guidance (MODP < 2048, ECP-192/224, 1024-bit subgroups).
+- **`IKEV1-AGGRESSIVE-MODE-DETECTED`** (medium, **CVE-2002-1623**) — IKEv1 **Aggressive Mode**:
+  identity and the PSK hash are exposed **pre-auth**. Read from the *Exchange Type* field
+  (offset 18, value 4) — NOT a flag bit; a wire-format correction the module documents.
+- **`WEAK-HASH-PSK-AUTHENTICATION` / `WEAK-PRF-IKEV2`** (medium, **CVE-2018-5389**) — MD5/SHA1
+  hash with PSK auth (v1), or a weak PRF (v2) — offline PSK cracking feasible.
+- **`LEGACY-CIPHER-PROPOSAL`** (medium) — DES / 3DES offered.
+- **`DHEATER-DOWNGRADE-DETECTED`** (high, stateful) — a strong DH offer answered with a **weak
+  group selected** by the responder on the same SPI pair: an actual downgrade in progress,
+  keyed on IKE SPIs so it survives NAT and correlates identically over v4/v6.
+- **`IKEV1-AGGRESSIVE-MODE-PSK-HASH-EXTRACTED`** — surfaces the plaintext Aggressive-Mode PSK
+  hash (already in the clear on the wire) in hex for offline analysis.
+- **`ML-KEM-DOWNGRADE-VULNERABLE`** (gated) — an IKE_SA_INIT offering an ML-KEM key exchange
+  with no downgrade-prevention Notify; inert until two IANA assignments are confirmed.
+
+**Dual-stack by construction:** IKE is transport-agnostic, so every proposal, algorithm and
+weakness is byte-identical over IPv4 and IPv6 — the address family is a report label, never a
+branch. The BPF is `udp port 500 or udp port 4500`; replay uses the in-app libpcap reader (no
+scapy). The engine is the vendored `python/ipsecwatch/` package, surfaced in-app.
+- Endpoint: `GET /api/net/ipsec-watch` `{interface, seconds}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py ipsec-watch [--iface I] [--seconds N] [--json]` · `ipsec-selftest`
 
 ### FHRP Watch
 A **passive** hijack scanner for the **First Hop Redundancy Protocols** — **HSRP**
