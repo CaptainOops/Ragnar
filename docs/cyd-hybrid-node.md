@@ -256,14 +256,6 @@ The CYD's screen is a native, Ragnar-themed **touch console** — not the web pa
 (no browser), and not framed as a mesh node. A HOME launcher of tiles drills into
 full screens, each with a back bar:
 
-> **Font.** All UI text renders in `RagnarCompact` — a compact **4x6 fixed-width**
-> GFX font (`ragnar_compact_font.h`, ~1 KB), downsampled from the library's classic
-> 5x7 glyphs, set globally via `gfx->setFont()`. It makes every screen ~25% smaller
-> than the built-in 6x8 font (the built-in only scales in whole steps, so a smaller
-> designed font is the only way to shrink text). Fixed-width so the `length*advance`
-> right-align/centre math still holds (advance 5, not 6); `xOffset=yOffset=0` keeps
-> the top-left origin so existing cursor coordinates are unchanged. Regenerate with
-> the script in docs/cyd-firmware.md.
 
 > **UI stays responsive during sensing.** The 2.4 GHz sniff dwell and the BLE
 > scan (run asynchronously) both service touch + the display cooperatively, so
