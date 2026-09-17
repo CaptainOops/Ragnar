@@ -3524,13 +3524,53 @@ def inventory_scan_now():
 _LIVECAM_TYPES = {'snapshot', 'mjpeg', 'embed'}
 
 
+def _resolve_youtube_channel(handle_or_channel_url):
+    """From a channel URL (@handle, /c/, /user/, /channel/UC…) return
+    (channel_id, current_live_video_id) — either may be None."""
+    import re
+    try:
+        import requests
+    except Exception:
+        return None, None
+    cid = None
+    m = re.search(r'/channel/(UC[A-Za-z0-9_-]{20,})', handle_or_channel_url)
+    if m:
+        cid = m.group(1)
+    live_vid = None
+    try:
+        r = requests.get(handle_or_channel_url.rstrip('/') + '/live', timeout=8,
+                         headers={'User-Agent': 'Mozilla/5.0'})
+        t = r.text
+        vm = (re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([A-Za-z0-9_-]{11})"', t)
+              or re.search(r'"videoDetails":\{"videoId":"([A-Za-z0-9_-]{11})"', t))
+        if vm:
+            live_vid = vm.group(1)
+        if not cid:
+            cm = re.search(r'"(?:channelId|externalId)":"(UC[A-Za-z0-9_-]{20,})"', t)
+            if cm:
+                cid = cm.group(1)
+    except Exception:
+        pass
+    return cid, live_vid
+
+
 def _livecam_embed_url(url):
-    """Normalize a YouTube watch/live/short URL into an embeddable player URL
-    for the 'embed' cam type; non-YouTube URLs are returned unchanged."""
+    """Normalize a YouTube link into an embeddable player URL for the 'embed'
+    cam type. A watch/live/short link -> that video. A channel link
+    (@handle, /channel/UC…, /c/…, /user/…) -> the channel's current live
+    stream (resolved now, with a live_stream fallback that auto-follows a
+    rotating stream id). Non-YouTube URLs are returned unchanged."""
     import re
     m = re.search(r'(?:youtube\.com/(?:watch\?v=|live/|embed/|v/)|youtu\.be/)([A-Za-z0-9_-]{6,})', url)
-    if m:
+    if m and 'live_stream' not in url and '/channel/' not in url:
         return 'https://www.youtube.com/embed/%s?autoplay=1&mute=1&playsinline=1' % m.group(1)
+    chan = re.search(r'youtube\.com/((?:channel/UC[A-Za-z0-9_-]{20,})|(?:@|c/|user/)[A-Za-z0-9_.\-]+)', url)
+    if chan:
+        cid, vid = _resolve_youtube_channel('https://www.youtube.com/' + chan.group(1))
+        if vid:
+            return 'https://www.youtube.com/embed/%s?autoplay=1&mute=1&playsinline=1' % vid
+        if cid:
+            return 'https://www.youtube.com/embed/live_stream?channel=%s&autoplay=1&mute=1' % cid
     return url
 
 
@@ -3608,6 +3648,51 @@ def livecams_snapshot(cam_id):
         return resp
     except Exception as exc:                                # noqa: BLE001
         logger.debug(f"[livecams] snapshot fetch failed for {cam_id}: {exc}")
+        return jsonify({'success': False, 'error': 'fetch failed'}), 502
+
+
+@app.route('/api/livecams/reorder', methods=['POST'])
+def livecams_reorder():
+    body = request.get_json(silent=True) or {}
+    order = body.get('order') or []
+    cams = _livecams_list()
+    by_id = {c.get('id'): c for c in cams}
+    new = [by_id[i] for i in order if i in by_id]
+    inset = set(order)
+    new += [c for c in cams if c.get('id') not in inset]
+    shared_data.config['livecams'] = new
+    try:
+        shared_data.save_config()
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] save_config failed: {exc}")
+    return jsonify({'success': True, 'cams': new})
+
+
+@app.route('/api/livecams/save-snapshot', methods=['POST'])
+def livecams_save_snapshot():
+    """Grab the current still from a Snapshot-type cam and file it into loot."""
+    body = request.get_json(silent=True) or {}
+    cam = next((c for c in _livecams_list() if c.get('id') == (body.get('id') or '').strip()), None)
+    if not cam:
+        return jsonify({'success': False, 'error': 'not found'}), 404
+    if cam.get('type') != 'snapshot':
+        return jsonify({'success': False, 'error': 'snapshot capture works for Snapshot-type cams only'}), 400
+    url = cam.get('url', '')
+    try:
+        import requests
+        r = requests.get(url, timeout=(5, 10), verify=False)
+        r.raise_for_status()
+        if not str(r.headers.get('Content-Type', '')).lower().startswith('image/'):
+            return jsonify({'success': False, 'error': 'feed did not return an image'}), 415
+        d = os.path.join(_camera_recon_loot_dir(), 'snapshots')
+        os.makedirs(d, exist_ok=True)
+        safe = ''.join(ch if (ch.isalnum() or ch in '-_') else '_' for ch in cam.get('label', 'cam'))[:40] or 'cam'
+        fn = os.path.join(d, '%s_%s.jpg' % (safe, datetime.now().strftime('%Y%m%d-%H%M%S')))
+        with open(fn, 'wb') as f:
+            f.write(r.content)
+        return jsonify({'success': True, 'path': fn})
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] save-snapshot failed: {exc}")
         return jsonify({'success': False, 'error': 'fetch failed'}), 502
 
 
