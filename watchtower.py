@@ -158,6 +158,11 @@ DEFAULT_SOURCES = {
     # disclosure / missing HMAC, and LDP/RSVP/BGP-SR/IS-IS-SR/OSPF-SR control tells.
     'sr_mpls_watch': {'label': 'SR-MPLS Watch (label / segment injection)',
                       'paths': ['/var/log/ragnar/sr_mpls_watch.jsonl']},
+    # In-app IKEv1/IKEv2 key-exchange posture (do_ipsec_watch): D(HE)at / weak DH
+    # groups, SWEET32 64-bit IKE ciphers, Aggressive Mode, weak PSK-hash / PRF,
+    # and the stateful DH-downgrade correlator.
+    'ipsec_watch':   {'label': 'IPsec / IKE Watch (D(HE)at / weak-DH / SWEET32)',
+                      'paths': ['/var/log/ragnar/ipsec_watch.jsonl']},
     # Asset inventory change-detection (asset_inventory.py) emits new-device /
     # IP-move / spoof / offline events here so they page + forward like any alert.
     'asset_inventory': {'label': 'Asset Inventory',

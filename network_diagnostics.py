@@ -21272,6 +21272,38 @@ def _ipsec_verdict(findings):
     return 'observed'
 
 
+_IPSEC_SEV_MAP = {'high': 'HIGH', 'medium': 'MEDIUM', 'low': 'LOW'}
+_IPSEC_ATTACK_CODES = frozenset((
+    'DHEATER-DOWNGRADE-DETECTED', 'IKEV1-AGGRESSIVE-MODE-PSK-HASH-EXTRACTED'))
+_IPSEC_CVES = {
+    'SWEET32-VULNERABLE-CIPHER-PROPOSAL': ['CVE-2016-2183'],
+    'DHEATER-WEAK-DH-GROUP-OFFERED': ['CVE-2022-40735'],
+    'DHEATER-DOWNGRADE-DETECTED': ['CVE-2022-40735'],
+    'WEAK-DH-GROUP-OFFERED': ['CVE-2015-4000'],
+    'IKEV1-AGGRESSIVE-MODE-DETECTED': ['CVE-2002-1623'],
+    'IKEV1-AGGRESSIVE-MODE-PSK-HASH-EXTRACTED': ['CVE-2002-1623'],
+    'WEAK-HASH-PSK-AUTHENTICATION': ['CVE-2018-5389'],
+    'WEAK-PRF-IKEV2': ['CVE-2018-5389'],
+}
+
+
+def _ipsec_normalize(f):
+    """Map a raw ipsecwatch Finding dict → the guard finding shape the Watchtower
+    JSON-lines emitter (_guard_emit_jsonl) expects (code/name/severity/klass/cves/detail).
+    The vendored findings use their own shape (lowercase severity, string detail, no
+    name/klass), so this bridges the two."""
+    code = f.get('code', '')
+    return {'code': code, 'name': code,
+            'severity': _IPSEC_SEV_MAP.get(f.get('severity'), 'MEDIUM'),
+            'klass': 'ATTACK' if code in _IPSEC_ATTACK_CODES else 'EXPOSURE',
+            'src': f.get('src') or None, 'cves': _IPSEC_CVES.get(code, []),
+            'detail': {'algorithm': f.get('algorithm') or None,
+                       'ike_version': f.get('ike_version'),
+                       'exchange': f.get('exchange') or None,
+                       'family': f.get('family') or None,
+                       'text': f.get('detail')}}
+
+
 def do_ipsec_watch(interface=None, seconds=20, learn=True, quick=False):
     """Passive IKEv1/IKEv2 (IPsec key-exchange) security-posture watcher on UDP 500/4500
     (detection-only, never transmits). Reports weak DH groups (D(HE)at / Logjam), 64-bit
@@ -21320,8 +21352,12 @@ def do_ipsec_watch(interface=None, seconds=20, learn=True, quick=False):
               'finding_count': len(findings), 'findings': findings,
               'ike_msgs': stats.get('ike_msgs', 0),
               'packet_count': stats.get('packets', 0)}
-    if not quick:
-        _guard_emit_jsonl('ipsec_watch', result)
+    # Feed Watchtower with the normalized finding shape (the raw ipsecwatch findings
+    # keep their own shape in result['findings'] for the card / API / CLI).
+    if not quick and findings:
+        _guard_emit_jsonl('ipsec_watch',
+                          {'interface': iface,
+                           'findings': [_ipsec_normalize(f) for f in findings]})
     return result
 
 
