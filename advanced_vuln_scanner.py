@@ -31,7 +31,7 @@ import urllib.error
 import socket
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed  # kept for _run_full_scan only
 from queue import Queue, Empty
@@ -77,6 +77,32 @@ class ScanStrength(Enum):
     STANDARD = "standard"
     THOROUGH = "thorough"
     INSANE = "insane"
+
+
+def _scan_row_is_fresh(row: Dict[str, Any], max_age_seconds: float = 3600.0) -> bool:
+    """True if a scan_jobs row was updated recently enough to be resurrected
+    into the active-scans list at boot.
+
+    Anything older can only be a ghost from a previous incarnation — its
+    thread died with that process — so it must stay a DB record, not appear
+    as an "active" scan with a forever-ticking duration. Accepts both the
+    SQLite CURRENT_TIMESTAMP format ('YYYY-MM-DD HH:MM:SS', UTC) and ISO with
+    'T'/'Z'; naive timestamps are treated as UTC.
+    """
+    ts = row.get('updated_at') or row.get('created_at')
+    if not ts:
+        return False
+    try:
+        text = str(ts).strip().replace(' ', 'T')
+        if text.endswith('Z'):
+            text = text[:-1] + '+00:00'
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - parsed).total_seconds()
+        return 0 <= age <= max_age_seconds
+    except (ValueError, TypeError):
+        return False
 
 
 @dataclass
@@ -494,6 +520,11 @@ class AdvancedVulnScanner:
         self._zap_watchdog_stop = threading.Event()
         self._zap_user_stopped = False  # True when user explicitly stops ZAP
         self._zap_busy = False  # True during startup or active scan — suppresses watchdog
+        # Serialize ZAP-daemon scans: the daemon deadlocks when two scans run
+        # against it at once (newSession called while another spider is
+        # mid-crawl wedges every spider endpoint until the JVM is killed), so
+        # exactly one ZAP scan may run at a time — the rest fail fast.
+        self._zap_scan_lock = threading.Lock()
         self._zap_start_lock = threading.Lock()  # Prevents concurrent start_zap_daemon calls
 
         # Check capabilities
@@ -549,6 +580,15 @@ class AdvancedVulnScanner:
                     # Mark as interrupted - it was running when system restarted
                     self._db.mark_scan_interrupted(scan_id)
                     logger.info(f"Marked scan {scan_id} as interrupted")
+
+                    if not _scan_row_is_fresh(scan):
+                        # Ghost from an earlier incarnation: its thread died
+                        # with that process. Keep it as a DB record only — do
+                        # not resurrect it into active_scans with a
+                        # forever-ticking duration.
+                        logger.info(f"Scan {scan_id} marked interrupted in DB only "
+                                    f"(row not fresh enough to resurrect)")
+                        continue
 
                     # Create a progress entry for UI display
                     progress = ScanProgress(
@@ -3694,11 +3734,18 @@ class AdvancedVulnScanner:
 
     def _run_zap_spider(self, scan_id: str, target: str, options: Dict):
         """Run ZAP spider to discover URLs"""
+        # Serialize ZAP scans: a second scan against the same daemon deadlocks
+        # it (newSession while another spider is mid-crawl), so refuse instead.
+        if not self._zap_scan_lock.acquire(timeout=60):
+            raise RuntimeError('Another ZAP scan is already running against the daemon — '
+                               'concurrent ZAP scans deadlock it. Wait for the running scan '
+                               'to finish and retry.')
         self._zap_busy = True
         try:
             self._run_zap_spider_inner(scan_id, target, options)
         finally:
             self._zap_busy = False
+            self._zap_scan_lock.release()
 
     def _run_zap_spider_inner(self, scan_id: str, target: str, options: Dict):
         """Inner spider logic — called with busy-flag protection."""
@@ -3835,11 +3882,17 @@ class AdvancedVulnScanner:
 
     def _run_zap_active_scan(self, scan_id: str, target: str, options: Dict):
         """Run ZAP active vulnerability scan with strength-aware configuration."""
+        # Serialize ZAP scans (see _zap_scan_lock) — refuse instead of deadlocking.
+        if not self._zap_scan_lock.acquire(timeout=60):
+            raise RuntimeError('Another ZAP scan is already running against the daemon — '
+                               'concurrent ZAP scans deadlock it. Wait for the running scan '
+                               'to finish and retry.')
         self._zap_busy = True
         try:
             self._run_zap_active_scan_inner(scan_id, target, options)
         finally:
             self._zap_busy = False
+            self._zap_scan_lock.release()
 
     def _run_zap_active_scan_inner(self, scan_id: str, target: str, options: Dict):
         """Inner active scan logic — called with busy-flag protection."""
@@ -4423,11 +4476,17 @@ class AdvancedVulnScanner:
         Standard  (3 phases): Spider → AJAX Spider → Active Scan
         Thorough+ (5 phases): Spider → AJAX Spider → Active Scan → ragnar-fuzz → JSON Reflections
         """
+        # Serialize ZAP scans (see _zap_scan_lock) — refuse instead of deadlocking.
+        if not self._zap_scan_lock.acquire(timeout=60):
+            raise RuntimeError('Another ZAP scan is already running against the daemon — '
+                               'concurrent ZAP scans deadlock it. Wait for the running scan '
+                               'to finish and retry.')
         self._zap_busy = True
         try:
             self._run_zap_full_scan_inner(scan_id, target, options)
         finally:
             self._zap_busy = False
+            self._zap_scan_lock.release()
 
     def _run_zap_full_scan_inner(self, scan_id: str, target: str, options: Dict):
         """Inner full scan logic — called with busy-flag protection."""
@@ -6793,18 +6852,21 @@ class AdvancedVulnScanner:
                 del self.scan_results[scan_id]
                 deleted = True
 
-        # Remove from database
+        # Remove from database — scans are persisted to whichever per-network
+        # DB was active when they ran, so delete from every known DB, not just
+        # the current one (otherwise the delete silently misses rows and a
+        # leftover 'running' row gets resurrected at every boot).
         if self._db:
             try:
-                with self._db.get_connection() as conn:
-                    cursor = conn.cursor()
-                    # Delete findings for this scan
-                    cursor.execute("DELETE FROM scan_findings WHERE scan_id = ?", (scan_id,))
-                    # Delete scan job record
-                    cursor.execute("DELETE FROM scan_jobs WHERE scan_id = ?", (scan_id,))
-                    conn.commit()
-                deleted = True
-                logger.info(f"Deleted scan {scan_id} from database")
+                removed = self._db.delete_scan_everywhere(scan_id)
+                if removed:
+                    deleted = True
+                elif not deleted:
+                    # No rows anywhere and nothing in memory — report failure
+                    # so the UI stops claiming success on no-op deletes.
+                    deleted = False
+                logger.info(f"Deleted scan {scan_id} from database "
+                            f"({removed} job rows across all network DBs)")
             except Exception as e:
                 logger.error(f"Error deleting scan from database: {e}")
 
@@ -6819,15 +6881,14 @@ class AdvancedVulnScanner:
             self.active_scans.clear()
             self.scan_results.clear()
 
-        # Clear database
+        # Clear database — every network DB, not just the current one (scans
+        # are persisted to whichever network was active when they ran).
         if self._db:
             try:
-                with self._db.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM scan_findings")
-                    cursor.execute("DELETE FROM scan_jobs")
-                    conn.commit()
-                logger.info("Deleted all scans from database")
+                removed = self._db.delete_all_scan_jobs_everywhere()
+                count += removed
+                logger.info(f"Deleted all scans from database "
+                            f"({removed} job rows across all network DBs)")
             except Exception as e:
                 logger.error(f"Error clearing scans from database: {e}")
 
