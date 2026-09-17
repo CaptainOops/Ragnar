@@ -2087,6 +2087,7 @@ def _net_integrity_check_once():
         ('bfd', 'BFD', lambda: watch(nd.do_bfd_watch, interface=cap_iface)),
         ('srmpls', 'SR-MPLS', lambda: watch(nd.do_sr_mpls_watch, interface=cap_iface)),
         ('ipsec', 'IPsec', lambda: watch(nd.do_ipsec_watch, interface=cap_iface)),
+        ('dns_passive', 'DNS', lambda: watch(nd.do_dns_watch, interface=cap_iface)),
     ]
 
     # LAN-only vendor switch/router guards: only auto-run when a genuine wired

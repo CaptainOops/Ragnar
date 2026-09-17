@@ -163,6 +163,10 @@ DEFAULT_SOURCES = {
     # and the stateful DH-downgrade correlator.
     'ipsec_watch':   {'label': 'IPsec / IKE Watch (D(HE)at / weak-DH / SWEET32)',
                       'paths': ['/var/log/ragnar/ipsec_watch.jsonl']},
+    # Passive DNS-response threat detector (do_dns_watch): KeyTrap / NSEC3 DNSSEC
+    # DoS, NXNSAttack, MaginotDNS cache-poisoning, DNSBomb, SAD DNS.
+    'dns_watch':     {'label': 'DNS Watch (KeyTrap / NSEC3 / cache-poisoning)',
+                      'paths': ['/var/log/ragnar/dns_watch.jsonl']},
     # Asset inventory change-detection (asset_inventory.py) emits new-device /
     # IP-move / spoof / offline events here so they page + forward like any alert.
     'asset_inventory': {'label': 'Asset Inventory',

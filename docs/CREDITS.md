@@ -14,10 +14,10 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~138 CVEs actively detected.** 140 distinct CVE IDs are named across the detector code;
-  138 are actively detected.
+- **~144 CVEs actively detected.** 146 distinct CVE IDs are named across the detector code;
+  144 are actively detected.
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **27 CVEs from 2023, 36 from 2024, 22 from 2025, and
+- Weighted to the current threat wave: **29 CVEs from 2023, 37 from 2024, 22 from 2025, and
   7 already from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
@@ -27,6 +27,10 @@ behind them is Solarflere's work.
   everywhere they appear: **SWEET32** (CVE-2016-2183) in TLS, SSH and IKE; **D(HE)at**
   (CVE-2002-20001 / CVE-2022-40735 / CVE-2024-41996) across TLS, SSH and IPsec; and
   **Logjam / weak-DH** (CVE-2015-4000) in IKE.
+- **DNS / DNSSEC** — a passive DNS-response detector for **KeyTrap** (CVE-2023-50387),
+  **NSEC3** DoS (CVE-2023-50868), **NXNSAttack** (CVE-2020-8616), **MaginotDNS**
+  cache-poisoning (CVE-2021-25220), **DNSBomb** (CVE-2024-33655) and **SAD DNS**
+  (CVE-2020-25705), plus KeyTrap/NSEC3 posture folded into the active DNS Doctor.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
