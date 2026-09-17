@@ -22,7 +22,9 @@
     el('submit').disabled = busy || !tool.available;
     el('target-wrap').hidden = !tool.field;
     el('target').required = !!tool.field;
-    el('target-label').textContent = ({public_ip: 'Public IP address', host: 'Hostname or IP address', query: 'Shodan search query', capture_job: 'Capture job ID'})[tool.field] || 'Target';
+    el('target-label').textContent = ({public_ip: 'Public IP address', host: 'Hostname or IP address', url: 'HTTP(S) URL', query: 'Shodan search query', capture_job: 'Capture job ID'})[tool.field] || 'Target';
+    el('target').maxLength = tool.field === 'url' ? 2048 : 500;
+    el('port-wrap').hidden = !tool.port;
     el('interface-wrap').hidden = !tool.interface;
     el('capture-wrap').hidden = tool.id !== 'capture';
     el('page-wrap').hidden = tool.id !== 'shodan_search';
@@ -38,6 +40,29 @@
     fields();
   }
   function message(id, error) { el(id).textContent = error.message || String(error); }
+  function summarize(job, text) {
+    el('summary').replaceChildren();
+    if (!(job.tool === 'internetdb' || String(job.tool).startsWith('shodan_'))) return;
+    let result; try { result = JSON.parse(text); } catch { return; }
+    const line = text => { const p = document.createElement('p'); p.textContent = text; el('summary').append(p); };
+    if (result.ip || result.ip_str) line('IP: ' + (result.ip || result.ip_str));
+    if (result.ports) line('Indexed ports: ' + result.ports.join(', '));
+    if (result.hostnames) line('Hostnames: ' + result.hostnames.join(', '));
+    if (result.vulns) line('Reported CVEs (not independently verified): ' + (Array.isArray(result.vulns) ? result.vulns : Object.keys(result.vulns)).join(', '));
+    if (result.total !== undefined) line('Matching records: ' + result.total);
+    if (result.plan !== undefined) line('Plan: ' + result.plan + ' · Query credits: ' + result.query_credits);
+    for (const match of (result.matches || []).slice(0, 100)) {
+      const p = document.createElement('p');
+      p.textContent = (match.ip_str || '') + ':' + match.port + ' · ' + (match.product || match.org || '') + ' · Observed ' + (match.timestamp || 'unknown');
+      if (match.ip_str) {
+        const b = document.createElement('button'); b.textContent = 'Look up IP';
+        b.onclick = () => { el('tool').value = 'shodan_host'; el('target').value = match.ip_str; fields(); el('run').scrollIntoView({behavior: 'smooth'}); };
+        p.append(b);
+      }
+      el('summary').append(p);
+    }
+    line('These are Shodan’s indexed observations. The full response is below and saved in loot.');
+  }
   async function jobs() {
     const result = await api('/jobs');
     const nodes = result.jobs.map(job => {
@@ -64,6 +89,7 @@
               const response = await fetch('/api/toolkit/jobs/' + encodeURIComponent(job.id) + '/files/' + name);
               if (!response.ok) throw new Error('Could not load artifact.');
               const text = await response.text();
+              summarize(job, text);
               el('preview').textContent = text.slice(0, 150000) + (text.length > 150000 ? '\n… Download the file for the full result.' : '');
               el('preview-wrap').hidden = false;
             } catch (e) { message('message', e); }
@@ -79,15 +105,17 @@
   el('run').addEventListener('submit', async event => {
     event.preventDefault(); busy = true; fields();
     try {
-      await api('/jobs', 'POST', {tool: el('tool').value, params: {target: el('target').value, interface: el('interface').value, profile: el('profile').value, duration: el('duration').value, page: el('page').value}});
+      await api('/jobs', 'POST', {tool: el('tool').value, params: {target: el('target').value, interface: el('interface').value, profile: el('profile').value, duration: el('duration').value, page: el('page').value, port: el('port').value}});
       message('message', 'Job started. Results will appear below and in loot.'); await jobs();
     } catch (e) { message('message', e); }
     finally { busy = false; fields(); }
   });
   el('key-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    try { await api('/shodan-key', 'POST', {key: el('key').value.trim()}); el('key').value = ''; await configure(); message('key-message', 'Key saved.'); }
+    event.preventDefault(); el('save-key').disabled = true;
+    message('key-message', 'Verifying with Shodan…');
+    try { const account = await api('/shodan-key', 'POST', {key: el('key').value.trim()}); el('key').value = ''; await configure(); message('key-message', 'Verified and saved. Plan: ' + (account.plan || 'unknown') + ' · Query credits: ' + (account.query_credits ?? 'unknown')); }
     catch (e) { message('key-message', e); }
+    finally { el('save-key').disabled = false; }
   });
   el('remove-key').onclick = async () => {
     try { await api('/shodan-key', 'DELETE', {}); el('key').value = ''; await configure(); message('key-message', 'Key removed.'); }

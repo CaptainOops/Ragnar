@@ -5236,7 +5236,7 @@
                 </div>
             </div>
             <!-- expand / fullscreen viewer -->
-            <div id="lc-modal" class="hidden fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4" onclick="lcClose(event)">
+            <div id="lc-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,.85)" onclick="lcClose(event)">
                 <div class="relative w-full max-w-6xl">
                     <button onclick="lcClose()" class="absolute -top-9 right-0 text-white text-2xl leading-none hover:text-gray-300">✕</button>
                     <div id="lc-modal-body" class="aspect-video bg-black rounded-lg overflow-hidden"></div>
@@ -5275,8 +5275,9 @@
                 var fbar = el('lc-filters');
                 if (fbar){ fbar.innerHTML = (cats.length>1 ? cats.map(function(cat){
                     var a = (window._lcFilter===cat);
-                    return '<button onclick="lcSetFilter(\''+esc(cat)+'\')" class="px-2 py-1 rounded '+(a?'bg-Ragnar-600 text-white':'bg-slate-700 text-gray-300 hover:bg-slate-600')+'">'+esc(cat)+'</button>';
+                    return '<button data-lc-category="'+esc(cat)+'" class="px-2 py-1 rounded '+(a?'bg-Ragnar-600 text-white':'bg-slate-700 text-gray-300 hover:bg-slate-600')+'">'+esc(cat)+'</button>';
                 }).join('') : ''); }
+                if (el('livecams-tab').classList.contains('hidden')) { grid.replaceChildren(); return; }
                 var shown = (cams||[]).filter(function(c){ return window._lcFilter==='All' || c.category===window._lcFilter; });
                 if (!shown.length){ grid.innerHTML = '<p class="text-gray-400 text-sm">'+((cams&&cams.length)?'No cameras in this category.':'No cameras yet. Click &ldquo;+ Add Camera&rdquo; to add a public feed URL.')+'</p>'; return; }
                 grid.innerHTML = shown.map(function(cam){
@@ -5319,6 +5320,10 @@
                 var m = el('lc-modal'); if (m) m.classList.add('hidden');
                 var body = el('lc-modal-body'); if (body) body.innerHTML = ''; // stop the stream
             };
+            el('lc-filters').addEventListener('click', function(event){
+                var button = event.target.closest('[data-lc-category]');
+                if (button) window.lcSetFilter(button.getAttribute('data-lc-category'));
+            });
             window.lcSetFilter = function(cat){ window._lcFilter = cat; window.lcRender(window._lcCams); };
             var _lcDragId = null;
             window.lcDragStart = function(ev, id){ _lcDragId = id; if (ev.dataTransfer){ ev.dataTransfer.effectAllowed='move'; } };
@@ -5357,7 +5362,7 @@
             function refreshSnapshots(){
                 var tab = el('livecams-tab');
                 if (!tab || tab.classList.contains('hidden')) return;
-                var imgs = document.querySelectorAll('#livecams-grid img[data-lc-type="snapshot"]');
+                var imgs = document.querySelectorAll('#livecams-tab img[data-lc-type="snapshot"]');
                 for (var i=0;i<imgs.length;i++){
                     var base = imgs[i].getAttribute('data-lc-proxy'); if (!base) continue;
                     imgs[i].classList.remove('opacity-20');
@@ -5411,6 +5416,11 @@
                 fetch('/api/livecams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({label:'Cam '+ip, category:'Recon', url:url, type:'snapshot'})})
                     .then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
             };
+            new MutationObserver(function(){
+                if (el('livecams-tab').classList.contains('hidden')){
+                    window.lcClose(); window.lcCloseWall(); el('livecams-grid').replaceChildren();
+                } else { window.lcLoad(); }
+            }).observe(el('livecams-tab'), {attributes:true, attributeFilter:['class']});
             (function init(){ if (!el('livecams-grid')){ return setTimeout(init, 500); } window.lcLoad(); if (window.crModeChange) window.crModeChange(); setInterval(refreshSnapshots, REFRESH_MS); })();
         })();
         </script>
@@ -8880,7 +8890,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/toolkit.js?v=1"></script>
+    <script src="/web/scripts/toolkit.js?v=2"></script>
     <script src="/web/scripts/ragnar_modern.js?v=20260914-selftest-coverage"></script>
 
 

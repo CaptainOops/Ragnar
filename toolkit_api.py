@@ -1,6 +1,7 @@
 """Toolkit routes. Ragnar's application-wide authentication protects this blueprint."""
 import os
 import re
+import threading
 from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify, request, send_file
@@ -43,9 +44,11 @@ def create_blueprint(engine, settings):
         key = body().get('key', '')
         if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', key):
             raise ValueError('Enter a valid Shodan API key.')
+        # Verify with the no-query-credit account endpoint before replacing a working key.
+        account = engine.shodan('/api-info', {}, threading.Event(), key=key)
         settings.set_env_key(KEY, key)
         os.chmod(settings.env_file_path, 0o600)
-        return jsonify(configured=True)
+        return jsonify(configured=True, plan=account.get('plan'), query_credits=account.get('query_credits'))
 
     @bp.delete('/shodan-key')
     def remove_key():

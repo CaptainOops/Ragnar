@@ -18,17 +18,30 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
 
 TOOLS = [
+    dict(id='internetdb', name='Shodan InternetDB (free)', field='public_ip', binary=None,
+         description='No API key: indexed ports, hostnames, CPEs, tags and reported CVEs for one public IPv4 address.'),
     dict(id='shodan_host', name='Shodan host lookup', field='public_ip', binary=None,
          description='Indexed services, banners, and last-observed dates for one public IP.'),
     dict(id='shodan_search', name='Shodan search', field='query', binary=None,
          description='One page of indexed results. Searches may consume Shodan query credits.'),
     dict(id='shodan_account', name='Shodan account', field=None, binary=None,
          description='Check API plan and remaining query/scan credits.'),
+    dict(id='shodan_count', name='Shodan result count', field='query', binary=None,
+         description='Count indexed matches without consuming Shodan query credits.'),
+    dict(id='http_headers', name='HTTP headers', field='url', binary='curl',
+         description='Inspect one HTTP(S) response’s headers without downloading its body.'),
+    dict(id='tls_certificate', name='TLS certificate', field='host', binary='openssl', port=443,
+         description='Inspect the certificate chain and TLS handshake on one host and port.'),
+    dict(id='mdns', name='mDNS service discovery', field=None, binary='avahi-browse', interface=True,
+         description='Resolve advertised local services on the selected interface.'),
+    dict(id='smb_shares', name='SMB share listing', field='host', binary='smbclient',
+         description='List shares offered to an anonymous session; no passwords or file retrieval.'),
     dict(id='dns', name='DNS records', field='host', binary='dig',
          description='A, AAAA, MX, NS, TXT and CAA records for a hostname.'),
     dict(id='whois', name='WHOIS', field='host', binary='whois',
@@ -120,6 +133,17 @@ class Toolkit:
         field = tool.get('field')
         if field == 'host':
             result['target'] = host(params.get('target'))
+        elif field == 'url':
+            value = str(params.get('target', '')).strip()
+            parsed = urlsplit(value)
+            if (len(value) > 2048 or parsed.scheme not in ('http', 'https') or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None
+                    or any(ord(c) < 33 for c in value)):
+                raise ValueError('Enter an HTTP(S) URL without embedded credentials or whitespace.')
+            host(parsed.hostname)
+            if parsed.port is not None and not 1 <= parsed.port <= 65535:
+                raise ValueError('Invalid URL port.')
+            result['target'] = value
         elif field == 'public_ip':
             try:
                 address = ipaddress.ip_address(str(params.get('target', '')).strip())
@@ -127,6 +151,8 @@ class Toolkit:
                 raise ValueError('Enter a public IP address.')
             if not address.is_global:
                 raise ValueError('Shodan host lookup requires a public IP, not a LAN address.')
+            if tool_id == 'internetdb' and address.version != 4:
+                raise ValueError('InternetDB requires a public IPv4 address.')
             result['target'] = str(address)
         elif field == 'query':
             query = str(params.get('target', '')).strip()
@@ -148,6 +174,8 @@ class Toolkit:
             if not isinstance(profile, str) or profile not in FILTERS:
                 raise ValueError('Unknown capture profile.')
             result.update(profile=profile, duration=self._integer(params.get('duration', 20), 5, 120))
+        if tool.get('port'):
+            result['port'] = self._integer(params.get('port', tool['port']), 1, 65535)
         available = next(t for t in self.catalog()['tools'] if t['id'] == tool_id)
         if not available['available']:
             raise ValueError(available['reason'])
@@ -273,16 +301,20 @@ class Toolkit:
                         process.wait()
         return dict(output='output.txt', duration_limited=limit)
 
-    def shodan(self, endpoint, params, cancel):
-        key = self.get_key()
+    def shodan(self, endpoint, params, cancel, key=None):
+        key = key or self.get_key()
         if not key:
             raise ValueError('Configure a Shodan API key.')
         if cancel.is_set():
             raise Stopped()
+        return self._shodan_request(SHODAN_BASE + endpoint, dict(params, key=key), cancel, key)
+
+    def _shodan_request(self, url, params, cancel, key=''):
         try:
-            with requests.get(SHODAN_BASE + endpoint, params=dict(params, key=key),
+            with requests.get(url, params=params,
                               timeout=(5, 20), stream=True, allow_redirects=False) as response:
-                errors = {401: 'Invalid Shodan API key.', 403: 'Shodan plan or credits do not permit this request.',
+                errors = {400: 'Shodan rejected the query. Check its syntax and your plan.',
+                          401: 'Invalid Shodan API key.', 403: 'Shodan plan or credits do not permit this request.',
                           404: 'Shodan has no indexed results for this host.', 429: 'Shodan rate limit reached; retry later.'}
                 if response.status_code in errors:
                     raise ValueError(errors[response.status_code])
@@ -297,20 +329,43 @@ class Toolkit:
                     if len(data) > 5 * MAX_OUTPUT or time.monotonic() > deadline:
                         raise ValueError('Shodan response limit reached.')
                 # Provider data is untrusted; never echo the configured key into loot.
-                text = data.decode('utf-8').replace(key, '[REDACTED]')
-                return json.loads(text)
+                text = data.decode('utf-8')
+                if key:
+                    text = text.replace(key, '[REDACTED]')
+                result = json.loads(text)
+                if not isinstance(result, dict) or result.get('error'):
+                    raise ValueError('Shodan returned an invalid or unsuccessful response.')
+                return result
         except requests.RequestException:
             raise ValueError('Could not reach Shodan. Check connectivity and retry.') from None
 
     def execute(self, tool, p, folder, cancel):
         target = p.get('target', '')
+        if cancel.is_set():
+            raise Stopped()
+        if tool == 'internetdb':
+            return self._shodan_request('https://internetdb.shodan.io/' + target, {}, cancel)
         if tool.startswith('shodan_'):
             endpoint, query = {
                 'shodan_host': ('/shodan/host/' + target, {}),
                 'shodan_search': ('/shodan/host/search', {'query': target, 'page': p.get('page', 1), 'minify': 'true'}),
                 'shodan_account': ('/api-info', {}),
+                'shodan_count': ('/shodan/host/count', {'query': target}),
             }[tool]
             return self.shodan(endpoint, query, cancel)
+        if tool == 'http_headers':
+            return self.command(['curl', '--disable', '--head', '--silent', '--show-error', '--globoff',
+                                 '--connect-timeout', '5', '--max-time', '20', '--proto', '=http,https',
+                                 '--', target], folder, cancel, timeout=25)
+        if tool == 'tls_certificate':
+            address = ('[' + target + ']') if ':' in target else target
+            return self.command(['openssl', 's_client', '-connect', address + ':' + str(p['port']),
+                                 '-servername', target, '-showcerts'], folder, cancel, timeout=25)
+        if tool == 'mdns':
+            return self.command(['avahi-browse', '--all', '--resolve', '--terminate', '--parsable',
+                                 '--interface=' + p['interface']], folder, cancel, timeout=30)
+        if tool == 'smb_shares':
+            return self.command(['smbclient', '-L', target, '-N', '-U', '%', '-g', '-t', '10'], folder, cancel, timeout=25)
         if tool == 'dns':
             for kind in ('A', 'AAAA', 'MX', 'NS', 'TXT', 'CAA'):
                 if cancel.is_set():
@@ -323,8 +378,12 @@ class Toolkit:
             return dict(output='output.txt')
         if tool == 'capture':
             # At most 10,000 x 512-byte packet snapshots (~5 MB) and 120 seconds.
+            import pwd
+            capture_user = pwd.getpwuid(os.geteuid()).pw_name
+            # Keep the invoking identity: tcpdump's distro default drop-user may
+            # otherwise be unable to create files in Ragnar's per-network loot.
             argv = ['tcpdump', '-i', p['interface'], '-nn', '-U', '-s', '512', '-c', '10000',
-                    '-w', str(folder / 'capture.pcap')] + FILTERS[p['profile']]
+                    '-Z', capture_user, '-w', str(folder / 'capture.pcap')] + FILTERS[p['profile']]
             return self.command(argv, folder, cancel, timeout=p['duration'], capture=True)
         if tool == 'capture_summary':
             # Resolve inside the frozen network, even if active network changes.

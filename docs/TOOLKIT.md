@@ -8,7 +8,12 @@ sources, embeds and Camera Recon. It does not run RaspyJack's LCD/GPIO scripts.
 
 | Capability | Ragnar integration |
 | --- | --- |
+| Shodan InternetDB | Free IPv4 lookup; no API key required |
 | Shodan host lookup, search, account | Toolkit; configure your key in the tab |
+| Shodan result count | Count matches without query credits |
+| HTTP headers / TLS certificate | Toolkit; bounded curl / OpenSSL inspection |
+| mDNS / Bonjour discovery | Toolkit; interface-scoped Avahi service listing |
+| SMB share listing | Toolkit; anonymous listing without downloading files |
 | DNS and WHOIS | Toolkit; domain/IP input and saved output |
 | Ping and traceroute | Toolkit; bounded probes |
 | Ethernet addresses, routes, ARP/IPv6 neighbors | Toolkit; interface selection |
@@ -30,7 +35,7 @@ added by Toolkit.
 On Raspberry Pi OS / Debian, install whichever optional utilities you need:
 
 ```sh
-sudo apt install dnsutils whois iputils-ping traceroute iproute2 nmap tcpdump
+sudo apt install dnsutils whois iputils-ping traceroute iproute2 nmap tcpdump curl openssl avahi-utils smbclient
 ```
 
 The dashboard reports missing commands. Capture needs the service account to
@@ -39,7 +44,9 @@ privileges. Ethernet utilities work with the selected interface (for example,
 `eth0`). Switch ports ordinarily expose the Pi's own traffic and broadcast traffic;
 seeing other ports requires an appropriately configured mirror port.
 
-Set the Shodan key in Toolkit or `RAGNAR_SHODAN_API_KEY` in `.env`. The dashboard
+InternetDB works immediately without a key. For full Shodan access, set the key
+in Toolkit or `RAGNAR_SHODAN_API_KEY` in `.env`. Saving through Toolkit verifies
+the key against `/api-info` before replacing a previous key. The dashboard
 never returns the key. API requests use indexed Shodan data, not its scan API.
 Search access and query credits depend on your plan. Results can be older than
 the host's current state. A private LAN IP cannot be used for Shodan host lookup.
@@ -71,9 +78,38 @@ reject cross-origin browser mutations.
 ## Validation
 
 ```sh
-python -m pytest tests/test_toolkit.py
+python -m pytest tests/test_toolkit.py tests/test_livecams_integration.py
+npm install
+npm run test:dashboard
 node --check web/scripts/toolkit.js
+python scripts/toolkit_smoke.py --live
 ```
 
-Pi hardware, real Shodan credentials and actual capture permissions must be
-verified on the target deployment. No keys or private camera URLs are bundled.
+The smoke test uses a temporary directory and never imports Ragnar's hardware
+stack or changes its running configuration. Full Shodan credentials and actual
+capture permissions still need verification on the target deployment.
+
+## Camera compatibility review (2026-09-17)
+
+Integrated camera commits through `1e474c0` (YouTube channel resolution), including
+category filters, fullscreen, video wall, drag reordering and snapshot-to-loot.
+Fixed category buttons containing quotes, refreshing expanded/wall snapshots,
+hidden-tab stream cleanup, duplicate reorder IDs, snapshot filename collisions,
+PNG/WebP/GIF extensions and freezing snapshot storage before network changes.
+Camera configuration and its existing scan-results directory are preserved.
+
+Source mapping reviewed against RaspyJack `6208a982`:
+`shodan_query.py` → InternetDB; `curly.py` → HTTP headers (HEAD only);
+`cert_scanner.py` → one-host TLS inspection; `mdns_scanner.py` → Avahi discovery;
+`smb_probe.py` → anonymous share listing; `whois_lookup.py` → WHOIS;
+`pcap_analyzer.py` → bounded PCAP summary. These are native integrations of the
+underlying utilities, not full copies of every upstream payload mode.
+
+Validation completed for this integration: 26 Python tests (including real
+authentication-hook coverage), two DOM interaction tests, Python compilation
+and JavaScript syntax checks. On the Pi 5, isolated smoke jobs completed for
+InternetDB, DNS, HTTP headers, TLS certificates, loopback ping and interface
+inventory. Full Shodan search remains unverified with a live key; none was
+configured. Avahi and smbclient were not installed, and privileged PCAP capture
+was not run. The running Pi checkout contains local changes and was not updated
+or restarted during this review; deployment must preserve those changes.

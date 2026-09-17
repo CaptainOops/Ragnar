@@ -3654,10 +3654,14 @@ def livecams_snapshot(cam_id):
 @app.route('/api/livecams/reorder', methods=['POST'])
 def livecams_reorder():
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({'success': False, 'error': 'Expected a JSON object'}), 400
     order = body.get('order') or []
+    if not isinstance(order, list) or any(not isinstance(i, str) for i in order):
+        return jsonify({'success': False, 'error': 'Expected a list of camera IDs'}), 400
     cams = _livecams_list()
     by_id = {c.get('id'): c for c in cams}
-    new = [by_id[i] for i in order if i in by_id]
+    new = [by_id[i] for i in dict.fromkeys(order) if i in by_id]
     inset = set(order)
     new += [c for c in cams if c.get('id') not in inset]
     shared_data.config['livecams'] = new
@@ -3672,24 +3676,35 @@ def livecams_reorder():
 def livecams_save_snapshot():
     """Grab the current still from a Snapshot-type cam and file it into loot."""
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or not isinstance(body.get('id'), str):
+        return jsonify({'success': False, 'error': 'Expected a camera ID'}), 400
     cam = next((c for c in _livecams_list() if c.get('id') == (body.get('id') or '').strip()), None)
     if not cam:
         return jsonify({'success': False, 'error': 'not found'}), 404
     if cam.get('type') != 'snapshot':
         return jsonify({'success': False, 'error': 'snapshot capture works for Snapshot-type cams only'}), 400
     url = cam.get('url', '')
+    # Freeze the network context before a potentially slow fetch.
+    d = os.path.join(_camera_recon_loot_dir(), 'snapshots')
     try:
         import requests
-        r = requests.get(url, timeout=(5, 10), verify=False)
-        r.raise_for_status()
-        if not str(r.headers.get('Content-Type', '')).lower().startswith('image/'):
-            return jsonify({'success': False, 'error': 'feed did not return an image'}), 415
-        d = os.path.join(_camera_recon_loot_dir(), 'snapshots')
+        with requests.get(url, timeout=(5, 10), verify=False, stream=True) as r:
+            r.raise_for_status()
+            content_type = str(r.headers.get('Content-Type', '')).split(';')[0].lower().strip()
+            extension = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif'}.get(content_type)
+            if not extension:
+                return jsonify({'success': False, 'error': 'feed did not return a supported image'}), 415
+            image = bytearray()
+            deadline = time.monotonic() + 20
+            for chunk in r.iter_content(65536):
+                image.extend(chunk)
+                if len(image) > 10 * 1024 * 1024 or time.monotonic() > deadline:
+                    return jsonify({'success': False, 'error': 'snapshot exceeded size or time limit'}), 413
         os.makedirs(d, exist_ok=True)
         safe = ''.join(ch if (ch.isalnum() or ch in '-_') else '_' for ch in cam.get('label', 'cam'))[:40] or 'cam'
-        fn = os.path.join(d, '%s_%s.jpg' % (safe, datetime.now().strftime('%Y%m%d-%H%M%S')))
-        with open(fn, 'wb') as f:
-            f.write(r.content)
+        fn = os.path.join(d, '%s_%s_%s.%s' % (safe, datetime.now().strftime('%Y%m%d-%H%M%S'), os.urandom(4).hex(), extension))
+        with open(fn, 'xb') as f:
+            f.write(image)
         return jsonify({'success': True, 'path': fn})
     except Exception as exc:                                # noqa: BLE001
         logger.debug(f"[livecams] save-snapshot failed: {exc}")

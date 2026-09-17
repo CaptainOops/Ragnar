@@ -14,6 +14,7 @@
       <p id="tk-description"></p><p id="tk-dependency" class="tk-error"></p>
       <div id="tk-target-wrap"><label for="tk-target" id="tk-target-label">Target</label><input id="tk-target" maxlength="500" autocomplete="off"></div>
       <div id="tk-interface-wrap" hidden><label for="tk-interface">Interface</label><select id="tk-interface"></select></div>
+      <div id="tk-port-wrap" hidden><label for="tk-port">TLS port</label><input id="tk-port" type="number" min="1" max="65535" value="443"></div>
       <div id="tk-capture-wrap" hidden><label for="tk-profile">Capture profile</label><select id="tk-profile"></select><label for="tk-duration">Seconds (5–120)</label><input id="tk-duration" type="number" min="5" max="120" value="20"></div>
       <div id="tk-page-wrap" hidden><label for="tk-page">Search page (1–20)</label><input id="tk-page" type="number" min="1" max="20" value="1"></div>
       <button type="submit" id="tk-submit">Run &amp; save to loot</button>
@@ -21,12 +22,12 @@
     </form>
     <form id="tk-key-form" class="tk-card">
       <h2>Shodan</h2><p id="tk-key-status">Loading configuration…</p>
-      <p>Look up indexed internet services or run a search. Search filters and additional pages may use query credits on your Shodan plan.</p>
+      <p>Start with Shodan InternetDB for free IPv4 lookups—no key needed. Add a key for richer host details, search and account information. Search filters and additional pages may use query credits.</p>
       <label for="tk-key">API key</label><input id="tk-key" type="password" autocomplete="new-password" placeholder="Stored only on the Ragnar server">
-      <button type="submit">Save key</button><button type="button" id="tk-remove-key">Remove key</button>
+      <button type="submit" id="tk-save-key">Verify &amp; save key</button><button type="button" id="tk-remove-key">Remove key</button>
       <p id="tk-key-message" role="status"></p>
     </form>
   </div>
   <div class="tk-card"><h2>Saved jobs</h2><p>Latest 100 jobs for the active network. Captures include a downloadable PCAP. Copy a capture’s job ID into Capture summary to inspect it.</p><button id="tk-refresh">Refresh</button><div id="tk-jobs"></div></div>
-  <div class="tk-card" id="tk-preview-wrap" hidden><h2>Result preview</h2><pre id="tk-preview" class="tk-result"></pre></div>
+  <div class="tk-card" id="tk-preview-wrap" hidden><h2>Result preview</h2><div id="tk-summary"></div><pre id="tk-preview" class="tk-result"></pre></div>
 </div>
