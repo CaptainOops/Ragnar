@@ -51,7 +51,12 @@ DHCP_HI = "192.168.44.50"
 DNSMASQ_CONF = "/tmp/ragnar/btpan-dnsmasq.conf"
 DNSMASQ_PID = "/tmp/ragnar/btpan-dnsmasq.pid"
 
+# What the phone sees when it scans for the box. Set as the adapter Alias while
+# the NAP is up; cleared (reverts to the hostname) when it comes down.
+ADAPTER_ALIAS = "Ragnar"
+
 _CMD_TIMEOUT = 8.0
+_DBUS_TIMEOUT = 5.0
 
 # Which apt package provides each runtime tool the NAP needs. `ip` comes from
 # iproute2, which is always present, so it is not part of the installable set.
@@ -114,7 +119,7 @@ class BtPanServer:
                 self._start_dnsmasq()
                 self._start_agent()
                 self._start_nap()
-                self._set_discoverable(True)
+                self._configure_adapters(True)
                 self._error = None
                 self._started_at = time.time()
                 logger.info("[btpan] NAP up on %s (%s)", BRIDGE, GATEWAY)
@@ -134,8 +139,9 @@ class BtPanServer:
     # -- steps ---------------------------------------------------------------
     def _bring_up_adapter(self) -> None:
         # New BT dongles can boot rfkill-blocked; unblock before touching them.
+        # Powering + naming + discoverability are done over D-Bus in
+        # _configure_adapters (bluetoothctl hangs on a busy stack here).
         _ok(["rfkill", "unblock", "bluetooth"])
-        _ok(["bluetoothctl", "power", "on"])
 
     def _bring_up_bridge(self) -> None:
         # Idempotent: leave an existing bridge in place, just ensure addr + up.
@@ -201,13 +207,52 @@ class BtPanServer:
         if self._procs["nap"].poll() is not None:
             raise RuntimeError("bt-network exited immediately (NAP registration failed)")
 
-    def _set_discoverable(self, on: bool) -> None:
-        state = "on" if on else "off"
-        _ok(["bluetoothctl", "discoverable", state])
-        _ok(["bluetoothctl", "pairable", state])
+    def _configure_adapters(self, on: bool) -> None:
+        """Power, name and (un)advertise every BlueZ adapter — over D-Bus.
+
+        bluetoothctl is unreliable on a busy stack (it can block indefinitely and
+        silently no-op, which is exactly why the box never showed up), so drive
+        the adapter properties directly with bounded calls. Setting ``on`` names
+        the box "Ragnar", makes it discoverable with no timeout, and pairable;
+        clearing it reverts the name to the hostname and hides the box again.
+        Never raises — a missing dbus or a wedged bluetoothd degrades to a log
+        line, not a failed start.
+        """
+        try:
+            import dbus
+        except Exception:
+            logger.warning("[btpan] python3-dbus unavailable; cannot set discoverable/name")
+            return
+        try:
+            bus = dbus.SystemBus()
+            om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                                "org.freedesktop.DBus.ObjectManager")
+            objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[btpan] could not reach bluetoothd over D-Bus: %s", exc)
+            return
+        found = False
+        for path, ifaces in objs.items():
+            if "org.bluez.Adapter1" not in ifaces:
+                continue
+            found = True
+            try:
+                props = dbus.Interface(bus.get_object("org.bluez", path),
+                                       "org.freedesktop.DBus.Properties")
+                props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "Alias",
+                          dbus.String(ADAPTER_ALIAS if on else ""), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "DiscoverableTimeout", dbus.UInt32(0), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "PairableTimeout", dbus.UInt32(0), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(on), timeout=_DBUS_TIMEOUT)
+                props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(on), timeout=_DBUS_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[btpan] adapter %s config failed: %s", path, exc)
+        if on and not found:
+            logger.warning("[btpan] bluetoothd exposes no adapters — is a controller present?")
 
     def _teardown_locked(self) -> None:
-        self._set_discoverable(False)
+        self._configure_adapters(False)
         for name in ("nap", "agent"):
             proc = self._procs.pop(name, None)
             if not proc:
