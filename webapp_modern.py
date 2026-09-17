@@ -3517,13 +3517,53 @@ def inventory_scan_now():
 _LIVECAM_TYPES = {'snapshot', 'mjpeg', 'embed'}
 
 
+def _resolve_youtube_channel(handle_or_channel_url):
+    """From a channel URL (@handle, /c/, /user/, /channel/UC…) return
+    (channel_id, current_live_video_id) — either may be None."""
+    import re
+    try:
+        import requests
+    except Exception:
+        return None, None
+    cid = None
+    m = re.search(r'/channel/(UC[A-Za-z0-9_-]{20,})', handle_or_channel_url)
+    if m:
+        cid = m.group(1)
+    live_vid = None
+    try:
+        r = requests.get(handle_or_channel_url.rstrip('/') + '/live', timeout=8,
+                         headers={'User-Agent': 'Mozilla/5.0'})
+        t = r.text
+        vm = (re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([A-Za-z0-9_-]{11})"', t)
+              or re.search(r'"videoDetails":\{"videoId":"([A-Za-z0-9_-]{11})"', t))
+        if vm:
+            live_vid = vm.group(1)
+        if not cid:
+            cm = re.search(r'"(?:channelId|externalId)":"(UC[A-Za-z0-9_-]{20,})"', t)
+            if cm:
+                cid = cm.group(1)
+    except Exception:
+        pass
+    return cid, live_vid
+
+
 def _livecam_embed_url(url):
-    """Normalize a YouTube watch/live/short URL into an embeddable player URL
-    for the 'embed' cam type; non-YouTube URLs are returned unchanged."""
+    """Normalize a YouTube link into an embeddable player URL for the 'embed'
+    cam type. A watch/live/short link -> that video. A channel link
+    (@handle, /channel/UC…, /c/…, /user/…) -> the channel's current live
+    stream (resolved now, with a live_stream fallback that auto-follows a
+    rotating stream id). Non-YouTube URLs are returned unchanged."""
     import re
     m = re.search(r'(?:youtube\.com/(?:watch\?v=|live/|embed/|v/)|youtu\.be/)([A-Za-z0-9_-]{6,})', url)
-    if m:
+    if m and 'live_stream' not in url and '/channel/' not in url:
         return 'https://www.youtube.com/embed/%s?autoplay=1&mute=1&playsinline=1' % m.group(1)
+    chan = re.search(r'youtube\.com/((?:channel/UC[A-Za-z0-9_-]{20,})|(?:@|c/|user/)[A-Za-z0-9_.\-]+)', url)
+    if chan:
+        cid, vid = _resolve_youtube_channel('https://www.youtube.com/' + chan.group(1))
+        if vid:
+            return 'https://www.youtube.com/embed/%s?autoplay=1&mute=1&playsinline=1' % vid
+        if cid:
+            return 'https://www.youtube.com/embed/live_stream?channel=%s&autoplay=1&mute=1' % cid
     return url
 
 
