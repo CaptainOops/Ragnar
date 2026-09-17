@@ -752,6 +752,9 @@
                     <button onclick="showTab('epaper')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap requires-display" data-tab="epaper">
                         Display
                     </button>
+                    <button onclick="showTab('livecams')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap" data-tab="livecams">
+                        Live Cams
+                    </button>
                     <button onclick="showTab('files')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap" data-tab="files">
                         Files
                     </button>
@@ -803,6 +806,7 @@
                 <button onclick="showTab('adv-vuln')" data-tab="adv-vuln" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Adv Scan</button>
                 <button onclick="showTab('wardriving')" data-tab="wardriving" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700 wardriving-feature hidden">Wardriving</button>
                 <button onclick="showTab('epaper')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700 requires-display">Display</button>
+                <button onclick="showTab('livecams')" data-tab="livecams" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Live Cams</button>
                 <button onclick="showTab('files')" data-tab="files" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Files</button>
                 <button onclick="showTab('system')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">System</button>
                 <button onclick="showTab('connect')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Connect</button>
@@ -5167,6 +5171,94 @@
                 </div>
             </div>
         </div>
+
+        <div id="livecams-tab" class="tab-content hidden">
+            <div class="glass rounded-xl p-4 sm:p-6 mb-6">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
+                    <div class="flex items-center space-x-3">
+                        <h2 class="text-lg sm:text-2xl font-bold">📷 Live Cams</h2>
+                        <span class="text-xs text-gray-400">public feeds you add</span>
+                    </div>
+                    <button onclick="lcToggleAddForm()" class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded-lg text-sm">+ Add Camera</button>
+                </div>
+                <p class="text-xs text-amber-300/80 mb-4">Add only feeds published for public viewing — traffic/DOT cams, surf cams, city or tourism webcams. Do not add cameras you are not authorized to view.</p>
+
+                <div id="lc-add-form" class="hidden bg-slate-800/50 rounded-lg p-4 mb-4 grid gap-3 sm:grid-cols-2">
+                    <input id="lc-label" type="text" placeholder="Label (e.g. Downtown Main St)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                    <input id="lc-category" type="text" placeholder="Category (e.g. Traffic)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                    <input id="lc-url" type="url" placeholder="Feed URL (https:// snapshot or MJPEG)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm sm:col-span-2">
+                    <select id="lc-type" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                        <option value="snapshot">Snapshot JPG (recommended — refreshes, works with http feeds)</option>
+                        <option value="mjpeg">MJPEG stream (https only)</option>
+                    </select>
+                    <div class="flex gap-2">
+                        <button onclick="lcAddCam()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm flex-1">Add</button>
+                        <button onclick="lcToggleAddForm()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm">Cancel</button>
+                    </div>
+                    <p id="lc-add-msg" class="text-xs sm:col-span-2"></p>
+                </div>
+
+                <div id="livecams-grid" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <p class="text-gray-400 text-sm">Loading…</p>
+                </div>
+            </div>
+        </div>
+        <script>
+        (function(){
+            var REFRESH_MS = 12000;
+            function el(id){ return document.getElementById(id); }
+            function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+            window.lcToggleAddForm = function(){ var f = el('lc-add-form'); if (f) f.classList.toggle('hidden'); };
+            function camMediaHTML(cam){
+                if (cam.type === 'mjpeg'){
+                    return '<img data-lc-type="mjpeg" src="'+esc(cam.url)+'" class="w-full h-full object-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
+                }
+                var src = '/api/livecams/snapshot/' + encodeURIComponent(cam.id);
+                return '<img data-lc-type="snapshot" data-lc-proxy="'+src+'" src="'+src+'" class="w-full h-full object-cover" loading="lazy" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
+            }
+            window.lcRender = function(cams){
+                var grid = el('livecams-grid'); if (!grid) return;
+                if (!cams || !cams.length){ grid.innerHTML = '<p class="text-gray-400 text-sm">No cameras yet. Click &ldquo;+ Add Camera&rdquo; to add a public feed URL.</p>'; return; }
+                grid.innerHTML = cams.map(function(cam){
+                    return '<div class="bg-slate-800/60 rounded-lg overflow-hidden">'
+                        + '<div class="aspect-video bg-black overflow-hidden">' + camMediaHTML(cam) + '</div>'
+                        + '<div class="flex items-center justify-between px-3 py-2">'
+                        + '<div class="min-w-0"><div class="text-sm font-medium truncate">' + esc(cam.label) + '</div>'
+                        + '<div class="text-xs text-gray-400 truncate">' + esc(cam.category) + '</div></div>'
+                        + '<button onclick="lcDelete(\'' + esc(cam.id) + '\')" class="text-xs text-red-400 hover:text-red-300 ml-2 flex-shrink-0">Remove</button>'
+                        + '</div></div>';
+                }).join('');
+            };
+            window.lcLoad = function(){
+                fetch('/api/livecams').then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
+            };
+            window.lcAddCam = function(){
+                var msg = el('lc-add-msg');
+                var body = { label: el('lc-label').value, category: el('lc-category').value, url: el('lc-url').value, type: el('lc-type').value };
+                if (!body.url){ if(msg){ msg.textContent='Feed URL is required.'; msg.className='text-xs sm:col-span-2 text-red-400'; } return; }
+                fetch('/api/livecams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+                    .then(function(r){return r.json();}).then(function(d){
+                        if (d && d.success){ el('lc-label').value=''; el('lc-category').value=''; el('lc-url').value=''; window.lcRender(d.cams); window.lcToggleAddForm(); if(msg) msg.textContent=''; }
+                        else if (msg){ msg.textContent = (d && d.error) || 'Failed to add.'; msg.className='text-xs sm:col-span-2 text-red-400'; }
+                    }).catch(function(){ if(msg){ msg.textContent='Request failed.'; msg.className='text-xs sm:col-span-2 text-red-400'; } });
+            };
+            window.lcDelete = function(id){
+                fetch('/api/livecams/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:id})})
+                    .then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
+            };
+            function refreshSnapshots(){
+                var tab = el('livecams-tab');
+                if (!tab || tab.classList.contains('hidden')) return;
+                var imgs = document.querySelectorAll('#livecams-grid img[data-lc-type="snapshot"]');
+                for (var i=0;i<imgs.length;i++){
+                    var base = imgs[i].getAttribute('data-lc-proxy'); if (!base) continue;
+                    imgs[i].classList.remove('opacity-20');
+                    imgs[i].src = base + (base.indexOf('?')>-1?'&':'?') + '_ts=' + Date.now();
+                }
+            }
+            (function init(){ if (!el('livecams-grid')){ return setTimeout(init, 500); } window.lcLoad(); setInterval(refreshSnapshots, REFRESH_MS); })();
+        })();
+        </script>
 
         <div id="files-tab" class="tab-content hidden">
             <div class="glass rounded-xl p-4 sm:p-6 lg:h-[calc(100vh-7rem)] lg:flex lg:flex-col lg:overflow-hidden">

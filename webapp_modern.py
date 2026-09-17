@@ -3502,6 +3502,92 @@ def inventory_scan_now():
         return jsonify({'success': False, 'error': str(exc)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Live Cams — a curated dashboard of PUBLIC camera feeds the operator adds
+# (traffic/DOT cams, surf cams, city/tourism webcams). Bring-your-own-URL
+# only: it displays feeds the operator explicitly adds and never discovers,
+# scans for, or indexes cameras. Snapshot feeds are proxied same-origin so
+# both http and https feeds render under the dashboard's img-src CSP.
+# ---------------------------------------------------------------------------
+
+_LIVECAM_TYPES = {'snapshot', 'mjpeg'}
+
+
+def _livecams_list():
+    cams = shared_data.config.get('livecams')
+    return cams if isinstance(cams, list) else []
+
+
+@app.route('/api/livecams', methods=['GET'])
+def livecams_get():
+    return jsonify({'success': True, 'cams': _livecams_list()})
+
+
+@app.route('/api/livecams', methods=['POST'])
+def livecams_add():
+    body = request.get_json(silent=True) or {}
+    url = (body.get('url') or '').strip()
+    label = (body.get('label') or '').strip()
+    category = (body.get('category') or 'General').strip()[:40] or 'General'
+    cam_type = (body.get('type') or 'snapshot').strip().lower()
+    if not (url.startswith('http://') or url.startswith('https://')):
+        return jsonify({'success': False, 'error': 'A http(s) feed URL is required'}), 400
+    if cam_type not in _LIVECAM_TYPES:
+        cam_type = 'snapshot'
+    if not label:
+        label = url.split('//', 1)[-1].split('/', 1)[0][:60]
+    cams = _livecams_list()
+    cam = {'id': os.urandom(6).hex(), 'label': label[:80],
+           'category': category, 'url': url[:2048], 'type': cam_type}
+    cams.append(cam)
+    shared_data.config['livecams'] = cams
+    try:
+        shared_data.save_config()
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] save_config failed: {exc}")
+    return jsonify({'success': True, 'cam': cam, 'cams': cams})
+
+
+@app.route('/api/livecams/delete', methods=['POST'])
+def livecams_delete():
+    body = request.get_json(silent=True) or {}
+    cam_id = (body.get('id') or '').strip()
+    cams = [c for c in _livecams_list() if c.get('id') != cam_id]
+    shared_data.config['livecams'] = cams
+    try:
+        shared_data.save_config()
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] save_config failed: {exc}")
+    return jsonify({'success': True, 'cams': cams})
+
+
+@app.route('/api/livecams/snapshot/<cam_id>')
+def livecams_snapshot(cam_id):
+    """Proxy one snapshot image from an operator-added feed, same-origin, so
+    http and https feeds both render under the dashboard's img-src CSP. Only
+    URLs already saved in the livecams list are fetchable (no arbitrary proxy)."""
+    cam = next((c for c in _livecams_list() if c.get('id') == cam_id), None)
+    if not cam:
+        return jsonify({'success': False, 'error': 'not found'}), 404
+    url = cam.get('url', '')
+    if not (url.startswith('http://') or url.startswith('https://')):
+        return jsonify({'success': False, 'error': 'bad url'}), 400
+    try:
+        import requests
+        r = requests.get(url, timeout=(5, 10))
+        r.raise_for_status()
+        ctype = r.headers.get('Content-Type', 'image/jpeg')
+        if not ctype.lower().startswith('image/'):
+            return jsonify({'success': False, 'error': 'feed did not return an image'}), 415
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = ctype
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug(f"[livecams] snapshot fetch failed for {cam_id}: {exc}")
+        return jsonify({'success': False, 'error': 'fetch failed'}), 502
+
+
 @app.route('/api/inventory/config', methods=['POST'])
 def inventory_config():
     """Toggle the periodic snapshotter and its interval."""
