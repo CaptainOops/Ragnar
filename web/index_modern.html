@@ -5228,6 +5228,14 @@
                     <p class="text-gray-400 text-sm">Loading…</p>
                 </div>
             </div>
+            <!-- expand / fullscreen viewer -->
+            <div id="lc-modal" class="hidden fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4" onclick="lcClose(event)">
+                <div class="relative w-full max-w-6xl">
+                    <button onclick="lcClose()" class="absolute -top-9 right-0 text-white text-2xl leading-none hover:text-gray-300">✕</button>
+                    <div id="lc-modal-body" class="aspect-video bg-black rounded-lg overflow-hidden"></div>
+                    <div id="lc-modal-label" class="text-center text-sm text-gray-300 mt-2"></div>
+                </div>
+            </div>
         </div>
         <script>
         (function(){
@@ -5247,10 +5255,12 @@
             }
             window.lcRender = function(cams){
                 var grid = el('livecams-grid'); if (!grid) return;
+                window._lcCams = cams || [];
                 if (!cams || !cams.length){ grid.innerHTML = '<p class="text-gray-400 text-sm">No cameras yet. Click &ldquo;+ Add Camera&rdquo; to add a public feed URL.</p>'; return; }
                 grid.innerHTML = cams.map(function(cam){
                     return '<div class="bg-slate-800/60 rounded-lg overflow-hidden">'
-                        + '<div class="aspect-video bg-black overflow-hidden">' + camMediaHTML(cam) + '</div>'
+                        + '<div class="aspect-video bg-black overflow-hidden relative">' + camMediaHTML(cam)
+                        + '<button onclick="lcOpen(\''+esc(cam.id)+'\')" class="absolute top-1 right-1 bg-black/50 hover:bg-black/70 text-white text-sm rounded px-2 py-0.5" title="Expand">⤢</button></div>'
                         + '<div class="flex items-center justify-between px-3 py-2">'
                         + '<div class="min-w-0"><div class="text-sm font-medium truncate">' + esc(cam.label) + '</div>'
                         + '<div class="text-xs text-gray-400 truncate">' + esc(cam.category) + '</div></div>'
@@ -5275,6 +5285,18 @@
                 fetch('/api/livecams/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:id})})
                     .then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
             };
+            window.lcOpen = function(id){
+                var cam = (window._lcCams||[]).filter(function(c){ return c.id===id; })[0]; if (!cam) return;
+                var body = el('lc-modal-body'); if (body) body.innerHTML = camMediaHTML(cam);
+                var lbl = el('lc-modal-label'); if (lbl) lbl.textContent = cam.label + ' · ' + cam.category;
+                var m = el('lc-modal'); if (m) m.classList.remove('hidden');
+            };
+            window.lcClose = function(ev){
+                if (ev && ev.currentTarget && ev.target !== ev.currentTarget) return; // clicked inside the video, keep open
+                var m = el('lc-modal'); if (m) m.classList.add('hidden');
+                var body = el('lc-modal-body'); if (body) body.innerHTML = ''; // stop the stream
+            };
+            document.addEventListener('keydown', function(e){ if (e.key === 'Escape') window.lcClose(); });
             function refreshSnapshots(){
                 var tab = el('livecams-tab');
                 if (!tab || tab.classList.contains('hidden')) return;
