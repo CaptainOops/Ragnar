@@ -89,6 +89,12 @@ label & segment-manipulation findings to `/var/log/ragnar/sr_mpls_watch.jsonl`
 forwarded, TTL-expiry-forwarded, SRv6 path disclosure / missing HMAC, and the SR
 control-plane tells (LDP/RSVP/BGP-SR/IS-IS-SR/OSPF-SR) as **high**.
 
+[`ipsec_watch`](nettools.md#ipsec--ike-watch) (IPsec / IKE Watch) appends its IKE
+key-exchange posture findings to `/var/log/ragnar/ipsec_watch.jsonl` (deduplicated per code
++ source) — **D(HE)at** / weak DH groups (MODP-768/1024), **SWEET32** 64-bit IKE ciphers,
+IKEv1 **Aggressive Mode**, weak PSK-hash / PRF and the stateful **DH-downgrade** correlator,
+each mapped to its CVE and surfaced as **HIGH**/**MEDIUM**. Dual-stack (IPv4 + IPv6).
+
 These vendor guards are **LAN-only**: their findings only mean anything on a
 wired switch/router uplink or a SPAN/mirror port, so the background rotation
 runs them **only when a genuine wired LAN interface is up** and always over that

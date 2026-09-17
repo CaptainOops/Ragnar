@@ -279,6 +279,7 @@ def parse_server_hello(hs_body):
     exts_order = []
     alpn = []
     neg_version = None
+    selected_group = None
     if r.rem() >= 2:
         er = _Reader(r.take(r.u16()))
         while er.rem() >= 4:
@@ -289,8 +290,10 @@ def parse_server_hello(hs_body):
                 neg_version = (edata[0] << 8) | edata[1]
             elif etype == 0x0010:
                 alpn = _parse_alpn(edata)
+            elif etype == 0x0033 and len(edata) >= 2:    # key_share: selected group (TLS 1.3)
+                selected_group = (edata[0] << 8) | edata[1]
     return {'server_version': server_version, 'cipher': cipher,
-            'exts_order': exts_order, 'alpn': alpn,
+            'exts_order': exts_order, 'alpn': alpn, 'selected_group': selected_group,
             'neg_version': neg_version or server_version}
 
 
@@ -505,6 +508,52 @@ _CVE_2017_3731 = {'cve': 'CVE-2017-3731', 'cvss': 7.5,
 # absence is a reviewable decision, not an oversight.
 
 
+# ---- CVE-2002-20001 D(HE)at: DoS on finite-field Diffie-Hellman -------------
+# A server cannot tell a random number from a real DH public key without first doing the
+# expensive modular exponentiation, so a client forcing finite-field DHE makes the server
+# pay. PROTOCOL FLAW — no patch fixes it; mitigation is to disable FFDH or cap the group
+# size. Related: CVE-2022-40735 (long exponents), CVE-2024-41996 (peer-key validation).
+_CVE_2002_20001 = {'cve': 'CVE-2002-20001', 'cvss': 7.5, 'cvss_source': 'NVD',
+                   'related': ['CVE-2022-40735', 'CVE-2024-41996']}
+# TLS 1.3 finite-field DH named groups (RFC 7919), modulus size in bits.
+FFDHE_GROUPS = {0x0100: ('ffdhe2048', 2048), 0x0101: ('ffdhe3072', 3072),
+                0x0102: ('ffdhe4096', 4096), 0x0103: ('ffdhe6144', 6144),
+                0x0104: ('ffdhe8192', 8192)}
+# TLS<1.3 finite-field ephemeral-DH cipher suites — the server performs a modexp to build
+# its ServerKeyExchange. ECDHE is absent (cheap, not this CVE); anon-DH is present (server
+# still pays). A suite missing here is a MISSED detection, never a false positive.
+DHE_SUITES = frozenset((
+    0x0013, 0x0016, 0x001B, 0x0032, 0x0033, 0x0034, 0x0038, 0x0039, 0x003A,
+    0x0040, 0x0067, 0x006A, 0x006B, 0x006C, 0x006D, 0x008F, 0x0090, 0x0091,
+    0x009E, 0x009F, 0x00A2, 0x00A3, 0x00A6, 0x00A7, 0x00AA, 0x00AB, 0x00B2,
+    0x00B3, 0xCCAA, 0xCCAD))
+# Cost scales non-linearly with modulus size, so a large group needs far fewer requests to
+# hurt (OpenSSL 3.x / OpenJDK default to ffdhe8192). Volume tiers over the capture window,
+# keyed by the largest group seen, applied to the count of repeated DHE handshakes/source.
+DHEAT_LARGE_GROUP_BITS = 4096
+_DHEAT_TIERS_SMALL = ((50, 'warn'), (500, 'high'))
+_DHEAT_TIERS_LARGE = ((20, 'warn'), (200, 'high'))
+
+
+def _dheat_tiers(bits):
+    return _DHEAT_TIERS_LARGE if (bits or 0) >= DHEAT_LARGE_GROUP_BITS else _DHEAT_TIERS_SMALL
+
+
+def _dhe_info(server):
+    """(is_dhe, group_name, bits) for a parsed ServerHello. Classic finite-field DHE is
+    read from the negotiated suite (group not in ServerHello → bits None); TLS 1.3 from the
+    selected key_share group. ECDHE is not finite-field DH and is never counted."""
+    if not server:
+        return (False, None, None)
+    sg = server.get('selected_group')
+    if sg in FFDHE_GROUPS:
+        name, bits = FFDHE_GROUPS[sg]
+        return (True, name, bits)
+    if server.get('cipher') in DHE_SUITES:
+        return (True, 'classic-DHE', None)
+    return (False, None, None)
+
+
 def _leaf_findings(der, chain_len, sni, now):
     """Return (findings, info) for the leaf certificate. Requires cryptography;
     a hardened, memory-safe X.509 parser is safer here than a hand-rolled ASN.1
@@ -629,6 +678,23 @@ def analyze_session(client, server, cert_ders, now, records=None):
                                          'a SWEET32-exposed session (CVE-2016-2183) if a server '
                                          'selected one'.format(len(offered))),
                              'cve': 'CVE-2016-2183', 'detect_class': 'posture'})
+    # ---- CVE-2002-20001 D(HE)at EXPOSURE: server negotiated finite-field DHE ----
+    dhe, dhe_group, dhe_bits = _dhe_info(server)
+    if dhe:
+        big = (dhe_bits or 0) >= DHEAT_LARGE_GROUP_BITS
+        bits_txt = ' ({}-bit)'.format(dhe_bits) if dhe_bits else ''
+        findings.append({
+            'severity': 'warn' if big else 'notice',
+            'code': 'cve_2002_20001_dhe_offered',
+            'message': ('Server negotiated finite-field DHE ({}{}), performing a modular '
+                        'exponentiation per handshake - exposed to D(HE)at (CVE-2002-20001): '
+                        'a client can force that work cheaply, and large groups (OpenSSL 3.x '
+                        'and OpenJDK default to ffdhe8192) need far fewer requests to hurt'
+                        .format(dhe_group, bits_txt)),
+            'cve': 'CVE-2002-20001', 'cvss': _CVE_2002_20001['cvss'],
+            'cvss_source': _CVE_2002_20001['cvss_source'], 'detect_class': 'exposure',
+            'related_cve': list(_CVE_2002_20001['related']),
+            'dhe_group': dhe_group, 'group_bits': dhe_bits})
     # ---- record-layer attack shapes (v4): read from the plaintext record stream ----
     neg_ch = server['cipher'] if server else None
     for d in (records or []):
@@ -1077,6 +1143,35 @@ def _tls_analyze(sessions, now=None, denylist=None):
         index[key] = rec
         out.append(rec)
 
+    # ---- CVE-2002-20001 D(HE)at volume tier: a source repeating finite-field DH
+    # handshakes in the capture window is the DoS-flood shape. Uses the dedup `count`
+    # (per client fingerprint), tiered by the DH group size. Coarser than the daemon's
+    # per-flow "no application data" refinement, but the same volume-from-one-source signal.
+    for rec in out:
+        dhe_f = next((f for f in rec['findings']
+                      if f['code'] == 'cve_2002_20001_dhe_offered'), None)
+        if not dhe_f:
+            continue
+        bits = dhe_f.get('group_bits')
+        tiers = _dheat_tiers(bits)
+        if rec['count'] < tiers[0][0]:
+            continue
+        sev = tiers[0][1]
+        for limit, s in tiers:
+            if rec['count'] >= limit:
+                sev = s
+        rec['findings'].insert(0, {
+            'severity': sev, 'code': 'cve_2002_20001_dheat_flood',
+            'message': ('{} finite-field DH handshakes of this shape from {} in the capture '
+                        'window - the D(HE)at volume signature (CVE-2002-20001): a source '
+                        'forcing repeated server modexps (group {})'
+                        .format(rec['count'], rec['src'].split(':')[0],
+                                dhe_f.get('dhe_group'))),
+            'cve': 'CVE-2002-20001', 'cvss': _CVE_2002_20001['cvss'],
+            'cvss_source': _CVE_2002_20001['cvss_source'], 'detect_class': 'attack',
+            'confidence': 'heuristic', 'count': rec['count'],
+            'group': dhe_f.get('dhe_group'), 'group_bits': bits})
+
     # Verdict from the deduplicated set (recompute so an upgraded representative
     # is scored on its final findings).
     verdict = 'clean'
@@ -1241,12 +1336,15 @@ def _build_quic_initial(dcid, scid, keys, handshake_bytes, version, pn=0):
     return bytes(pkt)
 
 
-def _mk_server_hello(version, cipher, neg_version=None, alpn=None):
+def _mk_server_hello(version, cipher, neg_version=None, alpn=None, group=None):
     body = struct.pack('!H', version) + b'\x11' * 32 + b'\x00'
     body += struct.pack('!H', cipher) + b'\x00'
     exts = b''
     if neg_version is not None:
         exts += struct.pack('!HH', 0x002b, 2) + struct.pack('!H', neg_version)
+    if group is not None:                            # key_share: group + 1-byte key_exchange
+        ks = struct.pack('!H', group) + struct.pack('!H', 1) + b'\x00'
+        exts += struct.pack('!HH', 0x0033, len(ks)) + ks
     if alpn:
         protos = b''.join(struct.pack('!B', len(p.encode())) + p.encode() for p in alpn)
         d = struct.pack('!H', len(protos)) + protos
@@ -1438,6 +1536,36 @@ def selftest():
         _KAT_CIPHERS, _KAT_EXTS, _KAT_SIGALGS, [0x0304], alpn=['h2'], sni='x.test')[4:])
     ck('no_sweet32_false_positive', 'cve_2016_2183_client_offer'
        not in {x['code'] for x in analyze_session(cclean, None, [], now)[0]})
+
+    # ---- CVE-2002-20001 D(HE)at: finite-field DHE exposure + volume tier ----
+    shdhe = parse_server_hello(_mk_server_hello(0x0303, 0x0033)[4:])   # classic DHE_RSA_AES128
+    fd = next((x for x in analyze_session(None, shdhe, [], now)[0]
+               if x['code'] == 'cve_2002_20001_dhe_offered'), None)
+    ck('dheat_classic_dhe_exposure', fd is not None)
+    ck('dheat_cve_field', (fd or {}).get('cve'), 'CVE-2002-20001')
+    ck('dheat_exposure_class', (fd or {}).get('detect_class'), 'exposure')
+    # TLS 1.3 ffdhe8192 (large group) -> warn severity + group bits.
+    sh13 = parse_server_hello(_mk_server_hello(0x0303, 0x1301, neg_version=0x0304,
+                                               group=0x0104)[4:])
+    f13 = next((x for x in analyze_session(None, sh13, [], now)[0]
+                if x['code'] == 'cve_2002_20001_dhe_offered'), None)
+    ck('dheat_ffdhe8192_group', (f13 or {}).get('dhe_group'), 'ffdhe8192')
+    ck('dheat_ffdhe8192_bits', (f13 or {}).get('group_bits'), 8192)
+    ck('dheat_large_group_warn', (f13 or {}).get('severity'), 'warn')
+    # ECDHE (x25519 group 0x001d) must NOT trigger D(HE)at.
+    shec = parse_server_hello(_mk_server_hello(0x0303, 0x1301, neg_version=0x0304,
+                                               group=0x001d)[4:])
+    ck('dheat_ecdhe_no_finding', 'cve_2002_20001_dhe_offered'
+       not in {x['code'] for x in analyze_session(None, shec, [], now)[0]})
+    # Volume tier: many classic-DHE handshakes from one source -> flood attack finding.
+    dhe_sessions = [{'proto': 'tls', 'src': '10.0.0.9', 'sport': 40000 + i,
+                     'dst': '10.0.0.1', 'dport': 443, 'client': None,
+                     'server': parse_server_hello(_mk_server_hello(0x0303, 0x0033)[4:]),
+                     'certs': [], 'records': []} for i in range(60)]
+    fa = _tls_analyze(dhe_sessions, now)
+    ck('dheat_flood_volume_tier',
+       any(f['code'] == 'cve_2002_20001_dheat_flood'
+           for rec in fa['sessions'] for f in rec['findings']))
 
     # ---- record-layer CVEs (v4): CVE-2016-8610 death alert, CVE-2017-3731 short record ----
     def _rec_bytes(ct, body):

@@ -9523,6 +9523,52 @@ const _SRM_SEV_STYLE = {
     critical: 'text-red-300', high: 'text-red-300', medium: 'text-amber-300',
     low: 'text-gray-400', info: 'text-gray-500',
 };
+async function runIpsecWatch() {
+    const out = document.getElementById('ipsec-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('ipsec-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('ipsec-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '20';
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing IKE (UDP 500/4500)…</p>';
+    try {
+        _fillIfaceSel('ipsec-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs) +
+            (iface ? '&interface=' + encodeURIComponent(iface) : '');
+        const d = await fetchAPI('/api/net/ipsec-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runIpsecWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const styles = { attack: ['bg-red-900/40 border-red-700 text-red-200', 'ATTACK'], exposure: ['bg-amber-900/40 border-amber-700 text-amber-200', 'EXPOSURE'], observed: ['bg-slate-800 border-slate-600 text-gray-300', 'OBSERVED'], clean: ['bg-green-900/30 border-green-700 text-green-300', 'CLEAN'] };
+        const [cls, label] = styles[d.verdict] || styles.observed;
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · IKE msgs: ${d.ike_msgs || 0} · findings: ${d.finding_count || 0}</p>`;
+        const sev = { high: 'text-red-300', medium: 'text-amber-300', low: 'text-gray-400' };
+        if ((d.findings || []).length) {
+            html += '<ul class="space-y-1">';
+            for (const f of d.findings) {
+                const sc = sev[f.severity] || sev.low;
+                html += `<li class="text-sm"><span class="${sc} font-mono">${escapeHtml(f.code || '')}</span>${f.algorithm ? ' <span class="text-gray-400">' + escapeHtml(f.algorithm) + '</span>' : ''}${f.family ? ' <span class="text-xs text-gray-500">[' + escapeHtml(f.family) + ']</span>' : ''}<br><span class="text-xs text-gray-400">${escapeHtml(f.detail || '')}</span></li>`;
+            }
+            html += '</ul>';
+        } else {
+            html += '<p class="text-sm text-green-300">No IKE weaknesses observed.</p>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(String(e)) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+
 async function runSrMplsWatch() {
     const out = document.getElementById('srmpls-results');
     if (!out) return;
@@ -10738,7 +10784,7 @@ async function runRoutingSelftest() {
                         arp: 'ARP Poisoning (incl. HSRP/VRRP virtual-MAC awareness)', dns: 'DNS Doctor (poison parser / anchors / ASN)',
                         mac: 'MAC Watch (spoof / vendor-OUI / randomization / HSRP-VRRP virtual-MAC)', dhcp: 'DHCP Guardian (rogue server / starvation)',
                         lacp: 'LACP Watch (802.1AX LAG-hijack / flapping)', rpc: 'RPC/NetLogon Watch (Zerologon / DCSync / WinRM)',
-                        bfd: 'BFD Watch (failover manipulation)', ptp: 'PTP Watch (IEEE-1588 grandmaster takeover)', srmpls: 'SR-MPLS Watch (MPLS segment injection)',
+                        bfd: 'BFD Watch (failover manipulation)', ptp: 'PTP Watch (IEEE-1588 grandmaster takeover)', srmpls: 'SR-MPLS Watch (MPLS segment injection)', ipsec: 'IPsec/IKE Watch (D(HE)at / weak-DH / SWEET32)',
                         cisco_guard: 'Cisco Guard (IOS/IOS-XE/NX-OS CVEs)', juniper_guard: 'Juniper Guard (J-Web/SSR/Space CVEs)', arista_guard: 'Arista Guard (EOS CVEs)', comware_guard: 'Comware Guard (VRF-hop / MPLS CVEs)',
                         mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
                         bgp_speaker: 'BGP Speaker (codec/FSM/RIB)', path_asymmetry: 'Path Asymmetry (OWD)' };
@@ -10749,7 +10795,7 @@ async function runRoutingSelftest() {
             '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
             '<tr class="text-left text-gray-500"><th class="px-2 py-1">Scanner</th><th class="px-2 py-1">Scenarios</th><th class="px-2 py-1">End-to-end</th><th class="px-2 py-1">Result</th></tr>' +
             '</thead><tbody>';
-        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
+        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
         // Append any suite the backend returned that isn't in the preferred order,
         // so a newly-wired detector can never again be counted toward pass/fail yet
         // stay invisible in the table.
