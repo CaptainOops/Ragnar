@@ -53,6 +53,17 @@ DNSMASQ_PID = "/tmp/ragnar/btpan-dnsmasq.pid"
 
 _CMD_TIMEOUT = 8.0
 
+# Which apt package provides each runtime tool the NAP needs. `ip` comes from
+# iproute2, which is always present, so it is not part of the installable set.
+_TOOL_PKG = {
+    "bt-network": "bluez-tools",
+    "bt-agent": "bluez-tools",
+    "dnsmasq": "dnsmasq",
+}
+# bridge-utils is not strictly required (we bring the bridge up with `ip link`),
+# but installing it alongside is harmless and matches what other setups expect.
+_INSTALL_PACKAGES = ["bluez-tools", "dnsmasq", "bridge-utils"]
+
 
 def _priv(cmd: list[str]) -> list[str]:
     """Prefix ``sudo -n`` unless we are already root (ragnar.service runs as
@@ -246,10 +257,15 @@ class BtPanServer:
 
     def _status_locked(self) -> dict:
         running = self._running()
+        missing = missing_tools()
         return {
             "success": True,
             "running": running,
-            "available": _tool("bt-network") and _tool("bt-agent"),
+            # Available only when every runtime tool is present; the UI shows an
+            # "Install dependencies" action from `missing_packages` otherwise.
+            "available": not missing,
+            "missing_tools": missing,
+            "missing_packages": missing_packages(),
             "bridge": BRIDGE if self._bridge_present() else None,
             "address": GATEWAY if running else None,
             "port": 8000,
@@ -286,3 +302,83 @@ def stop() -> dict:
 
 def status() -> dict:
     return _instance().status()
+
+
+# --- On-demand dependency install -------------------------------------------
+# The NAP needs bluez-tools (bt-network, bt-agent) + dnsmasq, which a lean image
+# may not ship. Rather than fail with a raw package error, the UI offers an
+# "Install dependencies" action that drives this — apt in the background, with a
+# streamed log the page polls, exactly like the other on-demand installers.
+
+
+def missing_tools() -> list[str]:
+    """Runtime tools the NAP needs that are not on PATH."""
+    return [t for t in _TOOL_PKG if not _tool(t)]
+
+
+def missing_packages() -> list[str]:
+    """apt packages to install to satisfy the missing tools."""
+    return sorted({_TOOL_PKG[t] for t in missing_tools()})
+
+
+_install_lock = threading.Lock()
+_install_state = {"running": False, "log": "", "done": False, "ok": None, "error": None}
+
+
+def _install_append(text: str) -> None:
+    with _install_lock:
+        # Keep the tail bounded — the page only shows the last lines.
+        _install_state["log"] = (_install_state["log"] + text)[-8000:]
+
+
+def install_status() -> dict:
+    with _install_lock:
+        snap = dict(_install_state)
+    snap["missing_tools"] = missing_tools()
+    snap["missing_packages"] = missing_packages()
+    return snap
+
+
+def install_deps() -> dict:
+    """Kick off (once) a background apt install of the missing packages."""
+    with _install_lock:
+        if _install_state["running"]:
+            already = True
+        else:
+            already = False
+            _install_state.update(running=True, log="", done=False, ok=None, error=None)
+    if not already:
+        threading.Thread(target=_do_install, daemon=True, name="btpan-install").start()
+    return install_status()
+
+
+def _do_install() -> None:
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    try:
+        _install_append("Updating package lists…\n")
+        up = subprocess.run(_priv(["apt-get", "update"]), capture_output=True, text=True,
+                            timeout=180, env=env)
+        _install_append((up.stdout or "")[-1500:] + (up.stderr or "")[-1500:])
+        _install_append(f"\nInstalling: {' '.join(_INSTALL_PACKAGES)}\n")
+        proc = subprocess.Popen(
+            _priv(["apt-get", "install", "-y", "--no-install-recommends"] + _INSTALL_PACKAGES),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                _install_append(line)
+        proc.wait(timeout=600)
+        ok = proc.returncode == 0 and not missing_tools()
+        with _install_lock:
+            _install_state.update(done=True, ok=ok,
+                                  error=None if ok else "Install finished but some tools are still missing.")
+        _install_append("\nDone — dependencies installed.\n" if ok
+                        else "\nInstall did not complete cleanly.\n")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[btpan] dependency install failed: %s", exc)
+        with _install_lock:
+            _install_state.update(done=True, ok=False, error=str(exc))
+        _install_append(f"\nError: {exc}\n")
+    finally:
+        with _install_lock:
+            _install_state["running"] = False

@@ -25,6 +25,14 @@ On the box: **Config → Bluetooth access point → on** (or `POST /api/bt/pan/t
 {"enabled": true}`). The setting is persisted (`bt_pan_enabled`) and comes back
 up on boot.
 
+**Dependencies.** The NAP needs `bluez-tools` (`bt-network`, `bt-agent`) and
+`dnsmasq`. A lean image may not ship them; if they are missing the card shows an
+**Install dependencies** button, and turning the toggle on installs them for you
+first (apt in the background, with a streamed log). `POST /api/bt/pan/install`
+starts it and `GET /api/bt/pan/install-log` reports progress; the NAP comes up
+once they land. Nothing is persisted until it actually starts, so a box that
+can't install the packages never boot-loops trying.
+
 On the phone (**Android only** — iOS does not support Bluetooth PAN to a device
 like this):
 
