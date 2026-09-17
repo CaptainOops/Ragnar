@@ -294,6 +294,15 @@ The header shows the unit's identity — its mesh Viking short-name (e.g.
 
 ### Actions & the serial protocol
 
+**Action progress feedback.** The Action subpage shows an animated spinner + an
+elapsed clock while an action runs (so a slow Pi Zero never looks frozen), and for
+time-bounded actions a live **countdown + progress bar**. The Pi sends `act_dur`
+(seconds) and a "what's happening" `act_detail` from `_CYD_ACTION_INFO`
+(e.g. WiFi Defense -> "listening 2.4GHz", 16 s); the node counts down locally from
+when it first sees `running`. New-AP sensor findings are `info` severity (routine —
+no Pushover).
+
+
 Every tappable action maps to one entry in `cyd_node.ALLOWED_ACTIONS` and one
 Ragnar subsystem call in `_cyd_dispatch_action` (a queued tap → an `{"t":"ac"}`
 serial frame, or `POST /api/cyd/action`). A spoofed node can only ever request

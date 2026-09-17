@@ -286,6 +286,7 @@ struct RagnarStatus {
   char     actName[24]      = "";
   char     actState[12]     = "";
   char     actDetail[28]    = "";
+  int      actDur          = 0;    // expected duration (s) for a timed action, 0=unknown
   // Wardrive live status (own page):
   bool     wdRun            = false;
   int      wdNets           = 0;
@@ -649,6 +650,7 @@ static void applyStatus(const String &body) {
   CYD_CPYS(actName, "act_name");
   CYD_CPYS(actState, "act_state");
   CYD_CPYS(actDetail, "act_detail");
+  g_rs.actDur = jsonInt(body, "act_dur");
   CYD_CPYS(wdGps, "wd_gps");
   CYD_CPYS(wdBand, "wd_band");
   CYD_CPYS(wdC1, "wd_c1");
@@ -686,7 +688,7 @@ static void applyStatus(const String &body) {
     + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
     + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
-    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|'
+    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|' + g_rs.actDur + '|'
     + g_rs.wdRun + '|' + g_rs.wdNets + '|' + g_rs.wdScan + '|' + g_rs.wdBle + '|'
     + g_rs.wdCell + '|' + g_rs.wdZig + '|' + g_rs.wdComp + '|' + g_rs.wdGps + '|'
     + g_rs.wdBand + '|' + g_rs.wdC1 + '|' + g_rs.wdC2 + '|' + g_rs.wdEnabled;
@@ -1243,6 +1245,8 @@ static Screen   g_actReturn = SCR_HOME;    // where the tap came from
 static char     g_actLabel[24] = "";       // friendly label of what we asked
 static char     g_actName[24]  = "";       // action id we're tracking
 static uint32_t g_actStartMs   = 0;
+static uint32_t g_actRunStart  = 0;   // when THIS action first reported 'running'
+static bool     g_actAnimate   = false; // tick the Action page (spinner/countdown)
 
 static void requestAction(const char *action, const char *label) {
 #if CYD_TRANSPORT_SERIAL
@@ -1257,33 +1261,71 @@ static void requestAction(const char *action, const char *label) {
   g_rs.actName[0] = 0; g_rs.actState[0] = 0; g_rs.actDetail[0] = 0;
   g_actReturn = g_screen;
   g_actStartMs = millis();
+  g_actRunStart = 0;
+  g_actAnimate = true;   // spinner runs until Ragnar reports a terminal state
   g_screen = SCR_ACTION;
   g_needRedraw = true;
 }
 
 static void drawAction() {
   drawHeader("ACTION", false);
-  int16_t y = HEAD_H + 20;
+  int16_t y = HEAD_H + 16;
   gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
   // What we asked for
   gfx->setTextColor(colSky()); gfx->setTextSize(2);
-  gfx->setCursor(12, y); gfx->print(g_actLabel); y += 40;
+  gfx->setCursor(12, y); gfx->print(g_actLabel); y += 34;
 
-  // Fresh result only if Ragnar is reporting THIS action; a ~1.2s grace ignores a
-  // stale terminal result carried by an in-flight push right after the tap.
-  bool mine = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
+  // Only trust a result reporting THIS action; a ~1.2s grace ignores a stale
+  // terminal result carried by an in-flight push right after the tap.
+  bool mine  = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
   bool grace = (millis() - g_actStartMs) < 1200;
   const char *st = g_rs.actState;
-  if (!mine || (grace && strcmp(st, "running") != 0)) {
-    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
-    gfx->setCursor(12, y); gfx->print("starting...");
+  bool starting = (!mine) || (grace && strcmp(st, "running") != 0);
+  bool running  = !starting && strcmp(st, "running") == 0;
+  bool done     = !starting && strcmp(st, "done")  == 0;
+
+  // animated spinner while working (ticked by serviceUI while g_actAnimate)
+  static const char SPN[4] = {'|', '/', '-', '\\'};
+  char sc = SPN[(millis() / 125) % 4];
+
+  if (starting || running) {
+    g_actAnimate = true;
+    gfx->setTextColor(colAmber()); gfx->setTextSize(3);
+    gfx->setCursor(12, y); gfx->print(starting ? "STARTING" : "RUNNING");
+    gfx->setCursor(SCR_W - 30, y); gfx->print(sc);       // spinner
+    y += 40;
+    // what's happening
+    const char *what = starting ? "waiting for Ragnar"
+                                : (g_rs.actDetail[0] ? g_rs.actDetail : "working");
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(12, y); gfx->print(what); y += 32;
+    if (running && g_rs.actDur > 0) {
+      // known-length action: local countdown + progress bar
+      if (g_actRunStart == 0) g_actRunStart = millis();
+      uint32_t el = (millis() - g_actRunStart) / 1000;
+      int rem = (int)g_rs.actDur - (int)el; if (rem < 0) rem = 0;
+      int16_t bx = 12, bw = SCR_W - 24, bh = 16;
+      gfx->drawRoundRect(bx, y, bw, bh, 4, colSky());
+      uint32_t cl = (el < (uint32_t)g_rs.actDur) ? el : (uint32_t)g_rs.actDur;
+      int fill = (int)(((uint32_t)(bw - 2)) * cl / (uint32_t)g_rs.actDur);
+      if (fill > 0) gfx->fillRoundRect(bx + 1, y + 1, fill, bh - 2, 3, colGreen());
+      y += bh + 8;
+      gfx->setTextColor(colAmber()); gfx->setTextSize(2); gfx->setCursor(12, y);
+      if (rem > 0) { gfx->print(rem); gfx->print("s left"); }
+      else gfx->print("finishing...");
+    } else {
+      // unknown length: an elapsed clock (the spinner shows it's alive)
+      uint32_t el = (millis() - g_actStartMs) / 1000;
+      gfx->setTextColor(colDim()); gfx->setTextSize(1);
+      gfx->setCursor(12, y + 4); gfx->print("elapsed "); gfx->print(el); gfx->print("s");
+    }
     return;
   }
-  uint16_t c = colAmber(); const char *word = "RUNNING...";
-  if      (strcmp(st, "done")  == 0) { c = colGreen(); word = "DONE"; }
-  else if (strcmp(st, "error") == 0) { c = colRed();   word = "FAILED"; }
-  gfx->setTextColor(c); gfx->setTextSize(3);
-  gfx->setCursor(12, y); gfx->print(word); y += 44;
+
+  // terminal state — stop animating
+  g_actAnimate = false;
+  gfx->setTextColor(done ? colGreen() : colRed()); gfx->setTextSize(3);
+  gfx->setCursor(12, y); gfx->print(done ? "DONE" : "FAILED"); y += 44;
   if (g_rs.actDetail[0]) {
     gfx->setTextColor(WHITE); gfx->setTextSize(2);
     gfx->setCursor(12, y); gfx->print(g_rs.actDetail); y += 34;
@@ -2064,6 +2106,11 @@ static void serviceUI() {
   // status push), drop the "processing" latch so the button can't get stuck greyed.
   if (g_wdPending && millis() - g_wdPendMs > WD_PEND_TIMEOUT_MS) {
     g_wdPending = false; g_needRedraw = true;
+  }
+  // Keep the Action page's spinner + countdown ticking while work is in flight.
+  if (g_screen == SCR_ACTION && g_actAnimate) {
+    static uint32_t lastSpin = 0;
+    if (millis() - lastSpin > 130) { lastSpin = millis(); g_needRedraw = true; }
   }
   static uint32_t lastTap = 0;
   int16_t px, py;
