@@ -1,6 +1,6 @@
 {
   "name": "Ragnar CYD Hybrid Node — USB-serial (ESP32-2432S028R, 2.8\" touch)",
-  "version": "1.4",
+  "version": "1.5",
   "new_install_prompt_erase": true,
   "builds": [
     {

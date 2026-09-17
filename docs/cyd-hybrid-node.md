@@ -257,6 +257,13 @@ The CYD's screen is a native, Ragnar-themed **touch console** — not the web pa
 full screens, each with a back bar:
 
 
+> **HOME tile labels** use a small proportional GFX font (`ragnar_label_font.h`,
+> DejaVuSans-Bold rendered to ~10px caps via PIL) — a bit smaller than the size-2
+> built-in font, since the bitmap font only scales in whole steps. It's applied
+> ONLY to the tile labels (`gfx->setFont(&RagnarLabel)` then `gfx->setFont()` to
+> restore), so every other screen keeps the built-in font. Regenerate with the PIL
+> script kept with the firmware.
+
 > **UI stays responsive during sensing.** The 2.4 GHz sniff dwell and the BLE
 > scan (run asynchronously) both service touch + the display cooperatively, so
 > touch never goes dead mid-cycle. The panel repaints per-field (a full wipe only

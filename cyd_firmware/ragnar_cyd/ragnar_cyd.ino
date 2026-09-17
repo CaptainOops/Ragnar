@@ -44,6 +44,7 @@
 
 #include "config.h"
 #include "ragnar_boot_gif.h"      // embedded 240x320 full-screen boot animation (PROGMEM)
+#include "ragnar_label_font.h"    // proportional ~10px font for HOME tile labels only
 
 // Defined before the first include-terminated section so Arduino's auto-generated
 // prototypes (inserted after the includes) can reference ActionBtn*.
@@ -934,8 +935,12 @@ static void drawMenuTile(int16_t x, int16_t y, const char *label,
   gfx->fillRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(22, 28, 40));
   gfx->drawRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(45, 55, 70));
   gfx->fillRoundRect(x, y + 4, 4, TILE_H - 8, 2, accent);   // left accent bar
-  gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(x + 12, y + (TILE_H - 16) / 2); gfx->print(label);
+  // HOME tile label in the proportional ~10px font (a bit smaller than size-2,
+  // still clean). Custom fonts position by BASELINE, so y is the baseline row;
+  // revert to the built-in font right after so every other screen is unchanged.
+  gfx->setTextColor(WHITE); gfx->setFont(&RagnarLabel); gfx->setTextSize(1);
+  gfx->setCursor(x + 12, y + 22); gfx->print(label);
+  gfx->setFont();
   if (val.length()) {
     gfx->setTextColor(vcol); gfx->setTextSize(1);
     int16_t vx = x + TILE_W - (int16_t)val.length() * 6 - 6;
