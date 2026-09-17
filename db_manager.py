@@ -2138,6 +2138,78 @@ class DatabaseManager:
             logger.error(f"Failed to delete scan job {scan_id}: {e}")
             return False
 
+    def all_scan_db_paths(self) -> List[str]:
+        """
+        Every SQLite file that may hold scan_jobs/scan_findings rows: the
+        current db_path plus each per-network DB under <datadir>/networks/*/db/.
+
+        Scans are persisted to whichever network DB was active when they ran,
+        so any scan-level delete/cleanup must consider all of them — deleting
+        from only the current db_path silently misses rows (and leftover
+        status='running' rows get resurrected into active_scans at every boot).
+        """
+        paths = [self.db_path]
+        try:
+            import glob as _glob
+            current = os.path.abspath(self.db_path)
+            for p in _glob.glob(os.path.join(self.datadir, 'networks', '*', 'db', '*.db')):
+                if os.path.abspath(p) != current:
+                    paths.append(p)
+        except Exception as e:
+            logger.debug(f"Could not enumerate network DBs under {self.datadir}: {e}")
+        return paths
+
+    def delete_scan_everywhere(self, scan_id: str) -> int:
+        """
+        Delete a scan job (and its findings) from every known DB: the current
+        db_path and all per-network DBs.
+
+        Args:
+            scan_id: Scan ID to delete
+
+        Returns:
+            int: total scan_jobs rows removed (0 if the scan was unknown)
+        """
+        import sqlite3 as _sqlite3
+        removed = 0
+        for path in self.all_scan_db_paths():
+            try:
+                with _sqlite3.connect(path, timeout=30) as conn:
+                    n = conn.execute(
+                        "DELETE FROM scan_jobs WHERE scan_id = ?", (scan_id,)).rowcount
+                    f = conn.execute(
+                        "DELETE FROM scan_findings WHERE scan_id = ?", (scan_id,)).rowcount
+                    conn.commit()
+                    removed += n
+                    if n or f:
+                        logger.info(f"Deleted scan {scan_id} rows from {path} "
+                                    f"(jobs={n}, findings={f})")
+            except Exception as e:
+                # A network DB without the scan tables is fine — it just holds
+                # nothing for this scan.
+                logger.debug(f"delete_scan_everywhere skipped {path}: {e}")
+        return removed
+
+    def delete_all_scan_jobs_everywhere(self) -> int:
+        """
+        Delete all scan jobs and findings from every known DB (current +
+        per-network). Returns total scan_jobs rows removed.
+        """
+        import sqlite3 as _sqlite3
+        removed = 0
+        for path in self.all_scan_db_paths():
+            try:
+                with _sqlite3.connect(path, timeout=30) as conn:
+                    n = conn.execute("DELETE FROM scan_jobs").rowcount
+                    conn.execute("DELETE FROM scan_findings")
+                    conn.commit()
+                    removed += n
+                    if n:
+                        logger.info(f"Cleared {n} scan_jobs rows from {path}")
+            except Exception as e:
+                logger.debug(f"delete_all_scan_jobs_everywhere skipped {path}: {e}")
+        return removed
+
     def save_scan_finding(self, finding_id: str, scan_id: str, scanner: str, host: str,
                           port: int = None, severity: str = 'info', title: str = '',
                           description: str = '', cve_ids: List[str] = None,
