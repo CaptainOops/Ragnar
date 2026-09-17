@@ -5183,6 +5183,31 @@
                 </div>
                 <p class="text-xs text-amber-300/80 mb-4">Add only feeds published for public viewing — traffic/DOT cams, surf cams, city or tourism webcams. Do not add cameras you are not authorized to view.</p>
 
+                <!-- Camera Recon: scan YOUR network for IP cameras -->
+                <div class="bg-slate-800/40 rounded-lg p-4 mb-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="font-medium text-sm">🔎 Camera Recon</span>
+                            <span class="text-xs text-gray-400">scan your network for IP cameras</span>
+                        </div>
+                        <span id="cr-status" class="text-xs text-gray-400">idle</span>
+                    </div>
+                    <p class="text-xs text-amber-300/70 mb-3">Scans only the target you specify (your local subnet / an IP you own) — authorized networks only. Findings save to loot; discovered live streams can be added to the grid below.</p>
+                    <div class="flex flex-wrap gap-2 items-center">
+                        <select id="cr-mode" onchange="crModeChange()" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                            <option value="lan">Local subnet (ARP neighbours)</option>
+                            <option value="single">Single IP</option>
+                            <option value="subnet">CIDR (e.g. 192.168.1.0/24)</option>
+                            <option value="list">IP list</option>
+                        </select>
+                        <input id="cr-target" type="text" placeholder="leave blank — scans ARP neighbours" disabled class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm flex-1" style="min-width:180px">
+                        <button id="cr-scan-btn" onclick="crScan()" class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm">Scan</button>
+                        <button onclick="crStop()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm">Stop</button>
+                    </div>
+                    <div id="cr-progress" class="text-xs text-gray-400 mt-2"></div>
+                    <div id="cr-results" class="mt-3 grid gap-2"></div>
+                </div>
+
                 <div id="lc-add-form" class="hidden bg-slate-800/50 rounded-lg p-4 mb-4 grid gap-3 sm:grid-cols-2">
                     <input id="lc-label" type="text" placeholder="Label (e.g. Downtown Main St)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
                     <input id="lc-category" type="text" placeholder="Category (e.g. Traffic)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
@@ -5260,7 +5285,54 @@
                     imgs[i].src = base + (base.indexOf('?')>-1?'&':'?') + '_ts=' + Date.now();
                 }
             }
-            (function init(){ if (!el('livecams-grid')){ return setTimeout(init, 500); } window.lcLoad(); setInterval(refreshSnapshots, REFRESH_MS); })();
+            // ----- Camera Recon (scan own network) -----
+            var crTimer = null;
+            window.crModeChange = function(){
+                var m = el('cr-mode').value, t = el('cr-target'); if (!t) return;
+                t.placeholder = m==='lan' ? 'leave blank — scans ARP neighbours' :
+                    (m==='single' ? 'e.g. 192.168.1.50' :
+                    (m==='subnet' ? 'e.g. 192.168.1.0/24' : 'IPs separated by space or comma'));
+                t.disabled = (m==='lan'); if (m==='lan') t.value='';
+            };
+            window.crScan = function(){
+                var mode = el('cr-mode').value, target = (el('cr-target')||{}).value || '';
+                var btn = el('cr-scan-btn'); if (btn) btn.disabled = true;
+                fetch('/api/camera-recon/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode:mode, target:target})})
+                    .then(function(r){return r.json();}).then(function(d){
+                        if (d && d.success){ crPoll(); if(!crTimer) crTimer = setInterval(crPoll, 2000); }
+                        else { var pg=el('cr-progress'); if(pg) pg.textContent = (d && d.error) || 'scan failed'; if(btn) btn.disabled=false; }
+                    }).catch(function(){ if(btn) btn.disabled=false; });
+            };
+            window.crStop = function(){ fetch('/api/camera-recon/stop', {method:'POST'}).catch(function(){}); };
+            function crPoll(){
+                fetch('/api/camera-recon/status').then(function(r){return r.json();}).then(function(d){
+                    if (!d || !d.success) return;
+                    crRender(d.scan);
+                    if (!d.scan.scanning){ if (crTimer){ clearInterval(crTimer); crTimer=null; } var b=el('cr-scan-btn'); if(b) b.disabled=false; }
+                }).catch(function(){});
+            }
+            function crRender(scan){
+                var st = el('cr-status'); if (st) st.textContent = scan.status + (scan.scanning?' …':'');
+                var pg = el('cr-progress'); if (pg) pg.textContent = 'scanned ' + scan.scanned + '/' + scan.total + ' · cameras found: ' + (scan.cameras||[]).length;
+                var box = el('cr-results'); if (!box) return;
+                if (!scan.cameras || !scan.cameras.length){ box.innerHTML = scan.scanning ? '' : '<p class="text-xs text-gray-500">No cameras found on that target.</p>'; return; }
+                box.innerHTML = scan.cameras.map(function(c){
+                    var creds = c.creds ? '<span class="text-red-300">default creds: '+esc(c.creds[0])+':'+esc(c.creds[1])+'</span>' : '<span class="text-gray-500">no default creds</span>';
+                    var mjpeg = (c.mjpeg_urls||[]).map(function(u){
+                        return '<div class="flex items-center gap-2 text-xs mt-1"><span class="text-emerald-300 truncate">'+esc(u)+'</span>'
+                            + '<button onclick="crAddStream(\''+esc(u)+'\',\''+esc(c.ip)+'\')" class="text-Ragnar-300 hover:text-Ragnar-200 flex-shrink-0">+ Live Cams</button></div>';
+                    }).join('');
+                    var rtsp = (c.streams||[]).map(function(u){ return '<div class="text-xs text-blue-300 truncate mt-1">'+esc(u)+' <span class="text-gray-500">(RTSP — open in VLC)</span></div>'; }).join('');
+                    return '<div class="bg-slate-900/60 rounded p-2">'
+                        + '<div class="text-sm font-medium">'+esc(c.ip)+' <span class="text-xs text-gray-400">'+esc(c.brand)+' · ports '+(c.open_ports||[]).join(',')+'</span></div>'
+                        + '<div class="text-xs mt-1">'+creds+'</div>' + mjpeg + rtsp + '</div>';
+                }).join('');
+            }
+            window.crAddStream = function(url, ip){
+                fetch('/api/livecams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({label:'Cam '+ip, category:'Recon', url:url, type:'snapshot'})})
+                    .then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
+            };
+            (function init(){ if (!el('livecams-grid')){ return setTimeout(init, 500); } window.lcLoad(); if (window.crModeChange) window.crModeChange(); setInterval(refreshSnapshots, REFRESH_MS); })();
         })();
         </script>
 

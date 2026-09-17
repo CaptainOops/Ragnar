@@ -3604,6 +3604,55 @@ def livecams_snapshot(cam_id):
         return jsonify({'success': False, 'error': 'fetch failed'}), 502
 
 
+# ---------------------------------------------------------------------------
+# Camera Recon -- headless CCTV/IP-camera discovery on the operator's own /
+# authorized network (see camera_recon.py). Findings file into the scan-results
+# loot tree; any live stream URLs found can be added to the Live Cams panel.
+# ---------------------------------------------------------------------------
+try:
+    import camera_recon as _camera_recon
+except Exception:                                            # pragma: no cover
+    _camera_recon = None
+
+
+def _camera_recon_loot_dir():
+    base = (getattr(shared_data, 'scan_results_dir', None)
+            or getattr(shared_data, 'output_dir', None) or 'output')
+    d = os.path.join(base, 'camera_recon')
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+@app.route('/api/camera-recon/scan', methods=['POST'])
+def camera_recon_scan():
+    if _camera_recon is None:
+        return jsonify({'success': False, 'error': 'camera_recon module unavailable'}), 500
+    body = request.get_json(silent=True) or {}
+    mode = (body.get('mode') or 'lan').strip().lower()
+    target = (body.get('target') or '').strip()
+    ok, msg, total = _camera_recon.scanner.start(mode, target, _camera_recon_loot_dir())
+    if not ok:
+        return jsonify({'success': False, 'error': msg}), 409
+    return jsonify({'success': True, 'message': msg, 'targets': total})
+
+
+@app.route('/api/camera-recon/status', methods=['GET'])
+def camera_recon_status():
+    if _camera_recon is None:
+        return jsonify({'success': False, 'error': 'unavailable'}), 500
+    return jsonify({'success': True, 'scan': _camera_recon.scanner.snapshot()})
+
+
+@app.route('/api/camera-recon/stop', methods=['POST'])
+def camera_recon_stop():
+    if _camera_recon is not None:
+        _camera_recon.scanner.stop()
+    return jsonify({'success': True})
+
+
 @app.route('/api/inventory/config', methods=['POST'])
 def inventory_config():
     """Toggle the periodic snapshotter and its interval."""
