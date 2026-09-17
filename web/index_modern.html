@@ -752,6 +752,7 @@
                     <button onclick="showTab('epaper')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap requires-display" data-tab="epaper">
                         Display
                     </button>
+                    <button onclick="showTab('toolkit')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700" data-tab="toolkit">Toolkit</button>
                     <button onclick="showTab('livecams')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap" data-tab="livecams">
                         Live Cams
                     </button>
@@ -806,6 +807,7 @@
                 <button onclick="showTab('adv-vuln')" data-tab="adv-vuln" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Adv Scan</button>
                 <button onclick="showTab('wardriving')" data-tab="wardriving" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700 wardriving-feature hidden">Wardriving</button>
                 <button onclick="showTab('epaper')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700 requires-display">Display</button>
+                <button onclick="showTab('toolkit')" data-tab="toolkit" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Toolkit</button>
                 <button onclick="showTab('livecams')" data-tab="livecams" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Live Cams</button>
                 <button onclick="showTab('files')" data-tab="files" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Files</button>
                 <button onclick="showTab('system')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">System</button>
@@ -5172,6 +5174,7 @@
             </div>
         </div>
 
+        {% include "toolkit_panel.html" %}
         <div id="livecams-tab" class="tab-content hidden">
             <div class="glass rounded-xl p-4 sm:p-6 mb-6">
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
@@ -8801,6 +8804,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
+    <script src="/web/scripts/toolkit.js?v=1"></script>
     <script src="/web/scripts/ragnar_modern.js?v=20260914-selftest-coverage"></script>
 
 

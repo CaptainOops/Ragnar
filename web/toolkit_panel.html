@@ -1,0 +1,32 @@
+<div id="toolkit-tab" class="tab-content hidden">
+  <style>
+    .tk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.tk-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;margin-bottom:18px}.tk-card h2{font-size:20px;font-weight:600;margin-bottom:12px}.tk-card p,.tk-muted{color:#94a3b8;margin:8px 0}.tk-card label{display:block;margin:12px 0 6px}.tk-card input,.tk-card select{width:100%;background:#0f172a;color:#f1f5f9;border:1px solid #475569;border-radius:6px;padding:10px}.tk-card button,.tk-link{display:inline-block;background:#334155;border-radius:6px;padding:8px 12px;margin:8px 8px 0 0}.tk-card button:disabled{opacity:.45;cursor:not-allowed}.tk-card button[type=submit]{background:#0369a1}.tk-job{border-top:1px solid #475569;padding:14px 0;overflow-wrap:anywhere}.tk-job a{color:#7dd3fc;margin-right:16px}.tk-error{color:#fda4af!important}.tk-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#0f172a;padding:14px}.tk-card [hidden]{display:none}
+  </style>
+  <div class="tk-card">
+    <h2>Toolkit</h2>
+    <p>Quick investigations, Shodan intelligence and Ethernet utilities. Every job saves its report and artifacts to this network’s loot.</p>
+    <button onclick="showTab('livecams')">Live cameras</button><button onclick="showTab('network')">Network &amp; switch tools</button><button onclick="showTab('traffic')">Traffic analysis</button><button onclick="showTab('files')">Browse loot</button>
+  </div>
+  <div class="tk-grid">
+    <form id="tk-run" class="tk-card">
+      <h2>Run a tool</h2>
+      <label for="tk-tool">Tool</label><select id="tk-tool"></select>
+      <p id="tk-description"></p><p id="tk-dependency" class="tk-error"></p>
+      <div id="tk-target-wrap"><label for="tk-target" id="tk-target-label">Target</label><input id="tk-target" maxlength="500" autocomplete="off"></div>
+      <div id="tk-interface-wrap" hidden><label for="tk-interface">Interface</label><select id="tk-interface"></select></div>
+      <div id="tk-capture-wrap" hidden><label for="tk-profile">Capture profile</label><select id="tk-profile"></select><label for="tk-duration">Seconds (5–120)</label><input id="tk-duration" type="number" min="5" max="120" value="20"></div>
+      <div id="tk-page-wrap" hidden><label for="tk-page">Search page (1–20)</label><input id="tk-page" type="number" min="1" max="20" value="1"></div>
+      <button type="submit" id="tk-submit">Run &amp; save to loot</button>
+      <p id="tk-message" role="status" aria-live="polite"></p>
+    </form>
+    <form id="tk-key-form" class="tk-card">
+      <h2>Shodan</h2><p id="tk-key-status">Loading configuration…</p>
+      <p>Look up indexed internet services or run a search. Search filters and additional pages may use query credits on your Shodan plan.</p>
+      <label for="tk-key">API key</label><input id="tk-key" type="password" autocomplete="new-password" placeholder="Stored only on the Ragnar server">
+      <button type="submit">Save key</button><button type="button" id="tk-remove-key">Remove key</button>
+      <p id="tk-key-message" role="status"></p>
+    </form>
+  </div>
+  <div class="tk-card"><h2>Saved jobs</h2><p>Latest 100 jobs for the active network. Captures include a downloadable PCAP. Copy a capture’s job ID into Capture summary to inspect it.</p><button id="tk-refresh">Refresh</button><div id="tk-jobs"></div></div>
+  <div class="tk-card" id="tk-preview-wrap" hidden><h2>Result preview</h2><pre id="tk-preview" class="tk-result"></pre></div>
+</div>

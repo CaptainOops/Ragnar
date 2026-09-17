@@ -85,6 +85,13 @@ app = Flask(__name__,
             static_folder='web',
             template_folder='web')
 app.config['SECRET_KEY'] = auth_mgr.get_or_create_secret_key()
+from toolkit import Toolkit
+from toolkit_api import create_blueprint as create_toolkit_blueprint, KEY as SHODAN_KEY
+from env_manager import EnvManager
+_toolkit_settings = EnvManager()
+toolkit_engine = Toolkit(lambda: shared_data.datastolendir,
+                         lambda: _toolkit_settings.get_env_key(SHODAN_KEY))
+app.register_blueprint(create_toolkit_blueprint(toolkit_engine, _toolkit_settings))
 # Cookie name must be unique per device: two Ragnar instances reached through
 # the same hostname (e.g. SSH tunnels on localhost:3000/3001) share one cookie
 # jar, and with Flask's default name 'session' each login overwrites the other
