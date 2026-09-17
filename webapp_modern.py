@@ -2884,16 +2884,30 @@ def _cyd_sanitize(s, n=28):
 # Lifecycle of the most recent action a CYD requested, surfaced in the status
 # feed (act_name/act_state/act_detail) so the node's generic Action subpage can
 # show starting -> running -> done/error with a result, instead of firing blind.
-_cyd_last_action = {'name': '', 'state': '', 'detail': '', 'ts': 0.0}
+_cyd_last_action = {'name': '', 'state': '', 'detail': '', 'dur': 0, 'ts': 0.0}
 # Actions whose real result lands later from a background thread — they stay
 # 'running' on the immediate return and report their own 'done'/'error'.
 _CYD_BG_ACTIONS = {'speed_test', 'captive_check', 'network_scan',
                    'wifi_defense_scan', 'ragnar_update'}
 
 
-def _cyd_set_action(name, state, detail=''):
+# Expected duration (s) + a "what's happening" line per time-bounded action, so
+# the CYD can show a countdown/progress bar instead of a dead "working...". dur 0
+# = unknown length -> the node shows a spinner + elapsed clock only.
+_CYD_ACTION_INFO = {
+    'wifi_defense_scan': (16, 'listening 2.4GHz'),
+    'network_scan':      (10, 'sweeping airspace'),
+    'captive_check':     (8,  'probing portal'),
+    'ble_scan':          (10, 'scanning BLE'),
+    'speed_test':        (0,  'testing speed'),
+    'ragnar_update':     (0,  'updating Ragnar'),
+}
+
+
+def _cyd_set_action(name, state, detail='', dur=0):
     _cyd_last_action.update(name=str(name or ''), state=str(state or ''),
-                            detail=_cyd_sanitize(detail, 26), ts=time.time())
+                            detail=_cyd_sanitize(detail, 26), dur=int(dur or 0),
+                            ts=time.time())
 
 
 def _cyd_dispatch_tracked(action, node_name):
@@ -2901,7 +2915,8 @@ def _cyd_dispatch_tracked(action, node_name):
     _cyd_set_action(action, 'running', '')
     status, code = _cyd_dispatch_action(action, node_name)
     if action in _CYD_BG_ACTIONS and status == 'started':
-        _cyd_set_action(action, 'running', 'working...')      # thread reports finish
+        dur, what = _CYD_ACTION_INFO.get(action, (0, 'working...'))
+        _cyd_set_action(action, 'running', what, dur=dur)     # thread reports finish
     elif status in ('done', 'started'):
         _cyd_set_action(action, 'done', status)
     else:
@@ -3081,6 +3096,7 @@ def _cyd_build_status_dict():
         'act_name': _cyd_last_action['name'],
         'act_state': _cyd_last_action['state'],
         'act_detail': _cyd_last_action['detail'],
+        'act_dur': _cyd_last_action['dur'],
         'ts': int(time.time()),
     }
     d.update(_cyd_traffic())          # tf_run / tf_pps / tf_mbps / tf_hosts / ...

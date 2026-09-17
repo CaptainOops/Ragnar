@@ -155,7 +155,8 @@ def process_report(node, payload):
                     if rssi not in (None, ''):
                         detail += f' {rssi}dBm'
                     detail += f' (2.4 GHz sensor {node})'
-                    _emit(node, 'medium', 'CYD-NEW-AP', detail, src=bssid)
+                    # New APs are routine (neighbours come and go) -> info, not medium.
+                    _emit(node, 'info', 'CYD-NEW-AP', detail, src=bssid)
                     emitted.append('CYD-NEW-AP')
     return emitted
 

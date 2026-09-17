@@ -44,6 +44,7 @@
 
 #include "config.h"
 #include "ragnar_boot_gif.h"      // embedded 240x320 full-screen boot animation (PROGMEM)
+#include "ragnar_label_font.h"    // proportional ~10px font for HOME tile labels only
 
 // Defined before the first include-terminated section so Arduino's auto-generated
 // prototypes (inserted after the includes) can reference ActionBtn*.
@@ -65,6 +66,8 @@ static Preferences g_prefs;
 // Device settings (Settings screen), persisted in NVS.
 static bool    g_bleEnabled   = true;    // BLE scanning on/off
 static uint8_t g_backlightPct = 100;     // backlight brightness 0..100
+static bool    g_invert       = false;   // invert display colours (INVON/INVOFF)
+static bool    g_flip180      = false;   // rotate display + touch 180 degrees
 
 static void loadConfig() {
   g_prefs.begin("ragnarcyd", true);
@@ -75,6 +78,8 @@ static void loadConfig() {
   g_cfg.name  = g_prefs.getString("name",  CYD_NODE_NAME);
   g_bleEnabled   = g_prefs.getBool("ble", true);
   g_backlightPct = g_prefs.getUChar("bl", 100);
+  g_invert       = g_prefs.getBool("inv", false);
+  g_flip180      = g_prefs.getBool("flip", false);
   g_prefs.end();
   if (g_cfg.name.length() == 0) g_cfg.name = "cyd-node";
   if (g_backlightPct < 10) g_backlightPct = 10;
@@ -84,6 +89,8 @@ static void saveSettings() {
   g_prefs.begin("ragnarcyd", false);
   g_prefs.putBool("ble", g_bleEnabled);
   g_prefs.putUChar("bl", g_backlightPct);
+  g_prefs.putBool("inv", g_invert);
+  g_prefs.putBool("flip", g_flip180);
   g_prefs.end();
 }
 
@@ -115,6 +122,13 @@ static bool haveConfig() {
 static Arduino_DataBus *bus = new Arduino_ESP32SPI(
     TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI, TFT_MISO, VSPI);
 static Arduino_GFX *gfx = new Arduino_ILI9341(bus, TFT_RST, 0 /*rotation*/, false /*IPS*/);
+
+// Apply display orientation + colour inversion (both persisted). Rotation 2 flips
+// the panel 180 degrees; touchRead XORs its invert flags with g_flip180 to match.
+static void applyDisplayOpts() {
+  gfx->setRotation(g_flip180 ? 2 : 0);
+  gfx->invertDisplay(g_invert);
+}
 
 static const int16_t SCR_W = 240;
 static const int16_t SCR_H = 320;
@@ -230,6 +244,12 @@ static bool     g_wdPending = false;
 static bool     g_wdTarget  = false;   // run-state we asked Ragnar to reach
 static uint32_t g_wdPendMs  = 0;
 static const uint32_t WD_PEND_TIMEOUT_MS = 9000;
+// Traffic capture start is slow + variable (5-30s on a Pi Zero); latch a
+// pending state so the button shows a spinner + elapsed until it confirms.
+static bool     g_tfPending = false;
+static bool     g_tfTarget  = false;   // capture state we asked to reach
+static uint32_t g_tfPendMs  = 0;
+static const uint32_t TF_PEND_TIMEOUT_MS = 40000;
 
 // ── Live model: last status synced from Ragnar ────────────────────────────────
 struct RagnarStatus {
@@ -272,6 +292,7 @@ struct RagnarStatus {
   char     actName[24]      = "";
   char     actState[12]     = "";
   char     actDetail[28]    = "";
+  int      actDur          = 0;    // expected duration (s) for a timed action, 0=unknown
   // Wardrive live status (own page):
   bool     wdRun            = false;
   int      wdNets           = 0;
@@ -417,16 +438,14 @@ static bool touchRead(int16_t &px, int16_t &py) {
 #endif
   // Map raw ADC -> pixels (portrait), honouring the orientation flags so touch
   // lines up with the display. Clamp to screen.
-#if TOUCH_INVERT_X
-  long mx = map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, SCR_W - 1, 0);
-#else
-  long mx = map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, 0, SCR_W - 1);
-#endif
-#if TOUCH_INVERT_Y
-  long my = map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, SCR_H - 1, 0);
-#else
-  long my = map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, 0, SCR_H - 1);
-#endif
+  // Orientation flags are compile-time; XOR with g_flip180 so a runtime 180 deg
+  // flip (rotation 2) inverts touch on both axes to line up with the display.
+  bool invX = (TOUCH_INVERT_X != 0) ^ g_flip180;
+  bool invY = (TOUCH_INVERT_Y != 0) ^ g_flip180;
+  long mx = invX ? map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, SCR_W - 1, 0)
+                 : map(rawx, TOUCH_RAW_MINX, TOUCH_RAW_MAXX, 0, SCR_W - 1);
+  long my = invY ? map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, SCR_H - 1, 0)
+                 : map(rawy, TOUCH_RAW_MINY, TOUCH_RAW_MAXY, 0, SCR_H - 1);
   px = (int16_t)constrain(mx, 0, SCR_W - 1);
   py = (int16_t)constrain(my, 0, SCR_H - 1);
   return true;
@@ -637,6 +656,7 @@ static void applyStatus(const String &body) {
   CYD_CPYS(actName, "act_name");
   CYD_CPYS(actState, "act_state");
   CYD_CPYS(actDetail, "act_detail");
+  g_rs.actDur = jsonInt(body, "act_dur");
   CYD_CPYS(wdGps, "wd_gps");
   CYD_CPYS(wdBand, "wd_band");
   CYD_CPYS(wdC1, "wd_c1");
@@ -654,6 +674,7 @@ static void applyStatus(const String &body) {
   // asked for (the pushed wd_run now matches the target), so the button un-greys.
   if (g_wdPending && g_rs.wdRun == g_wdTarget) { g_wdPending = false; g_needRedraw = true; }
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
+  if (g_tfPending && g_rs.tfRun == g_tfTarget) { g_tfPending = false; g_needRedraw = true; }
   g_rs.tfPps    = jsonInt(body, "tf_pps");
   g_rs.tfHosts  = jsonInt(body, "tf_hosts");
   g_rs.tfConns  = jsonInt(body, "tf_conns");
@@ -674,7 +695,7 @@ static void applyStatus(const String &body) {
     + g_rs.ni1 + '|' + g_rs.ni2 + '|' + g_rs.ni3 + '|'
     + g_rs.tfRun + '|' + g_rs.tfPps + '|' + g_rs.tfMbps + '|' + g_rs.tfHosts + '|'
     + g_rs.tfConns + '|' + g_rs.tfPkts + '|' + g_rs.tfAlerts + '|'
-    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|'
+    + g_rs.actName + '|' + g_rs.actState + '|' + g_rs.actDetail + '|' + g_rs.actDur + '|'
     + g_rs.wdRun + '|' + g_rs.wdNets + '|' + g_rs.wdScan + '|' + g_rs.wdBle + '|'
     + g_rs.wdCell + '|' + g_rs.wdZig + '|' + g_rs.wdComp + '|' + g_rs.wdGps + '|'
     + g_rs.wdBand + '|' + g_rs.wdC1 + '|' + g_rs.wdC2 + '|' + g_rs.wdEnabled;
@@ -923,8 +944,12 @@ static void drawMenuTile(int16_t x, int16_t y, const char *label,
   gfx->fillRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(22, 28, 40));
   gfx->drawRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(45, 55, 70));
   gfx->fillRoundRect(x, y + 4, 4, TILE_H - 8, 2, accent);   // left accent bar
-  gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(x + 12, y + (TILE_H - 16) / 2); gfx->print(label);
+  // HOME tile label in the proportional ~10px font (a bit smaller than size-2,
+  // still clean). Custom fonts position by BASELINE, so y is the baseline row;
+  // revert to the built-in font right after so every other screen is unchanged.
+  gfx->setTextColor(WHITE); gfx->setFont(&RagnarLabel); gfx->setTextSize(1);
+  gfx->setCursor(x + 12, y + 22); gfx->print(label);
+  gfx->setFont();
   if (val.length()) {
     gfx->setTextColor(vcol); gfx->setTextSize(1);
     int16_t vx = x + TILE_W - (int16_t)val.length() * 6 - 6;
@@ -1227,6 +1252,9 @@ static Screen   g_actReturn = SCR_HOME;    // where the tap came from
 static char     g_actLabel[24] = "";       // friendly label of what we asked
 static char     g_actName[24]  = "";       // action id we're tracking
 static uint32_t g_actStartMs   = 0;
+static uint32_t g_actRunStart  = 0;   // when THIS action first reported 'running'
+static bool     g_actAnimate   = false; // tick the Action page (spinner/countdown)
+static String   g_actSig;              // static-content signature (full repaint only on change)
 
 static void requestAction(const char *action, const char *label) {
 #if CYD_TRANSPORT_SERIAL
@@ -1241,44 +1269,91 @@ static void requestAction(const char *action, const char *label) {
   g_rs.actName[0] = 0; g_rs.actState[0] = 0; g_rs.actDetail[0] = 0;
   g_actReturn = g_screen;
   g_actStartMs = millis();
+  g_actRunStart = 0;
+  g_actAnimate = true;   // spinner runs until Ragnar reports a terminal state
+  g_actSig = "";         // force a full repaint of the Action page on entry
   g_screen = SCR_ACTION;
   g_needRedraw = true;
 }
 
 static void drawAction() {
-  drawHeader("ACTION", false);
-  int16_t y = HEAD_H + 20;
-  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
-  // What we asked for
-  gfx->setTextColor(colSky()); gfx->setTextSize(2);
-  gfx->setCursor(12, y); gfx->print(g_actLabel); y += 40;
+  // Fixed layout so the animated bits (spinner / bar / countdown) can repaint in
+  // place — the whole frame is redrawn ONLY when the static content changes, so
+  // the ~7 Hz spinner tick no longer flickers the entire screen.
+  const int16_t YLBL = HEAD_H + 14, YWORD = HEAD_H + 46, YDET = HEAD_H + 92;
+  const int16_t YBAR = HEAD_H + 126, YCNT = YBAR + 24;
 
-  // Fresh result only if Ragnar is reporting THIS action; a ~1.2s grace ignores a
-  // stale terminal result carried by an in-flight push right after the tap.
-  bool mine = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
-  bool grace = (millis() - g_actStartMs) < 1200;
+  bool  mine  = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
+  bool  grace = (millis() - g_actStartMs) < 1200;
   const char *st = g_rs.actState;
-  if (!mine || (grace && strcmp(st, "running") != 0)) {
-    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
-    gfx->setCursor(12, y); gfx->print("starting...");
-    return;
+  bool starting = (!mine) || (grace && strcmp(st, "running") != 0);
+  bool running  = !starting && strcmp(st, "running") == 0;
+  bool done     = !starting && strcmp(st, "done")  == 0;
+  bool failed   = !starting && strcmp(st, "error") == 0;
+  bool timed    = running && g_rs.actDur > 0;
+
+  // Static-content signature: repaint the frame once when it changes.
+  String sig = String(starting ? 's' : running ? 'r' : done ? 'd' : 'f') + '|'
+             + g_actLabel + '|' + g_rs.actDetail + '|' + g_rs.actDur;
+  if (sig != g_actSig) {
+    g_actSig = sig;
+    drawHeader("ACTION", false);
+    gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
+    gfx->setTextColor(colSky()); gfx->setTextSize(2);
+    gfx->setCursor(12, YLBL); gfx->print(g_actLabel);
+    uint16_t wc = (starting || running) ? colAmber() : (done ? colGreen() : colRed());
+    const char *word = starting ? "STARTING" : running ? "RUNNING" : done ? "DONE" : "FAILED";
+    gfx->setTextColor(wc); gfx->setTextSize(3);
+    gfx->setCursor(12, YWORD); gfx->print(word);
+    if (starting || running) {
+      const char *what = starting ? "waiting for Ragnar"
+                                  : (g_rs.actDetail[0] ? g_rs.actDetail : "working");
+      gfx->setTextColor(WHITE); gfx->setTextSize(2);
+      gfx->setCursor(12, YDET); gfx->print(what);
+      if (timed) gfx->drawRoundRect(12, YBAR, SCR_W - 24, 16, 4, colSky());  // bar outline
+    } else {
+      if (g_rs.actDetail[0]) {
+        gfx->setTextColor(WHITE); gfx->setTextSize(2);
+        gfx->setCursor(12, YDET); gfx->print(g_rs.actDetail);
+      }
+      if (strcmp(g_actName, "service_restart") == 0 || strcmp(g_actName, "ragnar_update") == 0) {
+        gfx->setTextColor(colDim()); gfx->setTextSize(1);
+        gfx->setCursor(12, YDET + 30); gfx->print("link will drop, reconnects shortly");
+      }
+      gfx->setTextColor(colDim()); gfx->setTextSize(1);
+      gfx->setCursor(12, SCR_H - 40); gfx->print("tap < to go back");
+    }
   }
-  uint16_t c = colAmber(); const char *word = "RUNNING...";
-  if      (strcmp(st, "done")  == 0) { c = colGreen(); word = "DONE"; }
-  else if (strcmp(st, "error") == 0) { c = colRed();   word = "FAILED"; }
-  gfx->setTextColor(c); gfx->setTextSize(3);
-  gfx->setCursor(12, y); gfx->print(word); y += 44;
-  if (g_rs.actDetail[0]) {
-    gfx->setTextColor(WHITE); gfx->setTextSize(2);
-    gfx->setCursor(12, y); gfx->print(g_rs.actDetail); y += 34;
-  }
-  // Actions that take the link down get an explicit heads-up.
-  if (strcmp(g_actName, "service_restart") == 0 || strcmp(g_actName, "ragnar_update") == 0) {
+
+  // ── animated bits: repaint in place each tick (small clears only) ───────────
+  g_actAnimate = (starting || running);
+  if (!g_actAnimate) return;
+
+  static const char SPN[4] = {'|', '/', '-', '\\'};
+  char sc = SPN[(millis() / 125) % 4];
+  gfx->fillRect(SCR_W - 34, YWORD, 26, 26, colBg());          // spinner cell
+  gfx->setTextColor(colAmber()); gfx->setTextSize(3);
+  gfx->setCursor(SCR_W - 30, YWORD); gfx->print(sc);
+
+  if (timed) {
+    if (g_actRunStart == 0) g_actRunStart = millis();
+    uint32_t dur = (uint32_t)g_rs.actDur;
+    uint32_t el  = (millis() - g_actRunStart) / 1000;
+    uint32_t cl  = el < dur ? el : dur;
+    int fill = (int)(((uint32_t)(SCR_W - 26)) * cl / dur);
+    gfx->fillRect(13, YBAR + 1, SCR_W - 26, 14, colBg());     // clear bar interior
+    if (fill > 0) gfx->fillRoundRect(13, YBAR + 1, fill, 14, 3, colGreen());
+    int rem = (int)dur - (int)el; if (rem < 0) rem = 0;
+    gfx->fillRect(12, YCNT, 180, 18, colBg());                // clear countdown text
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2); gfx->setCursor(12, YCNT);
+    if (rem > 0) { gfx->print(rem); gfx->print("s left"); }
+    else gfx->print("finishing...");
+  } else {
+    uint32_t el = (millis() - g_actStartMs) / 1000;
+    gfx->fillRect(12, YBAR, 180, 12, colBg());                // clear elapsed text
     gfx->setTextColor(colDim()); gfx->setTextSize(1);
-    gfx->setCursor(12, y + 4); gfx->print("link will drop, reconnects shortly");
+    gfx->setCursor(12, YBAR); gfx->print("elapsed "); gfx->print(el); gfx->print("s");
   }
-  gfx->setTextColor(colDim()); gfx->setTextSize(1);
-  gfx->setCursor(12, SCR_H - 40); gfx->print("tap < to go back");
 }
 
 // ── Network: compact status header + wardrive/scan action buttons ─────────────
@@ -1334,24 +1409,50 @@ static void drawNetInt() {
 
 // Traffic Analysis — live capture stats from Ragnar + a start/stop button.
 static const int16_t TRAF_BTN_Y = SCR_H - 22 - 46;
+// The Start/Stop button. While a toggle is pending it greys out and shows a
+// spinner + elapsed clock (capture can take 5-30s to start). Repainted in place
+// on a tick so it never flickers the whole page.
+static void drawTrafficButton() {
+  gfx->fillRect(10, TRAF_BTN_Y, SCR_W - 20, 44, colBg());
+  if (g_tfPending) {
+    gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colDim());
+    gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colGray());
+    static const char SPN[4] = {'|', '/', '-', '\\'};
+    char sc = SPN[(millis() / 125) % 4];
+    uint32_t el = (millis() - g_tfPendMs) / 1000;
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+    gfx->setCursor(24, TRAF_BTN_Y + 7); gfx->print(g_tfTarget ? "starting" : "stopping");
+    gfx->setCursor(SCR_W - 34, TRAF_BTN_Y + 7); gfx->print(sc);
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(24, TRAF_BTN_Y + 28); gfx->print("elapsed "); gfx->print(el);
+    gfx->print("s (up to ~30s)");
+  } else {
+    uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
+    gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, bc);
+    gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+  }
+}
 static void drawTraffic() {
   drawHeader("TRAFFIC", false);
   int16_t y = HEAD_H + 10;
   gfx->fillRect(0, HEAD_H, SCR_W, TRAF_BTN_Y - HEAD_H, colBg());
   gfx->setTextSize(2);
-  gfx->setTextColor(g_rs.tfRun ? colGreen() : colGray());
-  gfx->setCursor(12, y); gfx->print(g_rs.tfRun ? "CAPTURING" : "stopped"); y += 30;
+  if (g_tfPending) {
+    gfx->setTextColor(colAmber());
+    gfx->setCursor(12, y); gfx->print(g_tfTarget ? "STARTING..." : "STOPPING...");
+  } else {
+    gfx->setTextColor(g_rs.tfRun ? colGreen() : colGray());
+    gfx->setCursor(12, y); gfx->print(g_rs.tfRun ? "CAPTURING" : "stopped");
+  }
+  y += 30;
   kv(y, "THROUGHPUT", String(g_rs.tfMbps) + " Mbps", colSky()); y += 34;
   kv(y, "PACKETS/S", String(g_rs.tfPps), WHITE); y += 34;
   kv(y, "HOSTS / CONNS", String(g_rs.tfHosts) + " / " + String(g_rs.tfConns), WHITE); y += 34;
   kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colGreen()); y += 34;
   kv(y, "ALERTS", String(g_rs.tfAlerts), g_rs.tfAlerts ? colRed() : colGreen());
-  // start/stop button
-  uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
-  gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, bc);
-  gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
-  gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+  drawTrafficButton();
 }
 
 // ── Wardrive: own page with live status + Start/Stop (stays on the page) ───────
@@ -1585,14 +1686,16 @@ static void drawAlerts() {
 
 // ── Settings: device-local, tappable rows + info. Persisted to NVS ────────────
 static const char *FW_BUILD = "cyd 0.5 " __DATE__;
-static const int16_t SET_Y0 = HEAD_H + 8, SET_ROWH = 30, SET_PITCH = 34;
+static const int16_t SET_Y0 = HEAD_H + 8, SET_ROWH = 28, SET_PITCH = 32;
 
 // Settings rows, built at draw time (Pwnagotchi row only when the bridge exists).
-enum { STAG_BLE, STAG_BL, STAG_WDRV, STAG_UPDATE, STAG_SVC, STAG_PWN, STAG_TOUCH };
+enum { STAG_BLE, STAG_BL, STAG_INV, STAG_FLIP, STAG_WDRV, STAG_UPDATE, STAG_SVC, STAG_PWN, STAG_TOUCH };
 static int settingsRows(uint8_t *tags) {
   int n = 0;
   tags[n++] = STAG_BLE;
   tags[n++] = STAG_BL;
+  tags[n++] = STAG_INV;
+  tags[n++] = STAG_FLIP;
   // Wardriving moved to its own page (NET -> Wardrive) with live status.
   tags[n++] = STAG_UPDATE;
   tags[n++] = STAG_SVC;
@@ -1605,6 +1708,8 @@ static void settingRowText(uint8_t tag, const char *&label, String &val, uint16_
   switch (tag) {
     case STAG_BLE:    label = "BLE scan";  val = g_bleEnabled ? "ON" : "OFF"; vcol = g_bleEnabled ? colGreen() : colGray(); break;
     case STAG_BL:     label = "Backlight"; val = String(g_backlightPct) + "%"; break;
+    case STAG_INV:    label = "Invert colors"; val = g_invert ? "ON" : "OFF"; vcol = g_invert ? colGreen() : colGray(); break;
+    case STAG_FLIP:   label = "Flip 180"; val = g_flip180 ? "ON" : "OFF"; vcol = g_flip180 ? colGreen() : colGray(); break;
     case STAG_WDRV:   label = "Wardriving"; val = String(g_rs.wardrive); vcol = (strcmp(g_rs.wardrive,"off")==0)?colGray():colGreen(); break;
     case STAG_UPDATE: label = "Ragnar update"; val = "run"; vcol = colAmber(); break;
     case STAG_SVC:    label = "Restart svc"; val = "go"; vcol = colAmber(); break;
@@ -1625,7 +1730,7 @@ static void drawSettingRow(int16_t y, const char *label, const String &val, uint
 
 static void drawSettings() {
   drawHeader("SETTINGS", false);
-  uint8_t tags[8]; int n = settingsRows(tags);
+  uint8_t tags[10]; int n = settingsRows(tags);
   for (int i = 0; i < n; i++) {
     const char *label; String val; uint16_t vcol;
     settingRowText(tags[i], label, val, vcol);
@@ -1754,7 +1859,7 @@ static void handleTouch(int16_t px, int16_t py) {
     g_needRedraw = true; return;
   }
   if (g_screen == SCR_SETTINGS) {
-    uint8_t tags[8]; int n = settingsRows(tags);
+    uint8_t tags[10]; int n = settingsRows(tags);
     for (int i = 0; i < n; i++) {
       int16_t ry = SET_Y0 + i * SET_PITCH;
       if (!inRect(px, py, 10, ry, SCR_W - 20, SET_ROWH)) continue;
@@ -1762,6 +1867,9 @@ static void handleTouch(int16_t px, int16_t py) {
         case STAG_BLE: g_bleEnabled = !g_bleEnabled; saveSettings(); break;
         case STAG_BL:  g_backlightPct = g_backlightPct > 66 ? 66 : (g_backlightPct > 33 ? 33 : 100);
                        applyBacklight(); saveSettings(); break;
+        case STAG_INV: g_invert = !g_invert; applyDisplayOpts(); saveSettings(); break;
+        case STAG_FLIP: g_flip180 = !g_flip180; applyDisplayOpts(); saveSettings();
+                        gfx->fillScreen(colBg()); break;
         case STAG_WDRV:   requestAction("wardrive_toggle", "Wardriving"); return;
         case STAG_UPDATE: requestAction("ragnar_update", "Ragnar update"); return;
         case STAG_SVC:    requestAction("service_restart", "Restart service"); return;
@@ -1801,9 +1909,13 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_TRAFFIC) {
-    if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
-      if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
-      else setStatus("queue full", colRed());
+    if (!g_tfPending && inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
+      g_tfTarget = !g_rs.tfRun;                 // capture state we expect to reach
+      if (actionEnqueue("traffic_toggle")) {
+        g_tfPending = true; g_tfPendMs = millis();
+        setStatus(g_tfTarget ? "starting capture" : "stopping", colAmber());
+      } else setStatus("queue full", colRed());
+      g_needRedraw = true;
     }
     return;
   }
@@ -1995,6 +2107,7 @@ void setup() {
 
   loadConfig();   // node name (+ optional WiFi seeds) + BLE/backlight settings
   applyBacklight();
+  applyDisplayOpts();   // orientation + colour inversion (persisted)
 
   // Boot splash. Over serial it plays the full 15 s clip and LOOPS until the Pi's
   // Ragnar service is up (first status frame), so a co-booting Pi gets covered; if
@@ -2040,6 +2153,20 @@ static void serviceUI() {
   // status push), drop the "processing" latch so the button can't get stuck greyed.
   if (g_wdPending && millis() - g_wdPendMs > WD_PEND_TIMEOUT_MS) {
     g_wdPending = false; g_needRedraw = true;
+  }
+  // Keep the Action page's spinner + countdown ticking while work is in flight.
+  if (g_screen == SCR_ACTION && g_actAnimate) {
+    static uint32_t lastSpin = 0;
+    if (millis() - lastSpin > 130) { lastSpin = millis(); g_needRedraw = true; }
+  }
+  // Traffic capture is slow to start; time out the pending latch and tick its
+  // button (spinner + elapsed) in place so it doesn't flicker the whole page.
+  if (g_tfPending && millis() - g_tfPendMs > TF_PEND_TIMEOUT_MS) {
+    g_tfPending = false; g_needRedraw = true;
+  }
+  if (g_screen == SCR_TRAFFIC && g_tfPending) {
+    static uint32_t lastTf = 0;
+    if (millis() - lastTf > 140) { lastTf = millis(); drawTrafficButton(); }
   }
   static uint32_t lastTap = 0;
   int16_t px, py;

@@ -256,6 +256,14 @@ The CYD's screen is a native, Ragnar-themed **touch console** — not the web pa
 (no browser), and not framed as a mesh node. A HOME launcher of tiles drills into
 full screens, each with a back bar:
 
+
+> **HOME tile labels** use a small proportional GFX font (`ragnar_label_font.h`,
+> DejaVuSans-Bold rendered to ~10px caps via PIL) — a bit smaller than the size-2
+> built-in font, since the bitmap font only scales in whole steps. It's applied
+> ONLY to the tile labels (`gfx->setFont(&RagnarLabel)` then `gfx->setFont()` to
+> restore), so every other screen keeps the built-in font. Regenerate with the PIL
+> script kept with the firmware.
+
 > **UI stays responsive during sensing.** The 2.4 GHz sniff dwell and the BLE
 > scan (run asynchronously) both service touch + the display cooperatively, so
 > touch never goes dead mid-cycle. The panel repaints per-field (a full wipe only
@@ -278,13 +286,22 @@ to `g_menu[]` to add a feature); each tile shows a compact live value.
 | **NETCONN** | drive the **Pi's** WiFi: scrollable scan list → tap an SSID → on-screen keyboard for the password → connect; plus AP-mode toggle and scanner start/stop |
 | **MESH** | scrollable roster of mesh nodes (online dot · name · IP), streamed from `mesh_manager` |
 | **TRAFFIC** | live capture stats (throughput/pps/hosts/conns/alerts) + a start/stop button |
-| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight; plus Ragnar update, Restart service, Pwnagotchi swap (shown only when installed), and a touch-test/orientation screen |
+| **SETTINGS** | device-local (NVS): BLE scan on/off, backlight, **Invert colors** (INVON/INVOFF), **Flip 180** (rotation 2 + touch axes XOR'd to match); plus Ragnar update, Restart service, Pwnagotchi swap (shown only when installed), and a touch-test/orientation screen |
 | **CTRL** | the allowlisted action buttons (WIDS scan, BLE scan, Watchtower clear, restart Ragnar) |
 
 The header shows the unit's identity — its mesh Viking short-name (e.g.
 `Yrsa Wolfsbane`), or the brand **`Ragnar`** (big R) when there's no mesh name.
 
 ### Actions & the serial protocol
+
+**Action progress feedback.** The Action subpage shows an animated spinner + an
+elapsed clock while an action runs (so a slow Pi Zero never looks frozen), and for
+time-bounded actions a live **countdown + progress bar**. The Pi sends `act_dur`
+(seconds) and a "what's happening" `act_detail` from `_CYD_ACTION_INFO`
+(e.g. WiFi Defense -> "listening 2.4GHz", 16 s); the node counts down locally from
+when it first sees `running`. New-AP sensor findings are `info` severity (routine —
+no Pushover).
+
 
 Every tappable action maps to one entry in `cyd_node.ALLOWED_ACTIONS` and one
 Ragnar subsystem call in `_cyd_dispatch_action` (a queued tap → an `{"t":"ac"}`
@@ -334,7 +351,7 @@ Tailscale mesh itself is running.
 - [x] App-launcher console (dense data-driven tile grid).
 - [x] RF waterfall streamed from the Pi's SDR — HackRF or RTL-SDR, piggybacking a running sweep.
 - [x] NET subpages (Net Integrity, Watchtower detail) + Speed test / Captive / Airspace / WIDS.
-- [x] SETTINGS: BLE, backlight, wardriving toggle, Ragnar update, restart, Pwnagotchi swap.
+- [x] SETTINGS: BLE, backlight, invert colors, flip 180, Ragnar update, restart, Pwnagotchi swap.
 - [x] Traffic Analysis live-capture screen.
 - [x] MESH roster (scrollable) streamed from `mesh_manager`.
 - [x] Net-Conn: scan + connect the **Pi's** WiFi via an on-screen keyboard; AP + scanner toggles.
