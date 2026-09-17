@@ -5237,7 +5237,7 @@
             window.lcToggleAddForm = function(){ var f = el('lc-add-form'); if (f) f.classList.toggle('hidden'); };
             function camMediaHTML(cam){
                 if (cam.type === 'embed'){
-                    return '<iframe src="'+esc(cam.url)+'" class="w-full h-full" style="border:0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy" referrerpolicy="no-referrer"></iframe>';
+                    return '<iframe src="'+esc(cam.url)+'" class="w-full h-full" style="border:0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe>';
                 }
                 if (cam.type === 'mjpeg'){
                     return '<img data-lc-type="mjpeg" src="'+esc(cam.url)+'" class="w-full h-full object-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
