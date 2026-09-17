@@ -5190,6 +5190,7 @@
                     <select id="lc-type" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
                         <option value="snapshot">Snapshot JPG (recommended — refreshes, works with http feeds)</option>
                         <option value="mjpeg">MJPEG stream (https only)</option>
+                        <option value="embed">Embed / YouTube live (paste the YouTube link)</option>
                     </select>
                     <div class="flex gap-2">
                         <button onclick="lcAddCam()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm flex-1">Add</button>
@@ -5210,6 +5211,9 @@
             function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
             window.lcToggleAddForm = function(){ var f = el('lc-add-form'); if (f) f.classList.toggle('hidden'); };
             function camMediaHTML(cam){
+                if (cam.type === 'embed'){
+                    return '<iframe src="'+esc(cam.url)+'" class="w-full h-full" style="border:0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy" referrerpolicy="no-referrer"></iframe>';
+                }
                 if (cam.type === 'mjpeg'){
                     return '<img data-lc-type="mjpeg" src="'+esc(cam.url)+'" class="w-full h-full object-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
                 }

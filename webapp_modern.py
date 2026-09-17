@@ -135,6 +135,10 @@ _DEFAULT_CSP = (
     "img-src 'self' data: blob: https:; "
     "font-src 'self' data:; "
     "connect-src 'self' ws: wss:; "
+    # frame-src: 'self' for in-app iframes, plus YouTube so the Live Cams panel
+    # can embed public YouTube live-camera streams. Scoped to specific trusted
+    # hosts (never '*').
+    "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
     "frame-ancestors 'self'; "
     "base-uri 'self'; "
     "form-action 'self'; "
@@ -3510,7 +3514,17 @@ def inventory_scan_now():
 # both http and https feeds render under the dashboard's img-src CSP.
 # ---------------------------------------------------------------------------
 
-_LIVECAM_TYPES = {'snapshot', 'mjpeg'}
+_LIVECAM_TYPES = {'snapshot', 'mjpeg', 'embed'}
+
+
+def _livecam_embed_url(url):
+    """Normalize a YouTube watch/live/short URL into an embeddable player URL
+    for the 'embed' cam type; non-YouTube URLs are returned unchanged."""
+    import re
+    m = re.search(r'(?:youtube\.com/(?:watch\?v=|live/|embed/|v/)|youtu\.be/)([A-Za-z0-9_-]{6,})', url)
+    if m:
+        return 'https://www.youtube.com/embed/%s?autoplay=1&mute=1&playsinline=1' % m.group(1)
+    return url
 
 
 def _livecams_list():
@@ -3534,6 +3548,8 @@ def livecams_add():
         return jsonify({'success': False, 'error': 'A http(s) feed URL is required'}), 400
     if cam_type not in _LIVECAM_TYPES:
         cam_type = 'snapshot'
+    if cam_type == 'embed':
+        url = _livecam_embed_url(url)
     if not label:
         label = url.split('//', 1)[-1].split('/', 1)[0][:60]
     cams = _livecams_list()
