@@ -1247,6 +1247,7 @@ static char     g_actName[24]  = "";       // action id we're tracking
 static uint32_t g_actStartMs   = 0;
 static uint32_t g_actRunStart  = 0;   // when THIS action first reported 'running'
 static bool     g_actAnimate   = false; // tick the Action page (spinner/countdown)
+static String   g_actSig;              // static-content signature (full repaint only on change)
 
 static void requestAction(const char *action, const char *label) {
 #if CYD_TRANSPORT_SERIAL
@@ -1263,80 +1264,89 @@ static void requestAction(const char *action, const char *label) {
   g_actStartMs = millis();
   g_actRunStart = 0;
   g_actAnimate = true;   // spinner runs until Ragnar reports a terminal state
+  g_actSig = "";         // force a full repaint of the Action page on entry
   g_screen = SCR_ACTION;
   g_needRedraw = true;
 }
 
 static void drawAction() {
-  drawHeader("ACTION", false);
-  int16_t y = HEAD_H + 16;
-  gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
-  // What we asked for
-  gfx->setTextColor(colSky()); gfx->setTextSize(2);
-  gfx->setCursor(12, y); gfx->print(g_actLabel); y += 34;
+  // Fixed layout so the animated bits (spinner / bar / countdown) can repaint in
+  // place — the whole frame is redrawn ONLY when the static content changes, so
+  // the ~7 Hz spinner tick no longer flickers the entire screen.
+  const int16_t YLBL = HEAD_H + 14, YWORD = HEAD_H + 46, YDET = HEAD_H + 92;
+  const int16_t YBAR = HEAD_H + 126, YCNT = YBAR + 24;
 
-  // Only trust a result reporting THIS action; a ~1.2s grace ignores a stale
-  // terminal result carried by an in-flight push right after the tap.
-  bool mine  = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
-  bool grace = (millis() - g_actStartMs) < 1200;
+  bool  mine  = (strcmp(g_rs.actName, g_actName) == 0) && g_rs.actState[0];
+  bool  grace = (millis() - g_actStartMs) < 1200;
   const char *st = g_rs.actState;
   bool starting = (!mine) || (grace && strcmp(st, "running") != 0);
   bool running  = !starting && strcmp(st, "running") == 0;
   bool done     = !starting && strcmp(st, "done")  == 0;
+  bool failed   = !starting && strcmp(st, "error") == 0;
+  bool timed    = running && g_rs.actDur > 0;
 
-  // animated spinner while working (ticked by serviceUI while g_actAnimate)
+  // Static-content signature: repaint the frame once when it changes.
+  String sig = String(starting ? 's' : running ? 'r' : done ? 'd' : 'f') + '|'
+             + g_actLabel + '|' + g_rs.actDetail + '|' + g_rs.actDur;
+  if (sig != g_actSig) {
+    g_actSig = sig;
+    drawHeader("ACTION", false);
+    gfx->fillRect(0, HEAD_H, SCR_W, SCR_H - HEAD_H - 22, colBg());
+    gfx->setTextColor(colSky()); gfx->setTextSize(2);
+    gfx->setCursor(12, YLBL); gfx->print(g_actLabel);
+    uint16_t wc = (starting || running) ? colAmber() : (done ? colGreen() : colRed());
+    const char *word = starting ? "STARTING" : running ? "RUNNING" : done ? "DONE" : "FAILED";
+    gfx->setTextColor(wc); gfx->setTextSize(3);
+    gfx->setCursor(12, YWORD); gfx->print(word);
+    if (starting || running) {
+      const char *what = starting ? "waiting for Ragnar"
+                                  : (g_rs.actDetail[0] ? g_rs.actDetail : "working");
+      gfx->setTextColor(WHITE); gfx->setTextSize(2);
+      gfx->setCursor(12, YDET); gfx->print(what);
+      if (timed) gfx->drawRoundRect(12, YBAR, SCR_W - 24, 16, 4, colSky());  // bar outline
+    } else {
+      if (g_rs.actDetail[0]) {
+        gfx->setTextColor(WHITE); gfx->setTextSize(2);
+        gfx->setCursor(12, YDET); gfx->print(g_rs.actDetail);
+      }
+      if (strcmp(g_actName, "service_restart") == 0 || strcmp(g_actName, "ragnar_update") == 0) {
+        gfx->setTextColor(colDim()); gfx->setTextSize(1);
+        gfx->setCursor(12, YDET + 30); gfx->print("link will drop, reconnects shortly");
+      }
+      gfx->setTextColor(colDim()); gfx->setTextSize(1);
+      gfx->setCursor(12, SCR_H - 40); gfx->print("tap < to go back");
+    }
+  }
+
+  // ── animated bits: repaint in place each tick (small clears only) ───────────
+  g_actAnimate = (starting || running);
+  if (!g_actAnimate) return;
+
   static const char SPN[4] = {'|', '/', '-', '\\'};
   char sc = SPN[(millis() / 125) % 4];
+  gfx->fillRect(SCR_W - 34, YWORD, 26, 26, colBg());          // spinner cell
+  gfx->setTextColor(colAmber()); gfx->setTextSize(3);
+  gfx->setCursor(SCR_W - 30, YWORD); gfx->print(sc);
 
-  if (starting || running) {
-    g_actAnimate = true;
-    gfx->setTextColor(colAmber()); gfx->setTextSize(3);
-    gfx->setCursor(12, y); gfx->print(starting ? "STARTING" : "RUNNING");
-    gfx->setCursor(SCR_W - 30, y); gfx->print(sc);       // spinner
-    y += 40;
-    // what's happening
-    const char *what = starting ? "waiting for Ragnar"
-                                : (g_rs.actDetail[0] ? g_rs.actDetail : "working");
-    gfx->setTextColor(WHITE); gfx->setTextSize(2);
-    gfx->setCursor(12, y); gfx->print(what); y += 32;
-    if (running && g_rs.actDur > 0) {
-      // known-length action: local countdown + progress bar
-      if (g_actRunStart == 0) g_actRunStart = millis();
-      uint32_t el = (millis() - g_actRunStart) / 1000;
-      int rem = (int)g_rs.actDur - (int)el; if (rem < 0) rem = 0;
-      int16_t bx = 12, bw = SCR_W - 24, bh = 16;
-      gfx->drawRoundRect(bx, y, bw, bh, 4, colSky());
-      uint32_t cl = (el < (uint32_t)g_rs.actDur) ? el : (uint32_t)g_rs.actDur;
-      int fill = (int)(((uint32_t)(bw - 2)) * cl / (uint32_t)g_rs.actDur);
-      if (fill > 0) gfx->fillRoundRect(bx + 1, y + 1, fill, bh - 2, 3, colGreen());
-      y += bh + 8;
-      gfx->setTextColor(colAmber()); gfx->setTextSize(2); gfx->setCursor(12, y);
-      if (rem > 0) { gfx->print(rem); gfx->print("s left"); }
-      else gfx->print("finishing...");
-    } else {
-      // unknown length: an elapsed clock (the spinner shows it's alive)
-      uint32_t el = (millis() - g_actStartMs) / 1000;
-      gfx->setTextColor(colDim()); gfx->setTextSize(1);
-      gfx->setCursor(12, y + 4); gfx->print("elapsed "); gfx->print(el); gfx->print("s");
-    }
-    return;
-  }
-
-  // terminal state — stop animating
-  g_actAnimate = false;
-  gfx->setTextColor(done ? colGreen() : colRed()); gfx->setTextSize(3);
-  gfx->setCursor(12, y); gfx->print(done ? "DONE" : "FAILED"); y += 44;
-  if (g_rs.actDetail[0]) {
-    gfx->setTextColor(WHITE); gfx->setTextSize(2);
-    gfx->setCursor(12, y); gfx->print(g_rs.actDetail); y += 34;
-  }
-  // Actions that take the link down get an explicit heads-up.
-  if (strcmp(g_actName, "service_restart") == 0 || strcmp(g_actName, "ragnar_update") == 0) {
+  if (timed) {
+    if (g_actRunStart == 0) g_actRunStart = millis();
+    uint32_t dur = (uint32_t)g_rs.actDur;
+    uint32_t el  = (millis() - g_actRunStart) / 1000;
+    uint32_t cl  = el < dur ? el : dur;
+    int fill = (int)(((uint32_t)(SCR_W - 26)) * cl / dur);
+    gfx->fillRect(13, YBAR + 1, SCR_W - 26, 14, colBg());     // clear bar interior
+    if (fill > 0) gfx->fillRoundRect(13, YBAR + 1, fill, 14, 3, colGreen());
+    int rem = (int)dur - (int)el; if (rem < 0) rem = 0;
+    gfx->fillRect(12, YCNT, 180, 18, colBg());                // clear countdown text
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2); gfx->setCursor(12, YCNT);
+    if (rem > 0) { gfx->print(rem); gfx->print("s left"); }
+    else gfx->print("finishing...");
+  } else {
+    uint32_t el = (millis() - g_actStartMs) / 1000;
+    gfx->fillRect(12, YBAR, 180, 12, colBg());                // clear elapsed text
     gfx->setTextColor(colDim()); gfx->setTextSize(1);
-    gfx->setCursor(12, y + 4); gfx->print("link will drop, reconnects shortly");
+    gfx->setCursor(12, YBAR); gfx->print("elapsed "); gfx->print(el); gfx->print("s");
   }
-  gfx->setTextColor(colDim()); gfx->setTextSize(1);
-  gfx->setCursor(12, SCR_H - 40); gfx->print("tap < to go back");
 }
 
 // ── Network: compact status header + wardrive/scan action buttons ─────────────
