@@ -244,6 +244,12 @@ static bool     g_wdPending = false;
 static bool     g_wdTarget  = false;   // run-state we asked Ragnar to reach
 static uint32_t g_wdPendMs  = 0;
 static const uint32_t WD_PEND_TIMEOUT_MS = 9000;
+// Traffic capture start is slow + variable (5-30s on a Pi Zero); latch a
+// pending state so the button shows a spinner + elapsed until it confirms.
+static bool     g_tfPending = false;
+static bool     g_tfTarget  = false;   // capture state we asked to reach
+static uint32_t g_tfPendMs  = 0;
+static const uint32_t TF_PEND_TIMEOUT_MS = 40000;
 
 // ── Live model: last status synced from Ragnar ────────────────────────────────
 struct RagnarStatus {
@@ -668,6 +674,7 @@ static void applyStatus(const String &body) {
   // asked for (the pushed wd_run now matches the target), so the button un-greys.
   if (g_wdPending && g_rs.wdRun == g_wdTarget) { g_wdPending = false; g_needRedraw = true; }
   g_rs.tfRun    = jsonInt(body, "tf_run") != 0;
+  if (g_tfPending && g_rs.tfRun == g_tfTarget) { g_tfPending = false; g_needRedraw = true; }
   g_rs.tfPps    = jsonInt(body, "tf_pps");
   g_rs.tfHosts  = jsonInt(body, "tf_hosts");
   g_rs.tfConns  = jsonInt(body, "tf_conns");
@@ -1402,24 +1409,50 @@ static void drawNetInt() {
 
 // Traffic Analysis — live capture stats from Ragnar + a start/stop button.
 static const int16_t TRAF_BTN_Y = SCR_H - 22 - 46;
+// The Start/Stop button. While a toggle is pending it greys out and shows a
+// spinner + elapsed clock (capture can take 5-30s to start). Repainted in place
+// on a tick so it never flickers the whole page.
+static void drawTrafficButton() {
+  gfx->fillRect(10, TRAF_BTN_Y, SCR_W - 20, 44, colBg());
+  if (g_tfPending) {
+    gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colDim());
+    gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colGray());
+    static const char SPN[4] = {'|', '/', '-', '\\'};
+    char sc = SPN[(millis() / 125) % 4];
+    uint32_t el = (millis() - g_tfPendMs) / 1000;
+    gfx->setTextColor(colAmber()); gfx->setTextSize(2);
+    gfx->setCursor(24, TRAF_BTN_Y + 7); gfx->print(g_tfTarget ? "starting" : "stopping");
+    gfx->setCursor(SCR_W - 34, TRAF_BTN_Y + 7); gfx->print(sc);
+    gfx->setTextColor(colDim()); gfx->setTextSize(1);
+    gfx->setCursor(24, TRAF_BTN_Y + 28); gfx->print("elapsed "); gfx->print(el);
+    gfx->print("s (up to ~30s)");
+  } else {
+    uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
+    gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, bc);
+    gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
+    gfx->setTextColor(WHITE); gfx->setTextSize(2);
+    gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+  }
+}
 static void drawTraffic() {
   drawHeader("TRAFFIC", false);
   int16_t y = HEAD_H + 10;
   gfx->fillRect(0, HEAD_H, SCR_W, TRAF_BTN_Y - HEAD_H, colBg());
   gfx->setTextSize(2);
-  gfx->setTextColor(g_rs.tfRun ? colGreen() : colGray());
-  gfx->setCursor(12, y); gfx->print(g_rs.tfRun ? "CAPTURING" : "stopped"); y += 30;
+  if (g_tfPending) {
+    gfx->setTextColor(colAmber());
+    gfx->setCursor(12, y); gfx->print(g_tfTarget ? "STARTING..." : "STOPPING...");
+  } else {
+    gfx->setTextColor(g_rs.tfRun ? colGreen() : colGray());
+    gfx->setCursor(12, y); gfx->print(g_rs.tfRun ? "CAPTURING" : "stopped");
+  }
+  y += 30;
   kv(y, "THROUGHPUT", String(g_rs.tfMbps) + " Mbps", colSky()); y += 34;
   kv(y, "PACKETS/S", String(g_rs.tfPps), WHITE); y += 34;
   kv(y, "HOSTS / CONNS", String(g_rs.tfHosts) + " / " + String(g_rs.tfConns), WHITE); y += 34;
   kv(y, "TOTAL PKTS", String(g_rs.tfPkts), colGreen()); y += 34;
   kv(y, "ALERTS", String(g_rs.tfAlerts), g_rs.tfAlerts ? colRed() : colGreen());
-  // start/stop button
-  uint16_t bc = g_rs.tfRun ? colRed() : colGreen();
-  gfx->fillRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, bc);
-  gfx->drawRoundRect(10, TRAF_BTN_Y, SCR_W - 20, 44, 8, colSky());
-  gfx->setTextColor(WHITE); gfx->setTextSize(2);
-  gfx->setCursor(40, TRAF_BTN_Y + 14); gfx->print(g_rs.tfRun ? "STOP capture" : "START capture");
+  drawTrafficButton();
 }
 
 // ── Wardrive: own page with live status + Start/Stop (stays on the page) ───────
@@ -1876,9 +1909,13 @@ static void handleTouch(int16_t px, int16_t py) {
     return;
   }
   if (g_screen == SCR_TRAFFIC) {
-    if (inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
-      if (actionEnqueue("traffic_toggle")) setStatus("queued: traffic", colAmber());
-      else setStatus("queue full", colRed());
+    if (!g_tfPending && inRect(px, py, 10, TRAF_BTN_Y, SCR_W - 20, 44)) {
+      g_tfTarget = !g_rs.tfRun;                 // capture state we expect to reach
+      if (actionEnqueue("traffic_toggle")) {
+        g_tfPending = true; g_tfPendMs = millis();
+        setStatus(g_tfTarget ? "starting capture" : "stopping", colAmber());
+      } else setStatus("queue full", colRed());
+      g_needRedraw = true;
     }
     return;
   }
@@ -2121,6 +2158,15 @@ static void serviceUI() {
   if (g_screen == SCR_ACTION && g_actAnimate) {
     static uint32_t lastSpin = 0;
     if (millis() - lastSpin > 130) { lastSpin = millis(); g_needRedraw = true; }
+  }
+  // Traffic capture is slow to start; time out the pending latch and tick its
+  // button (spinner + elapsed) in place so it doesn't flicker the whole page.
+  if (g_tfPending && millis() - g_tfPendMs > TF_PEND_TIMEOUT_MS) {
+    g_tfPending = false; g_needRedraw = true;
+  }
+  if (g_screen == SCR_TRAFFIC && g_tfPending) {
+    static uint32_t lastTf = 0;
+    if (millis() - lastTf > 140) { lastTf = millis(); drawTrafficButton(); }
   }
   static uint32_t lastTap = 0;
   int16_t px, py;
