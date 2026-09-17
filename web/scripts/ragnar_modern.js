@@ -14475,6 +14475,9 @@ async function loadConfigData() {
         // Load Bluetooth provisioning toggle + adapter picker state
         loadBleProvisioning();
 
+        // Load Bluetooth access-point (PAN) toggle state
+        loadBtPan();
+
         // Load GPS-backfill opt-in state (gates the map Backfill GPS button)
         loadWardrivingBackfillState();
 
@@ -30014,6 +30017,48 @@ function _bleProvPollUntilSettled(tries) {
             _bleProvPollUntilSettled(tries - 1);
         }
     }, 1500);
+}
+
+function _btPanStatusText(d) {
+    if (!d) return '—';
+    if (d.error) return '⚠ ' + d.error;
+    if (!d.available) return 'Unavailable — install bluez-tools (bt-network, bt-agent).';
+    if (!d.enabled) return 'Off. Turn on, then pair the box in your phone’s Bluetooth settings.';
+    if (d.running) {
+        const n = d.connected_devices || 0;
+        return 'On — discoverable at ' + (d.address || '192.168.44.1') + ':8000 · '
+            + (n ? (n + ' phone' + (n === 1 ? '' : 's') + ' connected') : 'no phone connected yet');
+    }
+    return 'Starting…';
+}
+
+async function loadBtPan() {
+    try {
+        const res = await fetch('/api/bt/pan/status');
+        const d = await res.json();
+        const cb = document.getElementById('bt-pan-enabled');
+        if (cb) cb.checked = !!d.enabled;
+        const st = document.getElementById('bt-pan-status');
+        if (st) st.textContent = _btPanStatusText(d);
+    } catch (e) { /* silent */ }
+}
+
+async function toggleBtPan(checkbox) {
+    const enabled = !!checkbox.checked;
+    const st = document.getElementById('bt-pan-status');
+    if (st) st.textContent = enabled ? 'Enabling…' : 'Disabling…';
+    try {
+        const res = await postAPI('/api/bt/pan/toggle', { enabled });
+        addConsoleMessage('Bluetooth access point ' + (enabled ? 'enabled' : 'disabled'),
+            (res && res.error) ? 'error' : 'success');
+        if (st) st.textContent = _btPanStatusText(Object.assign({ enabled: enabled }, res || {}));
+        setTimeout(loadBtPan, 800);
+    } catch (e) {
+        console.error('[BTPAN] toggle error:', e);
+        addConsoleMessage('Failed to toggle Bluetooth access point', 'error');
+        checkbox.checked = !enabled;
+        if (st) st.textContent = '⚠ toggle failed';
+    }
 }
 
 async function loadBleProvisioning() {

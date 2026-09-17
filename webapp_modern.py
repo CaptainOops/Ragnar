@@ -418,6 +418,67 @@ def ble_provisioning_toggle():
     _stop_ble_provisioning()
     return jsonify({'enabled': False, 'running': False})
 
+
+# ---------------------------------------------------------------------------
+# Bluetooth PAN (NAP) — a direct Bluetooth link to the box for the Ragnar Mobile
+# app when Tailscale/Wi-Fi can't reach it. Opt-in (bt_pan_enabled) and fully
+# reversible (disabling removes the bridge + NAP). Android-only. See bt_pan.py.
+# Unlike BLE provisioning this carries a real IP link, so the app talks ordinary
+# HTTP over it — the waterfall and everything else work unchanged.
+# ---------------------------------------------------------------------------
+def _start_bt_pan():
+    """Start the NAP server if config enables it. Never raises."""
+    try:
+        if not shared_data.config.get('bt_pan_enabled', False):
+            return False
+        import bt_pan
+        return bool(bt_pan.start().get('running'))
+    except Exception as e:  # pragma: no cover - hardware dependent
+        logger.error(f"BT PAN failed to start: {e}")
+        return False
+
+
+def _stop_bt_pan():
+    try:
+        import bt_pan
+        bt_pan.stop()
+    except Exception as e:  # pragma: no cover
+        logger.error(f"BT PAN stop error: {e}")
+
+
+@app.route('/api/bt/pan/status', methods=['GET'])
+def bt_pan_status():
+    enabled = bool(shared_data.config.get('bt_pan_enabled', False))
+    try:
+        import bt_pan
+        st = bt_pan.status()
+    except Exception as e:  # pragma: no cover
+        st = {'running': False, 'available': False, 'error': str(e)}
+    st['enabled'] = enabled
+    return jsonify(st)
+
+
+@app.route('/api/bt/pan/toggle', methods=['POST'])
+def bt_pan_toggle():
+    payload = request.get_json(silent=True) or {}
+    enable = bool(payload.get('enabled', not shared_data.config.get('bt_pan_enabled', False)))
+    shared_data.config['bt_pan_enabled'] = enable
+    shared_data.save_config()
+    if enable:
+        ok = _start_bt_pan()
+        try:
+            import bt_pan
+            st = bt_pan.status()
+        except Exception:
+            st = {}
+        st['enabled'] = True
+        if not ok and not st.get('error'):
+            st['error'] = ('NAP did not come up — check that bluez-tools (bt-network, '
+                           'bt-agent) is installed and a Bluetooth controller is present.')
+        return jsonify(st), 200
+    _stop_bt_pan()
+    return jsonify({'enabled': False, 'running': False})
+
 # ============================================================================
 # AUTHENTICATION MIDDLEWARE
 # ============================================================================
@@ -27296,6 +27357,17 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
             except Exception as _ble_err:  # pragma: no cover
                 logger.error(f"BLE provisioning boot error: {_ble_err}")
         socketio.start_background_task(_boot_ble)
+
+        # Bring up the Bluetooth PAN (NAP) if enabled — same deferred, never-fatal
+        # treatment as BLE, so a missing/blocked Bluetooth stack can't hold up the
+        # web server or crash boot.
+        def _boot_bt_pan():
+            try:
+                if _start_bt_pan():
+                    logger.info("Bluetooth PAN (NAP) up on 192.168.44.1")
+            except Exception as _btp_err:  # pragma: no cover
+                logger.error(f"BT PAN boot error: {_btp_err}")
+        socketio.start_background_task(_boot_bt_pan)
 
         logger.info("✅ All background threads started successfully")
 
