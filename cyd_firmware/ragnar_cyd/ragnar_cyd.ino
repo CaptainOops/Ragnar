@@ -846,7 +846,7 @@ static uint16_t threatColor(int t) {
 // — the grid lays itself out. Up to 10 items fit without scrolling.
 static const int16_t HEAD_H   = 30;
 static const int16_t TILE_W   = 105;
-static const int16_t TILE_H   = 28;                 // compact tiles (size-1 labels)
+static const int16_t TILE_H   = 34;                 // sized so 12 tiles (6 rows) fit
 static const int16_t TILE_XL  = 10, TILE_XR = 125;
 static const int16_t MENU_Y0  = 34;                 // first row top
 static const int16_t MENU_PITCH = TILE_H + 8;       // row stride (42)
@@ -934,8 +934,8 @@ static void drawMenuTile(int16_t x, int16_t y, const char *label,
   gfx->fillRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(22, 28, 40));
   gfx->drawRoundRect(x, y, TILE_W, TILE_H, 6, gfx->color565(45, 55, 70));
   gfx->fillRoundRect(x, y + 4, 4, TILE_H - 8, 2, accent);   // left accent bar
-  gfx->setTextColor(WHITE); gfx->setTextSize(1);
-  gfx->setCursor(x + 12, y + (TILE_H - 8) / 2); gfx->print(label);
+  gfx->setTextColor(WHITE); gfx->setTextSize(2);
+  gfx->setCursor(x + 12, y + (TILE_H - 16) / 2); gfx->print(label);
   if (val.length()) {
     gfx->setTextColor(vcol); gfx->setTextSize(1);
     int16_t vx = x + TILE_W - (int16_t)val.length() * 6 - 6;
