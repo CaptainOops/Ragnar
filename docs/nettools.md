@@ -36,6 +36,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 | [WHOIS](#whois) | Diagnostics | `POST /api/net/whois` |
 | [IP Attribution (country/ASN/ISP/abuse)](ip-intel.md) | Diagnostics | `POST /api/net/ip-intel` |
 | [DNS Doctor (poisoning check)](#dns-doctor) | Diagnostics | `POST /api/net/dns` |
+| [DNS Watch (passive)](#dns-watch) | Switch & L2/L3 | `GET /api/net/dns-watch` |
 | [ARP Poisoning](#arp-poisoning) | Diagnostics | `GET /api/net/arp-check`, `/arp-baseline` |
 | [MAC Watch](#mac-watch) | Diagnostics | `GET /api/net/mac-watch`, `POST /api/net/mac-watch-reset` |
 | [DHCP Guardian](#dhcp-guardian) | Switch & L2/L3 | `GET /api/net/dhcp-guardian`, `POST /api/net/dhcp-baseline` |
@@ -124,7 +125,7 @@ capture path.
 
 ### Detector Self-Test (Switch & L2/L3)
 A one-click **Run self-test** that validates the IGMP, **IPv6 first-hop**, **NDP**, **RA Guard**,
-**NTP**, **ICMP**, **SNMP**, **TLS-cert**, **STP**, **DTP**, **CDP**, **VTP**, **SMB**, **Relay/Coercion**, **SSH** (regreSSHion/Terrapin), **Telnet**, **RPC/NetLogon** (Zerologon/DCSync/WinRM), **LACP** (LAG hijack), **BFD** (failover manipulation), **PTP** (grandmaster takeover), **SR-MPLS** (label/segment injection), **IPsec/IKE** (D(HE)at / weak-DH / SWEET32 / Aggressive-Mode), **EIGRP**, **IS-IS**, **FHRP**, OSPF and BGP detectors — plus the cross-protocol **D(HE)at** (CVE-2002-20001) coverage that also names finite-field-DH exposure in TLS and SSH — the vendor CVE guards (**Cisco**, **Juniper**, **Arista**, **Comware**, **MikroTik**, **Aruba** and **Dell** — Dell Guard is a standalone daemon, so the panel runs its offline classifier self-test) — plus the **BGP speaker** (codec/framer/FSM/RIB) and
+**NTP**, **ICMP**, **SNMP**, **TLS-cert**, **STP**, **DTP**, **CDP**, **VTP**, **SMB**, **Relay/Coercion**, **SSH** (regreSSHion/Terrapin), **Telnet**, **RPC/NetLogon** (Zerologon/DCSync/WinRM), **LACP** (LAG hijack), **BFD** (failover manipulation), **PTP** (grandmaster takeover), **SR-MPLS** (label/segment injection), **IPsec/IKE** (D(HE)at / weak-DH / SWEET32 / Aggressive-Mode), **DNS Watch** (KeyTrap / NSEC3 / NXNSAttack / MaginotDNS cache-poisoning / SAD DNS), **EIGRP**, **IS-IS**, **FHRP**, OSPF and BGP detectors — plus the cross-protocol **D(HE)at** (CVE-2002-20001) coverage that also names finite-field-DH exposure in TLS and SSH — the vendor CVE guards (**Cisco**, **Juniper**, **Arista**, **Comware**, **MikroTik**, **Aruba** and **Dell** — Dell Guard is a standalone daemon, so the panel runs its offline classifier self-test) — plus the **BGP speaker** (codec/framer/FSM/RIB) and
 **path-asymmetry / OWD** engine — by running each classifier against crafted attack
 captures (no root, no external network) and reports per-suite pass/fail. With Scapy
 installed it also runs the end-to-end packet-crafting leg for the capture-based
@@ -386,6 +387,13 @@ Alongside the per-resolver table it runs active poisoning probes and returns a
   (the less-monitored path, which RFC 6724 makes dual-stack clients *prefer*) stays
   invisible to an A-only check. "Both flagged" is not re-alarmed, and a silent
   AAAA family (single-stack host) is simply not compared.
+- **DNSSEC-CVE posture** (v4) — reads the target **zone's own** DNSKEY / NSEC3PARAM
+  through a trusted resolver and flags **KeyTrap** (`CVE-2023-50387`): distinct DNSKEYs
+  that **share a key tag** (a validator must try every one against each signature), or an
+  excessive **DNSKEY × RRSIG** crypto product; and **NSEC3 over-iteration**
+  (`CVE-2023-50868`, iterations above the RFC 9276 ceiling of 0). Returned in the
+  `dnssec_cve` field. Fail-open — a resolver/parse hiccup never blocks the poison verdict.
+  (The full DNSSEC-CVE + over-DNS attack set is caught passively by [DNS Watch](#dns-watch).)
 
 Strong signals (NXDOMAIN rewrite, bogon answer, DoH mismatch, anchor mismatch,
 ASN divergence, failed DNSSEC control, transport race, AAAA bogon / cross-family
@@ -395,6 +403,37 @@ banner in the web panel, is available on the e-Paper **KEY4-long** result page,
 and drives the [Network Integrity Monitor](#-network-integrity-monitor).
 
 - Endpoint: `POST /api/net/dns` `{name}` · binaries: `dig` (`dnsutils`), `curl`
+
+### DNS Watch
+A **passive** DNS-response threat detector on port **53** — **detection-only**, it never
+transmits (unlike the active [DNS Doctor](#dns-doctor), which queries resolvers). It observes
+DNS answers already on the wire and flags weaknesses in the record structure, dual-stack (A +
+AAAA, byte-identical logic). The engine is the vendored `python/dns_doctor_passive/` package;
+its no-transmit invariant is AST-enforced in its own conformance. Findings (code `DNSD-nnn`):
+
+- **KeyTrap** (`CVE-2023-50387`) — `DNSD-001` colliding DNSKEY key tags, `DNSD-002` an RRSIG
+  burst over one RRset, `DNSD-003` a DNSKEY × RRSIG crypto product that forces a validator
+  into quadratic signature verification. Stateless — visible in the record counts.
+- **NSEC3** (`CVE-2023-50868`) — `DNSD-010` iteration count above the RFC 9276 ceiling of 0;
+  `DNSD-021` the closest-encloser CPU-exhaustion pattern (baseline-gated).
+- **NXNSAttack** (`CVE-2020-8616`) — `DNSD-004` a glueless out-of-bailiwick NS overflow,
+  `DNSD-005` a correlated burst — referral amplification.
+- **MaginotDNS** (`CVE-2021-25220`) — `DNSD-006` an authority/additional record outside the
+  queried zone's bailiwick: cache-poisoning record injection.
+- **DNSBomb** (`CVE-2024-33655`) — `DNSD-020` a short-TTL burst far above a zone's learned
+  rate: the pulsing-amplification accumulation phase (baseline-gated).
+- **SAD DNS** (`CVE-2020-25705`) — `DNSD-030` two conflicting responses to one outstanding
+  query (a forged response raced the real one), `DNSD-031` low outbound source-port entropy.
+  Plus `DNSD-007` a malformed/truncated response and `DNSD-011` an unsupported DNSSEC algorithm.
+
+The stateless detectors (KeyTrap, NSEC3 iteration, bailiwick, algorithm) fire on a single
+response; the **baseline-gated** ones (DNSBomb, NXNS burst, NSEC3-encloser, water-torture,
+port-entropy) accumulate across the capture, so a longer window catches more. HIGH/CRITICAL
+findings feed [Watchtower](watchtower.md). dnspython + scapy back the self-test's frame
+builders. The active [DNS Doctor](#dns-doctor) also folds the stateless KeyTrap / NSEC3
+checks into a targeted lookup.
+- Endpoint: `GET /api/net/dns-watch` `{interface, seconds}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py dns-watch [--iface I] [--seconds N] [--json]` · `dns-passive-selftest`
 
 ### ARP Poisoning
 Detects **ARP spoofing / MITM** from the kernel neighbour table (`ip neigh`) —
@@ -1494,6 +1533,14 @@ redirect / rogue-irdp / flood / tunnel / recon / anomaly / redirect parse), and 
 when [Scapy](https://scapy.net) is installed — crafts a real ICMP Redirect into a
 pcap and parses it back through `tcpdump`, exercising the capture→parse path end to
 end.
+
+**CVE-2020-16898 "Bad Neighbor" (v4).** Alongside redirects it captures **Router
+Advertisements** (type 134) and reads the raw ND options: an **RDNSS** option (type 25) whose
+length field is **even** is flagged CRITICAL — RFC 8106 fixes that length at an odd `1+2N`, so
+an even value is the Windows TCP/IP stack buffer-overflow trigger (CVSS 8.8, `nd_ra_rdnss_malformed`).
+It also flags a **zero-length** ND option (`nd_option_length_zero`, a parser-loop trap) and an
+option that **overruns** the message (`nd_option_length_invalid`). These fold into the same
+verdict and [Watchtower](watchtower.md) path as the redirect findings.
 
 - Endpoint: `GET /api/net/icmp-watch` `{interface, seconds}`,
   `POST /api/net/icmp-baseline` `{action: reset}` · binary: `tcpdump`

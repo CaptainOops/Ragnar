@@ -9523,6 +9523,51 @@ const _SRM_SEV_STYLE = {
     critical: 'text-red-300', high: 'text-red-300', medium: 'text-amber-300',
     low: 'text-gray-400', info: 'text-gray-500',
 };
+async function runDnsWatch() {
+    const out = document.getElementById('dnswatch-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('dnswatch-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('dnswatch-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '20';
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing DNS (port 53)…</p>';
+    try {
+        _fillIfaceSel('dnswatch-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '');
+        const d = await fetchAPI('/api/net/dns-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runDnsWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const styles = { attack: ['bg-red-900/40 border-red-700 text-red-200', 'ATTACK'], exposure: ['bg-amber-900/40 border-amber-700 text-amber-200', 'EXPOSURE'], observed: ['bg-slate-800 border-slate-600 text-gray-300', 'OBSERVED'], clean: ['bg-green-900/30 border-green-700 text-green-300', 'CLEAN'] };
+        const [cls, label] = styles[d.verdict] || styles.observed;
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · frames: ${d.packet_count || 0} · findings: ${d.finding_count || 0}</p>`;
+        const sev = { critical: 'text-red-300', warning: 'text-amber-300', notice: 'text-gray-400' };
+        if ((d.findings || []).length) {
+            html += '<ul class="space-y-1">';
+            for (const f of d.findings) {
+                const sc = sev[f.severity] || 'text-gray-400';
+                html += `<li class="text-sm"><span class="${sc} font-mono">${escapeHtml(f.code || '')}</span> ${escapeHtml(f.name || '')}${f.cve ? ' <span class="text-xs text-gray-500">' + escapeHtml(f.cve) + '</span>' : ''}${f.zone ? ' <span class="text-xs text-gray-500">[' + escapeHtml(f.zone) + ']</span>' : ''}<br><span class="text-xs text-gray-400">${escapeHtml(f.detail || '')}</span></li>`;
+            }
+            html += '</ul>';
+        } else {
+            html += '<p class="text-sm text-green-300">No DNS-response threats observed.</p>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(String(e)) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+
 async function runIpsecWatch() {
     const out = document.getElementById('ipsec-results');
     if (!out) return;
@@ -10785,6 +10830,7 @@ async function runRoutingSelftest() {
                         mac: 'MAC Watch (spoof / vendor-OUI / randomization / HSRP-VRRP virtual-MAC)', dhcp: 'DHCP Guardian (rogue server / starvation)',
                         lacp: 'LACP Watch (802.1AX LAG-hijack / flapping)', rpc: 'RPC/NetLogon Watch (Zerologon / DCSync / WinRM)',
                         bfd: 'BFD Watch (failover manipulation)', ptp: 'PTP Watch (IEEE-1588 grandmaster takeover)', srmpls: 'SR-MPLS Watch (MPLS segment injection)', ipsec: 'IPsec/IKE Watch (D(HE)at / weak-DH / SWEET32)',
+                        dns_passive: 'DNS Watch (KeyTrap / NSEC3 / NXNSAttack / MaginotDNS / SAD DNS)',
                         cisco_guard: 'Cisco Guard (IOS/IOS-XE/NX-OS CVEs)', juniper_guard: 'Juniper Guard (J-Web/SSR/Space CVEs)', arista_guard: 'Arista Guard (EOS CVEs)', comware_guard: 'Comware Guard (VRF-hop / MPLS CVEs)',
                         mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
                         bgp_speaker: 'BGP Speaker (codec/FSM/RIB)', path_asymmetry: 'Path Asymmetry (OWD)' };
@@ -10795,7 +10841,7 @@ async function runRoutingSelftest() {
             '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
             '<tr class="text-left text-gray-500"><th class="px-2 py-1">Scanner</th><th class="px-2 py-1">Scenarios</th><th class="px-2 py-1">End-to-end</th><th class="px-2 py-1">Result</th></tr>' +
             '</thead><tbody>';
-        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
+        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
         // Append any suite the backend returned that isn't in the preferred order,
         // so a newly-wired detector can never again be counted toward pass/fail yet
         // stay invisible in the table.
@@ -14474,6 +14520,9 @@ async function loadConfigData() {
 
         // Load Bluetooth provisioning toggle + adapter picker state
         loadBleProvisioning();
+
+        // Load Bluetooth access-point (PAN) toggle state
+        loadBtPan();
 
         // Load GPS-backfill opt-in state (gates the map Backfill GPS button)
         loadWardrivingBackfillState();
@@ -30014,6 +30063,109 @@ function _bleProvPollUntilSettled(tries) {
             _bleProvPollUntilSettled(tries - 1);
         }
     }, 1500);
+}
+
+let _btPanInstalling = false;
+
+function _btPanStatusText(d) {
+    if (!d) return '—';
+    if (d.error) return '⚠ ' + d.error;
+    if (!d.available) {
+        const pkgs = (d.missing_packages && d.missing_packages.length)
+            ? d.missing_packages.join(', ') : 'bluez-tools, dnsmasq';
+        return 'Dependencies not installed (' + pkgs + '). Tap “Install dependencies”, or just turn it on and it installs them for you.';
+    }
+    if (!d.enabled) return 'Off. Turn on, then pair the box in your phone’s Bluetooth settings.';
+    if (d.running) {
+        const n = d.connected_devices || 0;
+        return 'On — discoverable at ' + (d.address || '192.168.44.1') + ':8000 · '
+            + (n ? (n + ' phone' + (n === 1 ? '' : 's') + ' connected') : 'no phone connected yet');
+    }
+    return 'Starting…';
+}
+
+async function loadBtPan() {
+    try {
+        const res = await fetch('/api/bt/pan/status');
+        const d = await res.json();
+        const cb = document.getElementById('bt-pan-enabled');
+        if (cb) cb.checked = !!d.enabled;
+        const btn = document.getElementById('bt-pan-install');
+        // Offer the install button whenever the tools are missing (and we're not
+        // already mid-install).
+        if (btn) btn.classList.toggle('hidden', !!d.available || _btPanInstalling);
+        const st = document.getElementById('bt-pan-status');
+        if (st && !_btPanInstalling) st.textContent = _btPanStatusText(d);
+    } catch (e) { /* silent */ }
+}
+
+// Poll the install log until it finishes; optionally enable the NAP after.
+function _btPanPollInstall(thenEnable) {
+    _btPanInstalling = true;
+    const st = document.getElementById('bt-pan-status');
+    const log = document.getElementById('bt-pan-log');
+    const btn = document.getElementById('bt-pan-install');
+    if (btn) btn.classList.add('hidden');
+    if (log) log.classList.remove('hidden');
+    const timer = setInterval(async () => {
+        try {
+            const res = await fetch('/api/bt/pan/install-log');
+            const d = await res.json();
+            if (log && d.log) { log.textContent = d.log; log.scrollTop = log.scrollHeight; }
+            if (st) st.textContent = d.running ? 'Installing dependencies…' : (st.textContent || '');
+            if (!d.running && d.done) {
+                clearInterval(timer);
+                _btPanInstalling = false;
+                if (d.ok) {
+                    addConsoleMessage('Bluetooth access-point dependencies installed', 'success');
+                    if (thenEnable) {
+                        try { await postAPI('/api/bt/pan/toggle', { enabled: true }); } catch (e) { /* handled by reload */ }
+                    }
+                } else {
+                    addConsoleMessage('Dependency install failed — see the log', 'error');
+                    if (st) st.textContent = '⚠ ' + (d.error || 'install failed');
+                    const cb = document.getElementById('bt-pan-enabled');
+                    if (cb) cb.checked = false;
+                }
+                loadBtPan();
+            }
+        } catch (e) { /* keep polling */ }
+    }, 1500);
+}
+
+async function installBtPanDeps(thenEnable) {
+    try {
+        await postAPI('/api/bt/pan/install', {});
+        addConsoleMessage('Installing Bluetooth access-point dependencies…', 'info');
+        _btPanPollInstall(!!thenEnable);
+    } catch (e) {
+        console.error('[BTPAN] install error:', e);
+        addConsoleMessage('Failed to start dependency install', 'error');
+    }
+}
+
+async function toggleBtPan(checkbox) {
+    const enabled = !!checkbox.checked;
+    const st = document.getElementById('bt-pan-status');
+    if (st) st.textContent = enabled ? 'Enabling…' : 'Disabling…';
+    try {
+        const res = await postAPI('/api/bt/pan/toggle', { enabled });
+        // Turning it on with missing deps: the server started the install; drive
+        // the progress UI and enable once it lands.
+        if (enabled && res && res.installing) {
+            _btPanPollInstall(true);
+            return;
+        }
+        addConsoleMessage('Bluetooth access point ' + (enabled ? 'enabled' : 'disabled'),
+            (res && res.error) ? 'error' : 'success');
+        if (st) st.textContent = _btPanStatusText(Object.assign({ enabled: enabled }, res || {}));
+        setTimeout(loadBtPan, 800);
+    } catch (e) {
+        console.error('[BTPAN] toggle error:', e);
+        addConsoleMessage('Failed to toggle Bluetooth access point', 'error');
+        checkbox.checked = !enabled;
+        if (st) st.textContent = '⚠ toggle failed';
+    }
 }
 
 async function loadBleProvisioning() {

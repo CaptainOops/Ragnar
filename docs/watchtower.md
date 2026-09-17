@@ -95,6 +95,13 @@ key-exchange posture findings to `/var/log/ragnar/ipsec_watch.jsonl` (deduplicat
 IKEv1 **Aggressive Mode**, weak PSK-hash / PRF and the stateful **DH-downgrade** correlator,
 each mapped to its CVE and surfaced as **HIGH**/**MEDIUM**. Dual-stack (IPv4 + IPv6).
 
+[`dns_watch`](nettools.md#dns-watch) (DNS Watch) appends its passive DNS-response findings to
+`/var/log/ragnar/dns_watch.jsonl` (deduplicated per code + source) — **KeyTrap** and **NSEC3**
+DNSSEC-CPU DoS (CVE-2023-50387 / CVE-2023-50868), **NXNSAttack** referral amplification,
+**MaginotDNS** out-of-bailiwick cache-poisoning, **DNSBomb** and **SAD DNS**, each mapped to
+its CVE. Colliding-key-tag / cache-poisoning findings land as **CRITICAL**, iteration/rate
+tells as **MEDIUM**. Dual-stack (A + AAAA).
+
 These vendor guards are **LAN-only**: their findings only mean anything on a
 wired switch/router uplink or a SPAN/mirror port, so the background rotation
 runs them **only when a genuine wired LAN interface is up** and always over that

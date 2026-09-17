@@ -418,6 +418,98 @@ def ble_provisioning_toggle():
     _stop_ble_provisioning()
     return jsonify({'enabled': False, 'running': False})
 
+
+# ---------------------------------------------------------------------------
+# Bluetooth PAN (NAP) — a direct Bluetooth link to the box for the Ragnar Mobile
+# app when Tailscale/Wi-Fi can't reach it. Opt-in (bt_pan_enabled) and fully
+# reversible (disabling removes the bridge + NAP). Android-only. See bt_pan.py.
+# Unlike BLE provisioning this carries a real IP link, so the app talks ordinary
+# HTTP over it — the waterfall and everything else work unchanged.
+# ---------------------------------------------------------------------------
+def _start_bt_pan():
+    """Start the NAP server if config enables it. Never raises."""
+    try:
+        if not shared_data.config.get('bt_pan_enabled', False):
+            return False
+        import bt_pan
+        return bool(bt_pan.start().get('running'))
+    except Exception as e:  # pragma: no cover - hardware dependent
+        logger.error(f"BT PAN failed to start: {e}")
+        return False
+
+
+def _stop_bt_pan():
+    try:
+        import bt_pan
+        bt_pan.stop()
+    except Exception as e:  # pragma: no cover
+        logger.error(f"BT PAN stop error: {e}")
+
+
+@app.route('/api/bt/pan/status', methods=['GET'])
+def bt_pan_status():
+    enabled = bool(shared_data.config.get('bt_pan_enabled', False))
+    try:
+        import bt_pan
+        st = bt_pan.status()
+    except Exception as e:  # pragma: no cover
+        st = {'running': False, 'available': False, 'error': str(e)}
+    st['enabled'] = enabled
+    return jsonify(st)
+
+
+@app.route('/api/bt/pan/toggle', methods=['POST'])
+def bt_pan_toggle():
+    payload = request.get_json(silent=True) or {}
+    enable = bool(payload.get('enabled', not shared_data.config.get('bt_pan_enabled', False)))
+    if enable:
+        import bt_pan
+        # Dependencies missing? Kick off the install in the background and tell
+        # the UI to show progress; it re-issues enable once they are present.
+        # Don't persist bt_pan_enabled yet — a lean box would then try (and fail)
+        # to start the NAP on every boot until the packages actually land.
+        if bt_pan.missing_tools():
+            inst = bt_pan.install_deps()
+            resp = {'enabled': False, 'running': False, 'installing': True}
+            resp.update(inst)
+            return jsonify(resp), 200
+        shared_data.config['bt_pan_enabled'] = True
+        shared_data.save_config()
+        ok = _start_bt_pan()
+        try:
+            st = bt_pan.status()
+        except Exception:
+            st = {}
+        st['enabled'] = True
+        if not ok and not st.get('error'):
+            st['error'] = ('NAP did not come up — is a Bluetooth controller present '
+                           'and unblocked?')
+        return jsonify(st), 200
+    shared_data.config['bt_pan_enabled'] = False
+    shared_data.save_config()
+    _stop_bt_pan()
+    return jsonify({'enabled': False, 'running': False})
+
+
+@app.route('/api/bt/pan/install', methods=['POST'])
+def bt_pan_install():
+    """Install the NAP's missing apt dependencies in the background."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.install_deps())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'running': False, 'done': True, 'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/bt/pan/install-log', methods=['GET'])
+def bt_pan_install_log():
+    """Progress + streamed log for the dependency install (polled by the UI)."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.install_status())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'running': False, 'done': True, 'ok': False, 'error': str(e)}), 500
+
 # ============================================================================
 # AUTHENTICATION MIDDLEWARE
 # ============================================================================
@@ -1995,6 +2087,7 @@ def _net_integrity_check_once():
         ('bfd', 'BFD', lambda: watch(nd.do_bfd_watch, interface=cap_iface)),
         ('srmpls', 'SR-MPLS', lambda: watch(nd.do_sr_mpls_watch, interface=cap_iface)),
         ('ipsec', 'IPsec', lambda: watch(nd.do_ipsec_watch, interface=cap_iface)),
+        ('dns_passive', 'DNS', lambda: watch(nd.do_dns_watch, interface=cap_iface)),
     ]
 
     # LAN-only vendor switch/router guards: only auto-run when a genuine wired
@@ -2823,16 +2916,30 @@ def _cyd_sanitize(s, n=28):
 # Lifecycle of the most recent action a CYD requested, surfaced in the status
 # feed (act_name/act_state/act_detail) so the node's generic Action subpage can
 # show starting -> running -> done/error with a result, instead of firing blind.
-_cyd_last_action = {'name': '', 'state': '', 'detail': '', 'ts': 0.0}
+_cyd_last_action = {'name': '', 'state': '', 'detail': '', 'dur': 0, 'ts': 0.0}
 # Actions whose real result lands later from a background thread — they stay
 # 'running' on the immediate return and report their own 'done'/'error'.
 _CYD_BG_ACTIONS = {'speed_test', 'captive_check', 'network_scan',
                    'wifi_defense_scan', 'ragnar_update'}
 
 
-def _cyd_set_action(name, state, detail=''):
+# Expected duration (s) + a "what's happening" line per time-bounded action, so
+# the CYD can show a countdown/progress bar instead of a dead "working...". dur 0
+# = unknown length -> the node shows a spinner + elapsed clock only.
+_CYD_ACTION_INFO = {
+    'wifi_defense_scan': (16, 'listening 2.4GHz'),
+    'network_scan':      (10, 'sweeping airspace'),
+    'captive_check':     (8,  'probing portal'),
+    'ble_scan':          (10, 'scanning BLE'),
+    'speed_test':        (0,  'testing speed'),
+    'ragnar_update':     (0,  'updating Ragnar'),
+}
+
+
+def _cyd_set_action(name, state, detail='', dur=0):
     _cyd_last_action.update(name=str(name or ''), state=str(state or ''),
-                            detail=_cyd_sanitize(detail, 26), ts=time.time())
+                            detail=_cyd_sanitize(detail, 26), dur=int(dur or 0),
+                            ts=time.time())
 
 
 def _cyd_dispatch_tracked(action, node_name):
@@ -2840,7 +2947,8 @@ def _cyd_dispatch_tracked(action, node_name):
     _cyd_set_action(action, 'running', '')
     status, code = _cyd_dispatch_action(action, node_name)
     if action in _CYD_BG_ACTIONS and status == 'started':
-        _cyd_set_action(action, 'running', 'working...')      # thread reports finish
+        dur, what = _CYD_ACTION_INFO.get(action, (0, 'working...'))
+        _cyd_set_action(action, 'running', what, dur=dur)     # thread reports finish
     elif status in ('done', 'started'):
         _cyd_set_action(action, 'done', status)
     else:
@@ -3020,6 +3128,7 @@ def _cyd_build_status_dict():
         'act_name': _cyd_last_action['name'],
         'act_state': _cyd_last_action['state'],
         'act_detail': _cyd_last_action['detail'],
+        'act_dur': _cyd_last_action['dur'],
         'ts': int(time.time()),
     }
     d.update(_cyd_traffic())          # tf_run / tf_pps / tf_mbps / tf_hosts / ...
@@ -27296,6 +27405,17 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
             except Exception as _ble_err:  # pragma: no cover
                 logger.error(f"BLE provisioning boot error: {_ble_err}")
         socketio.start_background_task(_boot_ble)
+
+        # Bring up the Bluetooth PAN (NAP) if enabled — same deferred, never-fatal
+        # treatment as BLE, so a missing/blocked Bluetooth stack can't hold up the
+        # web server or crash boot.
+        def _boot_bt_pan():
+            try:
+                if _start_bt_pan():
+                    logger.info("Bluetooth PAN (NAP) up on 192.168.44.1")
+            except Exception as _btp_err:  # pragma: no cover
+                logger.error(f"BT PAN boot error: {_btp_err}")
+        socketio.start_background_task(_boot_bt_pan)
 
         logger.info("✅ All background threads started successfully")
 

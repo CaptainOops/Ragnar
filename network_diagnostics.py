@@ -3538,6 +3538,76 @@ def _dns_dualstack_check(name, tested, public_name, v4_flagged):
     return out, reasons
 
 
+def _keytrap_collisions(tag_to_keys):
+    """tag -> set(distinct key texts). Returns [(tag, count), ...] for any tag shared by
+    2+ DISTINCT DNSKEYs — the KeyTrap colliding-key-tag signature (a duplicate record of the
+    same key is NOT a collision). Pure/offline for the self-test."""
+    return [(t, len(ks)) for t, ks in tag_to_keys.items() if len(ks) > 1]
+
+
+def _dns_dnssec_cve_check(name, resolver='1.1.1.1'):
+    """Active DNSSEC-CVE posture from the zone's own records via dnspython: KeyTrap
+    (CVE-2023-50387 — colliding DNSKEY key tags, or an excessive DNSKEY×RRSIG crypto
+    product) and NSEC3 over-iteration (CVE-2023-50868). Fail-open: any error returns []."""
+    findings = []
+    try:
+        import dns.resolver as _dr, dns.dnssec as _dd, dns.rdatatype as _drt
+        from collections import defaultdict as _dd_map
+    except Exception:
+        return findings
+    try:
+        res = _dr.Resolver(configure=False)
+        res.nameservers = [resolver]
+        res.lifetime = res.timeout = 4.0
+        apex = _dr.zone_for_name(name, resolver=res)
+        ans = res.resolve(apex, 'DNSKEY', raise_on_no_answer=False)
+    except Exception:
+        return findings
+    rrset = getattr(ans, 'rrset', None)
+    if not rrset:
+        return findings
+    zone = apex.to_text().rstrip('.')
+    by_tag = _dd_map(set)
+    for k in rrset:
+        try:
+            by_tag[_dd.key_id(k)].add(k.to_text())
+        except Exception:
+            continue
+    for tag, count in _keytrap_collisions(by_tag):
+        findings.append({'code': 'DNSSEC_KEYTRAP_KEYTAG_COLLISION', 'cve': 'CVE-2023-50387',
+                         'severity': 'high', 'zone': zone,
+                         'detail': '%d distinct DNSKEYs share key tag %d — the KeyTrap '
+                                   'colliding-key-tag signature (a validator tries every one '
+                                   'against each signature)' % (count, tag)})
+    nkeys = len(rrset)
+    nsigs = 0
+    try:
+        for rr in ans.response.answer:
+            if rr.rdtype == _drt.RRSIG and getattr(rr, 'covers', None) == _drt.DNSKEY:
+                nsigs += len(rr)
+    except Exception:
+        pass
+    if nkeys and nsigs and nkeys * nsigs > 32:
+        findings.append({'code': 'DNSSEC_KEYTRAP_CRYPTO_AMPLIFICATION', 'cve': 'CVE-2023-50387',
+                         'severity': 'high', 'zone': zone,
+                         'detail': '%d DNSKEYs x %d RRSIGs = %d signature verifications for one '
+                                   'DNSKEY response (KeyTrap work amplification)'
+                                   % (nkeys, nsigs, nkeys * nsigs)})
+    try:
+        p = res.resolve(apex, 'NSEC3PARAM', raise_on_no_answer=False)
+        if getattr(p, 'rrset', None):
+            it = max(rr.iterations for rr in p.rrset)
+            if it > 0:
+                findings.append({'code': 'DNSSEC_NSEC3_HIGH_ITERATIONS', 'cve': 'CVE-2023-50868',
+                                 'severity': 'medium', 'zone': zone,
+                                 'detail': 'NSEC3 iterations = %d (RFC 9276 ceiling is 0) — '
+                                           'extra iterations are pure validator CPU cost, the '
+                                           'NSEC3 CPU-exhaustion lever' % it})
+    except Exception:
+        pass
+    return findings
+
+
 def do_dns_doctor(name):
     """Resolve `name` through every system resolver plus public 1.1.1.1 / 8.8.8.8,
     reporting per-resolver answers, query latency and the DNSSEC AD flag, whether
@@ -3732,11 +3802,17 @@ def do_dns_doctor(name):
         'dualstack': dualstack,
     }
 
+    # DNSSEC-CVE posture of the target zone itself: KeyTrap (CVE-2023-50387) and NSEC3
+    # over-iteration (CVE-2023-50868), read from its own DNSKEY/NSEC3PARAM via a trusted
+    # resolver. Fail-open, so it never blocks the poison verdict.
+    dnssec_cve = _dns_dnssec_cve_check(name)
+
     return {'success': True, 'name': name, 'results': results,
             'consistent': consistent,
             'dnssec_ok': any(r['ad'] for r in results),
             'doh_reachable': _tcp_reachable('1.1.1.1', 443),
             'dot_reachable': _tcp_reachable('1.1.1.1', 853),
+            'dnssec_cve': dnssec_cve,
             'poison': poison}
 
 
@@ -3749,6 +3825,12 @@ def _dns_selftest():
     def ck(name, cond, got=''):
         scenarios.append({'name': name, 'expect': 'pass', 'got': str(got),
                           'pass': bool(cond)})
+
+    # KeyTrap key-tag collision logic (CVE-2023-50387): 2+ DISTINCT keys sharing a tag
+    # fires; a duplicate record of one key does not.
+    ck('keytrap_collision_fires',
+       _keytrap_collisions({111: {'keyA', 'keyB'}, 222: {'keyC'}}) == [(111, 2)])
+    ck('keytrap_duplicate_not_collision', _keytrap_collisions({111: {'keyA'}}) == [])
 
     scapy_result = {'ran': False, 'reason': 'scapy unavailable'}
     try:
@@ -7799,6 +7881,111 @@ def _decode_icmp6_redirect_frames(frames):
     return events
 
 
+_ICMP6_RA = 134            # Router Advertisement
+_ND_OPT_RDNSS = 25         # RFC 8106 Recursive DNS Server option
+
+
+def _decode_icmp6_ra_findings(frames):
+    """Parse raw ICMPv6 Router Advertisements (type 134) out of Ethernet frames for
+    CVE-2020-16898 'Bad Neighbor' and malformed ND-option lengths. The RDNSS option
+    (type 25) carries N addresses, so RFC 8106 fixes its length field at 1+2N 8-byte
+    units — always ODD; an EVEN value is the Windows TCP/IP stack buffer-overflow trigger.
+    Pure bytes in, findings out — no scapy, unit-testable. Findings are shaped like the
+    redirect layer's (check/severity/src/message/details) so _emit_icmp_jsonl feeds them
+    to Watchtower unchanged."""
+    out = []
+    for _ts, frame in frames:
+        try:
+            if len(frame) < 14:
+                continue
+            src_mac = ':'.join('%02x' % b for b in frame[6:12])
+            off = 12
+            etype = (frame[off] << 8) | frame[off + 1]
+            off += 2
+            while etype in (0x8100, 0x88a8) and len(frame) >= off + 4:
+                etype = (frame[off + 2] << 8) | frame[off + 3]
+                off += 4
+            if etype != 0x86dd or len(frame) < off + 40:
+                continue
+            ip6 = frame[off:]
+            plen = (ip6[4] << 8) | ip6[5]
+            nxt = ip6[6]
+            src = _v6(ip6[8:24])
+            p = 40
+            hops = 0
+            while nxt in (0, 43, 60) and len(ip6) >= p + 2 and hops < 8:
+                nxt = ip6[p]
+                p += (ip6[p + 1] + 1) * 8
+                hops += 1
+            if nxt != 58 or len(ip6) < p + 16:      # 58 = ICMPv6; RA header is 16 bytes
+                continue
+            icmp = ip6[p:]
+            if icmp[0] != _ICMP6_RA:
+                continue
+            # Bound the option walk by the IPv6 payload length so trailing Ethernet
+            # padding is never misparsed as an option (a false-positive source).
+            end = min(len(icmp), max(16, plen - (p - 40)))
+            o = 16                                    # options follow the 16-byte RA header
+            while o + 2 <= end:
+                otype = icmp[o]
+                ounits = icmp[o + 1]
+                if ounits == 0:
+                    out.append({'check': 'nd_option_length_zero', 'severity': 'HIGH',
+                                'src': src, 'src_mac': src_mac,
+                                'message': ('Router Advertisement from %s carries an ND '
+                                            'option with a zero length field — a parser that '
+                                            'trusts it never advances and can loop' % src),
+                                'details': {'option_type': otype}})
+                    break
+                olen = ounits * 8
+                if o + olen > end:
+                    out.append({'check': 'nd_option_length_invalid', 'severity': 'HIGH',
+                                'src': src, 'src_mac': src_mac,
+                                'message': ('Router Advertisement from %s: an ND option '
+                                            'declares %d bytes but the message holds fewer — '
+                                            'malformed, stack-overflow shaped' % (src, olen)),
+                                'details': {'option_type': otype, 'declared_len': olen}})
+                    break
+                if otype == _ND_OPT_RDNSS and (ounits % 2) == 0:
+                    out.append({'check': 'nd_ra_rdnss_malformed', 'severity': 'CRITICAL',
+                                'src': src, 'src_mac': src_mac, 'cve': 'CVE-2020-16898',
+                                'message': ('CVE-2020-16898 "Bad Neighbor": Router '
+                                            'Advertisement from %s carries an RDNSS option '
+                                            'with an EVEN length (%d 8-byte units) — RFC 8106 '
+                                            'fixes it at an odd 1+2N, so this is the Windows '
+                                            'TCP/IP stack buffer-overflow trigger'
+                                            % (src, ounits)),
+                                'details': {'rdnss_length_units': ounits}})
+                o += olen
+        except Exception:
+            continue
+    return out
+
+
+def _icmp6_ra_capture(interface, seconds):
+    """Capture one ICMPv6 Router-Advertisement (type 134) window to a temp pcap and return
+    CVE-2020-16898 / malformed-ND-option findings. Best-effort: [] on any failure."""
+    if not _have('tcpdump'):
+        return []
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(suffix='.pcap')
+    os.close(fd)
+    try:
+        _run(['timeout', str(seconds), 'tcpdump', '-i', interface, '-nn', '-p',
+              '-s', '1600', '-c', '20000', '-w', path,
+              'icmp6 and ip6[40] == 134'], timeout=seconds + 8)
+        try:
+            from bfdwatch import read_pcap as _read_pcap
+            return _decode_icmp6_ra_findings(_read_pcap(path))
+        except Exception:
+            return []
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _icmp6_redirect_capture(interface, seconds):
     """Capture one ICMPv6-Redirect window to a temp pcap and return the decoded
     family=6 redirect events. Best-effort: returns [] on any capture/parse failure
@@ -8251,8 +8438,11 @@ def do_icmp_watch(interface=None, seconds=12, learn=True, quick=False):
     vendored v3 engine is present, IPv4 redirects get the RFC 1122 acceptance checks,
     gateway-MAC-spoof detection and ARP-poison correlation, and IPv6 redirects get
     the RFC 4861 §8.1 MUSTs (Hop Limit 255, link-local source, valid Target/code)
-    plus Target-LLA poisoning detection. HIGH/CRITICAL findings on either stack are
-    streamed to Watchtower."""
+    plus Target-LLA poisoning detection. It also captures Router Advertisements
+    (type 134) and flags **CVE-2020-16898 "Bad Neighbor"** — an RDNSS option with an
+    even length field (RFC 8106 fixes it at an odd 1+2N; even is the Windows TCP/IP
+    overflow trigger) — and malformed ND option lengths. HIGH/CRITICAL findings on
+    either stack are streamed to Watchtower."""
     iface = interface if _valid_iface(interface or '') else _capture_iface()
     if not iface:
         return {'success': False, 'error': 'no interface to capture on'}
@@ -8271,6 +8461,18 @@ def do_icmp_watch(interface=None, seconds=12, learn=True, quick=False):
             v6_box['events'] = []
     v6_thread = threading.Thread(target=_grab_v6, daemon=True)
     v6_thread.start()
+
+    # CVE-2020-16898 "Bad Neighbor" + malformed ND options: capture Router
+    # Advertisements (type 134) in a second thread — same one-window cost.
+    ra_box = {'findings': []}
+
+    def _grab_ra():
+        try:
+            ra_box['findings'] = _icmp6_ra_capture(iface, seconds)
+        except Exception:
+            ra_box['findings'] = []
+    ra_thread = threading.Thread(target=_grab_ra, daemon=True)
+    ra_thread.start()
 
     text, err = _icmp_capture(iface, seconds)
     if err:
@@ -8310,6 +8512,21 @@ def do_icmp_watch(interface=None, seconds=12, learn=True, quick=False):
                         'reasons': result['reasons'][:6]})
             b['events'] = evs[-_ICMP_EVENTS_CAP:]
             _icmp_watch_save(b)
+
+    # Merge Router-Advertisement findings (CVE-2020-16898 Bad Neighbor, malformed ND
+    # options) into the redirect-findings list so they escalate the verdict and stream to
+    # Watchtower through the same path.
+    ra_thread.join(timeout=seconds + 10)
+    ra_findings = ra_box['findings'] or []
+    if ra_findings:
+        result.setdefault('redirect_findings', []).extend(ra_findings)
+        result['ra_findings'] = ra_findings
+        crit = [f for f in ra_findings if f['severity'] in ('CRITICAL', 'HIGH')]
+        if crit:
+            result['reasons'] = (result.get('reasons') or []) + \
+                [f['message'] for f in crit[:4]]
+            if result.get('verdict') == 'clean':
+                result['verdict'] = 'ra-attack'
 
     result['interface'] = iface
     result['seconds'] = seconds
@@ -8539,6 +8756,48 @@ def _icmp_selftest():
             and dec[0]['target_lla'] == '02:aa:bb:cc:dd:ee')
     scenarios.append({'name': 'v6-decode', 'expect': 'target+dest+hop+tlla',
                       'got': str(dec[0] if dec else None)[:110], 'pass': d_ok})
+
+    # 20. CVE-2020-16898 "Bad Neighbor": build an Ethernet/IPv6/ICMPv6 Router
+    #     Advertisement carrying one ND option and confirm the RDNSS even-length trigger.
+    def _v6_ra_frame(opt_type, units, src='fe80::1',
+                     src_mac='02:00:00:00:00:01', dst_mac='33:33:00:00:00:01'):
+        def _mac(s):
+            return bytes(int(x, 16) for x in s.split(':'))
+        icmp = bytearray()
+        icmp += bytes([_ICMP6_RA, 0, 0, 0])                   # type, code, cksum
+        icmp += bytes([64, 0]) + (1800).to_bytes(2, 'big')    # cur-hop, flags, lifetime
+        icmp += bytes(8)                                      # reachable + retrans timers
+        icmp += bytes([opt_type, units])                     # ND option: type, length-units
+        if units:
+            icmp += bytes(units * 8 - 2)                      # option filler to length
+        ip6 = bytearray()
+        ip6 += bytes([0x60, 0, 0, 0])
+        ip6 += len(icmp).to_bytes(2, 'big')
+        ip6 += bytes([58, 255])
+        ip6 += ipaddress.IPv6Address(src).packed
+        ip6 += ipaddress.IPv6Address('ff02::1').packed
+        ip6 += icmp
+        return _mac(dst_mac) + _mac(src_mac) + bytes([0x86, 0xdd]) + bytes(ip6)
+
+    even = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(_ND_OPT_RDNSS, 2))])
+    scenarios.append({'name': 'bad-neighbor-rdnss-even',
+                      'expect': 'nd_ra_rdnss_malformed/CVE-2020-16898',
+                      'got': str([f['check'] for f in even]),
+                      'pass': any(f['check'] == 'nd_ra_rdnss_malformed'
+                                  and f.get('cve') == 'CVE-2020-16898' for f in even)})
+    odd = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(_ND_OPT_RDNSS, 3))])
+    scenarios.append({'name': 'rdnss-odd-clean', 'expect': 'no bad-neighbor',
+                      'got': str([f['check'] for f in odd]),
+                      'pass': not any(f['check'] == 'nd_ra_rdnss_malformed' for f in odd)})
+    zero = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(1, 0))])
+    scenarios.append({'name': 'nd-option-length-zero',
+                      'expect': 'nd_option_length_zero',
+                      'got': str([f['check'] for f in zero]),
+                      'pass': any(f['check'] == 'nd_option_length_zero' for f in zero)})
+    clean_ra = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(1, 1))])
+    scenarios.append({'name': 'clean-ra-silent', 'expect': 'no findings',
+                      'got': str([f['check'] for f in clean_ra]),
+                      'pass': clean_ra == []})
 
     # Optional Scapy end-to-end: craft a real Redirect -> pcap -> tcpdump -> parse.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
@@ -21419,6 +21678,176 @@ def _ipsec_selftest():
     return {'success': all(s['pass'] for s in scenarios), 'scenarios': scenarios}
 
 
+# ==========================================================================
+# DNS Watch — passive DNS-response threat detector (dns_doctor_passive)
+# ==========================================================================
+# Adapts the vendored dns_doctor_passive engine (python/dns_doctor_passive/): a passive
+# observer of DNS responses on port 53 that flags DNSSEC-CVE signatures and over-DNS attacks
+# visible in the record structure — KeyTrap (CVE-2023-50387), NSEC3 iteration abuse
+# (CVE-2023-50868), DNSBomb (CVE-2024-33655), NXNSAttack (CVE-2020-8616), MaginotDNS
+# cache-poisoning (CVE-2021-25220) and SAD DNS (CVE-2020-25705). Dual-stack; the engine
+# never transmits (AST-enforced in its conformance). Complements the ACTIVE do_dns_doctor.
+_DNS_PASSIVE_PKG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'python', 'dns_doctor_passive')
+
+
+def _dns_passive_engine():
+    """Import the vendored dns_doctor_passive engine (its dir must be on sys.path so the
+    bare cross-imports resolve). Returns a fresh Engine with default Config."""
+    if _DNS_PASSIVE_PKG_DIR not in sys.path:
+        sys.path.insert(0, _DNS_PASSIVE_PKG_DIR)
+    import engine as _e
+    from state import Config as _Config
+    return _e.Engine(_Config())
+
+
+def _iter_pcap_frames(path):
+    """Yield raw link-layer frames from a classic pcap file (stdlib; no scapy)."""
+    import struct as _st
+    with open(path, 'rb') as fh:
+        gh = fh.read(24)
+        if len(gh) < 24:
+            return
+        endian = '<' if gh[:4] in (b'\xd4\xc3\xb2\xa1', b'\x4d\x3c\xb2\xa1') else '>'
+        while True:
+            ph = fh.read(16)
+            if len(ph) < 16:
+                break
+            incl = _st.unpack(endian + 'IIII', ph)[2]
+            data = fh.read(incl)
+            if len(data) < incl:
+                break
+            yield data
+
+
+_DNS_PASSIVE_SEV = {'critical': 'CRITICAL', 'warning': 'MEDIUM', 'notice': 'LOW'}
+
+
+def _dns_passive_klass(sev):
+    s = str(sev).lower()
+    return 'ATTACK' if s == 'critical' else ('EXPOSURE' if s == 'warning' else 'POSTURE')
+
+
+def _dns_passive_normalize(f):
+    """Vendored dns_doctor_passive finding -> the guard finding shape _guard_emit_jsonl
+    expects for the Watchtower feed (code/name/severity/klass/cves/detail)."""
+    sev = f.get('severity')
+    return {'code': f.get('code'), 'name': f.get('name') or f.get('code'),
+            'severity': _DNS_PASSIVE_SEV.get(str(sev).lower(), 'MEDIUM'),
+            'klass': _dns_passive_klass(sev), 'src': f.get('src') or None,
+            'cves': [f['cve']] if f.get('cve') else [],
+            'detail': {'zone': f.get('zone'), 'confidence': f.get('confidence'),
+                       'evidence': f.get('evidence'), 'text': f.get('detail')}}
+
+
+def _dns_passive_verdict(findings):
+    if not findings:
+        return 'clean'
+    sevs = {str(f.get('severity')).lower() for f in findings}
+    if 'critical' in sevs:
+        return 'attack'
+    if 'warning' in sevs:
+        return 'exposure'
+    return 'observed'
+
+
+def do_dns_watch(interface=None, seconds=20, learn=True, quick=False):
+    """Passive DNS-response threat detector on port 53 (detection-only, never transmits).
+    Flags DNSSEC-CVE signatures (KeyTrap CVE-2023-50387, NSEC3 CVE-2023-50868) and over-DNS
+    attacks (NXNSAttack, MaginotDNS cache-poisoning, DNSBomb, SAD DNS) in the observed DNS
+    record structure. Dual-stack; adapts the vendored dns_doctor_passive engine over a
+    bounded capture."""
+    iface = interface if _valid_iface(interface or '') else _capture_iface()
+    if not iface:
+        return {'success': False, 'error': 'no interface to capture on'}
+    seconds = _clamp_int(seconds, 20, 5, 60)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    import tempfile
+    fd, pcap = tempfile.mkstemp(suffix='.pcap')
+    os.close(fd)
+    # Large snaplen: DNSSEC responses (DNSKEY/RRSIG bundles) are big and must not truncate.
+    res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-p',
+                '-s', '4096', '-c', '20000', '-w', pcap, 'udp port 53 or tcp port 53'],
+               timeout=seconds + 8)
+    if (os.path.getsize(pcap) <= 24 and res['err'] and any(
+            k in res['err'].lower() for k in ('permission', "couldn't",
+                                              'no such device', 'syntax error'))):
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+        return {'success': False, 'interface': iface, 'error': res['err'].strip()[:200]}
+    findings, frames = [], 0
+    try:
+        eng = _dns_passive_engine()
+        for frame in _iter_pcap_frames(pcap):
+            frames += 1
+            try:
+                findings.extend(eng.handle_frame(frame) or [])
+            except Exception:
+                continue
+    except Exception as e:
+        return {'success': False, 'interface': iface,
+                'error': 'dns analysis failed: %s: %s' % (type(e).__name__, e)}
+    finally:
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+    result = {'success': True, 'module': 'dns_watch', 'interface': iface,
+              'seconds': seconds, 'verdict': _dns_passive_verdict(findings),
+              'finding_count': len(findings), 'findings': findings,
+              'packet_count': frames}
+    if not quick and findings:
+        _guard_emit_jsonl('dns_watch',
+                          {'interface': iface,
+                           'findings': [_dns_passive_normalize(f) for f in findings]})
+    return result
+
+
+def _dns_passive_selftest():
+    """Self-test the vendored dns_doctor_passive detectors by running their own Tier-1 unit
+    suite (fabricated frames through the real Engine.handle_frame). Requires scapy +
+    dnspython for the frame builders; reported as offline-skipped if either is missing."""
+    try:
+        if _DNS_PASSIVE_PKG_DIR not in sys.path:
+            sys.path.insert(0, _DNS_PASSIVE_PKG_DIR)
+        import importlib.util
+        import unittest
+        spec = importlib.util.spec_from_file_location(
+            '_dns_passive_selftest_mod', os.path.join(_DNS_PASSIVE_PKG_DIR, 'selftest.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        return {'success': True, 'scenarios': [],
+                'scapy': {'ran': False, 'reason': 'requires scapy + dnspython: %s' % e}}
+    scenarios = []
+
+    class _Res(unittest.TestResult):
+        def addSuccess(self, t):
+            scenarios.append({'name': t._testMethodName, 'pass': True,
+                              'expect': 'pass', 'got': 'pass'})
+
+        def addFailure(self, t, err):
+            scenarios.append({'name': t._testMethodName, 'pass': False,
+                              'expect': 'pass', 'got': 'FAIL'})
+
+        def addError(self, t, err):
+            scenarios.append({'name': t._testMethodName, 'pass': False,
+                              'expect': 'pass', 'got': 'error'})
+
+        def addSkip(self, t, reason):
+            scenarios.append({'name': t._testMethodName, 'pass': True,
+                              'expect': 'skip', 'got': 'skip'})
+
+    unittest.TestLoader().loadTestsFromModule(mod).run(_Res())
+    return {'success': bool(scenarios) and all(s['pass'] for s in scenarios),
+            'scenarios': scenarios}
+
+
 def do_routing_selftest():
     """Run the IGMP / OSPF / BGP detector self-tests and report a combined result
     plus whether Scapy is available for the end-to-end packet-crafting leg. Drives
@@ -21437,6 +21866,7 @@ def do_routing_selftest():
               'lacp': _lacp_selftest(), 'rpc': _rpc_selftest(),
               'bfd': _bfd_selftest(), 'ptp': _ptp_selftest(),
               'srmpls': _srmpls_selftest(), 'ipsec': _ipsec_selftest(),
+              'dns_passive': _dns_passive_selftest(),
               'ospf': _ospf_selftest(), 'bgp': _bgp_selftest(),
               'arp': _arp_selftest(), 'dns': _dns_selftest(),
               'mac': _mac_selftest(), 'dhcp': _dhcp_selftest(),
@@ -23288,6 +23718,15 @@ def register_network_diagnostics(app, logger=None):
         secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
         _log(f"net/ipsec-watch iface={iface or 'default-route'} secs={secs}")
         return jsonify(do_ipsec_watch(interface=iface, seconds=secs))
+
+    @app.route('/api/net/dns-watch', methods=['GET'])
+    def net_dns_watch():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 60)
+        _log(f"net/dns-watch iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_dns_watch(interface=iface, seconds=secs))
 
     @app.route('/api/net/isis-watch', methods=['GET'])
     def net_isis_watch():
@@ -25671,6 +26110,16 @@ def _cli(argv=None):
     iwst = sub.add_parser('ipsec-selftest', help='self-test the IPsec/IKE detectors (no root)')
     iwst.add_argument('--json', action='store_true', help='emit JSON')
 
+    dw_ = sub.add_parser('dns-watch',
+                         help='passive DNS-response threat scan (KeyTrap / NSEC3 / cache-poison)')
+    dw_.add_argument('--iface', '-i', default=None, help='interface (default: route)')
+    dw_.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-60)')
+    dw_.add_argument('--json', action='store_true', help='emit JSON')
+
+    dwst = sub.add_parser('dns-passive-selftest',
+                          help='self-test the passive DNS detectors (no root)')
+    dwst.add_argument('--json', action='store_true', help='emit JSON')
+
     sm = sub.add_parser('smb-watch',
                         help='passive SMBv1 + LLMNR/NBT-NS/mDNS poisoning + Kerberos downgrade scan')
     sm.add_argument('--iface', '-i', default=None, help='interface (default: route)')
@@ -26300,6 +26749,34 @@ def _cli(argv=None):
             for s in r['scenarios']:
                 print(f"  [{'PASS' if s['pass'] else 'FAIL'}] {s['name']}: expect={s['expect']}")
             print(f"IPsec/IKE self-test: {'OK' if r['success'] else 'FAILED'} "
+                  f"({sum(1 for s in r['scenarios'] if s['pass'])}/{len(r['scenarios'])})")
+        return 0 if r['success'] else 1
+
+    if args.cmd == 'dns-watch':
+        r = do_dns_watch(interface=args.iface, seconds=args.seconds)
+        if args.json:
+            print(json.dumps(r, indent=2))
+        elif not r.get('success'):
+            print(f"error: {r.get('error')}")
+        else:
+            print(f"DNS Watch [{r['interface']}] {r['seconds']}s: {r['verdict'].upper()}  "
+                  f"({r['packet_count']} frames, {r['finding_count']} finding(s))")
+            for f in r.get('findings', []):
+                print(f"  [{str(f.get('severity', '?')).upper()}] {f.get('code')} "
+                      f"{f.get('name', '')} ({f.get('cve', '')}) zone={f.get('zone', '')}")
+        return 0 if r.get('success') else 1
+
+    if args.cmd == 'dns-passive-selftest':
+        r = _dns_passive_selftest()
+        if args.json:
+            print(json.dumps(r, indent=2))
+        else:
+            for s in r['scenarios']:
+                print(f"  [{'PASS' if s['pass'] else 'FAIL'}] {s['name']}")
+            note = r.get('scapy', {})
+            if note and not note.get('ran', True):
+                print(f"  [skip] {note.get('reason')}")
+            print(f"DNS passive self-test: {'OK' if r['success'] else 'FAILED'} "
                   f"({sum(1 for s in r['scenarios'] if s['pass'])}/{len(r['scenarios'])})")
         return 0 if r['success'] else 1
 
