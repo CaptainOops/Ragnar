@@ -5,13 +5,14 @@ const path = require('node:path');
 const {JSDOM} = require('jsdom');
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'web/index_modern.html'), 'utf8');
-const panel = fs.readFileSync(path.join(root, 'web/toolkit_panel.html'), 'utf8');
 const cameraScript = source.slice(source.indexOf('var REFRESH_MS = 12000;'), source.indexOf('var REFRESH_MS = 12000;') + 30000).split('</script>')[0];
 const cameraCode = '(function(){' + cameraScript;
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture() {
-  const html = source.replace('{% include "toolkit_panel.html" %}', panel).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  // Ragnar serves this file directly; template includes are never expanded.
+  assert.ok(!source.includes('{% include'));
+  const html = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
   const dom = new JSDOM(html, {url: 'http://ragnar.local/', runScripts: 'dangerously'});
   const w = dom.window;
   const intervals = [];

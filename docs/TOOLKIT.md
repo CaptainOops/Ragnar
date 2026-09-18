@@ -113,3 +113,15 @@ inventory. Full Shodan search remains unverified with a live key; none was
 configured. Avahi and smbclient were not installed, and privileged PCAP capture
 was not run. The running Pi checkout contains local changes and was not updated
 or restarted during this review; deployment must preserve those changes.
+
+## Deployment verification
+
+Deployed the targeted integration over the Pi's local edits with backups under
+`/home/ragnar/ragnar-backups/toolkit-20260917T231942Z`. The live dashboard is served
+as static HTML, so Toolkit markup is embedded directly in `index_modern.html`.
+DOM tests now use that file without expanding any template directives.
+
+Verified the live Toolkit tab in a browser, all 18 existing camera records,
+InternetDB lookup, a five-second DNS-only loopback PCAP, its summary, and artifact
+downloads through the running service. Full Shodan access awaits a user-supplied
+API key. Optional Avahi/SMB utilities need `avahi-utils` and `smbclient`.
