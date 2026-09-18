@@ -510,6 +510,28 @@ def bt_pan_install_log():
     except Exception as e:  # pragma: no cover
         return jsonify({'running': False, 'done': True, 'ok': False, 'error': str(e)}), 500
 
+
+@app.route('/api/bt/pan/devices', methods=['GET'])
+def bt_pan_devices():
+    """Paired/connected Bluetooth devices, so the operator can forget a stale one."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.list_devices())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e), 'devices': []}), 500
+
+
+@app.route('/api/bt/pan/forget', methods=['POST'])
+def bt_pan_forget():
+    """Remove a device's bond from the box (fixes 'incorrect PIN' on re-pair)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        import bt_pan
+        r = bt_pan.forget_device(data.get('address', ''))
+        return jsonify(r), (200 if r.get('success') else 400)
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ============================================================================
 # AUTHENTICATION MIDDLEWARE
 # ============================================================================

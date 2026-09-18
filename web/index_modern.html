@@ -7531,6 +7531,11 @@
                         <button id="bt-pan-install" class="hidden mt-3 px-3 py-1.5 rounded-lg bg-Ragnar-600 hover:bg-Ragnar-500 text-white text-sm" onclick="installBtPanDeps(false)">Install dependencies</button>
                         <p id="bt-pan-status" class="text-xs mt-3 text-gray-500">—</p>
                         <pre id="bt-pan-log" class="hidden mt-2 max-h-40 overflow-auto text-[11px] leading-snug bg-black/40 border border-slate-700 rounded-lg p-2 text-gray-400 whitespace-pre-wrap"></pre>
+                        <div id="bt-pan-devices-wrap" class="hidden mt-4">
+                            <div class="text-xs text-gray-400 mb-2">Paired devices</div>
+                            <div id="bt-pan-devices" class="space-y-2"></div>
+                            <p class="text-[11px] text-gray-500 mt-2">Forget a device here if it can't re-pair (a stale bond on the box causes an "incorrect PIN" error). The phone must also forget it on its side.</p>
+                        </div>
                     </div>
                 </div>
 

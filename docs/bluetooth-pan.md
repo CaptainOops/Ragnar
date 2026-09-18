@@ -66,6 +66,11 @@ and the **Fleet** view while on it and shows a **BT** badge in the header.
 
 ## Troubleshooting
 
+- **"incorrect PIN" when re-pairing** — a stale bond on the box (it forgot the
+  device on the phone's side but not its own). The Config card lists paired
+  devices with a **Forget** button (`GET /api/bt/pan/devices`, `POST
+  /api/bt/pan/forget {address}`); forget it there and on the phone, then pair
+  fresh.
 - **"Ragnar" doesn't appear when scanning** — the NAP isn't up; enable it in
   Config, and check a Bluetooth controller is present and unblocked (`rfkill`).
 - **Pairs, but the app won't connect** — first, is it an **iPhone**? iOS does not
