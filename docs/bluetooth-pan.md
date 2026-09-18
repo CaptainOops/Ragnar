@@ -73,6 +73,9 @@ and the **Fleet** view while on it and shows a **BT** badge in the header.
   fresh.
 - **"Ragnar" doesn't appear when scanning** — the NAP isn't up; enable it in
   Config, and check a Bluetooth controller is present and unblocked (`rfkill`).
+  (bluetoothd sometimes drops discoverability on its own — notably when a device
+  connects — so bt_pan re-asserts discoverable + the network class on an 8s poll
+  while the NAP is enabled.)
 - **Pairs, but the app won't connect** — first, is it an **iPhone**? iOS does not
   support connecting to a Bluetooth NAP, so it pairs but never forms the PAN
   link; use Android. On Android, open the paired device and turn on **Internet
