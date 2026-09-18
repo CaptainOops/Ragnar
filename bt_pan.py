@@ -55,6 +55,13 @@ DNSMASQ_PID = "/tmp/ragnar/btpan-dnsmasq.pid"
 # the NAP is up; cleared (reverts to the hostname) when it comes down.
 ADAPTER_ALIAS = "Ragnar"
 
+# Class-of-Device advertised while the NAP is up: Networking service class +
+# LAN Access Point major device class. Without this the box's audio stack
+# (pipewire/wireplumber register A2DP) leaves the adapter flagged as an
+# audio/rendering device, so a phone pairs it as "headphones" and never offers
+# the Bluetooth-tethering ("Internet access") toggle that the PAN needs.
+NAP_CLASS = "0x020300"
+
 _CMD_TIMEOUT = 8.0
 _DBUS_TIMEOUT = 5.0
 
@@ -122,6 +129,7 @@ class BtPanServer:
                 self._start_agent()
                 self._start_nap()
                 self._configure_adapters(True)
+                self._set_network_class()
                 self._start_trust_loop()
                 self._error = None
                 self._started_at = time.time()
@@ -209,6 +217,18 @@ class BtPanServer:
         time.sleep(0.4)
         if self._procs["nap"].poll() is not None:
             raise RuntimeError("bt-network exited immediately (NAP registration failed)")
+
+    def _set_network_class(self) -> None:
+        """Flag every controller as a network access point (see NAP_CLASS).
+
+        Best-effort and reversible: the class resets when bluetoothd restarts,
+        and a missing controller just returns non-zero. Note a phone caches the
+        class at pair time, so a device paired while the box still looked like
+        audio must be forgotten and re-paired to pick this up.
+        """
+        for hci in ("hci0", "hci1"):
+            if _ok(["hciconfig", hci, "class", NAP_CLASS], timeout=5):
+                logger.info("[btpan] %s Class-of-Device set to %s (network access point)", hci, NAP_CLASS)
 
     def _configure_adapters(self, on: bool) -> None:
         """Power, name and (un)advertise every BlueZ adapter — over D-Bus.
