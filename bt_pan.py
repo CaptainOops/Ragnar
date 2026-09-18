@@ -417,6 +417,68 @@ def status() -> dict:
     return _instance().status()
 
 
+# --- Paired / connected device management -----------------------------------
+# The Config card lists the box's paired/connected Bluetooth devices so the
+# operator can forget one — the common reason a phone can't re-pair is a stale
+# bond left on the box after it forgot the device on its side.
+
+
+def list_devices() -> dict:
+    """Every paired or connected Bluetooth device, over D-Bus (bounded)."""
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                            "org.freedesktop.DBus.ObjectManager")
+        objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc), "devices": []}
+    devices = []
+    for path, ifaces in objs.items():
+        d = ifaces.get("org.bluez.Device1")
+        if not d or not (d.get("Paired") or d.get("Connected")):
+            continue
+        addr = str(d.get("Address", ""))
+        devices.append({
+            "address": addr,
+            "name": str(d.get("Name") or d.get("Alias") or addr or "device"),
+            "connected": bool(d.get("Connected")),
+            "paired": bool(d.get("Paired")),
+            "trusted": bool(d.get("Trusted")),
+            "icon": str(d.get("Icon", "")),
+        })
+    devices.sort(key=lambda x: (not x["connected"], x["name"].lower()))
+    return {"success": True, "devices": devices}
+
+
+def forget_device(address: str) -> dict:
+    """Remove a device's bond from the box (BlueZ Adapter1.RemoveDevice)."""
+    address = (address or "").strip().upper()
+    if not address:
+        return {"success": False, "error": "no address given"}
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                            "org.freedesktop.DBus.ObjectManager")
+        objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc)}
+    for path, ifaces in objs.items():
+        d = ifaces.get("org.bluez.Device1")
+        if not d or str(d.get("Address", "")).upper() != address:
+            continue
+        adapter_path = "/".join(path.split("/")[:-1])
+        try:
+            dbus.Interface(bus.get_object("org.bluez", adapter_path),
+                           "org.bluez.Adapter1").RemoveDevice(path, timeout=_DBUS_TIMEOUT)
+            logger.info("[btpan] forgot device %s", address)
+            return {"success": True, "address": address}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error": str(exc)}
+    return {"success": False, "error": "device not found"}
+
+
 # --- On-demand dependency install -------------------------------------------
 # The NAP needs bluez-tools (bt-network, bt-agent) + dnsmasq, which a lean image
 # may not ship. Rather than fail with a raw package error, the UI offers an

@@ -30096,7 +30096,54 @@ async function loadBtPan() {
         if (btn) btn.classList.toggle('hidden', !!d.available || _btPanInstalling);
         const st = document.getElementById('bt-pan-status');
         if (st && !_btPanInstalling) st.textContent = _btPanStatusText(d);
+        // Only worth listing devices once the NAP is usable.
+        if (d.available) loadBtPanDevices();
+        else { const w = document.getElementById('bt-pan-devices-wrap'); if (w) w.classList.add('hidden'); }
     } catch (e) { /* silent */ }
+}
+
+async function loadBtPanDevices() {
+    const wrap = document.getElementById('bt-pan-devices-wrap');
+    const list = document.getElementById('bt-pan-devices');
+    if (!wrap || !list) return;
+    try {
+        const res = await fetch('/api/bt/pan/devices');
+        const d = await res.json();
+        const devs = (d && d.devices) || [];
+        if (!devs.length) { wrap.classList.add('hidden'); return; }
+        wrap.classList.remove('hidden');
+        list.innerHTML = '';
+        devs.forEach(dev => {
+            const row = document.createElement('div');
+            row.className = 'flex items-center justify-between gap-3 bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2';
+            const dot = dev.connected ? '<span class="inline-block w-2 h-2 rounded-full bg-green-400 mr-2 align-middle"></span>'
+                                      : '<span class="inline-block w-2 h-2 rounded-full bg-slate-500 mr-2 align-middle"></span>';
+            const meta = document.createElement('div');
+            meta.className = 'min-w-0';
+            meta.innerHTML = '<div class="text-sm truncate">' + dot + escapeHtml(dev.name || dev.address) + '</div>'
+                + '<div class="text-[11px] text-gray-500">' + escapeHtml(dev.address)
+                + (dev.connected ? ' · connected' : (dev.paired ? ' · paired' : '')) + '</div>';
+            const btn = document.createElement('button');
+            btn.className = 'flex-none px-2.5 py-1 rounded-lg border border-red-700 text-red-300 hover:bg-red-900/40 text-xs';
+            btn.textContent = 'Forget';
+            btn.onclick = () => forgetBtPanDevice(dev.address, dev.name);
+            row.appendChild(meta);
+            row.appendChild(btn);
+            list.appendChild(row);
+        });
+    } catch (e) { /* silent */ }
+}
+
+async function forgetBtPanDevice(address, name) {
+    if (!confirm('Forget "' + (name || address) + '"? You will need to pair it again.')) return;
+    try {
+        const res = await postAPI('/api/bt/pan/forget', { address });
+        if (res && res.success) addConsoleMessage('Forgot ' + (name || address), 'success');
+        else addConsoleMessage('Could not forget: ' + ((res && res.error) || 'unknown'), 'error');
+    } catch (e) {
+        addConsoleMessage('Failed to forget device', 'error');
+    }
+    setTimeout(loadBtPanDevices, 500);
 }
 
 // Poll the install log until it finishes; optionally enable the NAP after.
