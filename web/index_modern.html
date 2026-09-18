@@ -7536,6 +7536,8 @@
                             <div id="bt-pan-devices" class="space-y-2"></div>
                             <p class="text-[11px] text-gray-500 mt-2">Forget a device here if it can't re-pair (a stale bond on the box causes an "incorrect PIN" error). The phone must also forget it on its side.</p>
                         </div>
+                        <button id="bt-pan-clear" class="hidden mt-4 px-3 py-1.5 rounded-lg border border-red-700 text-red-300 hover:bg-red-900/40 text-sm" onclick="clearBtPanKeys()">Clear all Bluetooth pairings</button>
+                        <p id="bt-pan-clear-hint" class="hidden text-[11px] text-gray-500 mt-1">Wipes every stored bond on the box in one go. Use when a phone keeps failing with <span class="font-mono">"incorrect PIN or passkey"</span> — then forget "Ragnar" on the phone too and pair fresh.</p>
                     </div>
                 </div>
 

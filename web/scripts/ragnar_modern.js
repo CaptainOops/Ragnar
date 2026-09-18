@@ -30099,6 +30099,12 @@ async function loadBtPan() {
         // Only worth listing devices once the NAP is usable.
         if (d.available) loadBtPanDevices();
         else { const w = document.getElementById('bt-pan-devices-wrap'); if (w) w.classList.add('hidden'); }
+        // "Clear all pairings" is available whenever the stack is (even with no
+        // device currently listed — a phone's failed bond may not show here).
+        const clr = document.getElementById('bt-pan-clear');
+        const clrHint = document.getElementById('bt-pan-clear-hint');
+        if (clr) clr.classList.toggle('hidden', !d.available);
+        if (clrHint) clrHint.classList.toggle('hidden', !d.available);
     } catch (e) { /* silent */ }
 }
 
@@ -30142,6 +30148,22 @@ async function forgetBtPanDevice(address, name) {
         else addConsoleMessage('Could not forget: ' + ((res && res.error) || 'unknown'), 'error');
     } catch (e) {
         addConsoleMessage('Failed to forget device', 'error');
+    }
+    setTimeout(loadBtPanDevices, 500);
+}
+
+async function clearBtPanKeys() {
+    if (!confirm('Clear ALL Bluetooth pairings on the box?\n\nEvery paired phone will need to pair again (and forget "Ragnar" on its side first). This fixes the "incorrect PIN or passkey" error.')) return;
+    try {
+        const res = await postAPI('/api/bt/pan/clear-keys', {});
+        if (res && res.success) {
+            const n = res.removed || 0;
+            addConsoleMessage('Cleared ' + n + ' Bluetooth pairing' + (n === 1 ? '' : 's') + ' — pair fresh from the phone now', 'success');
+        } else {
+            addConsoleMessage('Could not clear pairings: ' + ((res && res.error) || 'unknown'), 'error');
+        }
+    } catch (e) {
+        addConsoleMessage('Failed to clear pairings', 'error');
     }
     setTimeout(loadBtPanDevices, 500);
 }

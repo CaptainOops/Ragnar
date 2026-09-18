@@ -532,6 +532,51 @@ def bt_pan_forget():
     except Exception as e:  # pragma: no cover
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/bt/pan/clear-keys', methods=['POST'])
+def bt_pan_clear_keys():
+    """Forget every Bluetooth bond on the box — clean-slate re-pair.
+
+    Fixes a phone stuck on 'incorrect PIN or passkey', which is a stale-link-key
+    mismatch, not a real PIN (this NAP pairs with 'just works')."""
+    try:
+        import bt_pan
+        r = bt_pan.clear_keys()
+        return jsonify(r), (200 if r.get('success') else 400)
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/bt/pan/client/connect', methods=['POST'])
+def bt_pan_client_connect():
+    """Connect the box to a phone's Bluetooth tethering (box as PAN client).
+
+    The direction Android supports: the phone shares via Bluetooth tethering and
+    the box joins it at 192.168.44.2, so the app reaches the box at that IP."""
+    data = request.get_json(silent=True) or {}
+    try:
+        import bt_pan
+        r = bt_pan.client_connect(data.get('address'))
+        return jsonify(r), (200 if r.get('success') else 400)
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/bt/pan/client/disconnect', methods=['POST'])
+def bt_pan_client_disconnect():
+    """Drop the box's PAN-client link to the phone."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.client_disconnect())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/bt/pan/client/status', methods=['GET'])
+def bt_pan_client_status():
+    """Whether the box is currently a PAN client of a phone's tethering."""
+    try:
+        import bt_pan
+        return jsonify(bt_pan.client_status())
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ============================================================================
 # AUTHENTICATION MIDDLEWARE
 # ============================================================================

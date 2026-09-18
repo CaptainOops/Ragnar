@@ -66,10 +66,13 @@ and the **Fleet** view while on it and shows a **BT** badge in the header.
 
 ## Troubleshooting
 
-- **"incorrect PIN" when re-pairing** — a stale bond on the box (it forgot the
-  device on the phone's side but not its own). The Config card lists paired
-  devices with a **Forget** button (`GET /api/bt/pan/devices`, `POST
-  /api/bt/pan/forget {address}`); forget it there and on the phone, then pair
+- **"incorrect PIN" when re-pairing** — a stale bond (one side holds a link key
+  the other lost). There is no real PIN — the NAP pairs "just works" — so this
+  is always a key mismatch. The Config card lists paired devices with a
+  **Forget** button (`GET /api/bt/pan/devices`, `POST /api/bt/pan/forget
+  {address}`), and a **Clear all Bluetooth pairings** button that wipes every
+  bond on the box at once (`POST /api/bt/pan/clear-keys`) for when a phone keeps
+  failing. Clear it on the box, forget "Ragnar" on the phone too, then pair
   fresh.
 - **"Ragnar" doesn't appear when scanning** — the NAP isn't up; enable it in
   Config, and check a Bluetooth controller is present and unblocked (`rfkill`).

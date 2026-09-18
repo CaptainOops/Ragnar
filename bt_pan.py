@@ -431,6 +431,191 @@ def status() -> dict:
     return _instance().status()
 
 
+# --- PAN client (reverse direction) -----------------------------------------
+# Android will not run IP over a Bluetooth PAN where the box is the access point
+# — it connects the profile but never DHCPs (confirmed on multiple devices, IPv4
+# and IPv6 both silent). The direction Android *does* support is the reverse:
+# the phone turns on **Bluetooth tethering** (becomes the NAP) and the box
+# connects to it as a PAN user (PANU). Android's tether always serves
+# 192.168.44.0/24 with the phone at 192.168.44.1, so the box takes a fixed
+# 192.168.44.2 (no DHCP client needed — and dhcpcd is told to ignore bnep*
+# anyway) and the app reaches the box's web UI at 192.168.44.2:8000 over
+# Bluetooth.
+
+NAP_UUID = "00001116-0000-1000-8000-00805f9b34fb"  # BNEP NAP service
+CLIENT_IP = "192.168.44.2"
+CLIENT_CIDR = "192.168.44.2/24"
+PHONE_GATEWAY = "192.168.44.1"
+
+# What the box last connected to, so status()/disconnect() can find it again.
+_client_state: dict = {"iface": None, "device": None, "name": None}
+
+
+def _power_on_adapter() -> None:
+    _ok(["rfkill", "unblock", "bluetooth"])
+    _ok(["bluetoothctl", "power", "on"])
+
+
+def _managed_objects():
+    """(bus, objects) from BlueZ, or (None, None) on any failure."""
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                            "org.freedesktop.DBus.ObjectManager")
+        return bus, om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[btpan] managed objects failed: %s", exc)
+        return None, None
+
+
+def _pick_phone(objs, address: str | None):
+    """Choose the device to connect to: an explicit address if given, else the
+    best paired candidate — preferring one that advertises the NAP service
+    (a phone with Bluetooth tethering on) and/or is already connected."""
+    want = (address or "").strip().upper()
+    best = None  # (score, path, name, addr)
+    for path, ifaces in objs.items():
+        d = ifaces.get("org.bluez.Device1")
+        if not d:
+            continue
+        addr = str(d.get("Address", "")).upper()
+        name = str(d.get("Name") or d.get("Alias") or addr or "phone")
+        if want:
+            if addr == want:
+                return path, name, addr
+            continue
+        if not (d.get("Paired") or d.get("Connected")):
+            continue
+        uuids = [str(u).lower() for u in (d.get("UUIDs") or [])]
+        score = ((NAP_UUID.lower() in uuids) * 4
+                 + bool(d.get("Connected")) * 2 + bool(d.get("Paired")))
+        if best is None or score > best[0]:
+            best = (score, path, name, addr)
+    if want or best is None:
+        return None, None, None
+    return best[1], best[2], best[3]
+
+
+def client_connect(address: str | None = None) -> dict:
+    """Connect the box to a phone's Bluetooth tethering (NAP) as a PAN user.
+
+    Turn on 'Bluetooth tethering' on the paired phone first. On success the box
+    joins the phone's 192.168.44.0/24 at a fixed 192.168.44.2, so the mobile app
+    reaches the box's web UI at 192.168.44.2:8000 over the Bluetooth link.
+    """
+    # One radio: the NAP server and the client cannot both hold it. Stop AP mode.
+    try:
+        _instance().stop()
+    except Exception:  # noqa: BLE001
+        pass
+    _power_on_adapter()
+    bus, objs = _managed_objects()
+    if objs is None:
+        return {"success": False, "error": "BlueZ unreachable (is bluetoothd running?)"}
+    path, name, addr = _pick_phone(objs, address)
+    if not path:
+        if (address or "").strip():
+            return {"success": False, "error": f"{address} is not paired — pair it first"}
+        return {"success": False,
+                "error": "no paired phone found — pair the box in the phone's Bluetooth settings first"}
+    try:
+        import dbus
+        net = dbus.Interface(bus.get_object("org.bluez", path), "org.bluez.Network1")
+        iface = str(net.Connect("nap", timeout=25))
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        low = msg.lower()
+        if "not supported" in low or "notsupported" in low or "not available" in low or "notavailable" in low:
+            msg = "the phone isn't sharing — turn on Bluetooth tethering on the phone, then retry"
+        elif "in progress" in low:
+            msg = "connection already in progress — retry in a moment"
+        return {"success": False, "error": msg, "phone": name}
+    # Static address on the bnep link (Android tether is always 192.168.44.1/24).
+    _run(["ip", "addr", "flush", "dev", iface])
+    _run(["ip", "addr", "add", CLIENT_CIDR, "dev", iface])
+    _ok(["ip", "link", "set", iface, "up"])
+    reachable = _ok(["ping", "-c", "1", "-W", "2", "-I", iface, PHONE_GATEWAY], timeout=6)
+    _client_state.update({"iface": iface, "device": addr, "name": name})
+    logger.info("[btpan] client connected to %s via %s (reachable=%s)", name, iface, reachable)
+    return {
+        "success": True,
+        "interface": iface,
+        "ip": CLIENT_IP,
+        "gateway": PHONE_GATEWAY,
+        "app_url": f"http://{CLIENT_IP}:8000",
+        "phone": name,
+        "reachable": reachable,
+        "note": None if reachable else
+                "link up, but the phone isn't answering yet — confirm Bluetooth tethering is on, then check status",
+    }
+
+
+def client_disconnect() -> dict:
+    """Drop the PAN-client link to the phone and release the static address."""
+    iface = _client_state.get("iface")
+    addr = (_client_state.get("device") or "").upper()
+    bus, objs = _managed_objects()
+    if objs is not None:
+        try:
+            import dbus
+            for p, ifaces in objs.items():
+                d = ifaces.get("org.bluez.Device1")
+                if d and (not addr or str(d.get("Address", "")).upper() == addr) \
+                   and "org.bluez.Network1" in ifaces:
+                    dbus.Interface(bus.get_object("org.bluez", p),
+                                   "org.bluez.Network1").Disconnect(timeout=_DBUS_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[btpan] client disconnect: %s", exc)
+    if iface:
+        _run(["ip", "addr", "flush", "dev", iface])
+    _client_state.update({"iface": None, "device": None, "name": None})
+    return {"success": True}
+
+
+def client_status() -> dict:
+    """Whether the box is currently a PAN client of a phone's tethering."""
+    connected = False
+    iface = _client_state.get("iface")
+    name = _client_state.get("name")
+    _bus, objs = _managed_objects()
+    if objs is not None:
+        addr = (_client_state.get("device") or "").upper()
+        for _p, ifaces in objs.items():
+            net = ifaces.get("org.bluez.Network1")
+            d = ifaces.get("org.bluez.Device1")
+            if not net or not d:
+                continue
+            if addr and str(d.get("Address", "")).upper() != addr:
+                continue
+            if net.get("Connected"):
+                connected = True
+                iface = str(net.get("Interface") or iface or "")
+                name = str(d.get("Name") or d.get("Alias") or name or "phone")
+                _client_state.update({"iface": iface, "name": name,
+                                      "device": str(d.get("Address", "")).upper()})
+                break
+    ip = None
+    reachable = False
+    if connected and iface:
+        r = _run(["ip", "-4", "-o", "addr", "show", iface])
+        ip = CLIENT_IP if (CLIENT_IP in (r.stdout or "")) else None
+        if ip is None:  # link is up but lost its address (e.g. after a flap) — re-add
+            _run(["ip", "addr", "add", CLIENT_CIDR, "dev", iface])
+            ip = CLIENT_IP
+        reachable = _ok(["ping", "-c", "1", "-W", "2", "-I", iface, PHONE_GATEWAY], timeout=6)
+    return {
+        "success": True,
+        "connected": connected,
+        "interface": iface if connected else None,
+        "ip": ip,
+        "gateway": PHONE_GATEWAY if connected else None,
+        "app_url": f"http://{CLIENT_IP}:8000" if connected else None,
+        "phone": name if connected else None,
+        "reachable": reachable,
+    }
+
+
 # --- Paired / connected device management -----------------------------------
 # The Config card lists the box's paired/connected Bluetooth devices so the
 # operator can forget one — the common reason a phone can't re-pair is a stale
@@ -491,6 +676,47 @@ def forget_device(address: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             return {"success": False, "error": str(exc)}
     return {"success": False, "error": "device not found"}
+
+
+def clear_keys() -> dict:
+    """Forget **every** paired/bonded Bluetooth device on the box.
+
+    The nuclear reset for the classic "Couldn't pair … incorrect PIN or
+    passkey" failure: that error means one side holds a link key the other no
+    longer has, so authentication fails before any PIN is ever involved (this
+    NAP uses "just works" pairing — there is no PIN). Removing every bond here,
+    then forgetting the box on the phone, guarantees the next attempt is a clean
+    first-time pairing with no stale keys on either side.
+    """
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                            "org.freedesktop.DBus.ObjectManager")
+        objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc), "removed": 0}
+    removed: list[str] = []
+    errors: list[str] = []
+    for path, ifaces in objs.items():
+        d = ifaces.get("org.bluez.Device1")
+        if not d or not (d.get("Paired") or d.get("Connected")):
+            continue
+        addr = str(d.get("Address", ""))
+        adapter_path = "/".join(path.split("/")[:-1])
+        try:
+            dbus.Interface(bus.get_object("org.bluez", adapter_path),
+                           "org.bluez.Adapter1").RemoveDevice(path, timeout=_DBUS_TIMEOUT)
+            removed.append(addr)
+            logger.info("[btpan] cleared bond %s", addr)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{addr or path}: {exc}")
+    return {
+        "success": not errors,
+        "removed": len(removed),
+        "addresses": removed,
+        "error": "; ".join(errors) if errors else None,
+    }
 
 
 # --- On-demand dependency install -------------------------------------------
