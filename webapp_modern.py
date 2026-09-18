@@ -532,6 +532,19 @@ def bt_pan_forget():
     except Exception as e:  # pragma: no cover
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/bt/pan/clear-keys', methods=['POST'])
+def bt_pan_clear_keys():
+    """Forget every Bluetooth bond on the box — clean-slate re-pair.
+
+    Fixes a phone stuck on 'incorrect PIN or passkey', which is a stale-link-key
+    mismatch, not a real PIN (this NAP pairs with 'just works')."""
+    try:
+        import bt_pan
+        r = bt_pan.clear_keys()
+        return jsonify(r), (200 if r.get('success') else 400)
+    except Exception as e:  # pragma: no cover
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ============================================================================
 # AUTHENTICATION MIDDLEWARE
 # ============================================================================

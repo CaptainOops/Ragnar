@@ -493,6 +493,47 @@ def forget_device(address: str) -> dict:
     return {"success": False, "error": "device not found"}
 
 
+def clear_keys() -> dict:
+    """Forget **every** paired/bonded Bluetooth device on the box.
+
+    The nuclear reset for the classic "Couldn't pair … incorrect PIN or
+    passkey" failure: that error means one side holds a link key the other no
+    longer has, so authentication fails before any PIN is ever involved (this
+    NAP uses "just works" pairing — there is no PIN). Removing every bond here,
+    then forgetting the box on the phone, guarantees the next attempt is a clean
+    first-time pairing with no stale keys on either side.
+    """
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        om = dbus.Interface(bus.get_object("org.bluez", "/"),
+                            "org.freedesktop.DBus.ObjectManager")
+        objs = om.GetManagedObjects(timeout=_DBUS_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc), "removed": 0}
+    removed: list[str] = []
+    errors: list[str] = []
+    for path, ifaces in objs.items():
+        d = ifaces.get("org.bluez.Device1")
+        if not d or not (d.get("Paired") or d.get("Connected")):
+            continue
+        addr = str(d.get("Address", ""))
+        adapter_path = "/".join(path.split("/")[:-1])
+        try:
+            dbus.Interface(bus.get_object("org.bluez", adapter_path),
+                           "org.bluez.Adapter1").RemoveDevice(path, timeout=_DBUS_TIMEOUT)
+            removed.append(addr)
+            logger.info("[btpan] cleared bond %s", addr)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{addr or path}: {exc}")
+    return {
+        "success": not errors,
+        "removed": len(removed),
+        "addresses": removed,
+        "error": "; ".join(errors) if errors else None,
+    }
+
+
 # --- On-demand dependency install -------------------------------------------
 # The NAP needs bluez-tools (bt-network, bt-agent) + dnsmasq, which a lean image
 # may not ship. Rather than fail with a raw package error, the UI offers an
