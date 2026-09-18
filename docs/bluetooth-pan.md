@@ -73,6 +73,13 @@ and the **Fleet** view while on it and shows a **BT** badge in the header.
   link; use Android. On Android, open the paired device and turn on **Internet
   access / tethering** — that is what actually establishes the link. A `bnep0`
   interface appearing under `ip link show master pan0` confirms it connected.
+- **The phone shows the box as "headphones" / an audio device** — the box's
+  audio stack (pipewire/wireplumber) flagged the adapter's Class-of-Device as
+  audio, so the phone paired it as a speaker and never offered the tethering
+  toggle. The NAP now forces a Networking / LAN-Access class (`NAP_CLASS`), but a
+  phone that already paired caches the old class: **forget the device on the
+  phone and pair again**, then the "Internet access" toggle appears. Verify on
+  the box with `hciconfig hci0 class` → should read `Networking, LAN Access`.
 
 It is **opt-in** and **fully reversible**: turning it off removes the NAP server,
 the agent, dnsmasq, and the bridge, leaving networking exactly as before. The
