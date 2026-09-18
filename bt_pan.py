@@ -293,9 +293,23 @@ class BtPanServer:
         self._trust_thread.start()
 
     def _trust_loop(self) -> None:
-        self._trust_paired()  # immediately, then on a slow poll
+        self._keepalive()  # immediately, then on a slow poll
         while not self._trust_stop.wait(8.0):
-            self._trust_paired()
+            self._keepalive()
+
+    def _keepalive(self) -> None:
+        """Re-assert the NAP-critical adapter state, and keep devices trusted.
+
+        bluetoothd changes this out from under us: it drops **Discoverable**
+        (notably when a device connects) and recomputes the **Class-of-Device**,
+        which silently makes the box unpairable / look like the wrong kind of
+        device again. Re-forcing discoverable / pairable / no-timeout / the
+        network class on the poll keeps the box reachable the whole time the NAP
+        is enabled, not just for the first few seconds after start.
+        """
+        self._configure_adapters(True)
+        self._set_network_class()
+        self._trust_paired()
 
     def _trust_paired(self) -> None:
         try:
