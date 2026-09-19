@@ -2267,7 +2267,7 @@ slaved to it. All three transports are parsed **unconditionally**: **Annex F** (
 Ethernet, EtherType `0x88F7`), **Annex D** (UDP/IPv4, `224.0.1.129` / `224.0.0.107`, ports
 `319` event / `320` general) and **Annex E** (UDP/IPv6, `ff0X::181` / `ff02::6B`). PTP
 advertises no prefixes and correlates with no route family, so dual-stack is packet-layer
-plumbing with **no IPv6-specific finding codes** — the same 42 codes fire regardless of L3.
+plumbing with **no IPv6-specific finding codes** — the same 46 codes fire regardless of L3.
 
 Two design constraints shape every rule. First, **no rule consults the sensor's wall
 clock** — a sensor monitoring a timing plane under attack may itself be slewed or targeted,
@@ -2294,6 +2294,15 @@ card **verdict**:
   but not, on its own, a confirmed takeover.
 - **posture** — no integrity protection on the timing plane (`PTP-E03`), multiple PTP
   domains, PTPv1 or `minorVersionPTP` **downgrade** (`PTP-E02`).
+- **CVE-attributed *(new in v3)*** — a **Class V** of four codes that take **precedence over
+  the generic malformed code** `PTP-A09` (a packet matching a known CVE gets the CVE, not a
+  shrug): **`PTP-V01`** linuxptp forwarding over-read — declared `messageLength` exceeds the
+  bytes that arrived (**CVE-2021-3570**, critical); **`PTP-V02`** one-step Sync length abuse —
+  a one-step Sync whose surplus is not a well-formed TLV chain (**CVE-2021-3571**); **`PTP-V03`**
+  gPTP peer-delay requester flood — a **third** distinct `Pdelay_Req` requester on a
+  point-to-point 802.1AS link disables the port's sync (**CVE-2024-42861**, stateful);
+  **`PTP-V04`** Arista EOS agent restart — a management/signaling message with a truncated or
+  overrunning TLV (**CVE-2021-28510**).
 
 **gPTP / IEEE 802.1AS** (`majorSdoId == 1`) gets eight peer-delay-specific codes on top of
 the generic set (the two `clockClass`-derived rules are masked for it, since 802.1AS uses
