@@ -234,6 +234,7 @@ class PtpMsg:
     tlvs: List[Tlv] = field(default_factory=list)
     tlv_end: int = 0            # body offset after the last well-formed TLV
     tlv_truncated: bool = False  # a TLV declared more bytes than arrived
+    wire_len: int = 0            # PTP bytes actually present (for CVE-2021-3570 over-read)
 
     # ---- derived helpers -------------------------------------------------
     @property
@@ -344,6 +345,7 @@ def parse_ptp(buf: bytes, *, strict: bool = False) -> PtpMsg:
     # clamped to what actually arrived. A declared/actual mismatch is a
     # finding (A09), not a parse abort.
     body = buf[HEADER_LEN:min(len(buf), max(msg_length, HEADER_LEN))]
+    msg.wire_len = len(buf)          # PTP bytes actually present (CVE-2021-3570)
     try:
         _parse_body(msg, body)
     except (struct.error, IndexError, ValueError) as exc:
@@ -661,10 +663,14 @@ class CodeSpec:
     rationale: str
     armed_by: Optional[str] = None   # config knob that arms a disarmed rule
     gptp_masked: bool = False        # suppressed for majorSdoId==1 (decision 4)
+    cve: Optional[str] = None        # CVE this code attributes to, if any
+    cvss: Optional[float] = None     # that CVE's CVSS v3.1 base score
 
 
-def _c(code, sev, conf, kl, cat, title, rationale, armed_by=None, gptp_masked=False):
-    return CodeSpec(code, sev, conf, kl, cat, title, rationale, armed_by, gptp_masked)
+def _c(code, sev, conf, kl, cat, title, rationale, armed_by=None, gptp_masked=False,
+       cve=None, cvss=None):
+    return CodeSpec(code, sev, conf, kl, cat, title, rationale, armed_by, gptp_masked,
+                    cve, cvss)
 
 
 FINDINGS: Dict[str, CodeSpec] = {s.code: s for s in [
@@ -880,9 +886,49 @@ FINDINGS: Dict[str, CodeSpec] = {s.code: s for s in [
        "DISARMED until both halves of a negotiation have been seen on this tap. On "
        "a passive tap that joined mid-session, never having seen the grant is not "
        "evidence it was never sent.", armed_by="_negotiation_seen"),
+
+    # -- Class V: CVE-attributed signatures --------------------------------
+    # These take precedence over the generic malformed-message code (A09): when a
+    # packet matches a known CVE signature the operator gets the CVE, not a generic
+    # "malformed message". A09 still catches everything these do not (see
+    # _check_cve_signatures + the precedence guard in feed()).
+    _c("PTP-V01", Severity.CRITICAL, Confidence.CONFIRMED, Klass.ATTACK, "cve",
+       "linuxptp forwarding over-read (CVE-2021-3570)",
+       "ptp4l failed to validate messageLength against the bytes actually received "
+       "before forwarding a message between ports, allowing an information leak, "
+       "crash or potentially remote code execution. The wire signature is a PTP "
+       "message declaring more bytes than arrived. Affects linuxptp before 3.1.1, "
+       "2.0.1, 1.9.3, 1.8.1, 1.7.1, 1.6.1 and 1.5.1.",
+       cve="CVE-2021-3570", cvss=8.8),
+    _c("PTP-V02", Severity.HIGH, Confidence.PROBABLE, Klass.ATTACK, "cve",
+       "linuxptp one-step Sync length abuse (CVE-2021-3571)",
+       "A crafted one-step Sync causes an information leak or crash when ptp4l runs "
+       "as a transparent clock on a little-endian architecture -- the underlying "
+       "defect is a wrong length computed for the one-step follow-up. The wire "
+       "signature is a one-step Sync whose declared length exceeds its fixed body "
+       "without a well-formed TLV chain accounting for the excess. Affects linuxptp "
+       "before 3.1.1 and 2.0.1.",
+       cve="CVE-2021-3571", cvss=7.1),
+    _c("PTP-V03", Severity.HIGH, Confidence.PROBABLE, Klass.ATTACK, "cve",
+       "gPTP peer-delay requester flood disabling sync (CVE-2024-42861)",
+       "An 802.1AS port receiving Pdelay_Req from more than one peer clockID "
+       "disables its own time synchronization function. Since 802.1AS links are "
+       "point-to-point, exactly two requesters are normal -- one per end. A THIRD "
+       "distinct requesting clockIdentity on one link is the attack. Note upstream "
+       "linuxptp disputes this as a vulnerability; it is a property of the 802.1AS "
+       "standard rather than an implementation bug, so patching does not retire the "
+       "signature.",
+       cve="CVE-2024-42861", cvss=7.5),
+    _c("PTP-V04", Severity.MEDIUM, Confidence.PROBABLE, Klass.ATTACK, "cve",
+       "Arista EOS PTP agent restart via invalid TLV (CVE-2021-28510)",
+       "A PTP management or signaling message carrying an invalid TLV restarts the "
+       "EOS PTP agent; repeated restarts make PTP unavailable and degrade every "
+       "downstream clock. The wire signature is a management or signaling message "
+       "whose TLV chain is truncated or overruns the declared length.",
+       cve="CVE-2021-28510", cvss=5.3),
 ]}
 
-assert len(FINDINGS) == 42, f"registry drift: {len(FINDINGS)} codes"
+assert len(FINDINGS) == 46, f"registry drift: {len(FINDINGS)} codes"
 
 
 # ---------------------------------------------------------------------------
@@ -965,6 +1011,8 @@ class Finding:
             "port_identity": self.port_identity,
             "src": self.src,
             "detail": self.detail,
+            "cve": spec.cve,
+            "cvss": spec.cvss,
         }
 
 
@@ -1178,6 +1226,8 @@ class PtpEngine:
         self.capped = 0
         # (requesting_identity, requesting_port, sequenceId) -> responder set
         self.pdelay_responders: Dict[Tuple[bytes, int, int], set] = {}
+        # distinct gPTP Pdelay_Req requester clockIdentities (CVE-2024-42861 / V03)
+        self.pdelay_requesters: set = set()
         self.gptp_seen = False
         self.declared_gms = {g.lower().replace(":", "").replace(".", "")
                              for g in cfg.grandmasters}
@@ -1234,7 +1284,10 @@ class PtpEngine:
             self.unicast_peers.add(pids)
 
         self._check_transparent_clock_evidence(msg)
-        self._check_lengths(msg, ts)
+        # CVE signatures take precedence over the generic malformed code (A09): when a
+        # CVE claims the packet, A09 stays quiet so the operator gets the CVE.
+        if not self._check_cve_signatures(msg, ts, mono):
+            self._check_lengths(msg, ts)
         self._check_correction(msg, ts)
         self._check_version(msg, ts, st)
         self._check_sequence(msg, ts, st, pids)
@@ -1273,6 +1326,79 @@ class PtpEngine:
             self.tc_evidence = "multi-port-clockIdentity"
 
     # -- A09 ---------------------------------------------------------------
+    def _check_cve_signatures(self, msg: PtpMsg, ts: float, mono: float) -> bool:
+        """Return True if a CVE signature claimed this packet, so the generic
+        malformed-message code (A09) stays quiet and the operator gets the CVE
+        rather than a shrug. (Ported from PTP Watch v3, Class V.)"""
+        claimed = False
+
+        # V01 / CVE-2021-3570 -- declared length exceeds what actually arrived.
+        # This is the over-read primitive: ptp4l forwarded using messageLength
+        # without checking it against the received byte count.
+        if msg.msg_length > msg.wire_len:
+            self._emit("PTP-V01", msg, ts,
+                       {"declared_length": msg.msg_length,
+                        "bytes_received": msg.wire_len,
+                        "overread_bytes": msg.msg_length - msg.wire_len,
+                        "message_type": msg.msg_type},
+                       (msg.msg_type, msg.msg_length))
+            claimed = True
+
+        # V02 / CVE-2021-3571 -- one-step Sync whose surplus is not a valid TLV
+        # chain. A transparent clock rewriting this into a follow-up is what
+        # miscomputes the length on little-endian builds.
+        if msg.msg_type == MsgType.SYNC and not msg.two_step:
+            fixed = FIXED_MSG_LEN[MsgType.SYNC]
+            if msg.msg_length > fixed:
+                consumed = msg.tlv_end - (fixed - HEADER_LEN)
+                if msg.tlv_truncated or not msg.tlvs \
+                        or consumed != msg.msg_length - fixed:
+                    self._emit("PTP-V02", msg, ts,
+                               {"declared_length": msg.msg_length,
+                                "fixed_body": fixed,
+                                "tlv_bytes": consumed,
+                                "tlv_truncated": msg.tlv_truncated,
+                                "one_step": True},
+                               (msg.msg_length,))
+                    claimed = True
+
+        # V03 / CVE-2024-42861 -- 802.1AS links are point-to-point, so exactly
+        # two peer-delay requesters are normal (one per end). A third distinct
+        # requesting clockIdentity disables the port's sync function. Stateful,
+        # and deliberately does NOT set `claimed` (a Pdelay_Req is fixed-length
+        # and never trips A09). Bounded by the engine's max_clocks discipline via
+        # feed(), so this set cannot grow before an identity is even admitted.
+        if msg.is_gptp and msg.msg_type == MsgType.PDELAY_REQ:
+            self.pdelay_requesters.add(msg.clock_identity)
+            if len(self.pdelay_requesters) > 2:
+                self._emit("PTP-V03", msg, ts,
+                           {"distinct_requesters": len(self.pdelay_requesters),
+                            "requesters": sorted(c.hex() for c in
+                                                 self.pdelay_requesters),
+                            "expected_max": 2,
+                            "effect": "receiving port disables its time "
+                                      "synchronization function"},
+                           ())
+
+        # V04 / CVE-2021-28510 -- management or signaling carrying an invalid
+        # TLV restarts the Arista EOS PTP agent.
+        if msg.msg_type in (MsgType.MANAGEMENT, MsgType.SIGNALING):
+            bad = msg.tlv_truncated or any(
+                t.length > len(t.value) for t in msg.tlvs)
+            if bad:
+                self._emit("PTP-V04", msg, ts,
+                           {"message_type": msg.msg_type,
+                            "tlv_truncated": msg.tlv_truncated,
+                            "tlvs": [{"type": hex(t.tlv_type),
+                                      "declared": t.length,
+                                      "actual": len(t.value)}
+                                     for t in msg.tlvs],
+                            "effect": "PTP agent restart on affected EOS versions"},
+                           (msg.msg_type,))
+                claimed = True
+
+        return claimed
+
     def _check_lengths(self, msg: PtpMsg, ts: float) -> None:
         want = FIXED_MSG_LEN.get(msg.msg_type)
         if want is not None and msg.msg_length < want:
@@ -2695,13 +2821,47 @@ def selftest():
                          {"code": "PTP-E03", "severity": "low", "class": "posture"}])
     check("verdict-time-manipulation", v == _PTP_CRITICAL_VERDICT, v)
 
-    # 5. Registry integrity: the documented 42-code / severity split holds.
+    # 5. Registry integrity: 46 codes after the Class V (CVE) additions.
     sev = {}
     for spec in FINDINGS.values():
         sev[spec.severity.value] = sev.get(spec.severity.value, 0) + 1
-    reg_ok = (len(FINDINGS) == 42 and sev.get("critical") == 11
-              and sev.get("high") == 15)
-    check("registry-42-codes", reg_ok, "%d codes %s" % (len(FINDINGS), sev))
+    reg_ok = (len(FINDINGS) == 46 and sev.get("critical") == 12
+              and sev.get("high") == 17)
+    check("registry-46-codes", reg_ok, "%d codes %s" % (len(FINDINGS), sev))
+
+    # 5b. Class V CVE detectors (ported from PTP Watch v3).
+    # V01 / CVE-2021-3570: declared messageLength exceeds the bytes that arrived.
+    got, _ = run([_ptp_annexf_frame(_ptp_build_announce(1, msg_length=200))])
+    check("v01-overread-declared-gt-wire", "PTP-V01" in got, sorted(got))
+    # A09 is suppressed when a CVE claims the packet.
+    check("v01-suppresses-a09", "PTP-A09" not in got, sorted(got))
+    # V02 / CVE-2021-3571: one-step Sync whose surplus is a truncated TLV, not a
+    # clean chain — and declared length == bytes present (so it is V02, not V01).
+    sync_body = bytes(10) + b"\x00\x01\xff\xff\x00\x00"          # 10B origin + truncated TLV
+    sync = bytes(_ptp_build_header(MsgType.SYNC, 1, flags=0,
+                                   msg_length=HEADER_LEN + len(sync_body))) + sync_body
+    got, _ = run([_ptp_annexf_frame(sync)])
+    check("v02-onestep-sync-length-abuse", "PTP-V02" in got, sorted(got))
+    # V03 / CVE-2024-42861: a THIRD distinct gPTP Pdelay_Req requester on the link.
+    pdreq = lambda cid: _ptp_annexf_frame(bytes(_ptp_build_header(
+        MsgType.PDELAY_REQ, 1, major_sdo=1, clock_id=cid,
+        msg_length=FIXED_MSG_LEN[MsgType.PDELAY_REQ])) + bytes(20))
+    got, _ = run([pdreq(b"\xaa" * 8), pdreq(b"\xbb" * 8), pdreq(b"\xcc" * 8)])
+    check("v03-gptp-pdelay-requester-flood", "PTP-V03" in got, sorted(got))
+    # Two requesters (the point-to-point normal) do NOT trip V03.
+    got2, _ = run([pdreq(b"\xaa" * 8), pdreq(b"\xbb" * 8)])
+    check("v03-two-requesters-no-fp", "PTP-V03" not in got2, sorted(got2))
+    # V04 / CVE-2021-28510: a signaling message carrying a truncated TLV.
+    sig_body = bytes(10) + b"\x00\x01\xff\xff\x00\x00"           # targetPortIdentity + trunc TLV
+    sig = bytes(_ptp_build_header(MsgType.SIGNALING, 1,
+                                  msg_length=HEADER_LEN + len(sig_body))) + sig_body
+    got, _ = run([_ptp_annexf_frame(sig)])
+    check("v04-invalid-tlv-mgmt-signaling", "PTP-V04" in got, sorted(got))
+    # A clean Announce raises none of the CVE codes.
+    gotc, _ = run([_ptp_annexf_frame(_ptp_build_announce(1)),
+                   _ptp_annexf_frame(_ptp_build_announce(2))])
+    check("class-v-no-fp-on-clean",
+          not ({"PTP-V01", "PTP-V02", "PTP-V03", "PTP-V04"} & gotc), sorted(gotc))
 
     # 6. Engine conformance tier (656 cases) if it is co-located; skipped cleanly
     #    if the tier file was not vendored (production ships only ptpwatch.py).

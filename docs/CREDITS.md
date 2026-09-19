@@ -14,10 +14,10 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~159 CVEs actively detected.** 161 distinct CVE IDs are named across the detector code;
-  159 are actively detected.
+- **~165 CVEs actively detected.** 167 distinct CVE IDs are named across the detector code;
+  165 are actively detected.
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **29 CVEs from 2023, 37 from 2024, 24 from 2025, and
+- Weighted to the current threat wave: **29 CVEs from 2023, 38 from 2024, 24 from 2025, and
   8 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
@@ -40,6 +40,12 @@ behind them is Solarflere's work.
   monlist amplification (CVE-2013-5211), spoofed Kiss-o'-Death (CVE-2015-7704/7705),
   loopback-source ACL bypass (CVE-2014-9298/9751) and the zero-origin sync block
   (CVE-2020-11868).
+- **TLS record layer & timing plane** — **TLS Watch** adds **Heartbleed** (CVE-2014-0160,
+  the cleartext heartbeat over-read shape) and the **oversized DH prime** client-DoS
+  (CVE-2018-0732, read from the ServerKeyExchange); **PTP Watch** adds a CVE-attributed
+  class for the timing plane — linuxptp **forwarding over-read** (CVE-2021-3570) and
+  **one-step Sync length abuse** (CVE-2021-3571), the gPTP **peer-delay requester flood**
+  (CVE-2024-42861) and the Arista EOS **invalid-TLV agent restart** (CVE-2021-28510).
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 

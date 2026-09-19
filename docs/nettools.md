@@ -1296,6 +1296,22 @@ wire. One short `tcpdump` window over the TLS ports (443/8443/993/995/465/990/
   is *deliberately not* detected — the crafted ASN.1 that triggers it reaches the decoder
   in no field a passive tap can read; the decision is recorded in-code so the absence is
   reviewable.
+- **Heartbleed / `CVE-2014-0160` *(new in v7)*** — **`cve_2014_0160_heartbleed`** (high,
+  *attack-shape*): a **cleartext TLS heartbeat request** (record content type 24) whose
+  declared `payload_length` is larger than the record that carries it — `3 + payload_length
+  + 16 > record_length` — the buffer over-read shape. Observable because the reference
+  exploit sends the malformed heartbeat right after the ClientHello, **before** the
+  handshake completes, so the heartbeat record is still cleartext and its length field is
+  readable; a heartbeat after the encrypted boundary is invisible (an explicit blind spot).
+  It reports that an over-read was *attempted*, not that the peer is a vulnerable OpenSSL.
+  7.5 HIGH (NVD, CISA KEV).
+- **Oversized DH prime / `CVE-2018-0732` *(new in v7)*** — **`cve_2018_0732_oversized_dh_prime`**
+  (warn, *exposure*): a **ServerKeyExchange** for a finite-field DHE suite carrying a DH prime
+  above the **10000-bit** ceiling OpenSSL's own fix enforces, so a client doing the modexp
+  burns CPU — the mirror image of D(HE)at (server-attacks-client). The prime size is measured
+  directly from the cleartext SKE (TLS 1.2 DHE only; TLS 1.3/QUIC have no ServerKeyExchange),
+  which also recovers the real group size for the D(HE)at accounting. NVD 7.5 HIGH; OpenSSL
+  rates it Low (*disputed*).
 - **Certificate posture (TLS 1.2 over TCP only)** — subject/issuer, SANs, validity
   window, self-issued flag, signature hash, and findings: `cert_expired`,
   `cert_not_yet_valid`, `cert_self_signed`, `cert_short_chain`, `cert_weak_sig`,
@@ -2251,7 +2267,7 @@ slaved to it. All three transports are parsed **unconditionally**: **Annex F** (
 Ethernet, EtherType `0x88F7`), **Annex D** (UDP/IPv4, `224.0.1.129` / `224.0.0.107`, ports
 `319` event / `320` general) and **Annex E** (UDP/IPv6, `ff0X::181` / `ff02::6B`). PTP
 advertises no prefixes and correlates with no route family, so dual-stack is packet-layer
-plumbing with **no IPv6-specific finding codes** — the same 42 codes fire regardless of L3.
+plumbing with **no IPv6-specific finding codes** — the same 46 codes fire regardless of L3.
 
 Two design constraints shape every rule. First, **no rule consults the sensor's wall
 clock** — a sensor monitoring a timing plane under attack may itself be slewed or targeted,
@@ -2278,6 +2294,15 @@ card **verdict**:
   but not, on its own, a confirmed takeover.
 - **posture** — no integrity protection on the timing plane (`PTP-E03`), multiple PTP
   domains, PTPv1 or `minorVersionPTP` **downgrade** (`PTP-E02`).
+- **CVE-attributed *(new in v3)*** — a **Class V** of four codes that take **precedence over
+  the generic malformed code** `PTP-A09` (a packet matching a known CVE gets the CVE, not a
+  shrug): **`PTP-V01`** linuxptp forwarding over-read — declared `messageLength` exceeds the
+  bytes that arrived (**CVE-2021-3570**, critical); **`PTP-V02`** one-step Sync length abuse —
+  a one-step Sync whose surplus is not a well-formed TLV chain (**CVE-2021-3571**); **`PTP-V03`**
+  gPTP peer-delay requester flood — a **third** distinct `Pdelay_Req` requester on a
+  point-to-point 802.1AS link disables the port's sync (**CVE-2024-42861**, stateful);
+  **`PTP-V04`** Arista EOS agent restart — a management/signaling message with a truncated or
+  overrunning TLV (**CVE-2021-28510**).
 
 **gPTP / IEEE 802.1AS** (`majorSdoId == 1`) gets eight peer-delay-specific codes on top of
 the generic set (the two `clockClass`-derived rules are masked for it, since 802.1AS uses

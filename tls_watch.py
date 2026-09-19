@@ -496,6 +496,20 @@ _CVE_2017_3731 = {'cve': 'CVE-2017-3731', 'cvss': 7.5,
                   'cvss_source': 'Red Hat (A:H); IBM X-Force scores 5.3 with A:L',
                   'score_confidence': 'disputed'}
 
+# ---- CVE-2014-0160 Heartbleed: TLS heartbeat buffer over-read ---------------
+# A heartbeat REQUEST whose declared payload_length is larger than the record that
+# carries it makes a vulnerable OpenSSL 1.0.1 copy adjacent heap back to the peer.
+# Observable passively because the reference exploit sends the malformed heartbeat
+# right after the ClientHello, BEFORE the handshake completes — so the heartbeat
+# record is still cleartext and its length field is readable. A heartbeat sent after
+# the handshake turns encrypted is invisible (explicit blind spot). This is an
+# ATTACK SHAPE (an over-read was attempted), not a version fingerprint.
+_CT_HEARTBEAT = 0x18              # record content type 24
+_HEARTBEAT_HEADER_BYTES = 3       # type(1) + payload_length(2)
+_HEARTBEAT_MIN_PADDING = 16       # RFC 6520 §4 minimum padding
+_CVE_2014_0160 = {'cve': 'CVE-2014-0160', 'cvss': 7.5, 'cvss_source': 'NVD (KEV)',
+                  'score_confidence': 'agreed'}
+
 # CVE-2016-2108 (OpenSSL ASN.1 negative-zero memory corruption) is DELIBERATELY
 # NOT detected. The attack needs a crafted ASN.1 structure fed to the victim's
 # decoder; the only ASN.1 a passive tap sees is the server certificate chain, and
@@ -550,8 +564,42 @@ def _dhe_info(server):
         name, bits = FFDHE_GROUPS[sg]
         return (True, name, bits)
     if server.get('cipher') in DHE_SUITES:
-        return (True, 'classic-DHE', None)
+        # bits from the ServerKeyExchange prime when it was parsed (TLS 1.2 DHE);
+        # None if the SKE was not seen (then the D(HE)at tier uses the small-group table).
+        return (True, 'classic-DHE', server.get('dh_prime_bits'))
     return (False, None, None)
+
+
+# ---- CVE-2018-0732 oversized DH prime in ServerKeyExchange ------------------
+# A malicious server sends a very large DH prime p; the client must do a modexp with
+# it, burning CPU (client-side DoS — the mirror image of D(HE)at). OpenSSL's fix
+# rejects any prime above 10000 bits. The prime is cleartext in the TLS 1.2 DHE
+# ServerKeyExchange, so its size is measured directly (an on-the-wire EXPOSURE, not a
+# fingerprint). TLS 1.3 has no ServerKeyExchange and QUIC is always 1.3, so this is
+# TLS-1.2-and-below over TCP only, and fires on servers our own hosts connect out to.
+OPENSSL_DH_MAX_MODULUS_BITS = 10000
+_CVE_2018_0732 = {'cve': 'CVE-2018-0732', 'cvss': 7.5,
+                  'cvss_source': 'NVD 7.5 HIGH; OpenSSL advisory rates Low',
+                  'score_confidence': 'disputed'}
+
+
+def parse_dhe_server_key_exchange(body):
+    """Bit length of the DH prime p in a (finite-field) ServerKeyExchange, or None.
+    ServerDHParams (RFC 5246 §7.4.3) starts with dh_p as u16-length + bytes; leading
+    zero octets are skipped so the reported size is the true modulus bit length."""
+    r = _Reader(body)
+    if r.rem() < 2:
+        return None
+    n = r.u16()
+    if n == 0 or r.rem() < n:
+        return None
+    p = r.take(n)
+    i = 0
+    while i < len(p) and p[i] == 0:                  # skip leading zero octets
+        i += 1
+    if i >= len(p):
+        return None
+    return (len(p) - i - 1) * 8 + p[i].bit_length()
 
 
 def _leaf_findings(der, chain_len, sni, now):
@@ -695,9 +743,44 @@ def analyze_session(client, server, cert_ders, now, records=None):
             'cvss_source': _CVE_2002_20001['cvss_source'], 'detect_class': 'exposure',
             'related_cve': list(_CVE_2002_20001['related']),
             'dhe_group': dhe_group, 'group_bits': dhe_bits})
+    # ---- CVE-2018-0732 oversized DH prime EXPOSURE (server-attacks-client) ----
+    # A DH prime above OpenSSL's 10000-bit ceiling in the ServerKeyExchange makes the
+    # client burn a modexp — the mirror image of D(HE)at. Read directly from the SKE
+    # prime size threaded onto the server dict by the dispatch (TLS 1.2 DHE only).
+    if server and server.get('cipher') in DHE_SUITES:
+        pb = server.get('dh_prime_bits')
+        if pb and pb > OPENSSL_DH_MAX_MODULUS_BITS:
+            findings.append({
+                'severity': 'warn', 'code': 'cve_2018_0732_oversized_dh_prime',
+                'message': ('Server sent a {}-bit DH prime in its ServerKeyExchange, above '
+                            'the {}-bit ceiling OpenSSL\'s own fix enforces — a client doing '
+                            'the modexp burns CPU (CVE-2018-0732, client-side DoS)'
+                            .format(pb, OPENSSL_DH_MAX_MODULUS_BITS)),
+                'cve': _CVE_2018_0732['cve'], 'cvss': _CVE_2018_0732['cvss'],
+                'cvss_source': _CVE_2018_0732['cvss_source'],
+                'score_confidence': _CVE_2018_0732['score_confidence'],
+                'detect_class': 'exposure', 'prime_bits': pb,
+                'limit_bits': OPENSSL_DH_MAX_MODULUS_BITS,
+                'cipher': '0x{:04x}'.format(server['cipher'])})
+
     # ---- record-layer attack shapes (v4): read from the plaintext record stream ----
     neg_ch = server['cipher'] if server else None
     for d in (records or []):
+        # CVE-2014-0160 (Heartbleed): a cleartext heartbeat request over-declaring its
+        # payload — a buffer over-read attempt on the wire (attack shape, latched once).
+        bad_hb = d.get('bad_heartbeats', 0)
+        if bad_hb:
+            declared, rlen = d.get('heartbeat_sample') or (None, None)
+            findings.append({
+                'severity': 'high', 'code': 'cve_2014_0160_heartbleed',
+                'message': ('{} cleartext TLS heartbeat request(s) on {} declaring more '
+                            'payload than the record carries (declared {} bytes in a {}-byte '
+                            'record) — the Heartbleed buffer over-read shape (CVE-2014-0160)'
+                            .format(bad_hb, d.get('label', '?'), declared, rlen)),
+                'cve': _CVE_2014_0160['cve'], 'cvss': _CVE_2014_0160['cvss'],
+                'cvss_source': _CVE_2014_0160['cvss_source'], 'detect_class': 'attack',
+                'confidence': 'shape', 'direction': d.get('label'),
+                'bad_heartbeats': bad_hb})
         # CVE-2016-8610 (SSL Death Alert): consecutive plaintext warning alerts
         # during the handshake. Latching tiers on the per-direction run — a fatal
         # alert or any non-alert record already broke the run in the scanner.
@@ -946,6 +1029,8 @@ def _scan_tls_stream(stream):
     alert_sample = []
     short_records = 0
     shortest = None
+    bad_heartbeats = heartbeats_seen = 0
+    heartbeat_sample = None
     n = len(stream)
     while i + 5 <= n:
         ctype = stream[i]
@@ -966,6 +1051,18 @@ def _scan_tls_stream(stream):
         elif ctype == 20:                         # ChangeCipherSpec
             saw_ccs = True
             consec_warn = 0
+        elif ctype == _CT_HEARTBEAT:              # heartbeat (CVE-2014-0160)
+            # Only cleartext (pre-CCS/appdata) heartbeats are readable. A request whose
+            # declared payload + RFC 6520 minimum padding cannot fit the record is the
+            # Heartbleed over-read shape (the reference exploit sends it pre-handshake).
+            if not (saw_ccs or saw_appdata) and len(frag) >= _HEARTBEAT_HEADER_BYTES:
+                heartbeats_seen += 1
+                declared = (frag[1] << 8) | frag[2]
+                if _HEARTBEAT_HEADER_BYTES + declared + _HEARTBEAT_MIN_PADDING > rlen:
+                    bad_heartbeats += 1
+                    if heartbeat_sample is None:
+                        heartbeat_sample = (declared, rlen)
+            consec_warn = 0
         elif ctype == 21:                         # alert
             if not (saw_ccs or saw_appdata):
                 plaintext_alerts += 1
@@ -982,7 +1079,9 @@ def _scan_tls_stream(stream):
         i += 5 + rlen
     stats = {'plaintext_alerts': plaintext_alerts,
              'max_consec_warn': max_consec_warn, 'alert_sample': alert_sample,
-             'short_records': short_records, 'shortest': shortest}
+             'short_records': short_records, 'shortest': shortest,
+             'bad_heartbeats': bad_heartbeats, 'heartbeats_seen': heartbeats_seen,
+             'heartbeat_sample': heartbeat_sample}
     return handshake_messages(bytes(hs)), stats
 
 
@@ -1045,6 +1144,13 @@ def parse_pcap(path):
                     server = parse_server_hello(b)
                 elif t == 0x0b:
                     certs = parse_certificates(b)
+                elif t == 0x0c and server is not None \
+                        and server.get('cipher') in DHE_SUITES:
+                    # ServerKeyExchange: recover the DH prime size (CVE-2018-0732, and
+                    # the real group bits for the D(HE)at accounting on TLS 1.2 DHE).
+                    bits = parse_dhe_server_key_exchange(b)
+                    if bits:
+                        server['dh_prime_bits'] = bits
             seen.add(rev)
             # Per-direction record-layer stats, labelled by who is talking, so a
             # death-alert flood or a truncated record is attributed to the side
@@ -1620,6 +1726,44 @@ def selftest():
     # A full-length protected record is not short.
     _m, stok = _scan_tls_stream(_rec_bytes(23, b'\x00' * 40))
     ck('short_record_no_fp', stok['short_records'], 0)
+
+    # ---- CVE-2014-0160 Heartbleed: cleartext heartbeat over-declaring payload ----
+    hb_body = bytes([1]) + struct.pack('!H', 0x4000) + b'\x00'   # request, declares 16384
+    _m, sthb = _scan_tls_stream(_rec_bytes(_CT_HEARTBEAT, hb_body))
+    ck('heartbleed_bad_count', sthb['bad_heartbeats'], 1)
+    hbf = analyze_session(None, None, [], now, records=[dict(sthb, label='c -> s')])[0]
+    fhb = next((x for x in hbf if x['code'] == 'cve_2014_0160_heartbleed'), None)
+    ck('heartbleed_finding', fhb is not None)
+    ck('heartbleed_high', (fhb or {}).get('severity'), 'high')
+    ck('heartbleed_cve', (fhb or {}).get('cve'), 'CVE-2014-0160')
+    ck('heartbleed_attack_class', (fhb or {}).get('detect_class'), 'attack')
+    # A well-formed heartbeat (declared payload + padding fits the record) is NOT flagged.
+    good_hb = bytes([1]) + struct.pack('!H', 4) + b'\x00' * 4 + b'\x00' * 16
+    _m, stokhb = _scan_tls_stream(_rec_bytes(_CT_HEARTBEAT, good_hb))
+    ck('heartbleed_no_fp', stokhb['bad_heartbeats'], 0)
+    # A heartbeat AFTER ChangeCipherSpec is encrypted, so its length is not inspected.
+    _m, stench = _scan_tls_stream(_rec_bytes(20, b'\x01')
+                                  + _rec_bytes(_CT_HEARTBEAT, hb_body))
+    ck('heartbleed_post_ccs_ignored', stench['bad_heartbeats'], 0)
+
+    # ---- CVE-2018-0732 oversized DH prime in ServerKeyExchange ----
+    big_p = b'\xff' * 1300                         # 1300 bytes -> 10400-bit modulus
+    ske_big = struct.pack('!H', len(big_p)) + big_p
+    ck('dh_prime_bits_parse', parse_dhe_server_key_exchange(ske_big), 10400)
+    shdhe2 = parse_server_hello(_mk_server_hello(0x0303, 0x0033)[4:])   # DHE_RSA_AES128
+    shdhe2['dh_prime_bits'] = parse_dhe_server_key_exchange(ske_big)
+    fdh = analyze_session(None, shdhe2, [], now)[0]
+    fdho = next((x for x in fdh if x['code'] == 'cve_2018_0732_oversized_dh_prime'), None)
+    ck('oversized_dh_finding', fdho is not None)
+    ck('oversized_dh_warn', (fdho or {}).get('severity'), 'warn')
+    ck('oversized_dh_bits', (fdho or {}).get('prime_bits'), 10400)
+    # A normal 2048-bit prime is NOT flagged as oversized.
+    ok_p = b'\xff' * 256                            # 2048-bit modulus
+    shdhe3 = parse_server_hello(_mk_server_hello(0x0303, 0x0033)[4:])
+    shdhe3['dh_prime_bits'] = parse_dhe_server_key_exchange(struct.pack('!H', len(ok_p)) + ok_p)
+    ck('oversized_dh_no_fp',
+       not any(x['code'] == 'cve_2018_0732_oversized_dh_prime'
+               for x in analyze_session(None, shdhe3, [], now)[0]))
 
     try:
         # self-signed leaf + SNI mismatch (the interception signal)
