@@ -460,15 +460,28 @@ is the *active* complement to the passive duplicate-IP check in
 [L2 Link Health](#l2-link-health), and it feeds the
 [Network Integrity Monitor](#-network-integrity-monitor).
 
-This snapshot view is complemented by a **standalone live-stream monitor** —
-[arp_guard](arp_guard.md) (`python/arp_guard.py`) — a four-layer packet pipeline
-(binding-flap · gratuitous-ARP rate/breadth · per-packet structural sanity ·
-out-of-band trusted-MAC pins) that catches the attack **in progress** (a raw-byte
-parser, JSON-lines alerts, pcap `--replay`, and a hardened daemon), which a
-neighbour-table snapshot can't see.
+The snapshot is optionally deepened by a **passive ARP-frame capture** the neighbour
+table can never see. Run in the [Network Integrity Monitor](#-network-integrity-monitor)
+rotation (an opt-in `capture_seconds` window; the fast per-cycle check stays a pure table
+read), it folds live-frame signals into the same verdict:
+
+- **Reply-shape MITM tells** → **spoofed**: an ARP reply whose sender-hardware address
+  (`is-at`) differs from its Ethernet source, or an unsolicited **broadcast reply** — both
+  classic poisoning-tool tells — plus 0.0.0.0 / multicast-sender malformed replies.
+- **Request rate / breadth & gratuitous floods**: one MAC sweeping many distinct targets
+  or flooding requests/gratuitous announcements — the shared shape behind the **Juniper ARP
+  control-plane DoS family** (CVE-2018-0063 / CVE-2019-0033 / CVE-2021-0216 / CVE-2021-0292),
+  attached as *related context, not a per-CVE identification*. Own NICs, the gateway and a
+  confirmed FHRP virtual MAC are exempted so a router legitimately fronting the segment is
+  never flagged.
+
+A full **standalone live-stream monitor** — [arp_guard](arp_guard.md)
+(`python/arp_guard.py`) — remains available as a five-layer packet pipeline with JSON-lines
+alerts, pcap `--replay` and a hardened daemon.
 
 - Endpoints: `GET /api/net/arp-check`,
-  `GET|POST /api/net/arp-baseline` `{action:reset}` · uses `ip neigh` (iproute2)
+  `GET|POST /api/net/arp-baseline` `{action:reset}` · uses `ip neigh` (iproute2) + an
+  optional passive `tcpdump ... arp` capture
 
 ### MAC Watch
 **Detection-only** MAC-spoofing + randomization monitor — it *never spoofs or
@@ -1713,6 +1726,24 @@ duplicate them):
   *victim's* workstation, not the relay box's — a relay tell. Stays silent unless the
   source has a confident name, so it doesn't false-positive.
 
+**Part 4 — named CVEs on the wire (v3).** The same byte-level parse names the specific
+flaws that are legible in the traffic:
+
+- **smbghost-exploit** / **smbghost-exposure** — **SMBGhost** (CVE-2020-0796). *Exposure:*
+  an SMB **3.1.1 negotiate response** advertising the compression-capabilities context.
+  *Exploit:* a **compression-transform header** (`\xfcSMB`) whose decompressed size + offset
+  overflow 32 bits — the integer-overflow primitive. **CRITICAL** / **HIGH.**
+- **eternalblue-probe** — an SMBv1 **TRANS2 SESSION_SETUP** (CVE-2017-0144 / MS17-010), the
+  EternalBlue exploit primitive; the SMBv1-in-use posture is separately flagged as
+  **smbv1-active** (also CVE-2017-0144).
+- **krb-rc4md4** — Kerberos **RC4-MD4** (etype **-128**) offered in a request, granted in a
+  reply enc-part, or advertised by the KDC in a **KRB-ERROR PA-ETYPE-INFO2** — the
+  **CVE-2022-33679 / CVE-2022-33647** downgrade-injection signature (no modern stack ever
+  touches etype -128). **CRITICAL.**
+- **smb-reflection** — the **reflective-relay** primitive (CVE-2025-33073): an SMB session
+  whose **client == server** (the loopback), or a **marshalled CREDENTIAL_TARGET_INFORMATION
+  blob** in a resolved name or Kerberos SPN. **CRITICAL.**
+
 Cross-module fusion (a live poisoner **and** an unsigned relay target, or a directed
 Kerberos→SMB edge) is left to [Watchtower](watchtower.md) and the incident-correlation
 engine, which already fuse the separate watchers' alert streams into named attack chains
@@ -1799,15 +1830,30 @@ rides `\pipe\lsarpc`, DFSCoerce `\pipe\netdfs` and Zerologon works fine over
   interface, association below `PKT_INTEGRITY`, alter-context/rebind **downgrade**, and
   the NTLM weaknesses (NTLMv1, no extended session security, no SIGN/SEAL, no MIC,
   anonymous, LM session key). One NTLMSSP analyser serves RPC security trailers, WinRM
-  `Authorization` headers and (opt-in) SMB2 session setup.
+  `Authorization` headers and (opt-in) SMB2 session setup. *(v2:)* the **RemoteRegistry
+  NTLM-relay fallback** (`RPC-WINREG-RELAY-FALLBACK`, **CVE-2024-43532**) — WinReg binding
+  over direct `ncacn_ip_tcp` (not `\pipe\winreg`) at `RPC_C_AUTHN_LEVEL_CONNECT`, the
+  unsigned condition an NTLM relay to AD CS needs.
 - **interface** — **DCSync** (DRSUAPI `DRSGetNCChanges`, opnum 3), remote-exec
   primitives (svcctl / atsvc / winreg), DPAPI domain **backup-key** access (MS-BKRP),
-  and endpoint-mapper **sweeps** at an enumeration rate.
+  and endpoint-mapper **sweeps** at an enumeration rate. *(v2:)* **PrintNightmare**
+  (`RPC-PRINTNIGHTMARE-DRIVER-ADD`, **CVE-2021-1675 / CVE-2021-34527** — spoolss/PAR
+  `RpcAddPrinterDriver[Ex]`, severity graded by whether an off-box UNC driver path is
+  visible in the stub) and **PetitPotam-class LSA anonymous coercion**
+  (`RPC-LSA-ANONYMOUS-COERCION`, **CVE-2022-26925** — a coercion primitive on
+  `\pipe\lsarpc` over an *anonymous* association; the anonymity is the vulnerability, so
+  this is a distinct finding, not one of the deferred coercion codes below).
 - **protocol** — bind-NAK, fragment-length anomalies, legacy DCERPC major version.
+  *(v2:)* the **RPC-runtime bind_ack underflow** (`RPC-RUNTIME-BINDACK-UNDERFLOW`,
+  **CVE-2022-26809**) — a big-endian `BIND_ACK` with a zero secondary-address length, the
+  integer-underflow shape.
 - **winrm** — WS-Man on tcp/5985 cleartext, HTTP **Basic** auth, unencrypted SOAP
   body (`AllowUnencrypted`, distinguished from message-level SPNEGO/Kerberos
   encryption), auth downgrade, CredSSP delegation, and Shell-Create. tcp/5986 (TLS) is
-  observed but **never dissected**.
+  observed but **never dissected**. *(v2:)* the **HTTP.sys** Accept-Encoding bug
+  (`WINRM-HTTPSYS-ACCEPT-ENCODING`, **CVE-2021-31166 / CVE-2022-21907**) — an empty
+  coding-list element (`gzip,,deflate`), reachable on any path because http.sys parses the
+  header in-kernel before routing.
 
 > **Module boundary.** Authentication **coercion** (PetitPotam / PrinterBug /
 > DFSCoerce / ShadowCoerce) is **owned by [Relay/Coercion Watch](#relaycoercion-watch)**,

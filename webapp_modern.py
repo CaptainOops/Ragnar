@@ -2220,6 +2220,12 @@ def _net_integrity_check_once():
     # light. Each self-noops cheaply when its protocol isn't on the segment. All
     # capture on cap_iface (wired-preferred; see above).
     rotation = [
+        # Live ARP-frame capture (the fast 'arp' entry above is a neighbour-table
+        # read; this adds request rate/breadth, gratuitous floods and reply-shape
+        # MITM tells the snapshot can't see). Own NICs / gateway / confirmed FHRP
+        # vMAC are exempted inside do_arp_check.
+        ('arpframes', 'ARP Frames',
+         lambda: watch(nd.do_arp_check, interface=cap_iface, capture_seconds=8)),
         ('stp', 'STP', lambda: watch(nd.do_stp_watch, interface=cap_iface)),
         ('dtp', 'DTP', lambda: watch(nd.do_dtp_watch, interface=cap_iface)),
         ('cdp', 'CDP', lambda: watch(nd.do_cdp_watch, interface=cap_iface)),

@@ -14,10 +14,11 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~165 CVEs actively detected.** 167 distinct CVE IDs are named across the detector code;
-  165 are actively detected.
+- **~177 CVEs actively detected.** 183 distinct CVE IDs are named across the detector code;
+  177 are actively detected (the four Juniper ARP control-plane CVEs are named as related
+  context on the shared request-rate/breadth shape, not as per-CVE identifications).
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **29 CVEs from 2023, 38 from 2024, 24 from 2025, and
+- Weighted to the current threat wave: **29 CVEs from 2023, 39 from 2024, 25 from 2025, and
   8 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
@@ -46,6 +47,21 @@ behind them is Solarflere's work.
   class for the timing plane — linuxptp **forwarding over-read** (CVE-2021-3570) and
   **one-step Sync length abuse** (CVE-2021-3571), the gPTP **peer-delay requester flood**
   (CVE-2024-42861) and the Arista EOS **invalid-TLV agent restart** (CVE-2021-28510).
+- **Windows attack surface & ARP control plane** — the in-app **SMB / Kerberos Watch** now
+  names **SMBGhost** (CVE-2020-0796 — both the SMB 3.1.1 compression-negotiation exposure
+  and the compression-transform 32-bit-overflow exploit), the **EternalBlue** TRANS2
+  SESSION_SETUP primitive (CVE-2017-0144), **RC4-MD4** Kerberos downgrade injection
+  (CVE-2022-33679 / CVE-2022-33647 — etype -128 offered, granted, or advertised in a
+  KRB-ERROR PA-ETYPE-INFO2) and the **reflective-relay** primitive (CVE-2025-33073 —
+  client == server, or a marshalled CREDENTIAL_TARGET_INFORMATION blob in a name/SPN); the
+  vendored **RPC / NetLogon Watch** adds **PrintNightmare** (CVE-2021-1675 / CVE-2021-34527,
+  spoolss RpcAddPrinterDriver over `\pipe\spoolss`), the **HTTP.sys** Accept-Encoding bug
+  (CVE-2021-31166 / CVE-2022-21907), the **RPC-runtime bind_ack underflow** (CVE-2022-26809),
+  **PetitPotam-class LSA anonymous coercion** (CVE-2022-26925) and the **RemoteRegistry
+  NTLM-relay fallback** (CVE-2024-43532); and **ARP Watch** gains a passive ARP-frame capture
+  that flags request rate/breadth and gratuitous floods — the shared shape behind the Juniper
+  ARP control-plane DoS family (CVE-2018-0063 / CVE-2019-0033 / CVE-2021-0216 / CVE-2021-0292),
+  attached as related context, not a per-CVE identification.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 

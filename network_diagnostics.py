@@ -768,6 +768,19 @@ _arp_baseline_lock = threading.Lock()
 # keep the floor above normal noise.
 _ARP_IMPERSONATOR_MIN_IPS = 4
 
+# Thresholds for the optional passive ARP-frame capture (do_arp_check with
+# capture_seconds > 0). The neighbour table only ever shows a resolved binding
+# snapshot; live frames additionally expose ARP requests, gratuitous
+# announcements and reply-shape anomalies that a snapshot can never see. These
+# are absolute counts over the (short) capture window — deliberately conservative
+# so a normal host's handful of ARP requests never trips them, while a subnet
+# sweep or gratuitous flood does. Mirrors the ARP Guard module's layer-2/5
+# thresholds (GARP 5/60s & 3 distinct IPs, requests 60/30s & 25 distinct).
+_ARP_CAP_REQ_RATE = 60          # ARP requests from one MAC within the window
+_ARP_CAP_REQ_BREADTH = 25       # distinct request targets from one MAC (sweep)
+_ARP_CAP_GARP_RATE = 5          # gratuitous frames from one MAC
+_ARP_CAP_GARP_DISTINCT = 3      # distinct gratuitously-claimed IPs from one MAC
+
 
 def _neigh_entries(iface=None):
     """Parse `ip -4 neigh` into [(ip, mac, state)] for entries with a lladdr.
@@ -955,7 +968,187 @@ def do_arp_baseline(action='get'):
                 'fhrp_gateways': (b.get('fhrp_gateways') or {})}
 
 
-def do_arp_check(interface=None, learn=True):
+# tcpdump renders every ARP frame (verified against a crafted pcap) as:
+#   <eth_src> > <eth_dst>, ethertype ARP (0x0806), length N: \
+#       Request who-has <target_ip> tell <sender_ip>, length M
+#   <eth_src> > <eth_dst>, ethertype ARP (0x0806), length N: \
+#       Reply <sender_ip> is-at <sender_mac>, length M
+# so `-e -n` alone carries the Ethernet header, the ARP opcode, the sender/target
+# IPs and (on replies) the ARP sender-hardware-address. A leading timestamp is
+# tolerated by matching the MAC pair with re.search rather than anchoring.
+_ARP_MAC = r'[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}'
+_ARP_ETH_RE = re.compile(r'(' + _ARP_MAC + r')\s*>\s*(' + _ARP_MAC + r'),\s*ethertype ARP')
+_ARP_REQ_RE = re.compile(r'Request who-has (\d+\.\d+\.\d+\.\d+) tell (\d+\.\d+\.\d+\.\d+)')
+_ARP_REPLY_RE = re.compile(r'Reply (\d+\.\d+\.\d+\.\d+) is-at (' + _ARP_MAC + r')')
+
+
+def _parse_arp_capture(output):
+    """Parse `tcpdump -e -n arp` text into per-frame events:
+    {op, eth_src, eth_dst, sender_ip, sender_mac(reply)|None, target_ip(request)|None,
+     gratuitous(bool)}. Malformed/partial lines are skipped."""
+    events = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        eth = _ARP_ETH_RE.search(line)
+        if not eth:
+            continue
+        eth_src = eth.group(1).lower()
+        eth_dst = eth.group(2).lower()
+        mreq = _ARP_REQ_RE.search(line)
+        if mreq:
+            target_ip, sender_ip = mreq.group(1), mreq.group(2)
+            events.append({'op': 'request', 'eth_src': eth_src, 'eth_dst': eth_dst,
+                           'sender_ip': sender_ip, 'sender_mac': None,
+                           'target_ip': target_ip,
+                           'gratuitous': sender_ip == target_ip})
+            continue
+        mrep = _ARP_REPLY_RE.search(line)
+        if mrep:
+            sender_ip, sender_mac = mrep.group(1), mrep.group(2).lower()
+            events.append({'op': 'reply', 'eth_src': eth_src, 'eth_dst': eth_dst,
+                           'sender_ip': sender_ip, 'sender_mac': sender_mac,
+                           'target_ip': None, 'gratuitous': False})
+    return events
+
+
+def _arp_frame_capture(interface, seconds):
+    """Passively capture ARP frames for `seconds` and return parsed events.
+    Best-effort: returns [] (never raises) when tcpdump is missing/blocked, so
+    the neighbour-table check stands on its own. Generates no traffic."""
+    if not _have('tcpdump'):
+        return []
+    iface = interface if _valid_iface(interface or '') else _capture_iface()
+    if not iface:
+        return []
+    cmd = ['tcpdump', '-i', iface, '-n', '-e', '-l', 'arp']
+    # tcpdump has no built-in duration cap; run it under a timeout and read the
+    # buffered output. SIGTERM (rc 124) is the normal, expected end of the window.
+    res = _run(cmd, timeout=max(2, int(seconds)))
+    if res.get('rc') == 127:
+        return []
+    return _parse_arp_capture(res.get('out') or '')
+
+
+def _arp_capture_analyze(events, seconds, exempt_macs):
+    """Fold ARP-frame events into (findings, verdict, reasons).
+
+    Reply-shape checks are per-frame MITM tells (spoofed). Rate/breadth/gratuitous
+    checks aggregate per source MAC over the window (control-plane exhaustion or a
+    poisoner announcing many identities). `exempt_macs` (own NICs, the gateway, a
+    confirmed FHRP virtual MAC, routers) are never counted or flagged — a router
+    legitimately requests and announces a lot.
+
+    The four Juniper ARP-DoS CVEs (2018-0063 / 2019-0033 / 2021-0216 / 2021-0292)
+    share the request rate/breadth shape but are NOT individually identifiable on
+    the wire, so they ride the finding as *context, not an identification claim* —
+    matching the module's own disclaimer."""
+    exempt = {m.lower() for m in (exempt_macs or set()) if m}
+    findings = []
+    reasons = []
+    verdict = 'clean'
+
+    def bump(target):
+        nonlocal verdict
+        rank = {'clean': 0, 'suspicious': 1, 'spoofed': 2}
+        if rank.get(target, 0) > rank.get(verdict, 0):
+            verdict = target
+
+    # -- per-frame reply-shape anomalies --
+    seen_mismatch, seen_bcast, seen_probe, seen_badsender = set(), set(), set(), set()
+    for e in events:
+        src = e['eth_src']
+        if src in exempt:
+            continue
+        if e['op'] == 'reply':
+            if e['sender_mac'] and e['sender_mac'] != src and src not in seen_mismatch:
+                seen_mismatch.add(src)
+                findings.append({'code': 'eth_arp_src_mismatch', 'severity': 'high',
+                                 'mac': src, 'claims': e['sender_mac']})
+                reasons.append(f"ARP reply from {src} carries a different sender-hardware "
+                               f"address {e['sender_mac']} (is-at) than its Ethernet source "
+                               "— frame forgery / MITM tell")
+                bump('spoofed')
+            if e['eth_dst'] == 'ff:ff:ff:ff:ff:ff' and src not in seen_bcast:
+                seen_bcast.add(src)
+                findings.append({'code': 'broadcast_reply_anomaly', 'severity': 'high',
+                                 'mac': src})
+                reasons.append(f"{src} sent an ARP *reply* to the broadcast address "
+                               "— unsolicited broadcast reply, a classic poisoning-tool tell")
+                bump('spoofed')
+            if e['sender_ip'] == '0.0.0.0' and src not in seen_probe:
+                seen_probe.add(src)
+                findings.append({'code': 'invalid_probe_reply', 'severity': 'medium',
+                                 'mac': src})
+                reasons.append(f"{src} sent an ARP reply claiming sender IP 0.0.0.0 "
+                               "— malformed reply to an address-probe")
+                bump('suspicious')
+        sip = e['sender_ip']
+        try:
+            bad = sip and (ipaddress.ip_address(sip).is_multicast or sip == '255.255.255.255')
+        except ValueError:
+            bad = False
+        if bad and src not in seen_badsender:
+            seen_badsender.add(src)
+            findings.append({'code': 'invalid_sender_ip', 'severity': 'medium',
+                             'mac': src, 'sender_ip': sip})
+            reasons.append(f"{src} used ARP sender IP {sip} (multicast/broadcast) "
+                           "— structurally invalid, spoofing or a broken stack")
+            bump('suspicious')
+
+    # -- per-source-MAC aggregates --
+    req_count, req_targets = {}, {}
+    garp_count, garp_ips = {}, {}
+    for e in events:
+        src = e['eth_src']
+        if src in exempt:
+            continue
+        if e['gratuitous']:
+            garp_count[src] = garp_count.get(src, 0) + 1
+            garp_ips.setdefault(src, set()).add(e['sender_ip'])
+        elif e['op'] == 'request' and e.get('target_ip'):
+            req_count[src] = req_count.get(src, 0) + 1
+            req_targets.setdefault(src, set()).add(e['target_ip'])
+
+    win = max(1, int(seconds or 1))
+    for src, n in sorted(req_count.items()):
+        ntgt = len(req_targets.get(src, ()))
+        if ntgt >= _ARP_CAP_REQ_BREADTH:
+            findings.append({'code': 'request_breadth_anomaly', 'severity': 'high',
+                             'mac': src, 'targets': ntgt,
+                             'related_cves': ['CVE-2018-0063']})
+            reasons.append(f"{src} requested {ntgt} distinct IPs within ~{win}s — subnet "
+                           "sweep or neighbour/next-hop-table exhaustion shape (related, "
+                           "not identified: CVE-2018-0063)")
+            bump('suspicious')
+        if n >= _ARP_CAP_REQ_RATE:
+            findings.append({'code': 'request_rate_anomaly', 'severity': 'medium',
+                             'mac': src, 'requests': n,
+                             'related_cves': ['CVE-2021-0292', 'CVE-2021-0216',
+                                              'CVE-2019-0033']})
+            reasons.append(f"{src} sent {n} ARP requests within ~{win}s — ARP control-plane "
+                           "exhaustion shape (related, not identified: CVE-2021-0292, "
+                           "CVE-2021-0216, CVE-2019-0033)")
+            bump('suspicious')
+
+    for src, n in sorted(garp_count.items()):
+        nips = len(garp_ips.get(src, ()))
+        if nips >= _ARP_CAP_GARP_DISTINCT:
+            findings.append({'code': 'garp_multi_ip_claim', 'severity': 'high',
+                             'mac': src, 'ips': nips})
+            reasons.append(f"{src} gratuitously announced {nips} distinct IPs within ~{win}s "
+                           "— one host claiming many identities (ARP spoofing)")
+            bump('spoofed')
+        elif n >= _ARP_CAP_GARP_RATE:
+            findings.append({'code': 'garp_rate_anomaly', 'severity': 'medium',
+                             'mac': src, 'count': n})
+            reasons.append(f"{src} sent {n} gratuitous ARPs within ~{win}s "
+                           "— gratuitous-ARP flood (cache-poisoning pressure)")
+            bump('suspicious')
+
+    return findings, verdict, reasons
+
+
+def do_arp_check(interface=None, learn=True, capture_seconds=0):
     """Detect ARP spoofing / poisoning from the kernel neighbour table.
 
     Signals: (1) the default gateway's MAC no longer matches the trusted
@@ -970,7 +1163,14 @@ def do_arp_check(interface=None, learn=True):
 
     With `interface` set, the check is scoped to that segment: its own default
     gateway (a higher-metric uplink still counts) and only the neighbours on that
-    interface — the right lens on a multi-homed box."""
+    interface — the right lens on a multi-homed box.
+
+    capture_seconds > 0 additionally runs a short passive ARP-frame capture
+    (tcpdump, detection-only) whose findings are folded into the same verdict:
+    reply-shape MITM tells (sender-hardware ≠ Ethernet source, broadcast replies,
+    0.0.0.0 / multicast senders) and per-MAC request-rate/breadth and
+    gratuitous-flood shapes the neighbour-table snapshot can never see. Left at 0
+    (the fast-core / background default) the check stays a cheap table read."""
     iface = interface if _valid_iface(interface or '') else None
     gw = _iface_gateway(iface) if iface else _default_gateway()
     if not gw:
@@ -1051,6 +1251,27 @@ def do_arp_check(interface=None, learn=True):
                            f"({', '.join(ips[:4])}{'…' if len(ips) > 4 else ''}) "
                            '— possible ARP spoofing')
 
+    # Optional passive ARP-frame capture (opt-in via capture_seconds > 0). The
+    # fast neighbour-table analysis above always runs; this only adds live-frame
+    # signals when a caller asks for them (the Net Integrity rotation), so the
+    # every-cycle fast core stays a cheap table read.
+    capture = None
+    if capture_seconds and int(capture_seconds) > 0:
+        exempt = _local_macs()
+        if gw_mac:
+            exempt.add(gw_mac.lower())
+        if confirmed_vmac:
+            exempt.add(confirmed_vmac)
+        events = _arp_frame_capture(iface, int(capture_seconds))
+        cfind, cverdict, creasons = _arp_capture_analyze(events, int(capture_seconds), exempt)
+        capture = {'seconds': int(capture_seconds), 'frames': len(events),
+                   'findings': cfind}
+        if creasons:
+            reasons.extend(creasons)
+        rank = {'unknown': -1, 'clean': 0, 'suspicious': 1, 'spoofed': 2}
+        if cverdict in ('suspicious', 'spoofed') and rank[cverdict] > rank.get(verdict, 0):
+            verdict = cverdict
+
     return {'success': True, 'verdict': verdict, 'interface': iface,
             'gateway': {'ip': gw, 'mac': gw_mac, 'baseline': base_mac,
                         'learned': learned, 'fhrp_shape': fhrp_shape,
@@ -1059,6 +1280,7 @@ def do_arp_check(interface=None, learn=True):
                         'fhrp_note': fhrp_note},
             'impersonators': impersonators,
             'neighbor_count': len(entries),
+            'capture': capture,
             'reasons': reasons}
 
 
@@ -3957,8 +4179,100 @@ def _arp_selftest():
         except OSError:
             pass
 
-    return {'success': all(s['pass'] for s in scenarios),
-            'scenarios': scenarios, 'scapy': {'ran': False, 'reason': 'offline only'}}
+    # -- passive ARP-frame capture: parser + analyzer (deterministic) --
+    sample = [
+        'aa:bb:cc:00:00:10 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: '
+        'Request who-has 192.168.1.5 tell 192.168.1.10, length 28',
+        'aa:bb:cc:00:00:99 > aa:bb:cc:00:00:10, ethertype ARP (0x0806), length 42: '
+        'Reply 192.168.1.5 is-at dd:ee:ff:00:00:05, length 28',           # eth != is-at
+        'dd:ee:ff:00:00:05 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: '
+        'Reply 192.168.1.5 is-at dd:ee:ff:00:00:05, length 28',           # broadcast reply
+        'dd:ee:ff:00:00:05 > aa:bb:cc:00:00:10, ethertype ARP (0x0806), length 42: '
+        'Reply 0.0.0.0 is-at dd:ee:ff:00:00:05, length 28',               # 0.0.0.0 reply
+        'aa:bb:cc:00:00:10 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: '
+        'Request who-has 192.168.1.5 tell 224.0.0.1, length 28',          # multicast sender
+    ]
+    ev = _parse_arp_capture('\n'.join(sample))
+    ck('capture parse: 5 frames', len(ev) == 5, got=len(ev))
+    ck('capture parse: gratuitous flagged only when sender==target',
+       not any(e['gratuitous'] for e in ev))
+    find, verdict, _ = _arp_capture_analyze(ev, 8, set())
+    codes = {f['code'] for f in find}
+    ck('analyze: eth/ARP src mismatch -> spoofed',
+       'eth_arp_src_mismatch' in codes and verdict == 'spoofed', got=sorted(codes))
+    ck('analyze: broadcast reply flagged', 'broadcast_reply_anomaly' in codes)
+    ck('analyze: 0.0.0.0 probe reply flagged', 'invalid_probe_reply' in codes)
+    ck('analyze: multicast sender flagged', 'invalid_sender_ip' in codes)
+
+    # sweep / gratuitous-flood thresholds + exempt list + CVE context
+    sweep = ['de:ad:be:ef:00:01 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: '
+             f'Request who-has 10.0.0.{i} tell 10.0.0.254, length 28'
+             for i in range(1, _ARP_CAP_REQ_BREADTH + 5)]
+    sf, sv, _ = _arp_capture_analyze(_parse_arp_capture('\n'.join(sweep)), 8, set())
+    scodes = {f['code'] for f in sf}
+    ck('analyze: request breadth sweep -> suspicious',
+       'request_breadth_anomaly' in scodes and sv == 'suspicious', got=sorted(scodes))
+    ck('analyze: breadth carries CVE-2018-0063 as context (not identification)',
+       any(f['code'] == 'request_breadth_anomaly'
+           and 'CVE-2018-0063' in (f.get('related_cves') or []) for f in sf))
+    ck('analyze: sweep source in exempt list -> nothing',
+       not _arp_capture_analyze(_parse_arp_capture('\n'.join(sweep)), 8,
+                                {'de:ad:be:ef:00:01'})[0])
+
+    garp = ['00:0c:29:aa:bb:cc > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: '
+            f'Request who-has 172.16.0.{i} tell 172.16.0.{i}, length 28'
+            for i in range(1, _ARP_CAP_GARP_DISTINCT + 1)]
+    gf, gv, _ = _arp_capture_analyze(_parse_arp_capture('\n'.join(garp)), 8, set())
+    ck('analyze: gratuitous multi-IP claim -> spoofed',
+       any(f['code'] == 'garp_multi_ip_claim' for f in gf) and gv == 'spoofed',
+       got=gv)
+
+    ck('analyze: a clean request/reply pair stays clean',
+       _arp_capture_analyze(_parse_arp_capture(
+           'aa:bb:cc:00:00:10 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: '
+           'Request who-has 192.168.1.5 tell 192.168.1.10, length 28\n'
+           'dd:ee:ff:00:00:05 > aa:bb:cc:00:00:10, ethertype ARP (0x0806), length 42: '
+           'Reply 192.168.1.5 is-at dd:ee:ff:00:00:05, length 28'), 8, set())[1] == 'clean')
+
+    # -- Scapy end-to-end: craft frames, read them back through tcpdump -e, and
+    #    prove the capture->parse->analyze path (not just the string parser). --
+    scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
+    try:
+        import tempfile as _tf
+        from scapy.all import Ether, ARP, wrpcap
+        if _have('tcpdump'):
+            frames = [
+                Ether(src='aa:bb:cc:00:00:99', dst='aa:bb:cc:00:00:10') /
+                ARP(op=2, hwsrc='dd:ee:ff:00:00:05', psrc='192.168.1.5',
+                    hwdst='aa:bb:cc:00:00:10', pdst='192.168.1.10'),      # eth != is-at
+                Ether(src='dd:ee:ff:00:00:05', dst='ff:ff:ff:ff:ff:ff') /
+                ARP(op=2, hwsrc='dd:ee:ff:00:00:05', psrc='192.168.1.5',
+                    hwdst='00:00:00:00:00:00', pdst='192.168.1.5'),       # broadcast reply
+            ]
+            with _tf.NamedTemporaryFile(suffix='.pcap', delete=False) as tf:
+                ppath = tf.name
+            wrpcap(ppath, frames)
+            res = _run(['tcpdump', '-e', '-n', '-t', '-r', ppath], timeout=10)
+            e2e = _parse_arp_capture(res['out'])
+            f2, v2, _ = _arp_capture_analyze(e2e, 8, set())
+            c2 = {f['code'] for f in f2}
+            ok = ('eth_arp_src_mismatch' in c2 and 'broadcast_reply_anomaly' in c2
+                  and v2 == 'spoofed')
+            scenarios.append({'name': 'arp-capture-scapy-e2e',
+                              'expect': 'wire replies parsed + flagged spoofed',
+                              'got': 'ok' if ok else f'{sorted(c2)}/{v2}', 'pass': ok})
+            scapy_result = {'ran': True, 'pass': ok,
+                            'tcpdump_out': res['out'].strip()[:200]}
+            try:
+                os.remove(ppath)
+            except OSError:
+                pass
+    except Exception as e:
+        scapy_result = {'ran': False, 'reason': f'{type(e).__name__}: {e}'}
+
+    passed = all(s['pass'] for s in scenarios) and (not scapy_result.get('ran')
+                                                    or scapy_result.get('pass'))
+    return {'success': passed, 'scenarios': scenarios, 'scapy': scapy_result}
 
 
 def _mac_selftest():
@@ -10941,15 +11255,22 @@ _SMB_MCAST = {'224.0.0.252', 'ff02::1:3', '224.0.0.251', 'ff02::fb'}
 _KRB_PORTS = {88}
 # Kerberos encryption types (RFC 3961/4120). AES is strong; RC4/DES are the
 # downgrade/roasting-enabling weak ones; 3DES is deprecated legacy.
-_KRB_ETYPE_NAMES = {1: 'des-cbc-crc', 2: 'des-cbc-md4', 3: 'des-cbc-md5',
-                    5: 'des3-cbc-md5', 16: 'des3-cbc-sha1', 17: 'aes128',
-                    18: 'aes256', 19: 'aes128-sha256', 20: 'aes256-sha384',
-                    23: 'rc4-hmac', 24: 'rc4-hmac-exp', 25: 'camellia128',
-                    26: 'camellia256'}
+_KRB_ETYPE_NAMES = {-128: 'rc4-md4', 1: 'des-cbc-crc', 2: 'des-cbc-md4',
+                    3: 'des-cbc-md5', 5: 'des3-cbc-md5', 16: 'des3-cbc-sha1',
+                    17: 'aes128', 18: 'aes256', 19: 'aes128-sha256',
+                    20: 'aes256-sha384', 23: 'rc4-hmac', 24: 'rc4-hmac-exp',
+                    25: 'camellia128', 26: 'camellia256'}
 _KRB_RC4 = {23, 24}
 _KRB_DES = {1, 2, 3, 5, 16}          # single-DES + 3DES, all deprecated/breakable
 _KRB_AES = {17, 18, 19, 20}
-_KRB_WEAK = _KRB_RC4 | _KRB_DES
+# RC4-MD4 (etype -128): obsolete and trivially broken. Its very presence — offered,
+# granted, or advertised in a KRB-ERROR PA-ETYPE-INFO2 — is the CVE-2022-33679 /
+# CVE-2022-33647 downgrade-injection signature. Kept separate from _KRB_RC4 so it
+# earns its own verdict, but folded into _KRB_WEAK so it never counts as AES.
+_KRB_ETYPE_RC4_MD4 = -128
+_KRB_RC4_MD4 = {_KRB_ETYPE_RC4_MD4}
+_KRB_PA_ETYPE_INFO2 = 19             # padata-type carrying the KDC's offered etypes
+_KRB_WEAK = _KRB_RC4 | _KRB_DES | _KRB_RC4_MD4
 # PA-ENC-TIMESTAMP pre-auth padata type; its absence == "do not require preauth".
 _KRB_PA_ENC_TIMESTAMP = 2
 # Kerberos KRB-ERROR codes that, in bursts toward one requester, mark KDC recon (K7):
@@ -10975,6 +11296,104 @@ _NTLMSSP_SIG = b'NTLMSSP\x00'
 _NTLM_TYPE_CHALLENGE = 2             # server -> client, carries the 8-byte server challenge
 _NTLM_TYPE_AUTHENTICATE = 3          # client -> server, carries domain/user/workstation
 _NTLM_STATIC_CHALLENGES = {bytes.fromhex('1122334455667788')}
+
+# ---- SMB v3 named-CVE tells (byte-level, same raw-parse stance as the module) -------
+_SMB2_MAGIC = b'\xfeSMB'
+# CVE-2020-0796 (SMBGhost): the SMB2 3.1.1 compression feature. Offsets are from the
+# SMB2 header start; a negotiate response advertising a compression-capabilities
+# context is *exposure*, a compression-transform header whose sizes overflow 32 bits
+# is the *exploit* primitive.
+_SMB2_DIALECT_311 = 0x0311
+_SMB2_NEG_CTX_COMPRESSION = 0x0003    # SMB2_COMPRESSION_CAPABILITIES context type
+_SMB2_NEG_CTX_COUNT_OFF = 70          # NegotiateContextCount
+_SMB2_NEG_CTX_OFFSET_OFF = 124        # NegotiateContextOffset (absolute from header)
+_SMB2_COMPRESSION_MAGIC = b'\xfcSMB'  # COMPRESSION_TRANSFORM_HEADER magic
+_SMB2_U32_MAX = 0xFFFFFFFF
+# CVE-2017-0144 (EternalBlue): the SMBv1 TRANS2 SESSION_SETUP subcommand primitive.
+_SMB1_CMD_TRANS2 = 0x32
+_SMB1_TRANS2_SESSION_SETUP = 0x000E
+# CVE-2025-33073 (reflective relay): a marshalled CREDENTIAL_TARGET_INFORMATION blob.
+_SMB_MARSHALLED_MAGIC = '1UWhRC'
+_SMB_MARSHALLED_TAIL = 'BAAAA'
+
+
+def _smb2_compression_transform(load):
+    """Parse an SMB2 COMPRESSION_TRANSFORM_HEADER (\\xfcSMB) -> (original_size,
+    algorithm, flags, offset), or None. CVE-2020-0796 (SMBGhost): original_size +
+    offset overflowing 32 bits is the integer-overflow exploit primitive. Tries the
+    header with and without the 4-byte NetBIOS session-length prefix."""
+    for base in (4, 0):
+        if len(load) < base + 16 or load[base:base + 4] != _SMB2_COMPRESSION_MAGIC:
+            continue
+        p = load[base:]
+        try:
+            return (int.from_bytes(p[4:8], 'little'), int.from_bytes(p[8:10], 'little'),
+                    int.from_bytes(p[10:12], 'little'), int.from_bytes(p[12:16], 'little'))
+        except Exception:
+            return None
+    return None
+
+
+def _smb2_negotiate_contexts(load):
+    """Return the NegotiateContext types in an SMB2 3.1.1 NEGOTIATE *response*, or [].
+    Used to spot the SMB2_COMPRESSION_CAPABILITIES context (SMBGhost exposure). Offsets
+    are relative to the SMB2 header start; requires command NEGOTIATE + SERVER_TO_REDIR
+    so a non-negotiate v2 frame can't false-positive on stray bytes at those offsets."""
+    h = load.find(_SMB2_MAGIC)
+    if h < 0 or len(load) < h + _SMB2_NEG_CTX_OFFSET_OFF + 4:
+        return []
+    try:
+        command = int.from_bytes(load[h + 12:h + 14], 'little')
+        flags = int.from_bytes(load[h + 16:h + 20], 'little')
+        if command != 0 or not (flags & 0x01):        # NEGOTIATE + SERVER_TO_REDIR
+            return []
+        dialect = int.from_bytes(load[h + 68:h + 70], 'little')
+        count = int.from_bytes(load[h + _SMB2_NEG_CTX_COUNT_OFF:
+                                    h + _SMB2_NEG_CTX_COUNT_OFF + 2], 'little')
+        ctx_off = int.from_bytes(load[h + _SMB2_NEG_CTX_OFFSET_OFF:
+                                      h + _SMB2_NEG_CTX_OFFSET_OFF + 4], 'little')
+    except Exception:
+        return []
+    if dialect != _SMB2_DIALECT_311 or count == 0 or ctx_off == 0:
+        return []
+    types, p = [], h + ctx_off
+    for _ in range(min(count, 16)):
+        if p + 8 > len(load):
+            break
+        types.append(int.from_bytes(load[p:p + 2], 'little'))
+        dlen = int.from_bytes(load[p + 2:p + 4], 'little')
+        p += (8 + dlen + 7) & ~7                        # 8-byte-aligned next context
+    return types
+
+
+def _smb1_trans2_subcommand(load):
+    """SMBv1 TRANS2 (0x32) *request* Setup[0] subcommand, or None. CVE-2017-0144
+    (EternalBlue) rides TRANS2 SESSION_SETUP (0x000E). p starts at the \\xffSMB magic,
+    so command is p[4], flags p[9], WordCount p[32], Setup[0] at 33+28+2."""
+    i = load.find(b'\xffSMB')
+    if i < 0:
+        return None
+    p = load[i:]
+    if len(p) <= 32 or p[4] != _SMB1_CMD_TRANS2 or (p[9] & 0x80) or p[32] < 15:
+        return None
+    setup_off = 33 + 28 + 2
+    if len(p) < setup_off + 2:
+        return None
+    return int.from_bytes(p[setup_off:setup_off + 2], 'little')
+
+
+def _smb_marshalled_target(name):
+    """CVE-2025-33073: True if `name` carries a marshalled CREDENTIAL_TARGET_INFORMATION
+    blob (the reflective-relay target primitive). Case-insensitive: magic '1UWhRC', a
+    run ending in 'BAAAA', blob length >= 20."""
+    if not name:
+        return False
+    hay = name.upper()
+    idx = hay.find(_SMB_MARSHALLED_MAGIC.upper())
+    if idx < 0:
+        return False
+    blob = hay[idx + len(_SMB_MARSHALLED_MAGIC):].split('.', 1)[0]
+    return len(blob) >= 20 and blob.endswith(_SMB_MARSHALLED_TAIL.upper())
 
 
 def _smb_find_magic(raw):
@@ -11105,13 +11524,32 @@ def _smb_parse_packets(packets):
                 except Exception:
                     load = b''
                 found = _smb_find_magic(load) if load else None
-                if found:
-                    ver, cmd, resp = found
+                # \xfcSMB compression-transform frames carry no \xfeSMB/\xffSMB magic, so
+                # _smb_find_magic drops them — surface them here for the SMBGhost exploit
+                # check (CVE-2020-0796).
+                comp = _smb2_compression_transform(load) if load else None
+                if found or comp:
+                    if found:
+                        ver, cmd, resp = found
+                    else:
+                        ver, cmd, resp = 'v2', None, None
                     from_server = t.sport in _SMB_SERVER_PORTS
                     server = src if from_server else dst
                     ev = {'server': server, 'client': dst if from_server else src,
                           'version': ver, 'command': cmd, 'response': resp,
                           'from_server': from_server}
+                    if comp:
+                        ev['compression_transform'] = comp
+                    # SMBGhost exposure (CVE-2020-0796): an SMB2 3.1.1 negotiate response
+                    # advertising a compression-capabilities context.
+                    if found and ver == 'v2' \
+                            and _SMB2_NEG_CTX_COMPRESSION in _smb2_negotiate_contexts(load):
+                        ev['smbghost_ctx'] = True
+                    # EternalBlue (CVE-2017-0144): an SMBv1 TRANS2 SESSION_SETUP request.
+                    if found and ver == 'v1' and cmd == _SMB1_CMD_TRANS2 and not resp:
+                        sc = _smb1_trans2_subcommand(load)
+                        if sc is not None:
+                            ev['trans2_setup'] = sc
                     # v2 (N2/N3): pull the NTLMSSP fields out of a SESSION_SETUP so the
                     # analyzer can flag a static Responder challenge / a relayed
                     # workstation. ip_src/ip_dst disambiguate the connecting host.
@@ -11285,8 +11723,10 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
         known_mdns = set(baseline['mdns_responders'])
         known_v1 = set(baseline['smbv1_hosts'])
 
-    PRIORITY = ['responder-challenge', 'poisoning', 'smbv1-active', 'spoof-conflict',
-                'ntlm-workstation-mismatch', 'smbv1-offered', 'name-exposure', 'clean']
+    PRIORITY = ['smbghost-exploit', 'smb-reflection', 'responder-challenge',
+                'eternalblue-probe', 'poisoning', 'smbghost-exposure', 'smbv1-active',
+                'spoof-conflict', 'ntlm-workstation-mismatch', 'smbv1-offered',
+                'name-exposure', 'clean']
     verdict = 'clean'
     reasons = []
     ntlm_findings = []
@@ -11331,13 +11771,64 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
             bump('smbv1-active')
             reasons.append(
                 f"SMBv1 in ACTIVE use by {ip}{tag} — SMBv1 is deprecated and the "
-                f"EternalBlue/WannaCry (MS17-010) vector. Disable it "
+                f"EternalBlue/WannaCry (MS17-010 / CVE-2017-0144) vector. Disable it "
                 f"(Set-SmbServerConfiguration -EnableSMB1Protocol $false) and patch")
         elif s['offered']:
             bump('smbv1-offered')
             reasons.append(
                 f"SMBv1 offered by {ip}{tag} in dialect negotiation (may still upgrade "
                 f"to SMB2/3) — disable SMBv1 to remove the downgrade/fallback path")
+
+    # ---- v3 named-CVE tells: SMBGhost, EternalBlue primitive, reflective relay ----
+    seen_reflect, seen_ghost_x, seen_ghost_e, seen_eb = set(), set(), set(), set()
+    for e in smb_events:
+        srv = e.get('server')
+        # CVE-2025-33073: an SMB session whose client == server is the reflective-relay
+        # loopback — the attacker relays the victim's coerced auth back to itself.
+        if srv and srv == e.get('client') and srv not in seen_reflect:
+            seen_reflect.add(srv)
+            bump('smb-reflection')
+            reasons.append(
+                f"REFLECTION: SMB session on {srv} where client and server are the same "
+                f"host — the CVE-2025-33073 reflective-relay loopback. Patch and enforce "
+                f"SMB signing + channel binding (EPA)")
+        # CVE-2020-0796 (SMBGhost) exploit: a compression-transform header whose
+        # decompressed-size + offset overflow 32 bits.
+        ct = e.get('compression_transform')
+        if ct and srv not in seen_ghost_x and (ct[0] + ct[3]) > _SMB2_U32_MAX:
+            seen_ghost_x.add(srv)
+            bump('smbghost-exploit')
+            reasons.append(
+                f"SMBGhost EXPLOIT: {srv} sent an SMB3.1.1 compression-transform header "
+                f"whose decompressed size + offset overflow 32 bits (CVE-2020-0796) — the "
+                f"integer-overflow exploit primitive. Patch immediately (KB4551762)")
+        # CVE-2020-0796 exposure: an SMB3.1.1 negotiate advertising compression.
+        if e.get('smbghost_ctx') and srv not in seen_ghost_e:
+            seen_ghost_e.add(srv)
+            bump('smbghost-exposure')
+            reasons.append(
+                f"SMBGhost EXPOSURE: {srv} negotiated SMB 3.1.1 with the compression "
+                f"capability (CVE-2020-0796) — vulnerable if unpatched (Windows 10 / "
+                f"Server 1903/1909). Set DisableCompression=1 or patch")
+        # CVE-2017-0144 (EternalBlue) primitive: an SMBv1 TRANS2 SESSION_SETUP.
+        if e.get('trans2_setup') == _SMB1_TRANS2_SESSION_SETUP and srv not in seen_eb:
+            seen_eb.add(srv)
+            bump('eternalblue-probe')
+            reasons.append(
+                f"ETERNALBLUE probe: {srv} received an SMBv1 TRANS2 SESSION_SETUP "
+                f"(CVE-2017-0144 / MS17-010) — the EternalBlue exploit primitive. Disable "
+                f"SMBv1 and patch MS17-010")
+
+    # CVE-2025-33073: a marshalled CREDENTIAL_TARGET_INFORMATION blob in a resolved name
+    # (the reflective-relay target primitive, e.g. a poisoned LLMNR/NBT-NS answer).
+    for name in sorted(name_answers):
+        if _smb_marshalled_target(name):
+            bump('smb-reflection')
+            reasons.append(
+                f"REFLECTION target: name '{name}' carries a marshalled "
+                f"CREDENTIAL_TARGET_INFORMATION blob (CVE-2025-33073 reflective-relay "
+                f"primitive). Patch and enforce SMB signing + channel binding (EPA)")
+            break
 
     # ---- v2 (N2/N3): NTLM relay-in-progress tells from SESSION_SETUP ----
     # Reverse of the passive name map: which names resolved to a given IP. Built from
@@ -11530,6 +12021,35 @@ _KRB_APP_TAGS = {0x6a: 'as-req', 0x6b: 'as-rep', 0x6c: 'tgs-req', 0x6d: 'tgs-rep
                  0x7e: 'krb-error'}
 
 
+def _krb_etype_info2(edata_ctx_content):
+    """Etypes advertised in a KRB-ERROR PA-ETYPE-INFO2 (padata-type 19), read from the
+    e-data [12] field. [] if absent/unparsable. A KDC advertising RC4-MD4 (etype -128)
+    here is the CVE-2022-33679 downgrade-injection tell. Uses the same tolerant walker,
+    so a snaplen-truncated tail just yields fewer entries."""
+    kids = _der_children(edata_ctx_content)
+    if not kids:
+        return []
+    octet = kids[0][1] if kids[0][0] == 0x04 else edata_ctx_content   # OCTET STRING
+    etypes = []
+    for t, pd in _der_unwrap(octet):                     # each PA-DATA SEQUENCE
+        if t != 0x30:
+            continue
+        ch = _der_children(pd)
+        pt = _der_child(ch, 0xa1)                        # [1] padata-type
+        pv = _der_child(ch, 0xa2)                        # [2] padata-value (OCTET STRING)
+        if pt is None or pv is None or _der_first_int(pt) != _KRB_PA_ETYPE_INFO2:
+            continue
+        inner = _der_children(pv)
+        seq = inner[0][1] if inner and inner[0][0] == 0x04 else pv
+        for et_, entry in _der_unwrap(seq):              # SEQUENCE OF ETYPE-INFO2-ENTRY
+            if et_ != 0x30:
+                continue
+            e0 = _der_child(_der_children(entry), 0xa0)  # [0] etype
+            if e0 is not None:
+                etypes.append(_der_first_int(e0))
+    return etypes
+
+
 def _krb_parse_message(raw):
     """Parse one Kerberos message payload into a dict, or None if it isn't one. Over TCP
     the payload is preceded by a 4-byte length; over UDP it starts at the app tag."""
@@ -11590,6 +12110,9 @@ def _krb_parse_message(raw):
             ev['error_code'] = _der_first_int(ec)
         cn = _der_child(kids, 0xa8)                      # [8] cname
         ev['cname'] = _krb_princ(cn) if cn else []
+        ed = _der_child(kids, 0xac)                      # [12] e-data (PA-ETYPE-INFO2)
+        if ed is not None:
+            ev['etype_info2'] = _krb_etype_info2(ed)
     return ev
 
 
@@ -11628,10 +12151,11 @@ def _krb_analyze(krb_events, baseline, learn=True):
     """Pure classifier over parsed Kerberos events (separated from capture for the
     self-test). Flags downgrade / kerberoast / AS-REP roast. May learn known KDC IPs +
     realms into `baseline`, but never suppresses an attack verdict with them."""
-    PRIORITY = ['kerberoast', 'asrep-roast', 'krb-recon', 'krb-downgrade',
+    PRIORITY = ['krb-rc4md4', 'kerberoast', 'asrep-roast', 'krb-recon', 'krb-downgrade',
                 'krb-exposure', 'clean']
     verdict = 'clean'
     reasons, findings = [], []
+    reflection_names = []
 
     def bump(v):
         nonlocal verdict
@@ -11659,6 +12183,33 @@ def _krb_analyze(krb_events, baseline, learn=True):
         # A request offering only weak etypes (no AES at all) is an AES-stripped
         # downgrade — client-side AES disabled or an on-path etype strip.
         only_weak = bool(et) and not has_aes and all(x in _KRB_WEAK for x in et)
+
+        # CVE-2022-33679 / CVE-2022-33647: RC4-MD4 (etype -128) is obsolete and broken;
+        # a modern stack never offers or grants it, so any appearance — offered in a
+        # request, granted in a reply enc-part, or advertised by the KDC in a KRB-ERROR
+        # PA-ETYPE-INFO2 — is the RC4-MD4 downgrade-injection signature.
+        e_info2 = e.get('etype_info2') or []
+        if (_KRB_ETYPE_RC4_MD4 in et or e.get('rep_etype') == _KRB_ETYPE_RC4_MD4
+                or _KRB_ETYPE_RC4_MD4 in e_info2):
+            bump('krb-rc4md4')
+            if _KRB_ETYPE_RC4_MD4 in et:
+                where = f"offered in {e['kind']}"
+            elif e.get('rep_etype') == _KRB_ETYPE_RC4_MD4:
+                where = "granted in a reply enc-part"
+            else:
+                where = "advertised by the KDC in PA-ETYPE-INFO2 (downgrade injection)"
+            findings.append({'type': 'rc4-md4', 'principal': cname or sname or None,
+                             'etypes': ['rc4-md4']})
+            reasons.append(
+                f"Kerberos RC4-MD4 (etype -128) {where} for '{cname or sname or '?'}' — "
+                f"an obsolete, trivially-broken cipher; its presence is the "
+                f"CVE-2022-33679/CVE-2022-33647 downgrade-injection signature. Enforce "
+                f"AES-only on accounts + DCs and patch the KDC")
+
+        # CVE-2025-33073: a marshalled CREDENTIAL_TARGET_INFORMATION blob inside a
+        # service principal name (the reflective-relay target primitive over Kerberos).
+        if sname and _smb_marshalled_target(sname):
+            reflection_names.append(sname)
 
         if e['kind'] == 'as-req':
             preauth = _KRB_PA_ENC_TIMESTAMP in e['padata']
@@ -11805,6 +12356,7 @@ def _krb_analyze(krb_events, baseline, learn=True):
         'reasons': reasons,
         'learned': learned,
         'advisories': advisories,
+        'reflection_names': sorted(set(reflection_names)),
         'kerberos': {
             'verdict': verdict,
             'kdcs': [{'ip': ip, 'known': ip in known_kdcs} for ip in sorted(kdcs)],
@@ -11822,8 +12374,9 @@ def _krb_analyze(krb_events, baseline, learn=True):
 _SMB_SEVERITY = {
     'clean': 0, 'name-exposure': 2, 'smbv1-offered': 3, 'krb-exposure': 3,
     'ntlm-workstation-mismatch': 3, 'krb-downgrade': 4, 'spoof-conflict': 5,
-    'smbv1-active': 6, 'poisoning': 7, 'asrep-roast': 7, 'krb-recon': 7,
-    'kerberoast': 8, 'responder-challenge': 9,
+    'smbv1-active': 6, 'smbghost-exposure': 7, 'poisoning': 7, 'asrep-roast': 7,
+    'krb-recon': 7, 'eternalblue-probe': 8, 'kerberoast': 8, 'krb-rc4md4': 9,
+    'responder-challenge': 9, 'smb-reflection': 10, 'smbghost-exploit': 10,
 }
 
 
@@ -11863,10 +12416,11 @@ def _smb_capture(interface, seconds):
 
 # Combined verdicts that are HIGH/CRITICAL enough to page + fold into Watchtower.
 _SMB_WT_SEV = {
-    'responder-challenge': 'critical',
+    'responder-challenge': 'critical', 'smbghost-exploit': 'critical',
+    'smb-reflection': 'critical', 'krb-rc4md4': 'critical',
     'poisoning': 'high', 'smbv1-active': 'high', 'spoof-conflict': 'high',
     'kerberoast': 'high', 'asrep-roast': 'high', 'krb-downgrade': 'high',
-    'krb-recon': 'high',
+    'krb-recon': 'high', 'smbghost-exposure': 'high', 'eternalblue-probe': 'high',
 }
 
 
@@ -11960,6 +12514,22 @@ def do_smb_watch(interface=None, seconds=20, learn=True):
                 base = []
             result['reasons'] = base + krb['reasons']
         result['advisories'] = (result.get('advisories') or []) + krb['advisories']
+
+        # A marshalled reflective-relay target seen in a Kerberos SPN (CVE-2025-33073)
+        # rides the same smb-reflection verdict as the SMB-side loopback/name tells.
+        refl = krb.get('reflection_names') or []
+        if refl:
+            base = result['reasons']
+            if base == ['No SMB or LLMNR/NBT-NS/mDNS traffic seen on this segment'] or \
+               base == ['No SMBv1 and no name-resolution poisoning detected '
+                        '(SMB2/3 + legit mDNS only)']:
+                base = []
+            for spn in refl:
+                result['verdict'] = _smb_worse_verdict(result['verdict'], 'smb-reflection')
+                base = base + [f"REFLECTION target: Kerberos SPN '{spn}' carries a "
+                               f"marshalled CREDENTIAL_TARGET_INFORMATION blob "
+                               f"(CVE-2025-33073 reflective-relay primitive)"]
+            result['reasons'] = base
 
         if result['verdict'] != 'clean':
             b = _smb_watch_load()
@@ -12055,6 +12625,47 @@ def _smb_selftest():
         return (Ether() / IP(src=src, dst='10.0.0.9')
                 / TCP(sport=50000, dport=445, flags='PA') / Raw(body))
 
+    def smb2_neg_ghost(server='10.0.0.5'):
+        # SMB2 NEGOTIATE response (dialect 0x0311) advertising a compression context.
+        hdr = bytearray(64)
+        hdr[0:4] = b'\xfeSMB'
+        struct.pack_into('<H', hdr, 12, 0)              # Command = NEGOTIATE
+        struct.pack_into('<I', hdr, 16, 0x01)           # Flags = SERVER_TO_REDIR (response)
+        body = bytearray(64)
+        struct.pack_into('<H', body, 4, 0x0311)         # DialectRevision  (header+68)
+        struct.pack_into('<H', body, 6, 1)              # NegotiateContextCount (header+70)
+        struct.pack_into('<I', body, 60, 128)           # NegotiateContextOffset (header+124)
+        raw = (bytes(hdr) + bytes(body)).ljust(128, b'\x00')
+        raw += struct.pack('<HHI', _SMB2_NEG_CTX_COMPRESSION, 4, 0) + b'\x00\x00\x00\x00'
+        nb = b'\x00\x00' + struct.pack('>H', len(raw))
+        return (Ether() / IP(src=server, dst='10.0.0.9')
+                / TCP(sport=445, dport=50000, flags='PA') / Raw(nb + raw))
+
+    def smb2_comp_exploit(server='10.0.0.5', orig=0xFFFFFF00, off=0x200):
+        # SMB2 COMPRESSION_TRANSFORM_HEADER; orig+off overflows 32 bits by default.
+        p = (b'\xfcSMB' + struct.pack('<I', orig) + struct.pack('<H', 1)
+             + struct.pack('<H', 0) + struct.pack('<I', off))
+        nb = b'\x00\x00' + struct.pack('>H', len(p))
+        return (Ether() / IP(src=server, dst='10.0.0.9')
+                / TCP(sport=445, dport=50000, flags='PA') / Raw(nb + p))
+
+    def smb1_trans2(server='10.0.0.5', setup=_SMB1_TRANS2_SESSION_SETUP):
+        p = bytearray(80)
+        p[0:4] = b'\xffSMB'
+        p[4] = _SMB1_CMD_TRANS2
+        p[9] = 0x00                                     # request (no 0x80 response bit)
+        p[32] = 15                                      # WordCount >= 15
+        struct.pack_into('<H', p, 33 + 28 + 2, setup)   # Setup[0]
+        nb = b'\x00\x00\x00' + bytes([len(p)])
+        return (Ether() / IP(src='10.0.0.9', dst=server)
+                / TCP(sport=50000, dport=445, flags='PA') / Raw(nb + bytes(p)))
+
+    def smb2_reflection(host='10.0.0.7'):
+        # An SMB2 session whose client IP == server IP (reflective-relay loopback).
+        return (Ether() / IP(src=host, dst=host)
+                / TCP(sport=445, dport=50000, flags='PA')
+                / Raw(b'\x00\x00\x00\x20\xfeSMB' + b'\x00' * 20))
+
     def run(name, pkts, baseline, expect):
         with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tf:
             path = tf.name
@@ -12112,6 +12723,25 @@ def _smb_selftest():
         [mdns_self('10.0.0.51', 'ws51.local'),
          ntlm_type3('10.0.0.51', 'CORP', 'victim', 'WS51')],
         base, 'clean')
+
+    # v3 CVE tells (byte-level, parsed end-to-end through _smb_parse_packets):
+    # SMBGhost exploit (CVE-2020-0796) — overflowing compression-transform header.
+    run('smbghost-exploit', [smb2_comp_exploit()], base, 'smbghost-exploit')
+    # SMBGhost negative — sizes summing to exactly 0xFFFFFFFF must not fire.
+    run('smbghost-exploit-no-overflow',
+        [smb2_comp_exploit(orig=0xFFFFFFFF, off=0)], base, 'clean')
+    # SMBGhost exposure — SMB3.1.1 negotiate advertising the compression context.
+    run('smbghost-exposure', [smb2_neg_ghost()], base, 'smbghost-exposure')
+    # EternalBlue (CVE-2017-0144) — SMBv1 TRANS2 SESSION_SETUP primitive.
+    run('eternalblue-probe', [smb1_trans2()], base, 'eternalblue-probe')
+    # EternalBlue negative — an ordinary TRANS2 subcommand is just SMBv1 use.
+    run('eternalblue-negative', [smb1_trans2(setup=0x0001)], base, 'smbv1-active')
+    # Reflective relay (CVE-2025-33073) — an SMB session whose client == server.
+    run('smb-reflection-loopback', [smb2_reflection()], base, 'smb-reflection')
+    # Reflective relay — a resolved name carrying a marshalled target blob.
+    run('smb-reflection-marshalled',
+        [mdns_self('10.0.0.30', 'host1UWhRC' + 'A' * 17 + 'BAAAA')], base,
+        'smb-reflection')
 
     # 8. parse: fields land correctly.
     with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tf:
@@ -12189,6 +12819,15 @@ def _smb_selftest():
         inner = _ctx(6, _int(code)) + _ctx(8, _princ([cname]))
         return _tlv(0x7e, _tlv(0x30, inner))
 
+    def krb_error_ei2(code=25, etype=_KRB_ETYPE_RC4_MD4, cname='alice'):
+        # KRB-ERROR whose e-data [12] carries PA-ETYPE-INFO2 (type 19) advertising `etype`.
+        entry = _tlv(0x30, _ctx(0, _int(etype)))
+        ei2 = _tlv(0x30, entry)                                  # SEQUENCE OF entry
+        padata = _tlv(0x30, _ctx(1, _int(_KRB_PA_ETYPE_INFO2)) + _ctx(2, _tlv(0x04, ei2)))
+        edata = _tlv(0x04, _tlv(0x30, padata))                   # OCTET STRING(SEQ OF PA-DATA)
+        inner = _ctx(6, _int(code)) + _ctx(8, _princ([cname])) + _ctx(12, edata)
+        return _tlv(0x7e, _tlv(0x30, inner))
+
     def krun(name, raws, expect):
         evs = [e for e in (_krb_parse_message(r) for r in raws) if e]
         for e in evs:                                    # attach a KDC for realism
@@ -12217,6 +12856,25 @@ def _smb_selftest():
     # v2 K2: an AS-REQ that still offers RC4 alongside AES (pre-auth present) -> exposure.
     krun('krb-rc4-offer', [as_req(['carol'], ['krbtgt', 'CORP'], 'CORP', [23, 18], [2])],
          'krb-exposure')
+
+    # v3 CVE-2022-33679/33647: RC4-MD4 (etype -128) offered, granted, or KDC-advertised.
+    krun('krb-rc4md4-offer',
+         [as_req(['dave'], ['krbtgt', 'CORP'], 'CORP', [_KRB_ETYPE_RC4_MD4], [2])],
+         'krb-rc4md4')
+    krun('krb-rc4md4-grant', [as_rep(['dave'], 'CORP', _KRB_ETYPE_RC4_MD4)], 'krb-rc4md4')
+    krun('krb-rc4md4-etype-info2', [krb_error_ei2(25, _KRB_ETYPE_RC4_MD4)], 'krb-rc4md4')
+    # negative: a normal PREAUTH_REQUIRED advertising only AES must stay clean.
+    krun('krb-etype-info2-aes', [krb_error_ei2(25, 18)], 'clean')
+
+    # v3 CVE-2025-33073: a marshalled target blob in a Kerberos SPN is surfaced for the
+    # reflection fold (do_smb_watch escalates it to smb-reflection).
+    _refl = _krb_analyze(
+        [e for e in [_krb_parse_message(
+            tgs_req(['HTTP', 'x1UWhRC' + 'A' * 17 + 'BAAAA'], 'CORP', [18]))] if e],
+        {}, learn=False)
+    scenarios.append({'name': 'krb-reflection-spn', 'expect': 'marshalled SPN captured',
+                      'got': _refl.get('reflection_names'),
+                      'pass': bool(_refl.get('reflection_names'))})
 
     # v2 K7: a burst of KDC errors toward one requester == user-enum / spray recon.
     def k7run(name, code, n, expect):
