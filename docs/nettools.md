@@ -1296,6 +1296,22 @@ wire. One short `tcpdump` window over the TLS ports (443/8443/993/995/465/990/
   is *deliberately not* detected — the crafted ASN.1 that triggers it reaches the decoder
   in no field a passive tap can read; the decision is recorded in-code so the absence is
   reviewable.
+- **Heartbleed / `CVE-2014-0160` *(new in v7)*** — **`cve_2014_0160_heartbleed`** (high,
+  *attack-shape*): a **cleartext TLS heartbeat request** (record content type 24) whose
+  declared `payload_length` is larger than the record that carries it — `3 + payload_length
+  + 16 > record_length` — the buffer over-read shape. Observable because the reference
+  exploit sends the malformed heartbeat right after the ClientHello, **before** the
+  handshake completes, so the heartbeat record is still cleartext and its length field is
+  readable; a heartbeat after the encrypted boundary is invisible (an explicit blind spot).
+  It reports that an over-read was *attempted*, not that the peer is a vulnerable OpenSSL.
+  7.5 HIGH (NVD, CISA KEV).
+- **Oversized DH prime / `CVE-2018-0732` *(new in v7)*** — **`cve_2018_0732_oversized_dh_prime`**
+  (warn, *exposure*): a **ServerKeyExchange** for a finite-field DHE suite carrying a DH prime
+  above the **10000-bit** ceiling OpenSSL's own fix enforces, so a client doing the modexp
+  burns CPU — the mirror image of D(HE)at (server-attacks-client). The prime size is measured
+  directly from the cleartext SKE (TLS 1.2 DHE only; TLS 1.3/QUIC have no ServerKeyExchange),
+  which also recovers the real group size for the D(HE)at accounting. NVD 7.5 HIGH; OpenSSL
+  rates it Low (*disputed*).
 - **Certificate posture (TLS 1.2 over TCP only)** — subject/issuer, SANs, validity
   window, self-issued flag, signature hash, and findings: `cert_expired`,
   `cert_not_yet_valid`, `cert_self_signed`, `cert_short_chain`, `cert_weak_sig`,
