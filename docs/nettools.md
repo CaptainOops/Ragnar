@@ -777,15 +777,26 @@ per-packet Unix timestamp via `-tt`) is parsed and classified:
   passive analogue of the active anti-spoof echo check, with no probe sent.
 - **Rogue server** — an NTP server answering on the segment that **isn't in the
   learned baseline**. Clients may silently prefer it.
-- **Kiss-o'-Death** — a **stratum-0** reply (RFC 5905 KoD, e.g. `RATE` / `DENY`). A
-  rogue uses KoD to make clients **back off legitimate time sources** — a time-sync
-  DoS that softens them up for a rogue server.
+- **Kiss-o'-Death** — a **stratum-0** reply (RFC 5905 KoD, e.g. `RATE` / `DENY` /
+  `RSTR`). A rogue uses KoD to make clients **back off legitimate time sources** — a
+  time-sync DoS (**CVE-2015-7704 / CVE-2015-7705**). A genuine KoD is a *response* and
+  must echo the client's transmit nonce, so a KoD with a **zero origin timestamp** (or
+  from a source that never served normal time) is flagged as **likely-spoofed**
+  off-path DoS *(new in v6)*.
 - **Stratum spoof** — a source claiming **Stratum 1** (primary / GPS reference) it
   shouldn't, or a known server **lowering its stratum** to win client preference.
 - **Broadcast** — a **mode-Broadcast** time source: hosts in broadcast client mode
   accept it blindly, a classic injection vector on modern unicast networks.
-- **Recon** — NTP **mode 6/7** (`ntpq` control / `monlist`) traffic: reconnaissance
-  or amplification abuse.
+- **Recon** — NTP **mode 6** (`ntpq` control) is status enumeration / recon; **mode 7**
+  (`ntpdc` private / **monlist**) is the **CVE-2013-5211** amplification vector — one
+  small monlist query returns up to 600 recent clients, the reflection primitive behind
+  the 2013-14 NTP DDoS wave. The two modes are named separately *(new in v6)*.
+- **Loopback-source ACL bypass *(new in v6)*** — an NTP packet with a **loopback source
+  address** (`127.0.0.0/8`) on the segment. Loopback never crosses a wire, so this is
+  spoofed to look local and **bypass `ntpd` `restrict`/ACL rules** to reach mode 6/7
+  (**CVE-2014-9298 / CVE-2014-9751**) — a zero-false-positive `auth-bypass` by
+  construction. (The IPv6 `::1` form is deferred with the rest of IPv6 NTP; the in-app
+  parser is IPv4-only.)
 - **Anomaly** — an implausible **root dispersion**, a **leap-alarm** (unsynchronized)
   source, a **reference-ID loop** (refid equals the source's own address), a server
   reporting **Stratum 16** (unsynchronized) or a **reserved stratum > 16** (malformed),
@@ -817,11 +828,18 @@ per-packet Unix timestamp via `-tt`) is parsed and classified:
   unambiguous.
 - **Zero origin timestamp *(new in v4)*** — a **mode-4 server reply** whose **origin
   timestamp is all-zero** echoes no request the client actually sent — an **off-path
-  spoofed response** or origin-check bypass (**CVE-2016-7431** / **CVE-2015-8138**),
-  surfaced as **`time-injection`**. It is distinct from the transmit-offset check (a bad
-  time *value*) and the on-path nonce collision (a *non-zero* nonce reused). Gated to
-  server replies: mode 3 (client), mode 5 (broadcast) and the first packet of a
-  symmetric exchange legitimately carry a zero origin, so those never false-positive.
+  spoofed response** or origin-check bypass (**CVE-2016-7431** / **CVE-2015-8138** /
+  **CVE-2020-11868**, the last reaching the same signature by blocking sync in
+  `ntpd` < 4.2.8p14), surfaced as **`time-injection`**. It is distinct from the
+  transmit-offset check (a bad time *value*) and the on-path nonce collision (a
+  *non-zero* nonce reused). Gated to server replies: mode 3 (client), mode 5 (broadcast)
+  and the first packet of a symmetric exchange legitimately carry a zero origin, so
+  those never false-positive.
+
+> **Deferred (in-app):** the oversized mode-6/7 control datagram (**CVE-2016-9312**) is
+> *not* flagged in-app — the passive capture uses a small snaplen and does not reassemble
+> fragments, and a >1500-byte datagram collides with the extension-field heuristic. The
+> standalone NTP Watch daemon (RN18) catches an oversize datagram delivered intact.
 
 The **first scan learns** the trusted time source(s) + their stratum into
 `data/ntp_watch.json`; after a legitimate NTP change, click **Trust current** to
@@ -880,6 +898,22 @@ every v6 agent). What it flags:
   reflection / amplification DDoS vector (a small request eliciting a huge response).
 - **Enumeration** — one host issuing many `GetNext` / `GetBulk` requests: walking the
   MIB (SNMP reconnaissance).
+- **Exploit — raw-BER CVE signatures *(new in v4)*** — the tcpdump text decode cannot see
+  the byte-level fields these CVEs key on, so a **second, concurrent full-snaplen capture**
+  is decoded by a vendored dependency-free **BER parser** (`python/snmp_cve.py`) and run
+  through four detectors. Any hit escalates to a **critical `exploit`** verdict:
+  - **SNMPv3 USM HMAC truncation / absence** (**CVE-2008-0960**) — `authFlag` set but
+    `msgAuthenticationParameters` is **empty or < 12 bytes**, the auth-bypass on the wire
+    (a vulnerable agent verifies only the bytes supplied). Engine-discovery messages carry
+    `authFlag` clear and are never flagged.
+  - **Cisco IOS/IOS XE SNMP RCE** (**CVE-2017-6736..6744**, CISA KEV) — a varbind OID under
+    a Cisco-named vulnerable MIB (ALPS-MIB, transmission.94, …); an **absurd sub-identifier
+    count** (> 25 arcs, how the public PoC smuggles shellcode) is the *attempt* tier,
+    touching the MIB at all is the *exposure* tier.
+  - **net-snmp snmptrapd overflow** (**CVE-2025-68615**) — an **oversized field** (> 512 B
+    community / `msgUserName` / octet-string varbind) in a trap to **UDP/162**.
+  - **net-snmp VACM malformed-OID** (**CVE-2022-24805/24807/24809/24810**) — a `Set` /
+    `GetNext` OID that names a VACM table column then supplies a **truncated INDEX**.
 - **Clean** — only **SNMPv3** (authenticated/encrypted), or no SNMP at all.
 
 The parser reads tcpdump's SNMP decode, including its convention of **omitting
@@ -1167,7 +1201,19 @@ dual-stack segment is normal and never reads as "two queriers":
   224.0.0.0/4 for IGMP or ff00::/8 for MLD), a **membership report for a reserved group**
   (224.0.0.1 all-hosts / .2 all-routers, or `ff02::1` all-nodes / `ff02::2` all-routers —
   never joined), and a **join/leave flap** (a host toggling a group, thrashing the
-  snooping table). A per-source **leave flood** is flagged as a storm.
+  snooping table). A per-source **leave flood** is flagged as a storm. It also folds in
+  three **malformed-control CVE signatures** *(new in v4)* — pure structural predicates,
+  both address families (IGMP and MLD):
+  - **Fragmented membership** (**CVE-2019-5608**) — IGMP/MLD is fixed-footprint link-local
+    control and must never be fragmented; an MF flag / non-zero fragment offset (IPv4) or an
+    IPv6 Fragment header (MLD) is the fragment-reassembly overflow signature.
+  - **Invalid group-record type** (**CVE-2025-50681**) — an IGMPv3/MLDv2 report record whose
+    type is outside `IS_IN/IS_EX/TO_IN/TO_EX/ALLOW/BLOCK` (1-6); tcpdump renders it as
+    `[v3-report-#N]`.
+  - **Query source-count overrun** (**CVE-2026-53275**) — an IGMPv3/MLDv2 query whose
+    declared source count overruns the datagram (tcpdump's `[invalid number of sources]`;
+    the MLD leg bounds the check by the IPv6 payload-length so a snaplen-truncated large
+    query never false-positives).
 - **Reconnaissance** — one host joining a wide spread of **distinct groups** —
   multicast stream enumeration.
 - **Unauthorized join** — a host on an **admin-scoped** (239/8), **globally-scoped**
@@ -1192,9 +1238,10 @@ python3 network_diagnostics.py igmp-selftest     # self-test the detectors, no r
 `igmp-selftest` drives the real parser + classifier with synthetic captures
 (clean / storm / rogue-querier / recon / unauthorized / spoofed-querier /
 bad-TTL / non-multicast / reserved-group / join-leave-flap / leave-storm / v3
-group-record parse), and — when [Scapy](https://scapy.net) is installed —
-additionally crafts real IGMP packets into a pcap and parses them back through
-`tcpdump`, exercising the capture→parse path end to end.
+group-record parse / the three CVE structural detections on both IGMP and MLD),
+and — when [Scapy](https://scapy.net) is installed — additionally crafts real IGMP
+packets into a pcap and parses them back through `tcpdump`, exercising the
+capture→parse path end to end.
 
 For a **standalone deep monitor** — a pure-Python binary IGMP decoder with the
 full control-plane detector matrix (flood / anomaly / recon / policy), a

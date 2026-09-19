@@ -199,7 +199,7 @@ Ragnar is built on the shoulders of great work by others:
 | [RuView](https://github.com/ruvnet/ruview) | ruvnet | WiFi-CSI sensing engine and ESP32 CSI-node firmware behind [RuSense](docs/rusense.md) — camera-free presence, motion, people-count, pose and vital-sign sensing. Ragnar vendors bins from the [PierreGode/RuView](https://github.com/PierreGode/RuView) fork |
 | Networking and more | [Solarflere](https://www.instagram.com/solarflere) | Co-author of the [Authority Verification](docs/nettools.md) suite (Diagnostics, Switch & L2/L3, Interfaces) |
 
-> **[CREDITS.md](docs/CREDITS.md)** — Solarflere identified and curated the **~145-CVE** corpus behind Ragnar's passive detection suite (CVE-2002-1623 → CVE-2026-7668). See the full writeup and numbers there.
+> **[CREDITS.md](docs/CREDITS.md)** — Solarflere identified and curated the **~159-CVE** corpus behind Ragnar's passive detection suite (CVE-2002-1623 → CVE-2026-7668). See the full writeup and numbers there.
 
 ---
 

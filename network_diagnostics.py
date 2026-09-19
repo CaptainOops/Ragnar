@@ -4776,16 +4776,32 @@ def _parse_igmp_capture(output):
     ttl_re = re.compile(r'\bttl\s+(\d+)', re.I)
     # v3 record modes that mean "leaving / no interest" vs joining.
     leave_modes = ('to_in', 'is_in', 'block')
+    frag_re = re.compile(r'\boffset\s+(\d+)')
     pending_ttl = None
+    pending_frag = False
     for raw in output.splitlines():
         line = raw.strip()
         low = line.lower()
-        # IP-header line for an IGMP datagram: grab the TTL for the next event.
+        # IP-header line for an IGMP datagram: grab the TTL + fragmentation for the
+        # next event. CVE-2019-5608: IGMP is fixed-footprint link-local control and
+        # must never be fragmented, so an MF flag (flags [+]) or a non-zero fragment
+        # offset is off-spec (the FreeBSD fragment-reassembly overflow signature).
         if 'proto igmp' in low and 'ttl' in low and not src_re.search(line):
             tm = ttl_re.search(line)
             pending_ttl = int(tm.group(1)) if tm else None
+            om = frag_re.search(low)
+            pending_frag = ('flags [+]' in low) or bool(om and int(om.group(1)) > 0)
             continue
         if 'igmp' not in low:
+            # A non-first IGMP fragment prints as 'ip-proto-2' with no igmp payload
+            # line; still surface it as a fragment event so CVE-2019-5608 is caught.
+            if pending_frag:
+                sm = src_re.search(line)
+                if sm:
+                    events.append({'src': sm.group(1), 'group': None, 'kind': 'fragment',
+                                   'version': None, 'ttl': pending_ttl, 'fragmented': True})
+                pending_frag = False
+                pending_ttl = None
             continue
         sm = src_re.search(line)
         src = sm.group(1) if sm else None
@@ -4793,18 +4809,23 @@ def _parse_igmp_capture(output):
         vm = ver_re.search(line)
         version = int(vm.group(1)) if vm else 2
         ttl = pending_ttl
+        frag = pending_frag
         pending_ttl = None
+        pending_frag = False
         low = line.lower()
         if 'query' in low:
+            # CVE-2026-53275: an IGMPv3 query whose declared source count overruns the
+            # bytes on the wire — tcpdump prints the literal '[invalid number of sources]'.
             events.append({'src': src, 'group': None, 'kind': 'query',
-                           'version': version, 'ttl': ttl})
+                           'version': version, 'ttl': ttl, 'fragmented': frag,
+                           'source_overrun': 'invalid number of sources' in low})
             continue
         if 'leave' in low:
             # v2 leave-group: the left group is named after "leave" or is dst.
             lm = re.search(r'leave.*?' + _IGMP_IP_RE, low)
             grp = (lm.group(1) if lm else None) or (dst if dst != '224.0.0.2' else None)
             events.append({'src': src, 'group': grp, 'kind': 'leave',
-                           'version': version, 'ttl': ttl})
+                           'version': version, 'ttl': ttl, 'fragmented': frag})
             continue
         if 'report' in low:
             gaddrs = gaddr_re.findall(line)
@@ -4812,17 +4833,20 @@ def _parse_igmp_capture(output):
                 # v3 report — one event per group record.
                 for g in gaddrs:
                     # crude record-mode read near this gaddr; default to report.
-                    seg = low.split(g.lower(), 1)[-1][:24]
+                    seg = low.split(g.lower(), 1)[-1][:28]
                     kind = 'leave' if any(m in seg for m in leave_modes) and '{ }' in seg else 'report'
+                    # CVE-2025-50681: an out-of-range group-record type — tcpdump
+                    # renders it as '[v3-report-#N]' (valid types print is_in/is_ex/…).
                     events.append({'src': src, 'group': g, 'kind': kind,
-                                   'version': version, 'ttl': ttl})
+                                   'version': version, 'ttl': ttl, 'fragmented': frag,
+                                   'invalid_rtype': 'v3-report-#' in seg})
             else:
                 # v1/v2 report — the destination address IS the group.
                 grp = None
                 rm = re.search(r'report\s+' + _IGMP_IP_RE, low)
                 grp = rm.group(1) if rm else (dst if dst and dst not in _IGMP_WELL_KNOWN else dst)
                 events.append({'src': src, 'group': grp, 'kind': 'report',
-                               'version': version, 'ttl': ttl})
+                               'version': version, 'ttl': ttl, 'fragmented': frag})
     return events
 
 
@@ -4999,6 +5023,42 @@ def _igmp_analyze(events, seconds, baseline, learn=True):
                          f'{s} sent {n} IGMP leaves in {seconds}s — leave flood '
                          '(forces repeated group-specific queries; snooping DoS)'))
 
+    # (2c) CVE structural anomalies (IGMP Watch v4) — malformed IGMP/MLD control
+    # messages matching published memory-safety CVEs. These are pure structural
+    # predicates (no rate/window thresholds) and fold under 'anomaly' (crafted /
+    # malformed), so they need no new verdict. Both address families are covered:
+    # the IPv4 parser and the MLD (IPv6) decoder both tag events with these flags.
+    seen_cve = set()
+    for e in events:
+        s = e.get('src')
+        if not s:
+            continue
+        fam = e.get('family', 'ipv4')
+        proto = 'MLD' if fam == 'ipv6' else 'IGMP'
+        if e.get('fragmented') and (s, 'frag') not in seen_cve:
+            seen_cve.add((s, 'frag'))
+            categories.add('anomaly')
+            findings.append(('crit', 'anomaly',
+                             f'fragmented {proto} message from {s} — {proto} is fixed-'
+                             f'footprint link-local control (TTL/hop-limit 1) and must '
+                             f'never be fragmented; the fragment-reassembly overflow '
+                             f'signature (CVE-2019-5608)'))
+        g = e.get('group')
+        if e.get('invalid_rtype') and (s, 'rtype', g) not in seen_cve:
+            seen_cve.add((s, 'rtype', g))
+            categories.add('anomaly')
+            findings.append(('crit', 'anomaly',
+                             f'{proto}v3 report from {s}{" for " + g if g else ""} carries '
+                             f'an out-of-range group-record type (not IS_IN/IS_EX/TO_IN/'
+                             f'TO_EX/ALLOW/BLOCK) — malformed-record parsing (CVE-2025-50681)'))
+        if e.get('source_overrun') and (s, 'overrun') not in seen_cve:
+            seen_cve.add((s, 'overrun'))
+            categories.add('anomaly')
+            findings.append(('crit', 'anomaly',
+                             f'{proto}v3 query from {s} declares more sources than the '
+                             f'packet carries (source-count overrun) — out-of-bounds read '
+                             f'parsing the source list (CVE-2026-53275)'))
+
     # (3) reconnaissance — a source joining many distinct groups
     recon = sorted([(s, len(g)) for s, g in src_groups.items() if len(g) >= _IGMP_RECON_GROUPS],
                    key=lambda x: -x[1])
@@ -5112,17 +5172,32 @@ def _decode_mld_frames(frames):
             hop = ip6[7]
             src = _v6(ip6[8:24])
             p = 40
-            # walk extension headers (Hop-by-Hop / Routing / Dest-Opts) to ICMPv6
+            # walk extension headers (Hop-by-Hop / Routing / Dest-Opts / Fragment) to
+            # ICMPv6. A Fragment header (44) means the MLD datagram was fragmented —
+            # CVE-2019-5608: MLD is fixed-footprint link-local control and must never
+            # be fragmented (the fragment-reassembly overflow signature).
             hops = 0
-            while nxt in (0, 43, 60) and len(ip6) >= p + 2 and hops < 8:
-                ext_nxt = ip6[p]
-                ext_len = (ip6[p + 1] + 1) * 8
-                nxt = ext_nxt
-                p += ext_len
+            frag6 = False
+            while nxt in (0, 43, 60, 44) and len(ip6) >= p + 2 and hops < 8:
+                if nxt == 44:
+                    frag6 = True
+                    nxt = ip6[p]
+                    p += 8                       # the Fragment header is a fixed 8 octets
+                else:
+                    nxt = ip6[p]
+                    p += (ip6[p + 1] + 1) * 8
                 hops += 1
             if nxt != 58 or len(ip6) < p + 4:     # 58 = ICMPv6
                 continue
             icmp = ip6[p:]
+            # True on-wire ICMPv6 length from the IPv6 Payload Length field (ip6[4:6]),
+            # which survives snaplen truncation (the capture uses -s 256); the source-
+            # overrun check must key on this, not the captured byte count, or a large
+            # but legitimate MLDv2 query truncated by snaplen would false-positive.
+            plen = (ip6[4] << 8) | ip6[5]
+            true_icmp_len = (plen - (p - 40)) if plen else len(icmp)
+            if true_icmp_len <= 0:
+                true_icmp_len = len(icmp)
             mtype = icmp[0]
             if mtype not in _MLD_TYPES:
                 continue
@@ -5132,12 +5207,22 @@ def _decode_mld_frames(frames):
                     continue
                 grp = _v6(icmp[8:24])
                 if mtype == _MLD_QUERY:
+                    # CVE-2026-53275 (MLD leg): an MLDv2 query (>=28 bytes) declares a
+                    # source count at octets 26-27; a count whose 28+numsrc*16 span
+                    # overruns the datagram is an out-of-bounds read of the source list.
+                    overrun = False
+                    if len(icmp) >= 28:
+                        numsrc = (icmp[26] << 8) | icmp[27]
+                        if numsrc > 0 and (28 + numsrc * 16) > true_icmp_len:
+                            overrun = True
                     events.append({'src': src, 'group': None, 'kind': 'query',
-                                   'version': 1, 'ttl': hop, 'family': 'ipv6'})
+                                   'version': 1, 'ttl': hop, 'family': 'ipv6',
+                                   'fragmented': frag6, 'source_overrun': overrun})
                 else:
                     kind = 'leave' if mtype == _MLD_DONE else 'report'
                     events.append({'src': src, 'group': grp, 'kind': kind,
-                                   'version': 1, 'ttl': hop, 'family': 'ipv6'})
+                                   'version': 1, 'ttl': hop, 'family': 'ipv6',
+                                   'fragmented': frag6})
             else:
                 # MLDv2 report (143): 4-byte hdr + 2 reserved + 2 nrecords, records
                 if len(icmp) < 8:
@@ -5154,8 +5239,12 @@ def _decode_mld_frames(frames):
                     q += 20 + nsrc * 16 + aux * 4
                     kind = ('leave' if (rtype in _MLD_LEAVE_RECORDS and nsrc == 0)
                             else 'report')
+                    # CVE-2025-50681 (MLD leg): a group-record type outside 1-6
+                    # (IS_IN/IS_EX/TO_IN/TO_EX/ALLOW/BLOCK) is a malformed record.
                     events.append({'src': src, 'group': grp, 'kind': kind,
-                                   'version': 2, 'ttl': hop, 'family': 'ipv6'})
+                                   'version': 2, 'ttl': hop, 'family': 'ipv6',
+                                   'fragmented': frag6,
+                                   'invalid_rtype': rtype not in (1, 2, 3, 4, 5, 6)})
         except (IndexError, ValueError, TypeError):
             continue
     return events
@@ -5340,8 +5429,10 @@ def _igmp_selftest():
     # --- MLD (IPv6) scenarios: crafted frames -> byte decoder -> shared classifier.
     import struct as _st
 
-    def _mld_frame(mtype, src6, grp6=None, hop=1, records=None):
-        """Build an Ethernet/IPv6/Hop-by-Hop-RouterAlert/ICMPv6-MLD frame (test-only)."""
+    def _mld_frame(mtype, src6, grp6=None, hop=1, records=None, numsrc=None, frag=False):
+        """Build an Ethernet/IPv6/Hop-by-Hop-RouterAlert/ICMPv6-MLD frame (test-only).
+        numsrc appends an MLDv2-query source-count field (for the source-overrun CVE);
+        frag inserts an IPv6 Fragment header (for the fragmented-membership CVE)."""
         if mtype == _MLD_REPORT_V2:
             recs = records or []
             body = _st.pack('!BBH', mtype, 0, 0) + _st.pack('!HH', 0, len(recs))
@@ -5354,8 +5445,12 @@ def _igmp_selftest():
             g = grp6 or '::'
             body = (_st.pack('!BBH', mtype, 0, 0) + _st.pack('!HH', 0, 0)
                     + ipaddress.IPv6Address(g).packed)
-        hbh = _st.pack('!BB', 58, 0) + b'\x05\x02\x00\x00\x01\x00'   # RouterAlert+PadN
-        payload = hbh + body
+            if numsrc is not None:                       # MLDv2 query tail: Resv/S/QRV, QQIC, N
+                body += _st.pack('!BBH', 0, 0, numsrc)
+        # HBH Router-Alert; when fragmenting, chain HBH -> Fragment (44) -> ICMPv6.
+        hbh = _st.pack('!BB', 44 if frag else 58, 0) + b'\x05\x02\x00\x00\x01\x00'
+        frag_hdr = _st.pack('!BBHI', 58, 0, 0x0001, 0xabcd) if frag else b''  # offset 0, MF=1
+        payload = hbh + frag_hdr + body
         ip6 = (_st.pack('!IHBB', 0x60000000, len(payload), 0, hop)
                + ipaddress.IPv6Address(src6).packed
                + ipaddress.IPv6Address(grp6 or 'ff02::1').packed + payload)
@@ -5407,6 +5502,77 @@ def _igmp_selftest():
                       'got': str([e.get('group') for e in d2]),
                       'pass': any(e['group'] == 'ff15::1234' and e['kind'] == 'report'
                                   for e in d2)})
+
+    # --- CVE structural detections (IGMP Watch v4) ---------------------------
+    def run_cve(name, text, cve, baseline=None):
+        """Drive the real text parser + classifier and assert 'anomaly' + the CVE
+        is named in a finding. baseline defaults to a learned querier so a lone
+        crafted packet is judged in enforce mode."""
+        base = {'queriers': ['192.168.1.1'], 'members': {}} if baseline is None else baseline
+        evs = _parse_igmp_capture(text)
+        res = _igmp_analyze(evs, 12, dict(base), learn=False)
+        cve_hit = any(cve in t for t in res['reasons'])
+        ok = res['verdict'] == 'anomaly' and cve_hit
+        scenarios.append({'name': name, 'expect': f'anomaly+{cve}',
+                          'got': f"{res['verdict']},cve={'y' if cve_hit else 'n'}",
+                          'events': len(evs), 'pass': ok})
+        return res
+
+    # 19. CVE-2025-50681: an IGMPv3 report with an out-of-range group-record type,
+    #     as tcpdump renders it ('[v3-report-#7]').
+    run_cve('cve-invalid-record-type',
+            "IP (tos 0xc0, ttl 1, id 1, offset 0, flags [none], proto IGMP (2), length 36)\n"
+            "    192.168.1.50 > 224.0.0.22: igmp v3 report, 1 group record(s) "
+            "[gaddr 239.1.2.3 [v3-report-#7], 0 source(s)]",
+            'CVE-2025-50681')
+    # 20. CVE-2026-53275: an IGMPv3 query whose declared source count overruns the
+    #     packet ('[invalid number of sources]').
+    run_cve('cve-query-source-overrun',
+            "IP (tos 0xc0, ttl 1, id 1, offset 0, flags [none], proto IGMP (2), length 32)\n"
+            "    192.168.1.1 > 224.0.0.1: igmp query v3 [max resp time 2.0s] "
+            "[gaddr 239.1.2.3 [invalid number of sources]]",
+            'CVE-2026-53275')
+    # 21. CVE-2019-5608: a fragmented IGMP datagram — first fragment (flags [+]) plus a
+    #     non-first fragment that prints as 'ip-proto-2' (no igmp payload line).
+    run_cve('cve-fragmented-membership',
+            "IP (tos 0xc0, ttl 1, id 1, offset 0, flags [+], proto IGMP (2), length 36)\n"
+            "    192.168.1.77 > 224.0.0.22: igmp v3 report, 1 group record(s) "
+            "[gaddr 239.0.0.1 is_in, 0 source(s)]\n"
+            "IP (tos 0xc0, ttl 1, id 1, offset 16, flags [+], proto IGMP (2), length 36)\n"
+            "    192.168.1.77 > 224.0.0.22: ip-proto-2",
+            'CVE-2019-5608')
+    # 22. FP guard: a normal IGMPv3 report (valid record type, not fragmented) is CLEAN.
+    _clean_v3 = _parse_igmp_capture(
+        "IP (tos 0xc0, ttl 1, id 1, offset 0, flags [none], proto IGMP (2), length 36)\n"
+        "    192.168.1.50 > 224.0.0.22: igmp v3 report, 1 group record(s) "
+        "[gaddr 239.9.9.9 is_in, 0 source(s)]")
+    _cr = _igmp_analyze(_clean_v3, 12, {'queriers': ['192.168.1.1'],
+                                        'members': {'239.9.9.9': ['192.168.1.50']}}, learn=False)
+    scenarios.append({'name': 'cve-fp-guard-clean-v3', 'expect': 'no CVE finding',
+                      'got': _cr['verdict'],
+                      'pass': not any('CVE-20' in t for t in _cr['reasons'])})
+    # 23. MLD (IPv6) parity: an MLDv2 report record with an invalid record type (7).
+    _mld_bad = _decode_mld_frames([(1.0, _mld_frame(_MLD_REPORT_V2, 'fe80::50',
+                                                    records=[(7, 'ff15::1234', [])]))])
+    _mr = _igmp_analyze(_mld_bad, 12, {'queriers': ['fe80::1'], 'members': {}}, learn=False)
+    scenarios.append({'name': 'mld-cve-invalid-record-type', 'expect': 'anomaly+CVE-2025-50681',
+                      'got': f"{_mr['verdict']}",
+                      'pass': _mr['verdict'] == 'anomaly'
+                      and any('CVE-2025-50681' in t for t in _mr['reasons'])})
+    # 24. MLD (IPv6) parity: an MLDv2 query declaring 100 sources but carrying none.
+    _mld_ov = _decode_mld_frames([(1.0, _mld_frame(_MLD_QUERY, 'fe80::1', 'ff02::1', numsrc=100))])
+    _mo = _igmp_analyze(_mld_ov, 12, {'queriers': ['fe80::1'], 'members': {}}, learn=False)
+    scenarios.append({'name': 'mld-cve-source-overrun', 'expect': 'anomaly+CVE-2026-53275',
+                      'got': f"{_mo['verdict']}",
+                      'pass': _mo['verdict'] == 'anomaly'
+                      and any('CVE-2026-53275' in t for t in _mo['reasons'])})
+    # 25. MLD (IPv6) parity: a fragmented MLD datagram (IPv6 Fragment header present).
+    _mld_fr = _decode_mld_frames([(1.0, _mld_frame(_MLD_REPORT_V1, 'fe80::9', 'ff15::7', frag=True))])
+    _mf = _igmp_analyze(_mld_fr, 12, {'queriers': ['fe80::1'], 'members': {}}, learn=False)
+    scenarios.append({'name': 'mld-cve-fragmented', 'expect': 'anomaly+CVE-2019-5608',
+                      'got': f"{_mf['verdict']}",
+                      'pass': _mf['verdict'] == 'anomaly'
+                      and any('CVE-2019-5608' in t for t in _mf['reasons'])})
 
     # Optional Scapy end-to-end: craft real IGMP packets -> pcap -> tcpdump -> parse.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
@@ -7137,14 +7303,33 @@ def _ntp_analyze(records, seconds, baseline, learn=True, threshold=None):
                     f"the trusted baseline) — clients may silently sync to it")
 
     # --- kod: Kiss-o'-Death (stratum 0) reply ---
+    # CVE-2015-7704 / CVE-2015-7705: clients honour a KoD (RATE/DENY/RSTR) by backing
+    # off or tearing the association down, so a spoofed KoD is a cheap off-path DoS.
+    # The protocol invariant that discriminates a genuine KoD from a spoofed one is
+    # the ORIGIN timestamp: a real KoD is a response and must echo the client's
+    # transmit nonce, which an off-path attacker cannot know — so a zero origin marks
+    # it likely-spoofed. A source that never served normal time has no business
+    # issuing a KoD either. (Matches NTP Watch v6 RN03.)
+    kod_zero_origin = {r['src'] for r in server_recs
+                       if r['stratum'] == 0 and r.get('origin_zero')}
     for src in sorted(servers):
         s = servers[src]
         if s['kod']:
             bump('kod')
             codes = ', '.join(sorted(s['kod_codes'])) or 'stratum-0'
+            served_normally = any(1 <= n <= 15 for n in s['strata'])
+            if src in kod_zero_origin:
+                tell = (" — it echoes a zero origin timestamp (binds to no query the "
+                        "client sent), so it is a likely-spoofed off-path DoS")
+            elif not served_normally:
+                tell = (" — this source never served normal time, so an unsolicited "
+                        "KoD from it is suspect")
+            else:
+                tell = ""
             reasons.append(
-                f"Kiss-o'-Death from {src} ({codes}) — a rogue server uses KoD "
-                f"RATE/DENY to make clients back off legitimate time (sync DoS)")
+                f"Kiss-o'-Death from {src} ({codes}) — a rogue/off-path server uses "
+                f"KoD RATE/DENY/RSTR to make clients back off legitimate time (sync "
+                f"DoS, CVE-2015-7704 / CVE-2015-7705){tell}")
 
     # --- stratum-spoof: forged/lowered stratum to win client preference ---
     for src in sorted(servers):
@@ -7177,14 +7362,51 @@ def _ntp_analyze(records, seconds, baseline, learn=True, threshold=None):
                 f"NTP broadcast/multicast server {src} on the segment — hosts in "
                 f"broadcast client mode accept it blindly (classic rogue-time vector)")
 
-    # --- recon: mode 6/7 control / monlist ---
-    if control_recs:
-        srcs = sorted({r['src'] for r in control_recs})
-        bump('recon')
+    # --- auth-bypass: loopback source address on the segment (CVE-2014-9298 / -9751) ---
+    # ntpd's read_network_packet() mis-classified an IPv6 loopback source (and the
+    # 127/8 IPv4 form) as local, so a packet spoofed from ::1 / 127.x arriving on a
+    # real interface bypassed `restrict` ACLs — letting an attacker read or rewrite
+    # ntpd runtime state via mode 6/7. Loopback traffic never crosses a segment, so a
+    # captured loopback SOURCE is spoofed by construction (zero false positives).
+    # (Matches NTP Watch v6 RN15.) NOTE: the in-app NTP parser is IPv4-only, so this
+    # catches 127.0.0.0/8; the ::1 form is deferred with the rest of IPv6 NTP.
+    loopback_srcs = sorted({r['src'] for r in records if r['src'].startswith('127.')})
+    for src in loopback_srcs:
+        bump('auth-bypass')
         reasons.append(
-            f"NTP mode 6/7 (ntpq control / monlist) traffic from {', '.join(srcs)} "
-            f"— reconnaissance or amplification abuse; disable 'monitor' and restrict "
-            f"mode 6/7")
+            f"NTP packet with a loopback source address {src} on the segment — "
+            f"loopback never crosses a wire, so this is spoofed to bypass ntpd "
+            f"restrict/ACL rules and reach mode 6/7 (CVE-2014-9298 / CVE-2014-9751)")
+
+    # --- recon: mode 6 control / mode 7 private-monlist ---
+    # Split the two non-standard modes: mode 6 (ntpq control) is recon, while mode
+    # 7 (ntpdc private) is the monlist amplification primitive — CVE-2013-5211, the
+    # reflection vector behind the 2013-14 NTP DDoS wave (one small query returns up
+    # to 600 recent clients). Some tcpdump builds print both as 'Reserved'; that
+    # ambiguous case is reported generically. (Matches NTP Watch v6 RN02.)
+    if control_recs:
+        mode7 = sorted({r['src'] for r in control_recs if r['mode'] == 'Private'})
+        mode6 = sorted({r['src'] for r in control_recs if r['mode'] == 'Control Message'})
+        ambiguous = sorted({r['src'] for r in control_recs
+                            if r['mode'] not in ('Private', 'Control Message')})
+        if mode7:
+            bump('recon')
+            reasons.append(
+                f"NTP mode 7 (ntpdc private / monlist) traffic from "
+                f"{', '.join(mode7)} — CVE-2013-5211 amplification vector: one small "
+                f"monlist query returns up to 600 recent clients (reflection DDoS "
+                f"primitive) and is also active recon. Disable 'monitor' / restrict mode 7")
+        if mode6:
+            bump('recon')
+            reasons.append(
+                f"NTP mode 6 (ntpq control) traffic from {', '.join(mode6)} — "
+                f"reconnaissance / status enumeration; restrict mode 6 to trusted hosts")
+        if ambiguous:
+            bump('recon')
+            reasons.append(
+                f"NTP mode 6/7 (ntpq control / monlist) traffic from "
+                f"{', '.join(ambiguous)} — reconnaissance or amplification abuse; "
+                f"disable 'monitor' and restrict mode 6/7")
 
     # --- autokey: RFC 5906 Autokey extension field (CVE-2014-9295 surface) ---
     # Fires on ANY NTP packet (server replies AND inbound client/peer packets),
@@ -7250,8 +7472,9 @@ def _ntp_analyze(records, seconds, baseline, learn=True, threshold=None):
         bump('time-injection')
         reasons.append(
             f"NTP server {src} sent a reply with a zero origin timestamp — it echoed "
-            f"no client request (CVE-2016-7431 / CVE-2015-8138): an off-path spoofed "
-            f"response or origin-check bypass, accepted without seeing the query")
+            f"no client request (CVE-2016-7431 / CVE-2015-8138 / CVE-2020-11868): an "
+            f"off-path spoofed response or origin-check bypass, accepted without "
+            f"seeing the query; the same signature blocks sync in ntpd < 4.2.8p14")
 
     # --- anomaly: unusable / forged time source ---
     for src in sorted(servers):
@@ -7471,7 +7694,11 @@ def _ntp_selftest():
         15, base, 'rogue-server')
 
     # 4. kod: a known server sends a stratum-0 Kiss-o'-Death (RATE).
-    run('kod', block('10.0.0.1', stratum=0, refid='RATE'), 15, base, 'kod')
+    r_kod = run('kod', block('10.0.0.1', stratum=0, refid='RATE'), 15, base, 'kod')
+    scenarios.append({'name': 'kod-cve-reason', 'expect': 'CVE-2015-7704 flagged',
+                      'got': 'present' if any('CVE-2015-7704' in x for x in r_kod['reasons'])
+                      else 'absent',
+                      'pass': any('CVE-2015-7704' in x for x in r_kod['reasons'])})
 
     # 5. stratum-spoof: a known secondary now claims Stratum 1 (primary/GPS).
     run('stratum-spoof', block('10.0.0.1', stratum=1, refid='GPS'), 15, base,
@@ -7571,6 +7798,45 @@ def _ntp_selftest():
                       'got': 'clean' if not any('zero origin' in x for x in r_zc['reasons'])
                       else 'flagged',
                       'pass': not any('zero origin' in x for x in r_zc['reasons'])})
+
+    # 20. mode-7 monlist: an ntpdc private (mode 7) query → recon + CVE-2013-5211.
+    mon = ("1780000000.100000 IP (tos 0x0, ttl 64, id 1, offset 0, flags [none], "
+           "proto UDP (17), length 40)\n"
+           "    10.0.0.66.45000 > 10.0.0.1.123: NTPv2, Private, length 12\n"
+           "\tLeap indicator:  (0)")
+    r_mon = run('mode7-monlist', mon, 15, base, 'recon')
+    scenarios.append({'name': 'mode7-monlist-reason', 'expect': 'CVE-2013-5211 flagged',
+                      'got': 'present' if any('CVE-2013-5211' in x for x in r_mon['reasons'])
+                      else 'absent',
+                      'pass': any('CVE-2013-5211' in x for x in r_mon['reasons'])})
+
+    # 21. loopback source: a spoofed 127.x source → auth-bypass + CVE-2014-9298/9751.
+    r_lb = run('loopback-source', block('127.0.0.1'), 15, base, 'auth-bypass')
+    scenarios.append({'name': 'loopback-source-reason', 'expect': 'CVE-2014-9298 flagged',
+                      'got': 'present' if any('CVE-2014-9298' in x for x in r_lb['reasons'])
+                      else 'absent',
+                      'pass': any('CVE-2014-9298' in x for x in r_lb['reasons'])})
+
+    # 22. spoofed KoD: a stratum-0 KoD with a zero origin → likely-spoofed off-path
+    #     DoS (CVE-2015-7704/7705). The zero origin also trips RN17, so the verdict
+    #     escalates to time-injection; assert the KoD spoof reason is present.
+    r_ks = run('kod-spoofed-zero-origin',
+               block('10.0.0.1', stratum=0, refid='DENY', origin_zero=True),
+               15, base, 'time-injection')
+    scenarios.append({'name': 'kod-spoof-reason', 'expect': 'likely-spoofed KoD flagged',
+                      'got': 'present' if any('likely-spoofed' in x and 'CVE-2015-7704' in x
+                                              for x in r_ks['reasons']) else 'absent',
+                      'pass': any('likely-spoofed' in x and 'CVE-2015-7704' in x
+                                  for x in r_ks['reasons'])})
+
+    # 23. zero-origin also attributes CVE-2020-11868 (same wire signature reached a
+    #     different way — an off-path spoofed server packet that blocks sync).
+    r_zo2 = _ntp_analyze(_parse_ntp_capture(block('10.0.0.1', origin_zero=True)),
+                         15, dict(base), learn=False)
+    scenarios.append({'name': 'zero-origin-2020-cve', 'expect': 'CVE-2020-11868 flagged',
+                      'got': 'present' if any('CVE-2020-11868' in x for x in r_zo2['reasons'])
+                      else 'absent',
+                      'pass': any('CVE-2020-11868' in x for x in r_zo2['reasons'])})
 
     # --- Autokey extension-field detector (byte-level, deterministic, no deps) ---
     def _ak_ef(ef_len, vallen, total=28):
@@ -9177,11 +9443,78 @@ def _snmp_capture(interface, seconds):
     return out, None
 
 
+# Directory holding the vendored snmp_cve module (raw-BER CVE detectors).
+_SNMP_PY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'python')
+# CVE severity ranking for the verdict fold.
+_SNMP_CVE_SEV_RANK = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}
+
+
+def _snmp_cve_scan(interface, seconds):
+    """Capture a raw SNMP (UDP 161/162) pcap window and run the vendored BER CVE
+    detectors (python/snmp_cve.py) over it. The in-app text watch (tcpdump -v) cannot
+    see the raw BER these CVEs key on — the SNMPv3 USM HMAC length, OID sub-identifier
+    bytes and varbind value lengths — so this reads the SNMP message bytes off the wire.
+    Best-effort: returns [] on any capture/parse failure so the text watch is never
+    affected. Detection-only; a full-snaplen (-s 0) passive capture, no transmit."""
+    if not _have('tcpdump'):
+        return []
+    if _SNMP_PY_DIR not in sys.path:
+        sys.path.insert(0, _SNMP_PY_DIR)
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(suffix='.pcap')
+    os.close(fd)
+    try:
+        _run(['timeout', str(seconds), 'tcpdump', '-i', interface, '-nn', '-p',
+              '-s', '0', '-c', '20000', '-w', path,
+              'udp and (port 161 or port 162)'], timeout=seconds + 8)
+        try:
+            import snmp_cve as _sc
+            from bfdwatch import read_pcap as _read_pcap
+            return _sc.scan_frames(_read_pcap(path))
+        except Exception:
+            return []
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _snmp_cve_fold(result, cve_findings):
+    """Merge vendored SNMP CVE findings into the watch result: bump the verdict to
+    'exploit' (a CRITICAL/HIGH CVE signature) or at least 'anomaly' (MEDIUM/LOW),
+    prepend a reason per distinct finding, and attach the structured list under
+    'cve_findings'. Dedupes by (code, src, cve). No-op when there are no findings."""
+    if not cve_findings:
+        return result
+    seen, uniq = set(), []
+    for f in cve_findings:
+        k = (f.get('code'), f.get('src'), f.get('cve'))
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(f)
+    top = max(_SNMP_CVE_SEV_RANK.get(f.get('severity'), 1) for f in uniq)
+    order = ['exploit', 'write-exposed', 'cleartext', 'amplification',
+             'enumeration', 'anomaly', 'clean']
+    target = 'exploit' if top >= 3 else 'anomaly'
+    cur = result.get('verdict', 'clean')
+    if cur not in order or order.index(target) < order.index(cur):
+        result['verdict'] = target
+    cve_reasons = [
+        f"SNMP {f.get('code')} ({f.get('cve')}) from {f.get('src')} → "
+        f"{f.get('dst')}:{f.get('dport')} [{f.get('severity')}/{f.get('confidence')}] "
+        f"— {f.get('detail')}" for f in uniq]
+    result['reasons'] = cve_reasons if cur == 'clean' else cve_reasons + (result.get('reasons') or [])
+    result['cve_findings'] = uniq
+    return result
+
+
 def do_snmp_watch(interface=None, seconds=12, learn=True, quick=False):
     """Passive SNMP exposure scanner (detection-only). Captures SNMP for a few
-    seconds and classifies the segment: write-exposed / cleartext / amplification /
-    enumeration / clean. Learns the segment's SNMP agents + community strings on
-    first run."""
+    seconds and classifies the segment: exploit (a raw-BER SNMP CVE signature) /
+    write-exposed / cleartext / amplification / enumeration / clean. Learns the
+    segment's SNMP agents + community strings on first run."""
     iface = interface if _valid_iface(interface or '') else _capture_iface()
     if not iface:
         return {'success': False, 'error': 'no interface to capture on'}
@@ -9189,7 +9522,20 @@ def do_snmp_watch(interface=None, seconds=12, learn=True, quick=False):
         return {'success': False, 'error': f'unknown interface: {iface}'}
     seconds = _clamp_int(seconds, 12, 4, 40)
 
+    # Run the raw-BER CVE capture concurrently with the text window so the total wall
+    # time stays ~seconds, not 2x (mirrors the MLD side-capture in do_igmp_watch).
+    cve_findings = []
+
+    def _cve_worker():
+        try:
+            cve_findings.extend(_snmp_cve_scan(iface, seconds))
+        except Exception:
+            pass
+    _cve_t = threading.Thread(target=_cve_worker, daemon=True)
+    _cve_t.start()
+
     text, err = _snmp_capture(iface, seconds)
+    _cve_t.join(timeout=seconds + 10)
     if err:
         return {'success': False, 'interface': iface, 'error': err,
                 'missing_tool': 'tcpdump' if 'not installed' in err else None}
@@ -9198,6 +9544,7 @@ def do_snmp_watch(interface=None, seconds=12, learn=True, quick=False):
     with _snmp_watch_lock:
         baseline = _snmp_watch_load()
         result = _snmp_analyze(events, seconds, baseline, learn=learn)
+        _snmp_cve_fold(result, cve_findings)
         if result.get('learned'):
             _snmp_watch_save(baseline)
         if result['verdict'] != 'clean':
@@ -9312,6 +9659,102 @@ def _snmp_selftest():
     scenarios.append({'name': 'snmp-v6-parse',
                       'expect': 'src/dst=2001:db8::/community',
                       'got': str(pv6[0] if pv6 else None)[:80], 'pass': v6_ok})
+
+    # --- CVE detections (raw-BER, vendored python/snmp_cve.py) ----------------
+    if _SNMP_PY_DIR not in sys.path:
+        sys.path.insert(0, _SNMP_PY_DIR)
+    try:
+        import snmp_cve as _sc
+    except Exception as _e:
+        _sc = None
+        scenarios.append({'name': 'snmp-cve-import', 'expect': 'import ok',
+                          'got': f'{type(_e).__name__}: {_e}', 'pass': False})
+    if _sc is not None:
+        # Detector-level: each CVE fires on its crafted wire signature.
+        c1 = _sc.detect_usm_hmac_truncation(
+            {'version': 3, 'msg_flags': 1, 'usm': {'auth_len': 4, 'user_name': 'admin'}})
+        scenarios.append({'name': 'snmp-cve-2008-0960', 'expect': 'SW-USM-HMAC-TRUNCATED',
+                          'got': str([f['code'] for f in c1]),
+                          'pass': any(f['code'] == 'SW-USM-HMAC-TRUNCATED' for f in c1)})
+        # FP guard: authFlag CLEAR (engine discovery) must never flag.
+        c1b = _sc.detect_usm_hmac_truncation(
+            {'version': 3, 'msg_flags': 0, 'usm': {'auth_len': 0}})
+        scenarios.append({'name': 'snmp-cve-usm-fp-guard', 'expect': 'no finding',
+                          'got': str([f['code'] for f in c1b]), 'pass': not c1b})
+        rce = _sc.detect_cisco_snmp_rce(
+            [{'oid': '1.3.6.1.4.1.9.9.95.1.3.1.1.7.' + '.'.join(['1'] * 30),
+              'value_tag': 2, 'value_len': 1}], 'GetRequest')
+        scenarios.append({'name': 'snmp-cve-2017-6742', 'expect': 'SW-CISCO-SNMP-RCE-ATTEMPT',
+                          'got': str([f['code'] for f in rce]),
+                          'pass': any(f['code'] == 'SW-CISCO-SNMP-RCE-ATTEMPT' for f in rce)})
+        trap = _sc.detect_trapd_oversize(
+            [{'oid': '1.3.6.1.2.1.1.6.0', 'value_tag': 4, 'value_len': 900}],
+            'public', {}, 162, 'Trap-v2')
+        scenarios.append({'name': 'snmp-cve-2025-68615', 'expect': 'SW-TRAPD-OVERSIZE-FIELD',
+                          'got': str([f['code'] for f in trap]),
+                          'pass': any(f['code'] == 'SW-TRAPD-OVERSIZE-FIELD' for f in trap)})
+        vacm = _sc.detect_netsnmp_vacm_malformed(
+            [{'oid': '1.3.6.1.6.3.16.1.4.1.1.2', 'value_tag': 4, 'value_len': 1}],
+            0xA3, 'SetRequest')
+        scenarios.append({'name': 'snmp-cve-2022-24807', 'expect': 'SW-NETSNMP-VACM-MALFORMED-OID',
+                          'got': str([f['code'] for f in vacm]),
+                          'pass': any(f['code'] == 'SW-NETSNMP-VACM-MALFORMED-OID' for f in vacm)})
+
+        # BER round-trip through the raw frame path (_iter_udp + parse_snmp), no deps:
+        # a hand-built Ethernet/IPv4/UDP frame with a v2c GetRequest to a Cisco RCE OID
+        # must be decoded and flagged by scan_frames.
+        def _tlv(t, v):
+            if len(v) < 0x80:
+                return bytes([t, len(v)]) + v
+            lb = len(v).to_bytes((len(v).bit_length() + 7) // 8, 'big')
+            return bytes([t, 0x80 | len(lb)]) + lb + v
+
+        def _I(n):
+            return _tlv(0x02, b'\x00' if n == 0
+                        else n.to_bytes((n.bit_length() + 7) // 8, 'big'))
+
+        def _oid(d):
+            a = [int(x) for x in d.split('.')]
+            body = bytes([40 * a[0] + a[1]])
+            for v in a[2:]:
+                if v == 0:
+                    body += b'\x00'
+                    continue
+                st = []
+                while v > 0:
+                    st.append(v & 0x7f)
+                    v >>= 7
+                st = st[::-1]
+                for k in range(len(st) - 1):
+                    st[k] |= 0x80
+                body += bytes(st)
+            return _tlv(0x06, body)
+        vb = _tlv(0x30, _oid('1.3.6.1.4.1.9.9.95.1.3.1.1.7.' + '.'.join(['1'] * 25))
+                  + b'\x05\x00')
+        pdu = _tlv(0xA0, _I(1) + _I(0) + _I(0) + _tlv(0x30, vb))
+        snmp_msg = _tlv(0x30, _I(1) + _tlv(0x04, b'public') + pdu)
+        udp = struct.pack('!HHHH', 40000, 161, 8 + len(snmp_msg), 0) + snmp_msg
+        ip4 = (struct.pack('!BBH', 0x45, 0, 20 + len(udp)) + b'\x00\x00\x40\x00'
+               + struct.pack('!BBH', 64, 17, 0)
+               + bytes((10, 0, 0, 9)) + bytes((10, 0, 0, 1)) + udp)
+        frame = (b'\x00\x11\x22\x33\x44\x55' + b'\x66\x77\x88\x99\xaa\xbb'
+                 + b'\x08\x00' + ip4)
+        got = _sc.scan_frames([(1.0, frame)])
+        scenarios.append({'name': 'snmp-cve-frame-roundtrip',
+                          'expect': 'RCE flagged from raw frame',
+                          'got': str([f['code'] for f in got]),
+                          'pass': any(f['code'] == 'SW-CISCO-SNMP-RCE-ATTEMPT' for f in got)})
+
+        # Fold: a CRITICAL CVE finding turns a clean verdict into 'exploit'.
+        folded = _snmp_cve_fold(
+            {'verdict': 'clean', 'reasons': ['No SNMP traffic seen']},
+            [{'code': 'SW-USM-HMAC-TRUNCATED', 'cve': 'CVE-2008-0960',
+              'severity': 'CRITICAL', 'confidence': 'confirmed', 'src': '10.0.0.9',
+              'dst': '10.0.0.1', 'dport': 161, 'detail': 'x'}])
+        scenarios.append({'name': 'snmp-cve-fold-exploit', 'expect': 'exploit verdict',
+                          'got': folded['verdict'],
+                          'pass': folded['verdict'] == 'exploit'
+                          and any('CVE-2008-0960' in r for r in folded['reasons'])})
 
     # Optional Scapy end-to-end: craft real SNMP v2c -> pcap -> tcpdump -> parse.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
