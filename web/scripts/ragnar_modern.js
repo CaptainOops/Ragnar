@@ -7154,7 +7154,7 @@ const _NETINT_STYLE = {
 // else non-clean — a suspicious finding (amber). Mirrors the server's _ni_rank so the
 // chips colour every scanner's verdicts without enumerating them all.
 const _NETINT_CLEAN = new Set(['clean', 'unknown', 'ok', 'none', 'hardened', 'learned', 'n/a', 'no-traffic', 'disabled', 'not-applicable', 'randomization', 'fhrp', 'observed']);
-const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'exploit', 'attack']);
+const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'eternalblue-probe', 'krb-rc4md4', 'smbghost-exploit', 'smb-reflection', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'exploit', 'attack']);
 function _netintRank(verdict) {
     const v = verdict || 'unknown';
     if (_NETINT_CLEAN.has(v)) return 0;
@@ -9685,6 +9685,11 @@ const _SMB_VERDICT_STYLE = {
     'asrep-roast':    ['bg-red-950/60 border-red-800 text-red-300', '🛑 AS-REP ROASTING — a Kerberos account with no pre-auth (offline-crackable hash)'],
     kerberoast:       ['bg-red-950/60 border-red-800 text-red-300', '🛑 KERBEROASTING — a TGS-REQ forcing RC4 on a service SPN (crackable service ticket)'],
     'responder-challenge': ['bg-red-950/60 border-red-800 text-red-300', '🛑 RESPONDER ON THE WIRE — a server issued the fixed NTLM challenge (rogue auth server)'],
+    'smbghost-exposure': ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ SMBGhost EXPOSURE — SMB3.1.1 compression negotiated (CVE-2020-0796) — patch/disable'],
+    'eternalblue-probe': ['bg-red-950/60 border-red-800 text-red-300', '🛑 ETERNALBLUE probe — SMBv1 TRANS2 SESSION_SETUP (CVE-2017-0144 / MS17-010)'],
+    'krb-rc4md4':     ['bg-red-950/60 border-red-800 text-red-300', '🛑 KERBEROS RC4-MD4 — etype -128 offered/granted/advertised (CVE-2022-33679 downgrade)'],
+    'smbghost-exploit': ['bg-red-950/60 border-red-800 text-red-300', '🛑 SMBGhost EXPLOIT — compression-transform 32-bit overflow (CVE-2020-0796) — patch now'],
+    'smb-reflection': ['bg-red-950/60 border-red-800 text-red-300', '🛑 REFLECTIVE RELAY — client == server / marshalled target (CVE-2025-33073)'],
     unknown:          ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
 };
 const _KRB_FINDING_STYLE = {

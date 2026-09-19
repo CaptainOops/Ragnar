@@ -505,6 +505,28 @@ FINDINGS = {
     "WINRM-SHELL-CREATE": (
         "medium", "winrm",
         "WS-Man Shell Create - remote command execution session opened"),
+
+    # --- CVE-mapped additions (v2) ---------------------------------------
+    "RPC-PRINTNIGHTMARE-DRIVER-ADD": (
+        "critical", "interface",
+        "Printer driver installation call (PrintNightmare CVE-2021-34527 / "
+        "CVE-2021-1675); opnum is cleartext even when the stub is sealed"),
+    "RPC-WINREG-RELAY-FALLBACK": (
+        "high", "auth",
+        "Remote Registry bound over ncacn_ip_tcp at RPC_C_AUTHN_LEVEL_CONNECT "
+        "(CVE-2024-43532) - the insecure transport fallback used for NTLM relay"),
+    "RPC-LSA-ANONYMOUS-COERCION": (
+        "critical", "interface",
+        "Unauthenticated coercion call on the LSARPC pipe (CVE-2022-26925, "
+        "PetitPotam) - anonymous access is the vulnerability"),
+    "RPC-RUNTIME-BINDACK-UNDERFLOW": (
+        "critical", "protocol",
+        "Malformed big-endian bind_ack with a zero secondary address length "
+        "(CVE-2022-26809) - the RPC runtime integer underflow"),
+    "WINRM-HTTPSYS-ACCEPT-ENCODING": (
+        "high", "winrm",
+        "Malformed Accept-Encoding with an empty coding-list element "
+        "(CVE-2021-31166 / CVE-2022-21907 http.sys kernel RCE)"),
 }
 
 CATEGORIES = sorted({v[1] for v in FINDINGS.values()})
@@ -729,7 +751,7 @@ def parse_bind_ack(pdu: bytes, hdr: dict) -> dict:
             off += 24
     except RPCError:
         pass
-    return {"sec_addr": sec_addr, "results": results}
+    return {"sec_addr": sec_addr, "sec_addr_len": sec_addr_len, "results": results}
 
 
 def parse_bind_nak(pdu: bytes, hdr: dict) -> dict:
@@ -1402,6 +1424,35 @@ def is_wsman_path(path: str) -> bool:
     return p.startswith("/wsman") or p.startswith("/powershell") or "/wsman" in p
 
 
+# http.sys parses Accept-Encoding in the kernel, before any routing decision,
+# so these two CVEs are reachable on any path a listener is bound to - which
+# on a Windows host means tcp/5985 whether or not WinRM is the target.
+# RFC 7230 s7 tells senders not to produce empty list elements but tells
+# recipients to tolerate them, so a single empty element can be a sloppy
+# client rather than an attack.  That is why the count is graded, not gated.
+HTTPSYS_LONG_LIST = 8            # codings beyond which a list is unusual
+HTTPSYS_LONG_HEADER = 200        # bytes beyond which the header is unusual
+
+
+def accept_encoding_shape(value: str) -> dict:
+    """
+    Split an Accept-Encoding field-value and count the empty elements.
+
+    The CVE-2021-31166 / CVE-2022-21907 trigger is an element that is empty or
+    whitespace-only - "whitespace (or nothing at all) between the commas",
+    including a bare trailing comma.  UlpParseContentCoding returns a special
+    error for such an element and leaves a dangling entry in its coding list.
+    """
+    elems = value.split(",")
+    empty = [i for i, e in enumerate(elems) if not e.strip()]
+    return {
+        "elements": len(elems),
+        "empty_elements": len(empty),
+        "empty_positions": empty[:8],
+        "header_bytes": len(value),
+    }
+
+
 def content_type_encrypted(ctype: str) -> bool:
     c = ctype.lower()
     return any(t in c for t in WSMAN_ENCRYPTED_TYPES)
@@ -1568,7 +1619,7 @@ class Association:
 
     __slots__ = ("contexts", "auth_type", "auth_level", "auth_reported",
                  "ntlm_reported", "spnego_seen", "kerberos_seen", "pipe_name",
-                 "pending_calls", "created")
+                 "pending_calls", "created", "over_pipe", "anonymous")
 
     def __init__(self, ts):
         self.contexts: dict[int, dict] = {}
@@ -1581,6 +1632,8 @@ class Association:
         self.pipe_name = ""
         self.pending_calls: dict[int, tuple] = {}
         self.created = ts
+        self.over_pipe = False     # ncacn_np (carved from SMB) vs ncacn_ip_tcp
+        self.anonymous = False     # bound with no auth, or NTLM anonymous
 
 
 class NetlogonPeer:
@@ -1607,6 +1660,35 @@ class NetlogonPeer:
 # ---------------------------------------------------------------------------
 # RPC detection engine
 # ---------------------------------------------------------------------------
+
+# --- CVE-mapped call sets -------------------------------------------------
+#
+# MS-RPRN 3.1.4 / MS-PAR 3.1.4: the printer-driver installation calls behind
+# PrintNightmare (CVE-2021-1675, CVE-2021-34527).  Windows does not verify that
+# pDriverPath/pConfigFile/pDataFile are local to the machine, so an attacker
+# serves a DLL over UNC and has the spooler load it as SYSTEM.
+#
+# The opnum sits in the cleartext REQUEST header, so this is observable even at
+# PKT_PRIVACY where the driver container itself is ciphertext.
+RPRN_ADD_PRINTER_DRIVER = 9
+RPRN_ADD_PRINTER_DRIVER_EX = 89
+PAR_ASYNC_ADD_PRINTER_DRIVER = 39
+
+PRINTNIGHTMARE_CALLS = {
+    IF_RPRN: {
+        RPRN_ADD_PRINTER_DRIVER: "RpcAddPrinterDriver",
+        RPRN_ADD_PRINTER_DRIVER_EX: "RpcAddPrinterDriverEx",
+    },
+    IF_PAR: {
+        PAR_ASYNC_ADD_PRINTER_DRIVER: "RpcAsyncAddPrinterDriver",
+    },
+}
+
+# MS-EFSR reached over \pipe\lsarpc is the interface Microsoft's advisory for
+# CVE-2022-26925 refers to as "the LSARPC interface": the patch made anonymous
+# connections to it illegal, because an unauthenticated caller could coerce a
+# DC into authenticating to the attacker over NTLM.
+LSA_PIPE_INTERFACES = (IF_EFSR_LSA, IF_LSARPC)
 
 SENSITIVE_CLASSES = ("netlogon", "directory", "coercion", "exec")
 
@@ -1635,7 +1717,8 @@ class RPCEngine:
 
     # -- entry point -----------------------------------------------------
     def process_pdu(self, ts, flow, client_ip, server_ip, pdu: bytes,
-                    from_client: bool, pipe_name: str = ""):
+                    from_client: bool, pipe_name: str = "",
+                    over_pipe: bool = False):
         try:
             hdr = parse_co_header(pdu)
         except RPCError:
@@ -1656,6 +1739,8 @@ class RPCEngine:
             })
             return
         assoc = self._assoc(flow, ts)
+        if over_pipe:
+            assoc.over_pipe = True
         if pipe_name and not assoc.pipe_name:
             assoc.pipe_name = pipe_name
         try:
@@ -1672,7 +1757,7 @@ class RPCEngine:
             if ptype in (PTYPE_BIND, PTYPE_ALTER_CONTEXT):
                 self._on_bind(ts, subject, assoc, pdu, hdr, trailer, client_ip, server_ip)
             elif ptype == PTYPE_BIND_ACK or ptype == PTYPE_ALTER_CONTEXT_RESP:
-                self._on_bind_ack(ts, subject, assoc, pdu, hdr)
+                self._on_bind_ack(ts, subject, assoc, pdu, hdr, from_client)
             elif ptype == PTYPE_BIND_NAK:
                 self._on_bind_nak(ts, subject, pdu, hdr)
             elif ptype == PTYPE_AUTH3:
@@ -1708,6 +1793,8 @@ class RPCEngine:
                 })
         assoc.auth_type = new_type
         assoc.auth_level = new_level
+        if trailer is None:
+            assoc.anonymous = True
         if trailer:
             self._inspect_auth_value(ts, subject, assoc, trailer["auth_type"],
                                      trailer["auth_value"], "rpc")
@@ -1749,6 +1836,21 @@ class RPCEngine:
                 self.emitter.emit(ts, "RPC-COERCION-INTERFACE-BIND", subject,
                                   dict(base, description=desc), key_extra=(uuid,))
 
+            # CVE-2024-43532.  The WinReg client's BaseBindToMachine falls back
+            # to a legacy transport when SMB is unavailable and binds with
+            # RpcBindingSetAuthInfo at RPC_C_AUTHN_LEVEL_CONNECT, which neither
+            # signs nor verifies - the condition an NTLM relay to AD CS needs.
+            # A healthy Remote Registry session runs over \pipe\winreg, so it
+            # is the combination of interface, transport and level that matters.
+            if (uuid == IF_WINREG and not assoc.over_pipe
+                    and trailer is not None
+                    and new_level == RPC_C_AUTHN_LEVEL_CONNECT):
+                self.emitter.emit(ts, "RPC-WINREG-RELAY-FALLBACK", subject,
+                                  dict(base, cve="CVE-2024-43532",
+                                       transport="ncacn_ip_tcp",
+                                       expected_transport="ncacn_np"),
+                                  key_extra=(uuid,))
+
     def _netlogon_bind_posture(self, ts, subject, base, trailer, client_ip, server_ip):
         level = trailer["auth_level"] if trailer else RPC_C_AUTHN_LEVEL_NONE
         if trailer is None or level < RPC_C_AUTHN_LEVEL_PKT_INTEGRITY:
@@ -1758,10 +1860,40 @@ class RPCEngine:
             self.emitter.emit(ts, "RPC-NETLOGON-UNEXPECTED-SERVER", subject,
                               dict(base, server=server_ip))
 
-    def _on_bind_ack(self, ts, subject, assoc, pdu, hdr):
+    def _on_bind_ack(self, ts, subject, assoc, pdu, hdr, from_client=False):
         body = parse_bind_ack(pdu, hdr)
         if body["sec_addr"]:
             assoc.pipe_name = assoc.pipe_name or body["sec_addr"]
+        if not from_client:
+            self._bindack_underflow(ts, subject, pdu, hdr, body)
+
+    def _bindack_underflow(self, ts, subject, pdu, hdr, body):
+        """
+        CVE-2022-26809, as it actually appears on the wire.
+
+        The vulnerable code is OSF_CASSOCIATION::ProcessBindAckOrNak - the
+        CLIENT parsing a bind_ack, not the server parsing a fragmented request.
+        A zero secondary-address length drives an integer underflow, and a
+        big-endian data representation forces the byte-swapping path where the
+        underflowed value is used for out-of-bounds reads and writes.
+
+        Big-endian is what makes this cheap to detect: effectively every real
+        DCERPC implementation emits little-endian, so a big-endian bind_ack on a
+        production network is already an anomaly.  Requiring both conditions,
+        and reporting whether frag_length agrees with what actually arrived,
+        is what keeps it off ordinary traffic.
+        """
+        if not hdr["big_endian"] or body["sec_addr_len"] != 0:
+            return
+        self.emitter.emit(ts, "RPC-RUNTIME-BINDACK-UNDERFLOW", subject, {
+            "cve": "CVE-2022-26809",
+            "data_representation": "big-endian",
+            "sec_addr_len": 0,
+            "frag_length": hdr["frag_length"],
+            "observed_bytes": len(pdu),
+            "frag_length_consistent": hdr["frag_length"] == len(pdu),
+            "direction": "server -> client",
+        })
 
     def _on_bind_nak(self, ts, subject, pdu, hdr):
         body = parse_bind_nak(pdu, hdr)
@@ -1807,9 +1939,15 @@ class RPCEngine:
         if klass == "netlogon":
             self._netlogon_call(ts, subject, base, stub, opnum, sealed,
                                 client_ip, server_ip)
+        if uuid in PRINTNIGHTMARE_CALLS and opnum in PRINTNIGHTMARE_CALLS[uuid]:
+            self._printer_driver_call(ts, subject, base, stub, uuid, opnum,
+                                      sealed, server_ip)
         if uuid in COERCION_CALLS and opnum in COERCION_CALLS[uuid]:
             self._coercion_call(ts, subject, base, stub, uuid, opnum, sealed,
                                 server_ip)
+            if assoc.anonymous and uuid in LSA_PIPE_INTERFACES:
+                self._lsa_anonymous_coercion(ts, subject, base, assoc, uuid,
+                                             opnum)
         if uuid in EXEC_CALLS and opnum in EXEC_CALLS[uuid]:
             self._exec_call(ts, subject, base, uuid, opnum)
         if uuid == IF_EPM and opnum in EPM_LOOKUP_OPNUMS:
@@ -1904,6 +2042,67 @@ class RPCEngine:
                           dict(d, unc_paths=targets, external_listener=bool(external)),
                           severity=sev, key_extra=(uuid, opnum))
 
+    def _printer_driver_call(self, ts, subject, base, stub, uuid, opnum,
+                             sealed, server_ip):
+        """
+        PrintNightmare (CVE-2021-34527, and CVE-2021-1675 before it).
+
+        Windows does not check that pDriverPath / pConfigFile / pDataFile are
+        local to the machine, so the spooler will load a DLL the attacker
+        serves over UNC, as SYSTEM.  Both the MS-RPRN and MS-PAR routes are
+        covered: the July 2021 out-of-band update closed the MS-RPRN vector
+        while RCE remained reachable through MS-PAR with Point and Print on.
+
+        The opnum is in the cleartext REQUEST header, so the call is visible
+        even at PKT_PRIVACY.  A readable stub raises confidence rather than
+        being required: an off-box UNC in the driver container is the
+        confirmation, and its absence is reported, never assumed.
+        """
+        opname = PRINTNIGHTMARE_CALLS[uuid][opnum]
+        d = dict(base, call=opname, cve="CVE-2021-34527")
+        if sealed:
+            self.emitter.emit(ts, "RPC-PRINTNIGHTMARE-DRIVER-ADD", subject,
+                              dict(d, unc_path_visible=False,
+                                   confidence="opnum-only",
+                                   note="stub sealed; driver path not observable"),
+                              severity="high", key_extra=(uuid, opnum))
+            return
+        paths = extract_unc_paths(stub)
+        remote = [p for p in paths if unc_host(p) and unc_host(p) != server_ip]
+        if remote:
+            external = [p for p in remote
+                        if self.config.in_local(unc_host(p)) is not True]
+            self.emitter.emit(ts, "RPC-PRINTNIGHTMARE-DRIVER-ADD", subject,
+                              dict(d, driver_paths=remote,
+                                   external_source=bool(external),
+                                   unc_path_visible=True,
+                                   confidence="driver-path"),
+                              severity="critical", key_extra=(uuid, opnum))
+            return
+        # A driver install naming only local paths is how legitimate driver
+        # deployment looks.  Still worth recording, but not as an exploit.
+        self.emitter.emit(ts, "RPC-PRINTNIGHTMARE-DRIVER-ADD", subject,
+                          dict(d, unc_path_visible=True,
+                               driver_paths=[], external_source=False,
+                               confidence="local-paths-only",
+                               note="no off-box driver path observed"),
+                          severity="medium", key_extra=(uuid, opnum))
+
+    def _lsa_anonymous_coercion(self, ts, subject, base, assoc, uuid, opnum):
+        """
+        CVE-2022-26925.  The coercion call itself was always legal; what the
+        May 2022 update changed is that anonymous connections to the LSARPC
+        interface are now refused.  So the finding is the anonymity, observed
+        on an association that then issues a coercion primitive.
+        """
+        self.emitter.emit(ts, "RPC-LSA-ANONYMOUS-COERCION", subject,
+                          dict(base, cve="CVE-2022-26925",
+                               call=COERCION_CALLS[uuid][opnum],
+                               auth=AUTHN_NAMES.get(assoc.auth_type,
+                                                    assoc.auth_type),
+                               anonymous=True),
+                          key_extra=(uuid, opnum))
+
     def _exec_call(self, ts, subject, base, uuid, opnum):
         opname = EXEC_CALLS[uuid][opnum]
         d = dict(base, call=opname)
@@ -1989,6 +2188,7 @@ class RPCEngine:
                 self.emitter.emit(ts, "RPC-NTLM-OVER-SPNEGO", subject, dict(
                     base, kerberos_offered=assoc.kerberos_seen))
             if msg.get("anonymous"):
+                assoc.anonymous = True
                 self.emitter.emit(ts, "RPC-NTLM-ANONYMOUS", subject, dict(base))
                 return
             ident = {}
@@ -2107,6 +2307,12 @@ class WinRMEngine:
                 st.offered.add(s)
             return
         path = parsed.get("path", "")
+
+        # Checked BEFORE the wsman-path gate on purpose: http.sys parses
+        # Accept-Encoding in the kernel before it routes the request, so the
+        # bug is reachable on any path, not just /wsman.
+        self._httpsys_accept_encoding(ts, subject, parsed, path, server_port)
+
         if not is_wsman_path(path):
             return
         if "cleartext" not in st.reported:
@@ -2133,6 +2339,41 @@ class WinRMEngine:
                 "negotiate" in st.offered or "kerberos" in st.offered):
             self.emitter.emit(ts, "WINRM-AUTH-DOWNGRADE", subject, {
                 "selected": scheme, "offered": sorted(st.offered)})
+
+    def _httpsys_accept_encoding(self, ts, subject, parsed, path, server_port):
+        """
+        CVE-2021-31166 and CVE-2022-21907.
+
+        Both are the same wire shape: an Accept-Encoding coding-list element
+        that is empty or whitespace-only, which drives a use-after-free (2021)
+        or double free (2022) in http.sys.  Rapid7 reproduced the 2021 crash
+        against a WinRM-enabled host on 5985 specifically, which is why this
+        belongs here rather than nowhere.
+
+        One finding, both CVEs cited: the wire evidence cannot tell them
+        apart, and the 2022 variant additionally needs EnableTrailerSupport on
+        the host, which is registry state and not observable from a tap.
+        Claiming a specific CVE would be inventing precision we do not have.
+        """
+        if parsed["kind"] != "request":
+            return
+        value = http_header(parsed, "accept-encoding")
+        if not value:
+            return
+        shape = accept_encoding_shape(value)
+        if not shape["empty_elements"]:
+            return
+        d = dict(shape, path=path, port=server_port,
+                 cve="CVE-2021-31166 / CVE-2022-21907",
+                 note="empty coding-list element; the 2022 variant also "
+                      "requires EnableTrailerSupport, which is host state "
+                      "and not observable passively")
+        unusual = (shape["empty_elements"] > 1
+                   or shape["elements"] > HTTPSYS_LONG_LIST
+                   or shape["header_bytes"] > HTTPSYS_LONG_HEADER)
+        d["confidence"] = "crafted" if unusual else "single-empty-element"
+        self.emitter.emit(ts, "WINRM-HTTPSYS-ACCEPT-ENCODING", subject, d,
+                          severity="critical" if unusual else "high")
 
     def _body_checks(self, ts, subject, parsed, data, path):
         ctype = http_header(parsed, "content-type")
@@ -2255,7 +2496,7 @@ class FlowManager:
                         continue
                     hs.pipe_buf += item["data"]
                     self._drain_frames(ts, flow, hs, hs.pipe_buf, client_ip,
-                                       server_ip, from_client)
+                                       server_ip, from_client, over_pipe=True)
                 elif item["kind"] == "gss" and self.config.ntlm_from_smb:
                     assoc = self.rpc._assoc(flow, ts)
                     self.rpc._inspect_auth_value(
@@ -2267,7 +2508,7 @@ class FlowManager:
                            from_client, pipe)
 
     def _drain_frames(self, ts, flow, hs, buf, client_ip, server_ip,
-                      from_client, pipe=""):
+                      from_client, pipe="", over_pipe=False):
         """Pull whole frag_length-framed PDUs out of `buf`, keep the partial."""
         while True:
             try:
@@ -2287,7 +2528,7 @@ class FlowManager:
             pdu = bytes(buf[:n])
             del buf[:n]
             self.rpc.process_pdu(ts, flow, client_ip, server_ip, pdu,
-                                 from_client, pipe or hs.pipe_name)
+                                 from_client, pipe or hs.pipe_name, over_pipe)
 
 
 class RPCWatch:
@@ -2710,6 +2951,21 @@ def _st_co_pdu(ptype, body, call_id=1, pfc=0x03, auth=None, vers=5, vers_minor=0
     return hdr + body + auth
 
 
+def _st_co_pdu_be(ptype, body, call_id=1, pfc=0x03):
+    """Big-endian common header: drep high nibble 0, frag/auth/call_id in BE.
+    parse_co_header / peek_frag_length read those fields per the drep, so this
+    exercises the byte-swapping path (CVE-2022-26809 bind_ack underflow)."""
+    total = CO_HEADER_LEN + len(body)
+    hdr = struct.pack(">BBBB4sHHI", 5, 0, ptype, pfc,
+                      b"\x00\x00\x00\x00", total, 0, call_id)
+    return hdr + body
+
+
+def _st_bind_ack_body_be(sec_addr_len=0):
+    """bind_ack body in big-endian: max_xmit/max_recv/assoc_group + sec_addr_len."""
+    return struct.pack(">HHI", 5840, 5840, 0) + struct.pack(">H", sec_addr_len)
+
+
 def _st_bind_body(interfaces, ctx_ids=None, xfer=_NDR32, assoc_group=0):
     ctx_ids = ctx_ids or list(range(len(interfaces)))
     out = struct.pack("<HHI", 5840, 5840, assoc_group)
@@ -3052,7 +3308,49 @@ def selftest():
     v, _ = _rpc_verdict(list(h.watch.emitter.emitted))
     check("verdict-clean", v == "clean", "verdict=%s codes=%s" % (v, sorted(h.codes)))
 
-    # 22. Catalogue integrity: every declared code has a known severity.
+    # 22. WinReg relay fallback (CVE-2024-43532): winreg bound over ncacn_ip_tcp
+    #     (default port 135, not a named pipe) at RPC_C_AUTHN_LEVEL_CONNECT.
+    h = _STHarness(client="10.20.7.1")
+    _st_bind(h, IF_WINREG, level=RPC_C_AUTHN_LEVEL_CONNECT)
+    check("winreg-relay-fallback",
+          "RPC-WINREG-RELAY-FALLBACK" in h.codes, sorted(h.codes))
+
+    # 23. PrintNightmare (CVE-2021-34527): RpcAddPrinterDriver (opnum 9) naming
+    #     an off-box UNC driver path.
+    h = _STHarness(client="10.20.7.2")
+    _st_bind(h, IF_RPRN)
+    h.c2s(_st_co_pdu(PTYPE_REQUEST, _st_request_body(
+        RPRN_ADD_PRINTER_DRIVER,
+        _st_ndr_wstr("\\\\10.99.99.99\\share\\evil.dll")), call_id=3))
+    check("printnightmare-driver-add",
+          "RPC-PRINTNIGHTMARE-DRIVER-ADD" in h.codes, sorted(h.codes))
+
+    # 24. PetitPotam anonymous coercion (CVE-2022-26925): anonymous bind to the
+    #     LSARPC pipe, then a coercion opnum (EfsRpcOpenFileRaw, opnum 0).
+    h = _STHarness(client="10.20.7.3")
+    _st_bind(h, IF_EFSR_LSA)                      # no auth level -> anonymous
+    h.c2s(_st_co_pdu(PTYPE_REQUEST, _st_request_body(
+        0, _st_ndr_wstr("\\\\10.99.99.99\\x\\y.txt")), call_id=3))
+    check("lsa-anonymous-coercion",
+          "RPC-LSA-ANONYMOUS-COERCION" in h.codes, sorted(h.codes))
+
+    # 25. RPC runtime bind_ack underflow (CVE-2022-26809): big-endian bind_ack
+    #     with a zero secondary-address length, server -> client.
+    h = _STHarness(client="10.20.7.4")
+    h.s2c(_st_co_pdu_be(PTYPE_BIND_ACK, _st_bind_ack_body_be(0)))
+    check("runtime-bindack-underflow",
+          "RPC-RUNTIME-BINDACK-UNDERFLOW" in h.codes, sorted(h.codes))
+
+    # 26. http.sys Accept-Encoding (CVE-2021-31166 / CVE-2022-21907): an empty
+    #     coding-list element on tcp/5985.
+    h = _STHarness(client="10.20.7.5")
+    h.c2s(_st_http_request("POST", "/wsman", {
+        "Host": "dc01:5985", "Accept-Encoding": "gzip,,deflate"},
+        b""), dport=WINRM_HTTP_PORT)
+    check("winrm-httpsys-accept-encoding",
+          "WINRM-HTTPSYS-ACCEPT-ENCODING" in h.codes, sorted(h.codes))
+
+    # 27. Catalogue integrity: every declared code has a known severity.
     bad = [c for c, spec in FINDINGS.items() if spec[0] not in SEVERITY_RANK]
     check("catalogue-severity-integrity", not bad, bad)
 
