@@ -7154,7 +7154,7 @@ const _NETINT_STYLE = {
 // else non-clean — a suspicious finding (amber). Mirrors the server's _ni_rank so the
 // chips colour every scanner's verdicts without enumerating them all.
 const _NETINT_CLEAN = new Set(['clean', 'unknown', 'ok', 'none', 'hardened', 'learned', 'n/a', 'no-traffic', 'disabled', 'not-applicable', 'randomization', 'fhrp', 'observed']);
-const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'attack']);
+const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'exploit', 'attack']);
 function _netintRank(verdict) {
     const v = verdict || 'unknown';
     if (_NETINT_CLEAN.has(v)) return 0;
@@ -8728,6 +8728,7 @@ const _SNMP_VERDICT_STYLE = {
     amplification:   ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ SNMP GetBulk amplification — reflection-DDoS vector'],
     cleartext:       ['bg-red-950/60 border-red-800 text-red-300', '🛑 SNMP v1/v2c — community string exposed in cleartext'],
     'write-exposed': ['bg-red-950/60 border-red-800 text-red-300', '🛑 SNMP write community on the wire — device takeover risk'],
+    exploit:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 SNMP CVE signature on the wire — USM HMAC bypass / Cisco RCE / snmptrapd overflow / VACM malformed-OID'],
     unknown:         ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
 };
 function _snmpFillIfaces() {

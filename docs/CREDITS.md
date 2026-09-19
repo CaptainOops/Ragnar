@@ -14,11 +14,11 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~145 CVEs actively detected.** 147 distinct CVE IDs are named across the detector code;
-  145 are actively detected.
+- **~159 CVEs actively detected.** 161 distinct CVE IDs are named across the detector code;
+  159 are actively detected.
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **29 CVEs from 2023, 37 from 2024, 22 from 2025, and
-  7 already from 2026.**
+- Weighted to the current threat wave: **29 CVEs from 2023, 37 from 2024, 24 from 2025, and
+  8 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
   in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba) and **Dell
@@ -31,6 +31,15 @@ behind them is Solarflere's work.
   **NSEC3** DoS (CVE-2023-50868), **NXNSAttack** (CVE-2020-8616), **MaginotDNS**
   cache-poisoning (CVE-2021-25220), **DNSBomb** (CVE-2024-33655) and **SAD DNS**
   (CVE-2020-25705), plus KeyTrap/NSEC3 posture folded into the active DNS Doctor.
+- **SNMP / multicast / time-plane** — the in-app **SNMP Watch** now reads raw BER off the
+  wire for **USM HMAC truncation** (CVE-2008-0960), **Cisco SNMP RCE** (CVE-2017-6736..6744,
+  CISA KEV), **snmptrapd overflow** (CVE-2025-68615) and **net-snmp VACM malformed-OID**
+  (CVE-2022-24805/24807/24809/24810); **IGMP/MLD Watch** flags malformed multicast control —
+  fragmented membership (CVE-2019-5608), invalid group-record type (CVE-2025-50681) and
+  query source-count overrun (CVE-2026-53275), both address families; and **NTP Watch** names
+  monlist amplification (CVE-2013-5211), spoofed Kiss-o'-Death (CVE-2015-7704/7705),
+  loopback-source ACL bypass (CVE-2014-9298/9751) and the zero-origin sync block
+  (CVE-2020-11868).
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
