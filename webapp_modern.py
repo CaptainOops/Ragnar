@@ -578,6 +578,84 @@ def bt_pan_client_status():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # ============================================================================
+# MESH GATEWAY (hub mode)
+# ============================================================================
+# When the app reaches THIS unit directly (e.g. over the Bluetooth-handover LAN
+# address) it can still drive the rest of the fleet: it tags a request with
+# `X-Ragnar-Target: <peer node id>`, and this unit — which is on the tailnet —
+# relays the whole request to that peer and returns the reply. The phone talks
+# only to this hub over one Wi-Fi hop; the hub reaches the fleet over Tailscale.
+# The app is pure REST, so a plain HTTP relay covers all of it.
+#
+# The peer accepts a relayed request via the accept-guard in
+# check_authentication: it must come from a verified mesh peer AND carry a valid
+# mesh-secret proof. So this FULL-access relay (any endpoint, unlike the scoped
+# peer roles) is gated behind the mesh secret — tailnet-tag trust alone never
+# enables it.
+
+# Headers that must not be copied verbatim across the relay.
+_GATEWAY_HOP_BY_HOP = {
+    'content-encoding', 'transfer-encoding', 'connection', 'content-length',
+    'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers',
+    'upgrade',
+}
+
+
+def _proxy_forward_headers():
+    """Minimal header set to carry to the peer — never this hub's own session
+    cookie or Host (the peer authenticates the relay by mesh proof, not by this
+    hub's session)."""
+    keep = {}
+    for h in ('Content-Type', 'Accept', 'X-Requested-With'):
+        v = request.headers.get(h)
+        if v:
+            keep[h] = v
+    return keep
+
+
+def _maybe_mesh_gateway():
+    """Relay the operator's request to a targeted peer, or None to serve locally.
+
+    Only reached once THIS unit has already authenticated the operator, so a
+    relayed request always originates from a logged-in (or open-box) hub."""
+    target = request.headers.get('X-Ragnar-Target', '').strip()
+    if not target or not _mesh_enabled():
+        return None
+    node = _resolve_delegate_node(target)
+    if not node:
+        # Unknown id, or the target is this very unit (self is not a peer): serve
+        # locally. Resolving against the peer roster also blocks relaying to an
+        # arbitrary address (no SSRF).
+        return None
+    base = mesh_manager.peer_url(node, _mesh_node_port(), request.path)
+    if not base:
+        return jsonify({'success': False, 'error': 'Target unit has no tailnet address'}), 502
+    qs = request.query_string.decode('latin-1') if request.query_string else ''
+    url = f'{base}?{qs}' if qs else base
+    headers = _proxy_forward_headers()
+    # The proof is over the PATH only — the peer verifies against request.path,
+    # which never includes the query string.
+    headers.update(mesh_manager.auth_headers(request.method, request.path))
+    headers['X-Ragnar-Proxy'] = '1'
+    import requests  # imported locally, as elsewhere in this module
+    try:
+        resp = requests.request(
+            request.method, url,
+            data=request.get_data(),
+            headers=headers,
+            timeout=(5, 120),
+            allow_redirects=False,
+        )
+    except requests.RequestException as exc:
+        return jsonify({'success': False, 'error': f'Gateway to unit failed: {exc}'}), 504
+    # requests has already decoded any content-encoding into .content, so relay
+    # the decoded body and drop the encoding/length headers (Flask re-sets them).
+    out_headers = [(k, v) for k, v in resp.headers.items()
+                   if k.lower() not in _GATEWAY_HOP_BY_HOP]
+    return Response(resp.content, status=resp.status_code, headers=out_headers)
+
+
+# ============================================================================
 # AUTHENTICATION MIDDLEWARE
 # ============================================================================
 
@@ -773,7 +851,7 @@ def check_authentication():
                 if not is_push:
                     return jsonify({'error': 'Forbidden',
                                     'detail': 'share token: file push only'}), 403
-        return  # No auth set up yet, allow everyone else
+        return _maybe_mesh_gateway()  # No auth set up: allow, but still relay if targeted
 
     # Whitelist: paths that must be accessible without authentication
     whitelist_prefixes = ['/login', '/api/auth/', '/api/kill', '/api/provenance']
@@ -825,6 +903,17 @@ def check_authentication():
     # Tailnet membership alone is NOT enough. Every laptop and phone on the
     # tailnet would otherwise inherit Ragnar's full offensive toolset.
     if shared_data.config.get('mesh_enabled'):
+        # Mesh gateway (full relay). A request forwarded by a peer hub on behalf
+        # of an operator authenticated THERE. Unlike the scoped peer roles below,
+        # this grants ANY endpoint — so it is gated behind the mesh SECRET as a
+        # second factor: _is_mesh_peer_request() requires a valid HMAC proof
+        # whenever a secret is set, and we also require the secret to exist, so a
+        # tag-only mesh never enables it. The proxying hub proved the operator's
+        # session before ever forwarding.
+        if (request.headers.get('X-Ragnar-Proxy')
+                and _mesh_secret() and _is_mesh_peer_request()):
+            g.mesh_gateway = True
+            return
         peer_read = request.method == 'GET' and path.startswith('/api/mesh/')
         peer_control = request.method == 'POST' and path == '/api/mesh/control'
         # Scan delegation writes a peer may make: start a scan on this unit, and
@@ -897,6 +986,10 @@ def check_authentication():
         if path.startswith('/api/'):
             return jsonify({'error': 'Unauthorized', 'auth_required': True}), 401
         return redirect('/login')
+
+    # Authenticated operator: if the request targets another unit, relay it there
+    # over the mesh (hub mode); otherwise serve it here as normal.
+    return _maybe_mesh_gateway()
 
 # ============================================================================
 # RUSENSE PROXY

@@ -103,6 +103,35 @@ approaches:
 
 ---
 
+## Mesh gateway (reach the fleet through one unit)
+
+The mobile app normally reaches units over Tailscale — the phone is on the
+tailnet, so switching units just repoints at another peer's `100.x` address.
+But when the phone reaches a unit **directly** — over the
+[Bluetooth handover](bluetooth-pan.md) LAN address, or any plain LAN IP — the
+phone is *not* on the tailnet and cannot dial a peer's `100.x`. So the
+directly-connected unit acts as a **gateway**: it is on the tailnet, so it
+relays the app's requests to any other unit and returns the reply. The phone
+talks only to that one box (one Wi-Fi hop); the box reaches the fleet over
+Tailscale. Because the app is pure REST, a plain HTTP relay covers all of it.
+
+- **App:** in hub mode, picking another unit sets a relay *target* instead of
+  changing the address; every request then carries `X-Ragnar-Target: <peer node
+  id>`. The fleet roster (`/api/mesh/status`) is never relayed, so the switcher
+  always lists the fleet from the connected box.
+- **Box (hub):** `_maybe_mesh_gateway()` resolves the target against the peer
+  roster (so it can only relay to a known mesh unit — no SSRF), forwards the
+  request with `mesh_manager.auth_headers` + an `X-Ragnar-Proxy` marker, and
+  relays the response.
+- **Box (target):** accepts a relayed request for **any** endpoint only when it
+  carries `X-Ragnar-Proxy` **and** a valid mesh-secret proof from a verified
+  peer. This is a deliberate expansion of the normally-scoped peer role (which
+  allows only reads + a few writes), so it is **gated behind the mesh secret** —
+  set one (see [the mesh secret](#hardening-a-shared-tailnet-the-mesh-secret))
+  to enable it. Tailnet-tag trust alone never opens the full relay.
+
+---
+
 ## Unit identity — the Viking army
 
 Units are **individuals, not clones**. A mesh of boxes all called `raspberry` is
