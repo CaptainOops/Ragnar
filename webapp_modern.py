@@ -637,6 +637,7 @@ def _maybe_mesh_gateway():
     # which never includes the query string.
     headers.update(mesh_manager.auth_headers(request.method, request.path))
     headers['X-Ragnar-Proxy'] = '1'
+    import requests  # imported locally, as elsewhere in this module
     try:
         resp = requests.request(
             request.method, url,
