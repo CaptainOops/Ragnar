@@ -38,7 +38,9 @@ _STATE = {}
 _DEFAULTS = {
     'deauth_flood_threshold': 15,    # deauth/disassoc frames in one report window
     'deauth_realert_sec': 60,        # don't re-alert the same flood more often
-    'rogue_ap_enabled': True,        # alert on new BSSIDs after baseline
+    'rogue_ap_enabled': False,       # OFF: a channel-hopping ESP32 sees every neighbour
+                                     # AP as 'new' -> pure noise in Watchtower. Opt in via
+                                     # config cyd_rogue_ap_enabled if you really want it.
 }
 _get_cfg = None
 
