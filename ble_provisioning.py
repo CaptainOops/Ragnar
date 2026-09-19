@@ -395,9 +395,20 @@ class BleProvisioningServer:
                     "Run update_ragnar.sh, or: sudo apt install -y python3-gi python3-dbus"
                 )
 
-            dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+            # Attach D-Bus to our GLib loop via a PRIVATE connection. The shared
+            # dbus.SystemBus() is cached per-process, and inside the webapp other
+            # code (bt_pan and friends) already created it WITHOUT a main loop —
+            # then exporting our GATT objects on that cached connection fails with
+            # "connections must be attached to a main loop by passing mainloop=…".
+            # A private bus with an explicit mainloop is independent of that shared
+            # state, so BLE provisioning works whether it is run standalone or
+            # embedded in the running webapp (the latter always hit the error).
+            mainloop = dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
             self._glib = GLib
-            bus = dbus.SystemBus()
+            try:
+                bus = dbus.SystemBus(private=True, mainloop=mainloop)
+            except TypeError:  # very old dbus-python without the kwarg
+                bus = dbus.SystemBus(private=True)
             self._bus = bus
 
             adapter_path = f'/org/bluez/{self.providers.hci}'
@@ -645,6 +656,13 @@ class BleProvisioningServer:
             self._ready.set()
         finally:
             self._running = False
+            # Close the private connection so it does not leak / warn at GC.
+            try:
+                if self._bus is not None:
+                    self._bus.close()
+            except Exception:
+                pass
+            self._bus = None
 
 
 def _build_dbus_classes():
