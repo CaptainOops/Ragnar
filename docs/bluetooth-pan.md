@@ -1,9 +1,45 @@
-# Bluetooth access point (PAN) — a direct link to the box
+# Bluetooth: how the app connects over it
 
 The [Ragnar Mobile](https://github.com/PierreGode/Ragnarmobile) app normally
-reaches units over the [Ragnar Mesh](mesh.md) (Tailscale). **Bluetooth PAN** is a
-second way in, for when Tailscale or Wi-Fi can't reach the box — no internet, a
-locked-down network, or out in the field.
+reaches units over the [Ragnar Mesh](mesh.md) (Tailscale). There are two
+Bluetooth ideas below — read this first, because only one of them works with
+Android.
+
+## Bluetooth handover (this is the one that works)
+
+**Android will not run an IP stack over a Bluetooth PAN** — it connects the
+profile but never DHCPs, in *either* direction (box-as-AP and box-as-client both
+proven dead on real devices, IPv4 and IPv6 alike). So Bluetooth cannot carry the
+app's traffic.
+
+Instead, Bluetooth does the one thing it is good at here: a tiny **GATT read
+that hands over the box's LAN address**. The app scans for the box over BLE,
+reads its IP + port, then connects to that address **over Wi-Fi** — where the
+traffic is fast. A small BLE read works on Android where PAN does not.
+
+- **Box:** Config → **Bluetooth handover** → on (`ble_provisioning.py`, GATT
+  service `fc453ae1-…`, characteristic `net_status` returns `{api_port, ifaces}`).
+- **App:** Connect → Bluetooth → **Find Ragnar over Bluetooth** (`src/ble.ts`),
+  pick the box, done. The box is added as an ordinary Wi-Fi unit.
+- **Requirement:** the phone and the box must be on the **same network** — the
+  handed-over address is a LAN address, reached over Wi-Fi, not over Bluetooth.
+
+This is the recommended Bluetooth path. The PAN documentation below is kept for
+reference and for non-Android clients, but does not work with Android phones.
+
+---
+
+# Bluetooth access point (PAN) — does not work with Android
+
+> **Superseded — see [Bluetooth handover](#bluetooth-handover-this-is-the-one-that-works) above.**
+> Android connects the PAN profile but runs no IP on it, so this never reaches
+> the box from an Android phone. Kept for reference / non-Android clients only.
+
+The box becomes a Bluetooth **network access point (NAP)**. A phone pairs it in
+its own Bluetooth settings and turns on tethering, which gives the phone an IP
+route to the box. The app then talks ordinary **HTTP** to the box's PAN address
+— so the whole app, waterfall included, works unchanged over Bluetooth.
+
 
 The box becomes a Bluetooth **network access point (NAP)**. A phone pairs it in
 its own Bluetooth settings and turns on tethering, which gives the phone an IP
