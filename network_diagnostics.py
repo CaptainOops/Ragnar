@@ -18791,7 +18791,7 @@ def _rpc_selftest():
 def _bfd_selftest():
     """Adapt bfdwatch.selftest() to the aggregator's scenarios/scapy shape. The BFD
     decode+detect path is pure-Python (own libpcap reader; scapy only for the CLI's
-    live mode, unused here). Includes the engine's own 39-case Tier-1 suite."""
+    live mode, unused here). Includes the engine's own 48-case Tier-1 suite."""
     r = bfdwatch.selftest()
     scen = [{'name': c['name'], 'pass': c['pass']} for c in r['scenarios']]
     return {'success': r['success'], 'scenarios': scen}

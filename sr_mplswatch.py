@@ -337,6 +337,33 @@ OSPF_ASID_FLAG_V = 0x20
 OSPF_ASID_FLAG_L = 0x10
 OSPF_ASID_FLAG_S = 0x08
 
+# Minimum value length for each SR sub-TLV, from its fixed fields.  A declared
+# length below this is the "size is not validated" half of the FRR OSPF CVEs:
+# the parser reads fields the advertisement never carried.
+#   ("bgp",  container, type) / ("ospf", container, type) / ("isis", container, type)
+SR_TLV_MIN_LEN: Dict[Tuple[str, str, int], int] = {
+    # RFC 8669 s3.1: RESERVED(1) FLAGS(2) LABEL-INDEX(4)
+    ("bgp", "prefix-sid", 1): 7,
+    # RFC 8669 s3.2: RESERVED(2) then 6-octet (base,range) descriptors
+    ("bgp", "prefix-sid", 3): 8,
+    # RFC 8665 s5: FLAGS(1) RESERVED(1) MT-ID(1) ALGORITHM(1) SID(3 or 4)
+    ("ospf", "ext-prefix", OSPF_SUB_PREFIX_SID): 7,
+    # RFC 8665 s6.1: FLAGS(1) RESERVED(1) MT-ID(1) WEIGHT(1) SID(3 or 4)
+    ("ospf", "ext-link", OSPF_SUB_ADJ_SID): 7,
+    ("ospf", "ext-link", OSPF_SUB_LAN_ADJ_SID): 7,
+    # RFC 8665 s3.2/s3.3: RANGE SIZE(3) RESERVED(1) + a SID/Label sub-TLV header
+    ("ospf", "router-info", OSPF_RI_TLV_SID_LABEL_RANGE): 8,
+    ("ospf", "router-info", OSPF_RI_TLV_SR_LOCAL_BLOCK): 8,
+    # RFC 8667 s2.1: FLAGS(1) ALGORITHM(1) SID(4 index or 3 label)
+    ("isis", "prefix-reach", ISIS_SUB_PREFIX_SID): 5,
+    # RFC 8667 s2.2.1: FLAGS(1) WEIGHT(1) SID
+    ("isis", "neighbour", ISIS_SUB_ADJ_SID): 5,
+    ("isis", "neighbour", ISIS_SUB_LAN_ADJ_SID): 5,
+    # RFC 8667 s3.1/s3.3: FLAGS(1) then RANGE(3) + SID/Label sub-TLV
+    ("isis", "router-cap", ISIS_SUB_SR_CAPABILITY): 6,
+    ("isis", "router-cap", ISIS_SUB_SR_LOCAL_BLOCK): 6,
+}
+
 _MAX_ISIS_TLVS = 128
 _MAX_ISIS_SUBTLVS = 64
 _MAX_OSPF_LSAS = 64
@@ -396,6 +423,117 @@ INTERFACE_ROLES = ("ce", "core", "unknown")
 
 
 # ---------------------------------------------------------------------------
+# CVE references
+#
+# Every CVE identifier that appears ANYWHERE in this module must be a key here,
+# and the conformance harness enforces that by walking the source for
+# CVE-\d{4}-\d{4,} literals.  This registry exists because it did not: an
+# earlier revision cited "CVE-2014-7271" in SRM-TTL-ZERO-FORWARDED as an MPLS
+# TTL-handling flaw.  CVE-2014-7271 is SDDM, a local desktop login bypass.  The
+# reference was invented and passed all six test tiers, because nothing in the
+# suite checked that a CVE id corresponded to anything at all.
+#
+# `score` is the NVD/CNA figure only.  Where NVD has no assessment the entry
+# records None rather than an aggregator's number - aggregators disagree with
+# the CNA often enough that using one is how a wrong severity gets shipped.
+# ---------------------------------------------------------------------------
+
+CVE_REFERENCES: Dict[str, Dict[str, Any]] = {
+    "CVE-2014-7271": {
+        "score": 7.8, "source": "NVD",
+        "component": "SDDM before 0.10.0 - local login bypass as user 'sddm'",
+        "owner": None, "detected_here": False, "retracted": True,
+        "note": "RETRACTED. Cited in an earlier revision as an MPLS TTL flaw. It is "
+                "not: it is a local desktop display-manager login bypass with no "
+                "network protocol content whatsoever. Kept here so the mistake is "
+                "on the record and the identifier can never be quietly reused.",
+    },
+    "CVE-2023-31490": {
+        "score": 7.5, "source": "NVD",
+        "component": "FRRouting bgpd - bgp_attr_psid_sub() missing length checks "
+                     "in the BGP Prefix-SID attribute's sub-TLVs",
+        "owner": "sr-mplswatch", "detected_here": True,
+        "finding": "SRM-SR-TLV-OVERRUN",
+    },
+    "CVE-2024-31948": {
+        "score": 6.5, "source": "NVD",
+        "component": "FRRouting bgpd through 9.1 - malformed Prefix SID attribute "
+                     "in a BGP UPDATE crashes the daemon",
+        "owner": "sr-mplswatch", "detected_here": True,
+        "finding": "SRM-SR-TLV-OVERRUN",
+    },
+    "CVE-2024-31950": {
+        "score": 6.5, "source": "NVD",
+        "component": "FRRouting ospfd through 9.1 - ospf_te_parse_ri reads Segment "
+                     "Routing sub-TLVs of the Router Information LSA without "
+                     "validating their size",
+        "owner": "sr-mplswatch", "detected_here": True,
+        "finding": "SRM-SR-TLV-OVERRUN",
+    },
+    "CVE-2024-31951": {
+        "score": 6.5, "source": "NVD",
+        "component": "FRRouting ospfd through 9.1 - ospf_te_parse_ext_link reads "
+                     "Segment Routing Adjacency SID sub-TLVs of the Opaque LSA "
+                     "Extended Link without validating their lengths",
+        "owner": "sr-mplswatch", "detected_here": True,
+        "finding": "SRM-SR-TLV-OVERRUN",
+    },
+    # -- considered and REJECTED during the Sept 2026 sweep -----------------
+    # Recorded so they are not re-proposed, and so the reason survives.
+    "CVE-2024-31949": {
+        "score": 6.5, "source": "NVD",
+        "component": "FRRouting bgpd - infinite loop on a MP/GR dynamic capability",
+        "owner": "bgpwatch", "detected_here": False,
+        "rejected": "BGP capability negotiation, not Segment Routing.",
+    },
+    "CVE-2022-26125": {
+        "score": None, "source": "MITRE",
+        "component": "FRRouting isisd - input length checks in isis_tlvs.c",
+        "owner": "isiswatch", "detected_here": False,
+        "rejected": "Generic IS-IS TLV handling, not the SR sub-TLVs.",
+    },
+    "CVE-2022-26126": {
+        "score": None, "source": "MITRE",
+        "component": "FRRouting - strdup on a non-terminated string in "
+                     "isis_nb_notifications.c",
+        "owner": "isiswatch", "detected_here": False,
+        "rejected": "Notification path; no wire signature to key on.",
+    },
+    "CVE-2023-44204": {
+        "score": None, "source": "Juniper CNA",
+        "component": "Juniper Junos rpd - malformed BGP UPDATE crashes the daemon",
+        "owner": "bgpwatch", "detected_here": False,
+        "rejected": "The advisory never identifies the offending field.",
+    },
+    "CVE-2024-21593": {
+        "score": None, "source": "Juniper CNA",
+        "component": "Juniper - 'a specific MPLS packet' causes a PFE crash",
+        "owner": None, "detected_here": False,
+        "rejected": "The advisory never says which packet. No signature exists.",
+    },
+    "CVE-2024-27913": {
+        "score": None, "source": "MITRE",
+        "component": "FRRouting ospfd - ospf_te_parse_te reads a missing attribute",
+        "owner": "ospfwatch", "detected_here": False,
+        "rejected": "RFC 3630 MPLS-TE LSA parsing, not Segment Routing, and NVD "
+                    "publishes no assessment - only aggregators score it 6.5.",
+    },
+    "CVE-2015-5434": {
+        "score": 6.5, "source": "NVD",
+        "component": "HPE Comware 5/7, H3C - VRF hopping via MPLS label injection",
+        "owner": "vrfwatch", "detected_here": False,
+        "note": "Named only in the scope header. vrfwatch owns the detection; "
+                "sr-mplswatch is the generic MPLS+SR layer.",
+    },
+    "CVE-2015-8087": {
+        "score": None, "source": "Huawei PSIRT hw-457933",
+        "component": "Huawei - same VRF-hopping mechanism, same researcher",
+        "owner": "vrfwatch", "detected_here": False,
+        "note": "Sibling of CVE-2015-5434. Named only in the scope header.",
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Findings catalogue
 #
 # Three-class split, ciscoguard / vrfwatch precedent:
@@ -428,8 +566,10 @@ FINDINGS: Dict[str, Dict[str, str]] = {
     "SRM-TTL-ZERO-FORWARDED": {
         "severity": "high", "klass": "ATTACK", "category": "mpls",
         "title": "Labelled frame forwarded with an expired TTL",
-        "desc": "The outermost label carries TTL 0. A conforming LSR drops or punts "
-                "this. Seeing it forwarded is TTL-handling abuse (CVE-2014-7271 class).",
+        "desc": "The outermost label carries TTL 0. RFC 3032 s2.4.2 requires an LSR "
+                "that decrements a label TTL to zero to stop forwarding the labelled "
+                "packet. Seeing one still moving means some hop is not decrementing, or "
+                "the stack was built with a TTL the forwarding plane never set.",
     },
     "SRM-TTL-PROBE-SWEEP": {
         "severity": "medium", "klass": "ATTACK", "category": "mpls",
@@ -516,6 +656,17 @@ FINDINGS: Dict[str, Dict[str, str]] = {
                 "same algorithm. The SR control plane is being fed inconsistent "
                 "segment-to-prefix mappings. Sources are compared across BGP, IS-IS and "
                 "OSPFv2, so a cross-protocol disagreement is visible too.",
+    },
+    "SRM-SR-TLV-OVERRUN": {
+        "severity": "high", "klass": "ATTACK", "category": "sr-mpls",
+        "title": "Segment Routing TLV length inconsistent with its container",
+        "desc": "A TLV or sub-TLV in an SR-bearing structure declares a length that "
+                "runs past the container holding it, or is too short for the fixed "
+                "fields it must carry. A parser that reads the declared length "
+                "without checking it walks off the buffer. This is the wire condition "
+                "behind CVE-2023-31490, CVE-2024-31948, CVE-2024-31950 and "
+                "CVE-2024-31951, all of which are unvalidated SR TLV lengths in "
+                "FRRouting's BGP and OSPF Segment Routing parsers.",
     },
     "SRM-SRGB-CONFLICT": {
         "severity": "high", "klass": "ATTACK", "category": "sr-mpls",
@@ -1273,7 +1424,9 @@ def parse_bgp_update_attrs(body: bytes) -> List[Dict[str, Any]]:
         vend = min(end, vstart + alen)
         if vend < vstart:
             break
-        attrs.append({"flags": flags, "type": atype, "value": body[vstart:vend]})
+        attrs.append({"flags": flags, "type": atype, "value": body[vstart:vend],
+                      "available": max(0, end - vstart),
+                      "overrun": (vstart + alen) > end})
         off = vstart + alen
         guard += 1
     return attrs
@@ -1281,7 +1434,8 @@ def parse_bgp_update_attrs(body: bytes) -> List[Dict[str, Any]]:
 
 def parse_prefix_sid(value: bytes) -> Dict[str, Any]:
     """BGP Prefix-SID attribute (RFC 8669 s3): TLVs of {type, len(2), value}."""
-    out: Dict[str, Any] = {"label_index": None, "srgb": [], "srv6_service": False}
+    out: Dict[str, Any] = {"label_index": None, "srgb": [], "srv6_service": False,
+                           "tlvs": []}
     off = 0
     guard = 0
     while off + 3 <= len(value) and guard < 16:
@@ -1290,6 +1444,9 @@ def parse_prefix_sid(value: bytes) -> Dict[str, Any]:
         vstart = off + 3
         vend = min(len(value), vstart + tlen)
         v = value[vstart:vend]
+        out["tlvs"].append({"type": ttype, "len": tlen, "value": v,
+                            "available": max(0, len(value) - vstart),
+                            "overrun": (vstart + tlen) > len(value)})
         if ttype == BGP_PREFIX_SID_TLV_LABEL_INDEX and len(v) >= 7:
             # RESERVED(1) FLAGS(2) LABEL-INDEX(4)
             out["label_index"] = struct.unpack_from("!I", v, 3)[0]
@@ -1493,7 +1650,9 @@ def parse_isis_tlvs(data: bytes, start: int, end: int,
         vend = min(end, vstart + tlen)
         if vend < vstart:
             break
-        out.append({"type": ttype, "len": tlen, "value": data[vstart:vend]})
+        out.append({"type": ttype, "len": tlen, "value": data[vstart:vend],
+                    "available": max(0, end - vstart),
+                    "overrun": (vstart + tlen) > end})
         off = vstart + tlen
         guard += 1
     return out
@@ -1698,7 +1857,9 @@ def parse_ospf_tlvs(value: bytes, cap: int = _MAX_OSPF_TLVS) -> List[Dict[str, A
         vend = min(len(value), vstart + tlen)
         if vend < vstart:
             break
-        out.append({"type": ttype, "len": tlen, "value": value[vstart:vend]})
+        out.append({"type": ttype, "len": tlen, "value": value[vstart:vend],
+                    "available": max(0, len(value) - vstart),
+                    "overrun": (vstart + tlen) > len(value)})
         off = vstart + tlen + ((-tlen) % 4)
     return out
 
@@ -2413,7 +2574,14 @@ class SRMPLSEngine:
         labelled: List[Tuple[str, int]] = []
         for a in attrs:
             if a["type"] == BGP_ATTR_PREFIX_SID:
+                # CVE-2024-31948: the attribute itself may claim more octets
+                # than the UPDATE carries.
+                self._check_sr_tlvs("bgp", "path-attribute", [a], ts,
+                                    cves=self.CVES_BGP_PSID, originator=originator)
                 psid = parse_prefix_sid(a["value"])
+                # CVE-2023-31490: bgp_attr_psid_sub() reads the sub-TLVs.
+                self._check_sr_tlvs("bgp", "prefix-sid", psid["tlvs"], ts,
+                                    cves=self.CVES_BGP_PSID, originator=originator)
             elif a["type"] == BGP_ATTR_MP_REACH_NLRI:
                 mp = parse_mp_reach_labeled(a["value"])
                 labelled.extend(mp["routes"])
@@ -2502,6 +2670,47 @@ class SRMPLSEngine:
                            declared=[lo, hi], outside=outside)
         self.stats["evictions"] += _prune(self.srgb_adv, _CAP_SID_OWNERS)
         self.srgb_adv[originator] = list(ranges)
+
+    # -- SR TLV length conformance -----------------------------------------
+
+    CVES_BGP_PSID = ("CVE-2023-31490", "CVE-2024-31948")
+    CVES_OSPF_RI = ("CVE-2024-31950",)
+    CVES_OSPF_EXT = ("CVE-2024-31951",)
+
+    def _check_sr_tlvs(self, protocol: str, container: str,
+                       entries: List[Dict[str, Any]], ts: float,
+                       cves: Tuple[str, ...] = (), **ev: Any) -> None:
+        """Both halves of "the length was not validated".
+
+        A declared length that runs past its container is what walks a parser
+        off the buffer; a declared length SHORTER than the sub-TLV's fixed
+        fields is what makes it read values the advertisement never carried.
+        The module used to absorb both silently - every TLV walker clamped
+        with min(), so the malformation was seen and thrown away."""
+        # The dedup key carries the ORIGINATOR. Without it a single malformed
+        # peer suppresses every other peer sending the same malformed TLV for
+        # the whole dedup window - including the same condition arriving over
+        # the other address family, which is how the pcap tier caught this.
+        who = str(ev.get("originator", "?"))
+        for e in entries:
+            t = e.get("type")
+            if e.get("overrun"):
+                self._fire("SRM-SR-TLV-OVERRUN",
+                           "%s/%s/%s/%s" % (protocol, container, t, who), ts,
+                           protocol=protocol, container=container, tlv_type=t,
+                           declared_len=e.get("len"), available=e.get("available"),
+                           reason="declared length runs past its container",
+                           cves=list(cves), **ev)
+                continue
+            minimum = SR_TLV_MIN_LEN.get((protocol, container, t))
+            if minimum is not None and e.get("len", 0) < minimum:
+                self._fire("SRM-SR-TLV-OVERRUN",
+                           "%s/%s/%s/%s/short" % (protocol, container, t, who), ts,
+                           protocol=protocol, container=container, tlv_type=t,
+                           declared_len=e.get("len"), required_min=minimum,
+                           reason="declared length is shorter than the fixed fields "
+                                  "this sub-TLV must carry",
+                           cves=list(cves), **ev)
 
     def _record_algos(self, originator: str, algos: List[int]) -> None:
         self.stats["evictions"] += _prune(self.sr_algos, _CAP_SID_OWNERS)
@@ -2636,7 +2845,10 @@ class SRMPLSEngine:
                 # RFC 7981 s2: Router ID(4) | Flags(1) | sub-TLVs
                 if len(value) < 5:
                     continue
-                for sub in parse_isis_subtlvs(value[5:]):
+                cap_subs = parse_isis_subtlvs(value[5:])
+                self._check_sr_tlvs("isis", "router-cap", cap_subs, ts,
+                                    originator=originator)
+                for sub in cap_subs:
                     if sub["type"] == ISIS_SUB_SR_CAPABILITY:
                         saw_sr = True
                         self._record_srgb(
@@ -2652,6 +2864,8 @@ class SRMPLSEngine:
                             originator, parse_isis_sr_algorithms(sub["value"]))
             elif t in ISIS_PREFIX_TLVS:
                 for entry in isis_prefix_entries(t, value):
+                    self._check_sr_tlvs("isis", "prefix-reach", entry["subtlvs"], ts,
+                                        originator=originator, prefix=entry["prefix"])
                     for sub in entry["subtlvs"]:
                         if sub["type"] != ISIS_SUB_PREFIX_SID:
                             continue
@@ -2665,6 +2879,9 @@ class SRMPLSEngine:
             elif t in ISIS_NEIGHBOR_TLVS:
                 mt = t in (ISIS_TLV_MT_IS_NEIGH, ISIS_TLV_MT_IS_NEIGH_ATTR)
                 for entry in isis_neighbor_entries(value[2:] if mt else value):
+                    self._check_sr_tlvs("isis", "neighbour", entry["subtlvs"], ts,
+                                        originator=originator,
+                                        neighbor=entry["neighbor"])
                     for sub in entry["subtlvs"]:
                         if sub["type"] == ISIS_SUB_ADJ_SID:
                             a = parse_isis_adj_sid(sub["value"])
@@ -2697,7 +2914,10 @@ class SRMPLSEngine:
             last_originator = originator
             ot = lsa["opaque_type"]
             if ot == OSPF_OPAQUE_ROUTER_INFO:
-                for tlv in parse_ospf_tlvs(lsa["body"]):
+                ri_tlvs = parse_ospf_tlvs(lsa["body"])
+                self._check_sr_tlvs("ospf", "router-info", ri_tlvs, ts,
+                                    cves=self.CVES_OSPF_RI, originator=originator)
+                for tlv in ri_tlvs:
                     if tlv["type"] == OSPF_RI_TLV_SID_LABEL_RANGE:
                         saw_sr = True
                         self._record_srgb(
@@ -2711,12 +2931,18 @@ class SRMPLSEngine:
                         saw_sr = True
                         self._record_algos(originator, list(tlv["value"][:32]))
             elif ot == OSPF_OPAQUE_EXT_PREFIX:
-                for tlv in parse_ospf_tlvs(lsa["body"]):
+                ep_tlvs = parse_ospf_tlvs(lsa["body"])
+                self._check_sr_tlvs("ospf", "ext-prefix-lsa", ep_tlvs, ts,
+                                    cves=self.CVES_OSPF_EXT, originator=originator)
+                for tlv in ep_tlvs:
                     if tlv["type"] != OSPF_TLV_EXT_PREFIX:
                         continue
                     ep = parse_ospf_ext_prefix(tlv["value"])
                     if not ep:
                         continue
+                    self._check_sr_tlvs("ospf", "ext-prefix", ep["subtlvs"], ts,
+                                        cves=self.CVES_OSPF_EXT, originator=originator,
+                                        prefix=ep["prefix"])
                     for sub in ep["subtlvs"]:
                         if sub["type"] != OSPF_SUB_PREFIX_SID:
                             continue
@@ -2728,12 +2954,19 @@ class SRMPLSEngine:
                                                 p["algorithm"], p["kind"], p["sid"], ts,
                                                 mapping_server=p["mapping_server"])
             elif ot == OSPF_OPAQUE_EXT_LINK:
-                for tlv in parse_ospf_tlvs(lsa["body"]):
+                el_tlvs = parse_ospf_tlvs(lsa["body"])
+                self._check_sr_tlvs("ospf", "ext-link-lsa", el_tlvs, ts,
+                                    cves=self.CVES_OSPF_EXT, originator=originator)
+                for tlv in el_tlvs:
                     if tlv["type"] != OSPF_TLV_EXT_LINK:
                         continue
                     el = parse_ospf_ext_link(tlv["value"])
                     if not el:
                         continue
+                    # CVE-2024-31951: Adjacency SID sub-TLVs, lengths unvalidated.
+                    self._check_sr_tlvs("ospf", "ext-link", el["subtlvs"], ts,
+                                        cves=self.CVES_OSPF_EXT, originator=originator,
+                                        link_id=el["link_id"])
                     for sub in el["subtlvs"]:
                         if sub["type"] not in (OSPF_SUB_ADJ_SID, OSPF_SUB_LAN_ADJ_SID):
                             continue
@@ -3220,6 +3453,17 @@ def selftest():
         h = _srh(segments, sl)
         return _eth(ETHERTYPE_IPV6, _ipv6("2001:db8:a:ff::9", dst, IPPROTO_IPV6_ROUTE, h))
 
+    def _tcp(sport, dport, payload):
+        return _struct.pack("!HHIIBBHHH", sport, dport, 1000, 2000,
+                            (5 << 4), 0x18, 8192, 0, 0) + payload
+
+    def _bgp_msg(mtype, body):
+        return BGP_MARKER + _struct.pack("!HB", BGP_HDR_LEN + len(body), mtype) + body
+
+    def _bgp_frame(msg, src="203.0.113.7", dst="198.51.100.1", sport=50001):
+        return _eth(ETHERTYPE_IPV4,
+                    _ipv4(src, dst, IPPROTO_TCP, _tcp(sport, BGP_PORT, msg)))
+
     def _run(frames, **cfgkw):
         cfgkw.setdefault("quiet", True)
         cfgkw.setdefault("min_severity", "info")
@@ -3263,5 +3507,18 @@ def selftest():
     # 7. Undeclared role fires the fail-loud warning once.
     r = _run([_mpls_frame([(16001, 0, 1, 64)], _ip_payload())], role="unknown")
     check("role-undeclared-warns", "SRM-ROLE-UNDECLARED" in _codes(r), sorted(_codes(r)))
+
+    # 8. A BGP Prefix-SID path attribute whose declared length overruns the UPDATE
+    #    -> SRM-SR-TLV-OVERRUN (CVE-2024-31948 wire condition; unvalidated SR TLV length).
+    attr = _struct.pack("!BBB", 0xC0, BGP_ATTR_PREFIX_SID, 250) + b"\x00" * 8
+    body = _struct.pack("!H", 0) + _struct.pack("!H", len(attr)) + attr
+    r = _run([_bgp_frame(_bgp_msg(BGP_MSG_UPDATE, body))], role="core")
+    check("sr-tlv-overrun", "SRM-SR-TLV-OVERRUN" in _codes(r), sorted(_codes(r)))
+
+    # 9. The finding carries the FRR SR-parser CVE it is the wire signature for.
+    ov = [x for x in r if x["code"] == "SRM-SR-TLV-OVERRUN"]
+    check("sr-tlv-overrun-cve",
+          bool(ov) and "CVE-2024-31948" in (ov[0]["evidence"].get("cves") or []),
+          str(ov[0]["evidence"]) if ov else "no finding")
 
     return {"success": all(s["pass"] for s in scen), "scenarios": scen}

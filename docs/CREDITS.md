@@ -14,12 +14,14 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~177 CVEs actively detected.** 183 distinct CVE IDs are named across the detector code;
-  177 are actively detected (the four Juniper ARP control-plane CVEs are named as related
-  context on the shared request-rate/breadth shape, not as per-CVE identifications).
+- **~184 CVEs actively detected.** 195 distinct CVE IDs are named across the detector code;
+  184 are actively detected. The gap is named-as-context, not a per-CVE identification: the
+  four Juniper ARP control-plane CVEs (shared request-rate/breadth shape) and the SR-MPLS
+  `CVE_REFERENCES` table (SR-plane CVEs recorded as rejected/disputed or owned by
+  bgpwatch/isiswatch/ospfwatch).
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **29 CVEs from 2023, 39 from 2024, 25 from 2025, and
-  8 from 2026.**
+- Weighted to the current threat wave: **32 CVEs from 2023, 44 from 2024, 25 from 2025, and
+  10 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
   in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba) and **Dell
@@ -62,6 +64,16 @@ behind them is Solarflere's work.
   that flags request rate/breadth and gratuitous floods — the shared shape behind the Juniper
   ARP control-plane DoS family (CVE-2018-0063 / CVE-2019-0033 / CVE-2021-0216 / CVE-2021-0292),
   attached as related context, not a per-CVE identification.
+- **Forwarding & failover plane** — **BFD Watch** adds an **auth-bypass teardown**
+  (CVE-2026-73458, Arista EOS, CWE-303 — a Down whose auth type/key-id departs from the
+  session's established profile), a **micro-BFD flap storm** (CVE-2026-33800, Juniper MX
+  PFEMAN/FPC crash) and names **CVE-2023-20049** (Cisco IOS XR BFD hardware-offload crash) on
+  its malformed/truncated-header codes alongside CVE-2018-0155; **SR-MPLS Watch** adds an
+  **unvalidated Segment-Routing TLV-length overrun** (`SRM-SR-TLV-OVERRUN`) that names the
+  SR control-plane parser CVEs it actually catches on the wire — BGP Prefix-SID
+  (CVE-2023-31490 / CVE-2024-31948) and OSPF SR opaque-LSA (CVE-2024-31950 / CVE-2024-31951)
+  — with a further `CVE_REFERENCES` table recording the SR-plane CVEs that are disputed or
+  owned by the BGP/IS-IS/OSPF watchers rather than claimed here.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 

@@ -213,10 +213,17 @@ class CodeSpec:
     rationale: str
     # posture codes fire once per direction; event codes may re-fire (rate limited)
     event: bool = False
+    # Published CVEs whose on-wire signature this code covers. Attribution only:
+    # bfdwatch observes the packet pattern, it does NOT fingerprint the target's
+    # platform or software version, so a hit means "this traffic matches the
+    # exploitation pattern for these CVEs", never "this device is vulnerable".
+    # The operator still has to confirm platform and release.
+    cves: Tuple[str, ...] = ()
 
 
-def _spec(code, sev, conf, title, rationale, event=False) -> CodeSpec:
-    return CodeSpec(code, sev, conf, title, rationale, event)
+def _spec(code, sev, conf, title, rationale, event=False,
+          cves: Tuple[str, ...] = ()) -> CodeSpec:
+    return CodeSpec(code, sev, conf, title, rationale, event, cves)
 
 
 CODES: Dict[str, CodeSpec] = {c.code: c for c in [
@@ -291,15 +298,22 @@ CODES: Dict[str, CodeSpec] = {c.code: c for c in [
     _spec("BFD-TRUNCATED-HEADER", Severity.HIGH, Confidence.CONFIRMED,
           "BFD packet shorter than the mandatory 24-byte header",
           "An incomplete BFD header is the exploit primitive for CVE-2018-0155 "
-          "(Cisco Catalyst 4500/4500-X BFD offload, iosd crash, CVSS 8.6). "
-          "Treat as active exploitation attempt if the segment carries "
-          "affected platforms.", event=True),
+          "(Cisco Catalyst 4500/4500-X BFD offload, iosd crash, CVSS 8.6) and "
+          "for CVE-2023-20049 (Cisco IOS XR ASR 9000/9902/9903 BFD hardware "
+          "offload, line-card reset, CVSS 8.6). Both are offload engines that "
+          "parse the header before validating its length. Treat as an active "
+          "exploitation attempt if the segment carries affected platforms.",
+          event=True, cves=("CVE-2018-0155", "CVE-2023-20049")),
 
     _spec("BFD-MALFORMED-HEADER", Severity.HIGH, Confidence.CONFIRMED,
           "BFD header fails RFC 5880 s.6.8.6 validation",
           "Length field inconsistent with the datagram, Detect Mult zero, auth "
           "length mismatch, or Your Discriminator zero in a state that requires "
-          "it. Same crafted-header class as CVE-2018-0155.", event=True),
+          "it. Same crafted-header class as CVE-2018-0155 and CVE-2023-20049 "
+          "(CWE-805, buffer access with an incorrect length value) — a Length "
+          "field that disagrees with the datagram is exactly the input those "
+          "offload paths mishandle.",
+          event=True, cves=("CVE-2018-0155", "CVE-2023-20049")),
 
     _spec("BFD-ZERO-DISCRIMINATOR", Severity.MEDIUM, Confidence.CONFIRMED,
           "BFD packet with My Discriminator of zero",
@@ -389,7 +403,36 @@ CODES: Dict[str, CodeSpec] = {c.code: c for c in [
           "the peer. A non-self-addressed echo on UDP/3785 is either an "
           "amplification attempt or a spoofed liveness keeper.", event=True),
 
-    # ---- Flagship correlation ------------------------------------------
+    _spec("BFD-MICRO-FLAP-STORM", Severity.HIGH, Confidence.POSSIBLE,
+          "micro-BFD (LAG member) session flapping at a sustained high rate",
+          "RFC 7130 micro-BFD on UDP/6784 flapping well past the ordinary flap "
+          "threshold. On Juniper MX with Virtual-Chassis and locality-bias, "
+          "each up/down event is queued by PFEMAN; a sustained flap rate "
+          "prevents the queue from draining until the watchdog expires and the "
+          "FPC crashes (CVE-2026-33800, CVSS 6.5). Confidence is POSSIBLE "
+          "because a passive tap cannot see the FPC model or the VC/locality-"
+          "bias configuration that gate exploitability, and a genuinely "
+          "unstable LAG member produces the same pattern. Affected: MX FPCs up "
+          "to MPC9, LC2101/2103, LC480. Not MPC10/11, LC4800/9600, MX304.",
+          event=True, cves=("CVE-2026-33800",)),
+
+    # ---- Flagship correlations -----------------------------------------
+    _spec("BFD-AUTH-BYPASS-TEARDOWN", Severity.CRITICAL, Confidence.PROBABLE,
+          "BFD teardown on an authenticated session with a divergent auth profile",
+          "A Down/AdminDown arrived on a session this direction had been "
+          "running with authentication, but the teardown packet's auth profile "
+          "does not match the one established for that direction — the Auth "
+          "Type or Key ID changed at the teardown. A conformant peer holding "
+          "the key does not rotate either mid-session to tear itself down, but "
+          "an attacker who does not hold the key has to send something, and "
+          "whatever they send will not match. This is the on-wire signature of "
+          "CVE-2026-73458 (Arista EOS, CWE-303 incorrect implementation of the "
+          "authentication algorithm, CVSS 8.2 / 9.2 v4.0), for which the vendor "
+          "publishes no indicators of compromise and no mitigation. "
+          "Authentication was supposed to make this teardown impossible "
+          "off-path; it happened anyway.",
+          event=True, cves=("CVE-2026-73458",)),
+
     _spec("BFD-SPOOFED-TEARDOWN", Severity.CRITICAL, Confidence.PROBABLE,
           "BFD teardown correlated with off-path injection evidence",
           "A Down/AdminDown transition arrived inside the same window as hard "
@@ -410,9 +453,10 @@ class Finding:
     session: str
     detail: str
     evidence: Dict[str, Any] = field(default_factory=dict)
+    cves: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "module": MODULE_NAME,
             "version": __version__,
             "ts": round(self.ts, 6),
@@ -425,6 +469,11 @@ class Finding:
             "detail": self.detail,
             "evidence": self.evidence,
         }
+        # Only present on codes that carry attribution, so the common record
+        # shape is unchanged and downstream consumers see no new empty key.
+        if self.cves:
+            d["cves"] = list(self.cves)
+        return d
 
 
 # ===========================================================================
@@ -732,6 +781,14 @@ REPLAY_STALL_THRESHOLD = 8      # consecutive non-increasing auth seq numbers
 DETECT_TIME_SHRINK_FACTOR = 4.0  # effective detect time reduction that matters
 POLL_GRACE_S = 5.0              # how recently a Poll must have been seen
 CORRELATION_WINDOW_S = 30.0     # teardown <-> path-integrity evidence window
+# Authenticated packets needed before a direction has an "established" auth
+# profile worth comparing a teardown against. Two, so that a session first
+# observed at its teardown cannot manufacture a bypass finding from one packet.
+AUTH_PROFILE_MIN_PACKETS = 2
+# micro-BFD Down transitions per FLAP_WINDOW_S before CVE-2026-33800 becomes
+# plausible. Deliberately above FLAP_DOWN_THRESHOLD: BFD-SESSION-FLAP already
+# covers ordinary instability, and this code should not simply shadow it.
+MICRO_FLAP_THRESHOLD = 10
 EVENT_REFIRE_S = 300.0          # per-code, per-direction event rate limit
 # Per-session rate limiting alone is defeated by source spoofing: 500 truncated
 # headers from 500 forged source IPs produce 500 distinct keys and therefore 500
@@ -781,6 +838,13 @@ class DirectionState:
     last_seq: Optional[int] = None
     seq_stall_run: int = 0
     max_seq_stall: int = 0
+
+    # Established auth profile for this direction, used to spot the CWE-303
+    # bypass signature. auth_packets gates the check: one authenticated packet
+    # is not an established profile, so a session whose very first packet is a
+    # teardown cannot produce a bypass finding.
+    auth_key_id: Optional[int] = None
+    auth_packets: int = 0
 
     detect_mult: Optional[int] = None
     desired_min_tx: Optional[int] = None
@@ -858,6 +922,7 @@ class BFDWatch:
             confidence=confidence or spec.confidence,
             title=spec.title, session=session,
             detail=detail, evidence=evidence,
+            cves=spec.cves,
         )
 
     def _emit(self, d: Optional[DirectionState], ts, code, detail,
@@ -1055,6 +1120,14 @@ class BFDWatch:
         d.echo_rx = pkt.required_min_echo_rx
         d.auth_present = pkt.auth_present
         d.auth_type = pkt.auth.auth_type if pkt.auth else None
+        if pkt.auth_present and pkt.auth is not None:
+            d.auth_packets += 1
+            # The first authenticated packet establishes the profile. Later
+            # packets do NOT overwrite it: re-baselining on every packet would
+            # let a sustained injection quietly redefine "normal" for this
+            # direction, which is the exact thing the check exists to catch.
+            if d.auth_key_id is None:
+                d.auth_key_id = pkt.auth.key_id
         if pkt.poll:
             d.last_poll_ts = m.ts
 
@@ -1372,21 +1445,121 @@ class BFDWatch:
                                      for a, b, c in sorted(distinct)]},
                        session="<multiple>")
 
+        # CVE-2026-73458: teardown on an authenticated session whose auth
+        # profile diverged. Checked before the path-integrity correlation
+        # because it stands on its own — it needs no GTSM or MAC evidence.
+        self._check_auth_bypass_teardown(d, m, pkt)
+
+        # micro-BFD flap storm (CVE-2026-33800)
+        self._check_micro_flap_storm(d, m, pkt)
+
         # flagship correlation: teardown alongside path-integrity evidence
         self._trim(d.integrity_hits, ts, CORRELATION_WINDOW_S)
         if d.integrity_hits:
             reasons = sorted({c for _, c in d.integrity_hits})
+            ev = {"trigger_state": STATE_NAME.get(pkt.state, pkt.state),
+                  "diag": DIAG_NAME.get(pkt.diag, pkt.diag),
+                  "correlated_codes": reasons,
+                  "src_ip": m.src_ip, "src_mac": m.src_mac,
+                  "ttl": m.ttl,
+                  "window_s": CORRELATION_WINDOW_S}
+            extra = ""
+            # If the direction was authenticated, the teardown should not have
+            # been reachable off-path at all. That does not change the code or
+            # severity, but it is the difference between "no auth, so of course"
+            # and "auth was in force and it happened anyway" on the ticket.
+            if d.auth_packets > 0:
+                ev["auth_in_force"] = True
+                ev["established_auth_type"] = AUTH_NAME.get(d.auth_type,
+                                                            d.auth_type)
+                extra = (" This direction was running authenticated, so an "
+                         "off-path teardown should not have been possible — "
+                         "see CVE-2026-73458 if these are Arista EOS.")
             self._emit(d, ts, "BFD-SPOOFED-TEARDOWN",
                        f"Session went {STATE_NAME.get(pkt.state, pkt.state)} "
                        f"within {int(CORRELATION_WINDOW_S)}s of path-integrity "
                        f"evidence ({', '.join(reasons)}). Treat as a forged "
-                       f"failover, not a link fault.",
-                       {"trigger_state": STATE_NAME.get(pkt.state, pkt.state),
-                        "diag": DIAG_NAME.get(pkt.diag, pkt.diag),
-                        "correlated_codes": reasons,
-                        "src_ip": m.src_ip, "src_mac": m.src_mac,
-                        "ttl": m.ttl,
-                        "window_s": CORRELATION_WINDOW_S})
+                       f"failover, not a link fault.{extra}", ev)
+
+    def _check_auth_bypass_teardown(self, d, m, pkt: BFDControl):
+        """CVE-2026-73458 — Arista EOS BFD authentication bypass.
+
+        bfdwatch cannot validate a digest; it has no key and never will. What
+        it can do is notice that the teardown packet's auth profile is not the
+        profile this direction established. An endpoint that holds the key has
+        no reason to change Auth Type or Key ID in order to tear its own
+        session down; an attacker who does not hold the key cannot reproduce
+        the established profile by guessing.
+
+        Requires an established profile (>=2 authenticated packets) so that a
+        session first observed mid-teardown cannot manufacture a finding.
+        """
+        if d.auth_packets < AUTH_PROFILE_MIN_PACKETS:
+            return
+
+        divergence = None
+        if not pkt.auth_present or pkt.auth is None:
+            # Auth vanished at the teardown. BFD-AUTH-DOWNGRADE covers the
+            # posture change; this records the teardown that rode in on it.
+            divergence = "A bit cleared on the teardown packet"
+        elif pkt.auth.auth_type != d.auth_type:
+            divergence = (f"Auth Type changed "
+                          f"{AUTH_NAME.get(d.auth_type, d.auth_type)} -> "
+                          f"{AUTH_NAME.get(pkt.auth.auth_type, pkt.auth.auth_type)}")
+        elif (d.auth_key_id is not None and pkt.auth.key_id is not None
+              and pkt.auth.key_id != d.auth_key_id):
+            divergence = (f"Key ID changed {d.auth_key_id} -> "
+                          f"{pkt.auth.key_id}")
+        if divergence is None:
+            return
+
+        self._emit(d, m.ts, "BFD-AUTH-BYPASS-TEARDOWN",
+                   f"Session went {STATE_NAME.get(pkt.state, pkt.state)} on a "
+                   f"direction established with "
+                   f"{AUTH_NAME.get(d.auth_type, d.auth_type)} authentication, "
+                   f"but the teardown packet's auth profile diverged: "
+                   f"{divergence}. Either an operator rotated keys at the exact "
+                   f"moment of a teardown, or authentication was bypassed. On "
+                   f"Arista EOS confirm the release against CVE-2026-73458.",
+                   {"trigger_state": STATE_NAME.get(pkt.state, pkt.state),
+                    "diag": DIAG_NAME.get(pkt.diag, pkt.diag),
+                    "divergence": divergence,
+                    "established_auth_type": AUTH_NAME.get(d.auth_type,
+                                                           d.auth_type),
+                    "established_key_id": d.auth_key_id,
+                    "observed_auth_type": (
+                        AUTH_NAME.get(pkt.auth.auth_type, pkt.auth.auth_type)
+                        if pkt.auth else None),
+                    "observed_key_id": pkt.auth.key_id if pkt.auth else None,
+                    "authenticated_packets_before": d.auth_packets,
+                    "src_ip": m.src_ip, "src_mac": m.src_mac, "ttl": m.ttl})
+
+    def _check_micro_flap_storm(self, d, m, pkt: BFDControl):
+        """CVE-2026-33800 — Juniper MX micro-BFD flap rate crashes the FPC.
+
+        Scoped to UDP/6784 (RFC 7130 micro-BFD on LAG members) because that is
+        the only traffic that feeds the vulnerable PFEMAN queue. Threshold sits
+        above the ordinary flap threshold: this is about a *sustained* rate
+        that outruns queue processing, not about a link that bounced a few
+        times.
+        """
+        if d.port != PORT_LAG:
+            return
+        if len(d.down_events) < MICRO_FLAP_THRESHOLD:
+            return
+        self._emit(d, m.ts, "BFD-MICRO-FLAP-STORM",
+                   f"{len(d.down_events)} micro-BFD Down transitions on this "
+                   f"LAG member in {int(FLAP_WINDOW_S)}s (threshold "
+                   f"{MICRO_FLAP_THRESHOLD}). On Juniper MX in a "
+                   f"Virtual-Chassis with locality-bias this rate can outrun "
+                   f"PFEMAN event processing and crash the FPC. Verify the FPC "
+                   f"model against CVE-2026-33800 before treating this as a "
+                   f"plain unstable optic.",
+                   {"down_count": len(d.down_events),
+                    "window_s": FLAP_WINDOW_S,
+                    "threshold": MICRO_FLAP_THRESHOLD,
+                    "last_diag": DIAG_NAME.get(pkt.diag, pkt.diag),
+                    "encapsulation": "micro-BFD (RFC 7130, UDP/6784)"})
 
     # -- Class E: echo posture -------------------------------------------
 
@@ -1603,10 +1776,16 @@ def build_bfd(version=1, diag=0, state=STATE_UP, poll=False, final=False,
 
 def meta(payload: bytes, ts=1000.0, src_ip="10.0.0.1", dst_ip="10.0.0.2",
          src_mac="aa:bb:cc:00:00:01", ttl=255, dport=PORT_SINGLE_HOP,
-         sport=49152) -> PacketMeta:
+         sport=49152, ip_version=4) -> PacketMeta:
     return PacketMeta(ts=ts, src_mac=src_mac, dst_mac="aa:bb:cc:00:00:02",
-                      src_ip=src_ip, dst_ip=dst_ip, ip_version=4, ttl=ttl,
-                      src_port=sport, dst_port=dport, payload=payload)
+                      src_ip=src_ip, dst_ip=dst_ip, ip_version=ip_version,
+                      ttl=ttl, src_port=sport, dst_port=dport, payload=payload)
+
+
+def meta6(payload: bytes, src_ip="2001:db8::1", dst_ip="2001:db8::2", **kw):
+    """IPv6 counterpart of meta(). Every detector that is not address-family
+    specific gets proven on both stacks, per the dual-stack mandate."""
+    return meta(payload, src_ip=src_ip, dst_ip=dst_ip, ip_version=6, **kw)
 
 
 def self_test(verbose: bool = False) -> int:
@@ -1788,6 +1967,107 @@ def self_test(verbose: bool = False) -> int:
             t += 1
     case("repeated down transitions", {"BFD-SESSION-FLAP"}, set(), flap)
 
+    # --- CVE-2026-73458: authenticated-session teardown bypass ------------
+    def auth_bypass(mk):
+        """Establish an authenticated direction, then tear it down with a
+        packet whose Auth Type does not match the established profile."""
+        def run(w):
+            t = 1000.0
+            for _ in range(3):
+                w.observe(mk(build_bfd(state=STATE_UP,
+                                       auth_type=AUTH_KEYED_SHA1,
+                                       key_id=7, seq=int(t)), ts=t))
+                t += 0.3
+            w.observe(mk(build_bfd(state=STATE_DOWN, your_disc=0,
+                                   auth_type=AUTH_SIMPLE_PASSWORD,
+                                   key_id=7, password=b"guess"), ts=t))
+        return run
+
+    case("auth type changes at teardown (IPv4)",
+         {"BFD-AUTH-BYPASS-TEARDOWN"}, set(), auth_bypass(meta))
+    case("auth type changes at teardown (IPv6)",
+         {"BFD-AUTH-BYPASS-TEARDOWN"}, set(), auth_bypass(meta6))
+
+    def auth_bypass_keyid(w):
+        t = 1000.0
+        for _ in range(3):
+            w.observe(meta(build_bfd(state=STATE_UP, auth_type=AUTH_KEYED_MD5,
+                                     key_id=3, seq=int(t)), ts=t))
+            t += 0.3
+        w.observe(meta(build_bfd(state=STATE_ADMIN_DOWN, your_disc=0,
+                                 auth_type=AUTH_KEYED_MD5, key_id=99,
+                                 seq=int(t)), ts=t))
+    case("key id changes at teardown", {"BFD-AUTH-BYPASS-TEARDOWN"}, set(),
+         auth_bypass_keyid)
+
+    def auth_teardown_consistent(w):
+        """The control: a legitimate authenticated teardown keeps the same
+        auth profile and must stay silent, or every real link failure on an
+        authenticated session becomes a CRITICAL."""
+        t = 1000.0
+        for _ in range(3):
+            w.observe(meta(build_bfd(state=STATE_UP, auth_type=AUTH_KEYED_SHA1,
+                                     key_id=7, seq=int(t)), ts=t))
+            t += 0.3
+        w.observe(meta(build_bfd(state=STATE_DOWN, your_disc=0, diag=1,
+                                 auth_type=AUTH_KEYED_SHA1, key_id=7,
+                                 seq=int(t)), ts=t))
+    case("consistent authenticated teardown is not a bypass", set(),
+         {"BFD-AUTH-BYPASS-TEARDOWN"}, auth_teardown_consistent)
+
+    def unauth_teardown(w):
+        """A session with no auth at all cannot produce a bypass finding —
+        there was no authentication to bypass."""
+        t = 1000.0
+        for _ in range(3):
+            w.observe(meta(build_bfd(state=STATE_UP), ts=t))
+            t += 0.3
+        w.observe(meta(build_bfd(state=STATE_DOWN, your_disc=0), ts=t))
+    case("unauthenticated teardown is not a bypass", set(),
+         {"BFD-AUTH-BYPASS-TEARDOWN"}, unauth_teardown)
+
+    def bypass_needs_established_profile(w):
+        """One authenticated packet is not an established profile: a session
+        first seen at its teardown must not manufacture a finding."""
+        w.observe(meta(build_bfd(state=STATE_UP, auth_type=AUTH_KEYED_SHA1,
+                                 key_id=7, seq=1), ts=1000.0))
+        w.observe(meta(build_bfd(state=STATE_DOWN, your_disc=0,
+                                 auth_type=AUTH_SIMPLE_PASSWORD,
+                                 password=b"x"), ts=1000.3))
+    case("single authenticated packet is not an established profile", set(),
+         {"BFD-AUTH-BYPASS-TEARDOWN"}, bypass_needs_established_profile)
+
+    # --- CVE-2026-33800: micro-BFD flap storm -----------------------------
+    def micro_flap(mk):
+        def run(w):
+            t = 1000.0
+            for _ in range(MICRO_FLAP_THRESHOLD + 2):
+                w.observe(mk(build_bfd(state=STATE_UP), ts=t,
+                             dport=PORT_LAG))
+                t += 0.4
+                w.observe(mk(build_bfd(state=STATE_DOWN, your_disc=0), ts=t,
+                             dport=PORT_LAG))
+                t += 0.4
+        return run
+
+    case("micro-BFD sustained flap storm (IPv4)",
+         {"BFD-MICRO-FLAP-STORM"}, set(), micro_flap(meta))
+    case("micro-BFD sustained flap storm (IPv6)",
+         {"BFD-MICRO-FLAP-STORM"}, set(), micro_flap(meta6))
+
+    def single_hop_flap_is_not_micro(w):
+        """The same flap rate on UDP/3784 is ordinary instability, not the
+        CVE-2026-33800 queue-exhaustion path."""
+        t = 1000.0
+        for _ in range(MICRO_FLAP_THRESHOLD + 2):
+            w.observe(meta(build_bfd(state=STATE_UP), ts=t))
+            t += 0.4
+            w.observe(meta(build_bfd(state=STATE_DOWN, your_disc=0), ts=t))
+            t += 0.4
+    case("single-hop flap does not raise the micro-BFD code",
+         {"BFD-SESSION-FLAP"}, {"BFD-MICRO-FLAP-STORM"},
+         single_hop_flap_is_not_micro)
+
     # --- convergence storm -------------------------------------------------
     def storm(w):
         t = 1000.0
@@ -1890,6 +2170,7 @@ def self_test(verbose: bool = False) -> int:
         "BFD-STATE-REGRESSION", "BFD-SESSION-FLAP", "BFD-CONVERGENCE-STORM",
         "BFD-FORCED-ADMINDOWN", "BFD-DETECT-TIME-DEGRADED",
         "BFD-ECHO-ENABLED", "BFD-ECHO-SRC-MISMATCH", "BFD-SPOOFED-TEARDOWN",
+        "BFD-AUTH-BYPASS-TEARDOWN", "BFD-MICRO-FLAP-STORM",
     }
     unreached = covered - tested
     print()
@@ -2053,11 +2334,17 @@ _BFD_SEV_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 # failover / teardown — the critical verdict token, mirrored into the web
 # net-integrity critical set as 'failover-manipulation'.
 _BFD_TEARDOWN_CODES = frozenset((
-    "BFD-SPOOFED-TEARDOWN", "BFD-FORCED-ADMINDOWN", "BFD-STATE-REGRESSION"))
+    "BFD-SPOOFED-TEARDOWN", "BFD-FORCED-ADMINDOWN", "BFD-STATE-REGRESSION",
+    # An auth-bypass teardown (CVE-2026-73458) is a forged Down that defeats
+    # authentication — the induced-reconvergence attack, so it pages like one.
+    "BFD-AUTH-BYPASS-TEARDOWN"))
 # Behavioural instability (flap / storm / detect-time collapse): real but not,
-# on its own, proof of a forged teardown.
+# on its own, proof of a forged teardown. The micro-flap storm (CVE-2026-33800)
+# is a flap-rate DoS — classified here even though its HIGH severity means the
+# exposure fallback reports it first.
 _BFD_INSTABILITY_CODES = frozenset((
-    "BFD-SESSION-FLAP", "BFD-CONVERGENCE-STORM", "BFD-DETECT-TIME-DEGRADED"))
+    "BFD-SESSION-FLAP", "BFD-CONVERGENCE-STORM", "BFD-DETECT-TIME-DEGRADED",
+    "BFD-MICRO-FLAP-STORM"))
 
 
 def _bfd_verdict(findings):
@@ -2244,7 +2531,7 @@ def do_bfd_watch(interface=None, seconds=20):
 # --- selftest (aggregator shape: {'success', 'scenarios':[{name,pass,detail}]}) ---
 def selftest():
     """Build real BFD control packets, feed them through the engine, and assert the
-    findings; plus run the engine's own 39-case Tier-1 suite. No sockets, no
+    findings; plus run the engine's own 48-case Tier-1 suite. No sockets, no
     capture, no persistence — asserted by construction (the engine only reads
     bytes)."""
     scen = []
@@ -2290,12 +2577,39 @@ def selftest():
                          {"code": "BFD-NO-AUTH", "severity": "MEDIUM"}])
     check("verdict-failover-manipulation", v == "failover-manipulation", v)
 
-    # 7. Engine's own Tier-1 suite (39 cases): 0 failures.
+    # 7. Authenticated session torn down with a divergent auth profile ->
+    #    BFD-AUTH-BYPASS-TEARDOWN (CVE-2026-73458, Arista EOS auth bypass).
+    metas = []
+    t = 1000.0
+    for _ in range(3):
+        metas.append(meta(build_bfd(state=STATE_UP, auth_type=AUTH_KEYED_SHA1,
+                                     key_id=7, seq=int(t)), ts=t))
+        t += 0.3
+    metas.append(meta(build_bfd(state=STATE_DOWN, your_disc=0,
+                                auth_type=AUTH_SIMPLE_PASSWORD, key_id=7,
+                                password=b"guess"), ts=t))
+    got = run(metas)
+    check("auth-bypass-teardown", "BFD-AUTH-BYPASS-TEARDOWN" in got, sorted(got))
+
+    # 8. Sustained micro-BFD (LAG member, UDP/6784) flap storm ->
+    #    BFD-MICRO-FLAP-STORM (CVE-2026-33800, Juniper MX FPC crash).
+    metas = []
+    t = 1000.0
+    for _ in range(MICRO_FLAP_THRESHOLD + 2):
+        metas.append(meta(build_bfd(state=STATE_UP), ts=t, dport=PORT_LAG))
+        t += 0.4
+        metas.append(meta(build_bfd(state=STATE_DOWN, your_disc=0), ts=t,
+                          dport=PORT_LAG))
+        t += 0.4
+    got = run(metas)
+    check("micro-flap-storm", "BFD-MICRO-FLAP-STORM" in got, sorted(got))
+
+    # 9. Engine's own Tier-1 suite (48 cases): 0 failures.
     import io
     import contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         failures = self_test(verbose=False)
-    check("engine-tier1-39-cases", failures == 0, "failures=%d" % failures)
+    check("engine-tier1-48-cases", failures == 0, "failures=%d" % failures)
 
     return {"success": all(s["pass"] for s in scen), "scenarios": scen}
