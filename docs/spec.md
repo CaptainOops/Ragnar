@@ -277,6 +277,33 @@
 - Runtime modules reference `shared_data.config` live; writes through the Web UI call `SharedData.save_config()` which flushes JSON, updates in-memory attributes, and triggers downstream watchers (e.g., Wi-Fi manager reloading known networks, display toggling `screen_reversed`).
 - Config headings (`__title_*`) are used purely for UI grouping; the parser strips these keys automatically when exporting to Python dicts.
 
+### 13.1 When a settings change restarts the service
+Saving settings must **not** bounce the service. The Settings tab is a single
+form and `saveConfig()` posts every field in it, so a save always carries keys
+the user did not touch — which is why the restart gate is "a restart-bound key
+whose value actually **changed**", never "the key is present".
+
+- `CONFIG_RESTART_REQUIRED_KEYS` (`webapp_modern.py`) is the whole list of keys
+  that earn a restart. It currently holds only **`epd_type`**: the e-Paper
+  driver object is constructed at import time by `SharedData()`, so a different
+  panel driver cannot be swapped into a running process.
+- The comparison runs on the **resolved** driver name. The UI posts a size key
+  (`"2.13"`) while the config stores a driver (`"epd2in13_V4"`), so the raw
+  values never match and comparing them would restart on every save.
+  `resolve_epd_type()` keeps the current driver when the size family is
+  unchanged, so re-saving the same panel is correctly a no-op.
+- Display geometry (`ref_width`, `ref_height`, `screen_reversed`,
+  `display_brightness`) is re-read per render and is deliberately **not**
+  restart-bound.
+- When a restart does happen the response carries `restart_required` plus
+  `restart_reason` (the key that changed), and the UI says so before the socket
+  drops.
+- Feature toggles own their own live-apply path and must never reach for a
+  service restart. BLE provisioning is the worked example: the **adapter**
+  picker rebuilds the peripheral (the controller is bound at construction),
+  while **auto-stop after provisioning** is read live on the loop thread and is
+  applied to the running peripheral via `BleProvisioningServer.set_auto_stop()`.
+
 ## 14. Folder Structure Highlights
 | Path | Purpose |
 | --- | --- |

@@ -373,19 +373,25 @@ def ble_provisioning_toggle():
     payload = request.get_json(silent=True) or {}
     enable = bool(payload.get('enabled', not shared_data.config.get('ble_provisioning_enabled', False)))
 
-    # An adapter or auto-stop change: persist it and, if running, restart so
-    # the new setting takes effect (both are read at server-construction time).
+    # An adapter change needs the peripheral rebuilt: the controller is chosen
+    # when the server is constructed and cannot be swapped on a live one.
     needs_restart = False
     if 'adapter' in payload:
         new_adapter = (payload.get('adapter') or '').strip()
         if new_adapter != shared_data.config.get('ble_provisioning_adapter', ''):
             shared_data.config['ble_provisioning_adapter'] = new_adapter
             needs_restart = True
+    # Auto-stop is NOT construction-time: the loop thread reads self.auto_stop
+    # live in _on_provisioned(), so the running peripheral just gets told the
+    # new value. Tearing down and re-registering the GATT app for it meant
+    # flipping this checkbox bounced BLE (and, with bt-pan holding the adapter,
+    # took the process down with it) for a setting that needed no teardown.
     if 'autostop' in payload:
         new_autostop = bool(payload.get('autostop'))
-        if new_autostop != bool(shared_data.config.get('ble_provisioning_autostop', False)):
-            shared_data.config['ble_provisioning_autostop'] = new_autostop
-            needs_restart = True
+        shared_data.config['ble_provisioning_autostop'] = new_autostop
+        with _ble_lock:
+            if _ble_server is not None:
+                _ble_server.set_auto_stop(new_autostop)
 
     shared_data.config['ble_provisioning_enabled'] = enable
     shared_data.save_config()
@@ -10242,7 +10248,13 @@ def _apply_config_update(data):
     if True:
         ai_reload_success = None
         ai_reload_error = None
-        epd_type_changed = 'epd_type' in data
+        # Presence of the key is NOT a change. The Settings tab is one big form
+        # and saveConfig() posts every field in it, so `'epd_type' in data` was
+        # true on every single save — which meant saving any unrelated setting
+        # (a scan interval, a toggle) restarted the whole service. Only a real
+        # change to a restart-bound key earns a restart; see
+        # CONFIG_RESTART_REQUIRED_KEYS.
+        epd_type_present = 'epd_type' in data
 
         # Capture pre-update kiosk state so we can detect toggles after save.
         prev_kiosk_enabled = bool(shared_data.config.get('kiosk_enabled', False))
@@ -10261,11 +10273,18 @@ def _apply_config_update(data):
             for k in kiosk_settings_keys
         )
 
-        # Resolve size keys (from web UI) to actual driver names
-        if epd_type_changed:
+        # Resolve size keys (from web UI) to actual driver names. The comparison
+        # has to happen on the RESOLVED name: the UI posts a size key ("2.13")
+        # where the config stores a driver ("epd2in13_V4"), so comparing the raw
+        # value would read as a change on every save.
+        restart_keys_changed = set()
+        if epd_type_present:
             from shared import resolve_epd_type
             raw_epd = data['epd_type']
             data['epd_type'] = resolve_epd_type(raw_epd, shared_data.config.get('epd_type'))
+        for key in CONFIG_RESTART_REQUIRED_KEYS:
+            if key in data and data[key] != shared_data.config.get(key):
+                restart_keys_changed.add(key)
 
         # Update configuration (allow new keys to be added)
         for key, value in data.items():
@@ -10275,7 +10294,9 @@ def _apply_config_update(data):
                 # Also set as attribute on shared_data for immediate access
                 setattr(shared_data, key, value)
 
-        if epd_type_changed:
+        # Idempotent; still run whenever the key is posted so a hand-edited
+        # ref_width/ref_height self-heals back to the profile on any save.
+        if epd_type_present:
             shared_data.apply_display_profile(shared_data.config.get('epd_type'))
         
         # Save configuration
@@ -10371,15 +10392,20 @@ def _apply_config_update(data):
             if ai_reload_error:
                 response['ai_reload_error'] = ai_reload_error
 
-        # EPD type change requires a full service restart to reinitialize hardware
-        if epd_type_changed:
+        # Only a key whose value is bound at process start, and that actually
+        # CHANGED, is worth a restart. Everything else applies live.
+        if restart_keys_changed:
+            changed = ', '.join(sorted(restart_keys_changed))
             response['restart_required'] = True
-            response['message'] = 'Display type changed - restarting Ragnar service...'
+            response['restart_reason'] = changed
+            response['message'] = f'{changed} changed - restarting Ragnar service...'
             def _delayed_restart():
                 time.sleep(2)  # Give the response time to reach the client
-                logger.info(f"Restarting Ragnar service for EPD type change to: {shared_data.config.get('epd_type')}")
+                logger.info(f"Restarting Ragnar service for config change: {changed}")
                 subprocess.Popen(['systemctl', 'restart', 'ragnar.service'])
             threading.Thread(target=_delayed_restart, daemon=True).start()
+        else:
+            logger.debug("Config saved with no restart-bound change — applying live")
 
         return response, 200
 
@@ -10406,6 +10432,20 @@ CONFIG_EXPORT_EXCLUDE = {
     'rusense_node_positions',  # per-install physical node layout
     'rusense_node_names',      # per-install node naming
     'web_bind_interface',      # per-device network binding
+}
+
+# Config keys whose value is bound once at process start and cannot be re-read
+# at runtime — only these earn a service restart, and only when their value
+# actually changes. Everything else in the Settings tab applies live, so saving
+# it must NOT bounce the service.
+#
+# `epd_type` is here because the e-Paper driver object is constructed at import
+# time (SharedData() builds the EPD), so a different panel driver cannot be
+# swapped in on a running process. The geometry keys around it
+# (ref_width/ref_height/screen_reversed/brightness) ARE re-read per render and
+# deliberately stay out.
+CONFIG_RESTART_REQUIRED_KEYS = {
+    'epd_type',
 }
 
 CONFIG_HARDWARE_KEYS = {
