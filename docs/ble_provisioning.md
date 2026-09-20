@@ -62,6 +62,13 @@ longer rediscover the box over Bluetooth until it advertises again — use the
 controllers you don't need this: leave provisioning always-on on the built-in
 radio and let the USB dongle scan.
 
+Toggling the checkbox applies to the **running** peripheral — the flag is read
+live when a central provisions, so nothing is torn down and re-registered for
+it. Turning it off also cancels a grace timer a read has already armed, so the
+peripheral won't stop once more after you asked it not to. Only the **adapter**
+picker rebuilds the peripheral, because the controller is chosen when the
+server is constructed.
+
 ## Enabling it
 
 Once — over IP, from the mobile app's **Box** tab, or directly:

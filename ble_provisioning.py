@@ -359,6 +359,35 @@ class BleProvisioningServer:
         }
 
     # -- auto-stop (frees the adapter once a phone has provisioned) ---------
+    def set_auto_stop(self, value: bool) -> None:
+        """Change the auto-stop preference on a LIVE peripheral.
+
+        ``auto_stop`` is only ever consulted in ``_on_provisioned()``, which
+        runs on the loop thread, so there is nothing to rebuild for it — the
+        flag can simply be replaced. Turning it off also cancels a timer that a
+        provisioning read already armed, otherwise the peripheral would still
+        stop once after the user asked it not to.
+        """
+        value = bool(value)
+        self.auto_stop = value
+        if value or self._glib is None:
+            return
+
+        def _cancel():
+            timer, self._stop_timer = self._stop_timer, None
+            if timer is not None:
+                try:
+                    self._glib.source_remove(timer)
+                except Exception:
+                    pass
+            return False  # one-shot
+
+        # Touch the timer on the loop thread that owns it.
+        try:
+            self._glib.idle_add(_cancel)
+        except Exception:
+            pass
+
     def _on_provisioned(self) -> None:
         """A phone read the network status / AP creds. Arm (or re-arm) the
         auto-stop timer. Runs on the loop thread (D-Bus dispatch), so it can

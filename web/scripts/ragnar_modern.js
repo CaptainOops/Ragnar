@@ -22460,7 +22460,17 @@ async function saveConfig(form) {
     try {
         const result = await postAPI('/api/config', config);
         addConsoleMessage('Configuration saved successfully', 'success');
-        
+
+        // Almost every setting now applies live. Say so explicitly on the rare
+        // save that does bounce the service, so the UI dropping out is expected
+        // rather than alarming.
+        if (result && result.restart_required) {
+            const reason = result.restart_reason || 'a hardware setting';
+            addConsoleMessage(`${reason} changed — restarting the service to apply it…`, 'warning');
+            showNotification(`${reason} changed — Ragnar is restarting`, 'info');
+        }
+
+
         // If manual_mode was changed, refresh the dashboard to update UI
         if (config.hasOwnProperty('manual_mode')) {
             setTimeout(() => {
