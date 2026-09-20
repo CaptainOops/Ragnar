@@ -241,17 +241,57 @@ class NetworkScanner:
 
         return hosts
 
+    # Neighbour states that mean "this host answered ARP recently". FAILED and
+    # INCOMPLETE mean the opposite; NONE/NOARP carry no evidence either way.
+    NEIGH_ALIVE_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
+
+    def _read_neighbour_table(self):
+        """Return {ip: {mac, vendor}} for hosts in the kernel neighbour table."""
+        hosts = {}
+        command = ['ip', '-4', 'neigh', 'show']
+        if self.arp_scan_interface:
+            command += ['dev', self.arp_scan_interface]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                return hosts
+        except Exception as e:                                  # noqa: BLE001
+            self.logger.debug(f"_read_neighbour_table failed: {e}")
+            return hosts
+
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2 or not self._is_valid_ip(parts[0]):
+                continue
+            if 'lladdr' not in parts:
+                continue
+            mac = parts[parts.index('lladdr') + 1].lower()
+            if not self._is_valid_mac(mac):
+                continue
+            if parts[-1].upper() not in self.NEIGH_ALIVE_STATES:
+                continue
+            hosts[parts[0]] = {'mac': mac, 'vendor': ''}
+
+        return hosts
+
     def run_arp_scan(self, network=None):
         """Execute arp-scan to get MAC addresses and vendor information for local network hosts."""
         if network is None:
             network = self.get_network()
+        # --retry/--timeout: a single probe at arp-scan's 100ms default loses
+        # hosts behind a power-saving Wi-Fi client, and a host missing from the
+        # sweep is charged a failed ping. --ignoredups keeps duplicate replies
+        # from being parsed twice.
+        reliability_flags = ['--retry=3', '--timeout=500', '--ignoredups']
         commands = [
-            ['sudo', 'arp-scan', f'--interface={self.arp_scan_interface}', '--localnet'],
+            ['sudo', 'arp-scan', f'--interface={self.arp_scan_interface}',
+             '--localnet'] + reliability_flags,
         ]
         if network is not None:
             commands.append(
                 ['sudo', 'arp-scan',
-                 f'--interface={self.arp_scan_interface}', str(network)])
+                 f'--interface={self.arp_scan_interface}', str(network)]
+                + reliability_flags)
         else:
             self.logger.warning(
                 "run_arp_scan: no explicit subnet and detection failed; "
@@ -281,6 +321,24 @@ class NetworkScanner:
                 self.logger.error(f"Unexpected error running arp-scan: {e}")
                 continue
         
+        # Fold in the kernel neighbour table. An arp-scan sweep is one
+        # broadcast round: over Wi-Fi it routinely sees only a fraction of the
+        # hosts that are genuinely up, and every host it misses is charged a
+        # failed ping. The neighbour table remembers every host this box has
+        # actually exchanged frames with, so it fills those gaps. arp-scan wins
+        # on conflicts because it carries the vendor string.
+        try:
+            added = 0
+            for ip, data in self._read_neighbour_table().items():
+                if ip not in all_hosts:
+                    all_hosts[ip] = data
+                    added += 1
+            if added:
+                self.logger.info(
+                    f"Neighbour table added {added} host(s) the ARP sweep missed")
+        except Exception as e:                                  # noqa: BLE001
+            self.logger.debug(f"Could not merge neighbour table: {e}")
+
         self.logger.info(f"📋 arp-scan complete: {len(all_hosts)} hosts with MAC addresses discovered")
         
         # Write ARP scan results to SQLite database
@@ -802,8 +860,16 @@ class NetworkScanner:
 
                 # Update all existing entries - implement 30-failed-pings rule instead of immediate death
                 max_failed_pings = self.shared_data.config.get('network_max_failed_pings', 30)
+                # A scan that found nobody at all is a broken scan (no arp-scan
+                # binary, wrong interface, no sudo) — not the entire LAN going
+                # down between two cycles. Charging every host a failed ping for
+                # it is what made the whole target list flap to offline.
+                if not alive_macs:
+                    self.logger.warning(
+                        "Scan returned 0 alive hosts — skipping failed-ping "
+                        "accounting so existing hosts keep their status")
                 for mac in netkb_entries:
-                    if mac not in alive_macs:
+                    if alive_macs and mac not in alive_macs:
                         # Host not found in current scan - increment failure count
                         current_failures = netkb_entries[mac].get('Failed_Pings', 0)
                         netkb_entries[mac]['Failed_Pings'] = current_failures + 1
