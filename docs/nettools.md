@@ -2270,16 +2270,21 @@ Reduced to a single card **verdict**:
 
 - **failover-manipulation** (critical — the one that should page you) — a **spoofed
   teardown** (`BFD-SPOOFED-TEARDOWN`, a Down/AdminDown correlated with a GTSM violation or
-  source migration), a **forced AdminDown** (`BFD-FORCED-ADMINDOWN`), or an **illegal state
-  regression** (`BFD-STATE-REGRESSION`, Up→Init/Down against the RFC 5880 state machine) —
-  the packets that make a live path go dead.
+  source migration), a **forced AdminDown** (`BFD-FORCED-ADMINDOWN`), an **illegal state
+  regression** (`BFD-STATE-REGRESSION`, Up→Init/Down against the RFC 5880 state machine), or
+  *(v3)* an **auth-bypass teardown** (`BFD-AUTH-BYPASS-TEARDOWN` — a Down whose auth
+  type/key-id changed away from the session's established profile, the **CVE-2026-73458**
+  Arista EOS auth-bypass shape, CWE-303) — the packets that make a live path go dead.
 - **exposure** — high-severity posture visible on the wire: unauthenticated sessions
   (`BFD-NO-AUTH`), echo enabled, a `TTL≠255` **GTSM** violation on a single-hop/LAG session
   (RFC 5881 requires 255), and **malformed / truncated headers** — the latter the
   exploitation signal for **CVE-2018-0155** (Cisco Catalyst 4500/4900 BFD-offload `iosd`
-  crash on an incomplete BFD header, CVSS 8.6), not just protocol hygiene.
+  crash on an incomplete BFD header, CVSS 8.6) and **CVE-2023-20049** (Cisco IOS XR
+  BFD hardware-offload crash on a malformed BFD echo), not just protocol hygiene.
 - **instability** — behavioural: session flap, convergence storm (many sessions down at
-  once), and collapsed detection-time.
+  once), collapsed detection-time, and *(v3)* a **micro-BFD flap storm**
+  (`BFD-MICRO-FLAP-STORM` — sustained flapping on a `6784` micro-BFD/LAG session, the
+  **CVE-2026-33800** Juniper MX PFEMAN/FPC-crash shape).
 
 It also reads **auth posture** off the wire without holding any key: mid-session
 **downgrade**, one-sided (**asymmetric**) authentication, and stalled-sequence **replay
@@ -2391,7 +2396,15 @@ attribute, RFC 8669; labelled-unicast + VPN SAFIs), **IS-IS-SR** (RFC 8667 sub-T
   far end, not by this network — the label-injection / **VRF-hopping** primitive.
 - **label-manipulation** — reserved / **implicit-null** labels forwarded on the wire, a
   labelled frame forwarded with an **expired TTL** (`SRM-TTL-ZERO-FORWARDED`), a
-  BOS/GAL/ELI placement violation, or a label rebind.
+  BOS/GAL/ELI placement violation, a label rebind, or *(v2)* an **unvalidated
+  Segment-Routing TLV-length overrun** (`SRM-SR-TLV-OVERRUN` — a BGP Prefix-SID, IS-IS or
+  OSPF SR sub-TLV whose declared length runs past the bytes that arrived). It names the SR
+  control-plane parser CVEs it actually catches: BGP Prefix-SID **CVE-2023-31490 /
+  CVE-2024-31948** and OSPF SR opaque-LSA **CVE-2024-31950 / CVE-2024-31951**. A bundled
+  `CVE_REFERENCES` table additionally records the SR-plane CVEs that are disputed/rejected or
+  owned by the BGP/IS-IS/OSPF watchers, so they are documented without being falsely claimed
+  here. (v2's unrelated IPv6-transport refactor was deliberately not pulled in — separate
+  feature, not a CVE.)
 - **exposure / posture** — excessive label-stack depth, entropy-label anomalies, SRv6
   **path disclosure** / missing SRH **HMAC**, explicit-null exposed, LDP off-link hellos
   or mapping-without-withdraw, and adjacency-SID instability.
