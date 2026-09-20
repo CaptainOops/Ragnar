@@ -96,6 +96,8 @@ SENSITIVE_ATTRS = {
 BRUTE_BIND_ATTEMPTS = 10        # binds from one client == likely spraying/brute
 BRUTE_BIND_FAILURES = 5         # invalidCredentials results toward one client
 ENUM_SEARCH_COUNT = 20          # searches from one client == directory sweep
+FILTER_NEST_DEPTH = 12          # nested boolean-filter depth that trips the OpenLDAP
+                                # slapd stack-exhaustion crash (CVE-2020-12243)
 CLDAP_AMPLIFICATION = 4.0       # response/request byte ratio flagged as reflector
 
 
@@ -193,10 +195,16 @@ def ber_oid(buf, start, end):
 # =============================================================================
 # LDAPMessage decode
 # =============================================================================
-def _decode_filter(buf, tag_off, hard_end, raw_values, depth=0):
+def _decode_filter(buf, tag_off, hard_end, raw_values, depth=0, meta=None):
     """Render the Filter TLV whose tag byte is at tag_off to its RFC 4515 string
-    form, collecting raw assertion values into `raw_values` for injection checks."""
+    form, collecting raw assertion values into `raw_values` for injection checks.
+    `meta` (a dict) accumulates the maximum boolean-nesting depth reached, so the
+    analyzer can flag the OpenLDAP nested-filter DoS (CVE-2020-12243)."""
+    if meta is not None and depth > meta.get('max_depth', 0):
+        meta['max_depth'] = depth
     if depth > 24:
+        if meta is not None:
+            meta['truncated'] = True
         return '(...)'
     try:
         tag, vs, ve, _ = ber_tlv(buf, tag_off)
@@ -213,7 +221,7 @@ def _decode_filter(buf, tag_off, hard_end, raw_values, depth=0):
                 _t, _cvs, _cve, nxt = ber_tlv(buf, i)
             except BERError:
                 break
-            inner += _decode_filter(buf, i, ve, raw_values, depth + 1)
+            inner += _decode_filter(buf, i, ve, raw_values, depth + 1, meta)
             i = nxt
         return '(' + op + inner + ')'
     if tag == _F_PRESENT:                        # [7] primitive: attribute present
@@ -369,8 +377,11 @@ def _decode_search_request(buf, start, end, msg):
     msg['base'] = ber_str(buf, kids[0][2], kids[0][3])
     msg['scope'] = ber_int(buf, kids[1][2], kids[1][3])
     raw_values = []
-    msg['filter'] = _decode_filter(buf, kids[6][1], kids[6][3], raw_values)
+    fmeta = {'max_depth': 0, 'truncated': False}
+    msg['filter'] = _decode_filter(buf, kids[6][1], kids[6][3], raw_values, meta=fmeta)
     msg['assertion_values'] = raw_values
+    msg['filter_max_depth'] = fmeta['max_depth']
+    msg['filter_depth_truncated'] = fmeta['truncated']
     attrs = []
     if len(kids) >= 8:
         for _tg, vs, ve in ber_children(buf, kids[7][2], kids[7][3]):
@@ -440,7 +451,7 @@ _VERDICT_RANK = {'clean': 0, 'suspicious': 1, 'compromised': 2}
 _COMPROMISED_CODES = {'cleartext-bind-credentials', 'sasl-plaintext-cleartext',
                       'cleartext-password-modify', 'starttls-stripped',
                       'filter-injection', 'brute-force', 'cldap-amplification',
-                      'external-referral'}
+                      'external-referral', 'filter-nest-dos'}
 
 
 class LdapDetector:
@@ -550,6 +561,17 @@ class LdapDetector:
                           "filter metacharacters (%s) - likely an auth-bypass / blind "
                           "injection probe" % _clip(val))
                 break
+
+        # Excessively nested boolean filter -> OpenLDAP slapd stack exhaustion
+        # (CVE-2020-12243): a deeply recursive &/|/! filter crashes the directory.
+        depth = msg.get('filter_max_depth', 0)
+        if depth > FILTER_NEST_DEPTH:
+            trunc = '+' if msg.get('filter_depth_truncated') else ''
+            self._add(flowkey, 'high', 'filter-nest-dos',
+                      "Search filter nested %d%s levels deep (threshold %d) - the "
+                      "OpenLDAP slapd nested-filter crash (CVE-2020-12243), a "
+                      "stack-exhaustion DoS against the directory server"
+                      % (depth, trunc, FILTER_NEST_DEPTH))
 
         sens = attrs & SENSITIVE_ATTRS
         if sens and cleartext:
@@ -1073,6 +1095,21 @@ def selftest():
     # 8. Filter injection: unescaped ')(' in an assertion value.
     r = detect([_search_req('dc=corp,dc=local', 1, _f_equal('uid', '*)(uid=*'), ['cn'])])
     ck('filter_injection', 'filter-injection' in codes(r))
+
+    # 8b. Nested-filter DoS (CVE-2020-12243): a boolean filter nested past the depth
+    #     threshold -> filter-nest-dos + compromised verdict.
+    _deep = _f_present('objectClass')
+    for _ in range(FILTER_NEST_DEPTH + 2):
+        _deep = _tlv(_F_AND, _deep)
+    r = detect([_search_req('dc=corp,dc=local', 2, _deep, ['cn'])])
+    ck('filter_nest_dos', 'filter-nest-dos' in codes(r))
+    ck('filter_nest_dos_verdict', r['verdict'], 'compromised')
+    # 8c. Negative: a shallow nested filter stays clean of the DoS code.
+    _shallow = _f_present('objectClass')
+    for _ in range(3):
+        _shallow = _tlv(_F_AND, _shallow)
+    r = detect([_search_req('dc=corp,dc=local', 2, _shallow, ['cn'])])
+    ck('filter_nest_shallow_ok', 'filter-nest-dos' not in codes(r))
 
     # 9. StartTLS stripped: request refused by the server.
     r = detect([_ext_req(OID_STARTTLS), _ext_resp(2)])

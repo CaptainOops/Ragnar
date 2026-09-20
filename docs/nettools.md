@@ -1103,7 +1103,7 @@ export to CSV.
 hadn't covered, and arguably the highest-value one after DNS: whoever answers
 DHCP hands you your gateway and DNS, so a rogue DHCP server is a turnkey
 man-in-the-middle. **Detection-only** — it never runs a DHCP server or hands out
-leases. Two signals, rolled into a **clean / rogue / starvation** verdict:
+leases. Three signals, rolled into a **clean / suspicious / rogue / starvation** verdict:
 
 - **Rogue / fake DHCP server** — an active `broadcast-dhcp-discover` provokes
   *every* DHCP server on the segment to OFFER. More than one distinct server, a
@@ -1119,6 +1119,14 @@ leases. Two signals, rolled into a **clean / rogue / starvation** verdict:
   (chaddr) behind them; a burst of many distinct chaddrs in a few seconds is the
   pool-exhaustion signature (the classic precursor that clears the field for a
   rogue server) → **starvation**.
+- **Option-borne CVEs (v3)** — the same passive window is scapy-parsed for raw DHCP
+  options: **TunnelVision** (CVE-2024-3661) — a DHCP option 121 / Microsoft 249 pushing
+  classless static routes that **cover the default route**, steering VPN traffic outside
+  the tunnel (→ **suspicious**, since a legitimate policy route can also use option 121) —
+  and **DynoRoot-class command injection** (CVE-2018-1111) — shell metacharacters (`` ` ``,
+  `$(`, `|`, `;`, quote+`&`) inside an RFC-text option like hostname/domain-name (→
+  **rogue**, unambiguous). The two Microsoft heap-overflow CVEs (CVE-2026-50518 /
+  CVE-2026-56159) are deferred — no published trigger, so no passive signature exists.
 
 The result shows the verdict, every DHCP server that answered (server-id,
 offered gateway/DNS, lease, and a trusted / new / rogue badge), the starvation
@@ -1615,8 +1623,13 @@ Advertisements** (type 134) and reads the raw ND options: an **RDNSS** option (t
 length field is **even** is flagged CRITICAL — RFC 8106 fixes that length at an odd `1+2N`, so
 an even value is the Windows TCP/IP stack buffer-overflow trigger (CVSS 8.8, `nd_ra_rdnss_malformed`).
 It also flags a **zero-length** ND option (`nd_option_length_zero`, a parser-loop trap) and an
-option that **overruns** the message (`nd_option_length_invalid`). These fold into the same
-verdict and [Watchtower](watchtower.md) path as the redirect findings.
+option that **overruns** the message (`nd_option_length_invalid`). *(v2)* A malformed **DNSSL**
+option (type 31) — a domain-name field over 256 bytes, or a label length that overruns the
+option — is flagged as `nd_ra_dnssl_malformed`, the **CVE-2020-16899** (Windows TCP/IP) /
+**CVE-2020-25583** (FreeBSD `rtsold`) out-of-bounds-read trigger. These fold into the same
+`ra-attack` verdict and [Watchtower](watchtower.md) path as the redirect findings. (The
+host-hardening side — `accept_ra*` sysctls — lives in [IPv6 RA Guard](#ipv6-ra-guard); the
+RA-packet CVEs land here, where the RA options are actually parsed.)
 
 - Endpoint: `GET /api/net/icmp-watch` `{interface, seconds}`,
   `POST /api/net/icmp-baseline` `{action: reset}` · binary: `tcpdump`
@@ -1903,6 +1916,9 @@ What it flags:
 - **directory-enumeration** — a whole-subtree `(objectClass=*)` from a domain base, or
   a high volume of searches from one source — the **BloodHound / ldapdomaindump**
   signature. *(suspicious)*
+- **filter-nest-dos** *(v4)* — a search filter whose boolean nesting exceeds the depth
+  threshold (12), the **OpenLDAP slapd nested-filter crash (CVE-2020-12243)** — a
+  stack-exhaustion DoS against the directory. *(compromised)*
 - **sensitive-attribute** — a query for password/LAPS/gMSA/ACL material or
   **`servicePrincipalName`** (Kerberoast recon; ties into [SMB Watch](#smb-watch)'s
   Kerberos leg). *(warn, or high over cleartext)*
@@ -2222,9 +2238,11 @@ port, and — like STP/DTP/VTP — its control frames carry **no authentication,
 no digest and no sequence number**. This is therefore a **state-integrity** module,
 not a CVE detector: it detects aggregation hijacking, member eviction and
 selection-parameter manipulation — consequences of the protocol's design. The one real
-CVE anchor is **CVE-2024-30388** (a specific malformed LACP packet flaps a Junos LAG),
-whose observable signature is a `LACP-TLV-LENGTH-INVALID` / `LACP-MALFORMED-SHORT`
-followed by `LACP-SYNC-FLAPPING` on the same segment. What it flags (36 codes across
+CVE anchor is **CVE-2024-30388** (a specific malformed LACP packet flaps a Junos LAG):
+*(v2)* a malformed LACPDU from an external source followed by a member flap within a
+short window is now correlated into a dedicated **`LACP-MALFORMED-INDUCED-FLAP`** finding
+(the effect, not a byte signature Juniper never published; the flapping member's own
+garbage is excluded as a failing NIC). What it flags (37 codes across
 structural / delivery-path / identity / cross-view / state-machine / marker / posture
 groups), reduced to a single card **verdict**:
 

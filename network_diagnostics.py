@@ -2003,6 +2003,165 @@ def _dhcp_capture(interface, seconds):
     return requests, len(clients), None
 
 
+# ---- DHCP option-borne CVEs (v3): TunnelVision + DynoRoot -----------------------
+# These live in the raw DHCP option bytes, which the text/nmap paths above don't
+# expose, so this adds a short passive pcap + a raw option walk (the SNMP-CVE
+# pattern). Text options that carry an RFC-typed string; option 43/55/61 (arbitrary
+# bytes) are deliberately excluded from the metacharacter scan.
+_DHCP_V4_TEXT_OPTS = {
+    12: 'hostname', 14: 'merit-dump', 15: 'domain-name', 17: 'root-path',
+    18: 'extensions-path', 40: 'nis-domain', 56: 'message', 64: 'nisplus-domain',
+    66: 'tftp-server', 67: 'bootfile', 114: 'url', 252: 'proxy-autoconfig'}
+# Shell primitives that cannot appear in a legitimate DHCP text option. A bare
+# '&' is excluded (legal in a WPAD/PAC URL); the DynoRoot payload shape is a quote
+# adjacent to '&', caught separately.
+_DHCP_METACHARS = (b'`', b'$(', b'${', b'\n', b'\r', b'|', b';')
+
+
+def _dhcp_shell_metachars(raw):
+    """Shell primitives found in a text-option value (CVE-2018-1111 / DynoRoot)."""
+    hits = [lit.decode('latin-1') for lit in _DHCP_METACHARS if lit in raw]
+    if (b"'" in raw or b'"' in raw) and b'&' in raw:
+        hits.append('quote+&')
+    return hits
+
+
+def _dhcp_rfc3442_routes(raw):
+    """Decode DHCP option 121/249 (RFC 3442) -> [(prefix, plen, router)]. A
+    destination descriptor is a prefix-length byte + only the significant prefix
+    octets, then a 4-byte router. Raises ValueError on a malformed descriptor."""
+    out, i = [], 0
+    while i < len(raw):
+        plen = raw[i]
+        if plen > 32:
+            raise ValueError('prefix length > 32')
+        nsig = (plen + 7) // 8
+        if i + 1 + nsig + 4 > len(raw):
+            raise ValueError('descriptor overruns option')
+        pfx = raw[i + 1:i + 1 + nsig] + b'\x00' * (4 - nsig)
+        router = raw[i + 1 + nsig:i + 5 + nsig]
+        out.append(('.'.join(str(b) for b in pfx), plen,
+                    '.'.join(str(b) for b in router)))
+        i += 5 + nsig
+    return out
+
+
+def _dhcp_covers_default(routes):
+    """True if the route set swallows the default route — TunnelVision installs
+    0.0.0.0/0, or the 0.0.0.0/1 + 128.0.0.0/1 pair, to beat a VPN's own default."""
+    if any(plen == 0 for _, plen, _ in routes):
+        return True
+    halves = {pfx for pfx, plen, _ in routes if plen == 1}
+    return {'0.0.0.0', '128.0.0.0'}.issubset(halves)
+
+
+def _dhcp_options(pk):
+    """{option_code: raw_value_bytes} from a BOOTP/DHCP packet, or {}. Parses the
+    option TLVs directly off the wire (after the magic cookie), so values are the
+    raw bytes — not scapy's per-option decode — and split options (RFC 3396) join."""
+    try:
+        from scapy.all import UDP
+        u = pk.getlayer(UDP)
+        if u is None or (u.sport not in (67, 68) and u.dport not in (67, 68)):
+            return {}
+        payload = bytes(u.payload)
+    except Exception:
+        return {}
+    ck = payload.find(b'\x63\x82\x53\x63')          # DHCP magic cookie
+    if ck < 0:
+        return {}
+    i, opts = ck + 4, {}
+    while i < len(payload):
+        code = payload[i]
+        if code == 255:                             # end
+            break
+        if code == 0:                               # pad
+            i += 1
+            continue
+        if i + 1 >= len(payload):
+            break
+        ln = payload[i + 1]
+        val = payload[i + 2:i + 2 + ln]
+        if len(val) < ln:                           # truncated by snaplen
+            break
+        opts[code] = opts.get(code, b'') + val      # RFC 3396 option concatenation
+        i += 2 + ln
+    return opts
+
+
+def _dhcp_scan_frames(pkts):
+    """Walk DHCP options across captured packets and flag the option-borne CVEs:
+    TunnelVision (CVE-2024-3661) and DynoRoot-class command injection
+    (CVE-2018-1111). Deduped per (kind, option). Separated from capture for the
+    self-test."""
+    findings, seen = [], set()
+    for pk in pkts:
+        opts = _dhcp_options(pk)
+        if not opts:
+            continue
+        for code in (121, 249):                     # RFC 3442 + Microsoft's 249
+            raw = opts.get(code)
+            if not raw or ('tv', code) in seen:
+                continue
+            try:
+                routes = _dhcp_rfc3442_routes(raw)
+            except ValueError:
+                continue
+            if _dhcp_covers_default(routes):
+                seen.add(('tv', code))
+                findings.append({
+                    'code': 'dhcp-option-route-hijack', 'cve': 'CVE-2024-3661',
+                    'severity': 'high', 'option': code,
+                    'detail': (f'DHCP option {code} pushes classless static routes '
+                               f'covering the default route ({len(routes)} route(s)) '
+                               '— TunnelVision (CVE-2024-3661) VPN decloaking. Verify '
+                               'this route push is expected policy, not an attacker '
+                               'steering traffic around the tunnel')})
+        for code, name in _DHCP_V4_TEXT_OPTS.items():
+            raw = opts.get(code)
+            if not raw or ('mc', code) in seen:
+                continue
+            hits = _dhcp_shell_metachars(raw)
+            if hits:
+                seen.add(('mc', code))
+                findings.append({
+                    'code': 'dhcp-option-command-injection', 'cve': 'CVE-2018-1111',
+                    'severity': 'high', 'option': code,
+                    'detail': (f'shell metacharacters {hits} in DHCP option {code} '
+                               f'({name}) — DHCP option command injection '
+                               '(CVE-2018-1111 / DynoRoot class)')})
+    return findings
+
+
+def _dhcp_cve_scan(interface, seconds):
+    """Passively capture DHCP traffic and return the option-borne CVE findings.
+    Best-effort: returns [] when tcpdump/scapy is unavailable or nothing matched.
+    Generates no traffic."""
+    if not _have('tcpdump') or not _have_scapy():
+        return []
+    iface = interface if _valid_iface(interface or '') else _capture_iface()
+    if not iface:
+        return []
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix='.pcap')
+    os.close(fd)
+    _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-p',
+          '-s', '1500', '-c', '5000', '-w', path,
+          'udp and (port 67 or port 68)'], timeout=int(seconds) + 8)
+    try:
+        from scapy.all import rdpcap
+        try:
+            pkts = rdpcap(path)
+        except Exception:
+            return []
+        return _dhcp_scan_frames(pkts)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def do_dhcp_guardian(interface=None, capture_seconds=6, learn=True, quick=False):
     """DHCP-snooping-style rogue-server + starvation detector (detection-only).
 
@@ -2077,6 +2236,7 @@ def do_dhcp_guardian(interface=None, capture_seconds=6, learn=True, quick=False)
 
     # --- (2) starvation ----------------------------------------------------
     starv = {'requests': 0, 'clients': 0, 'captured': False, 'error': None}
+    dhcp_cves = []
     if not quick:
         req, clients, cap_err = _dhcp_capture(iface, capture_seconds)
         starv = {'requests': req, 'clients': clients,
@@ -2085,6 +2245,10 @@ def do_dhcp_guardian(interface=None, capture_seconds=6, learn=True, quick=False)
             reasons.append(f"{clients} distinct DHCP clients requested leases in "
                            f"{capture_seconds}s ({req} requests) — DHCP starvation "
                            "(pool-exhaustion) signature")
+        # --- (3) option-borne CVEs: TunnelVision / DynoRoot ----------------
+        dhcp_cves = _dhcp_cve_scan(iface, capture_seconds)
+        for f in dhcp_cves:
+            reasons.append(f['detail'])
 
     # --- verdict -----------------------------------------------------------
     if starv['clients'] >= _DHCP_STARV_MIN_CLIENTS:
@@ -2099,6 +2263,15 @@ def do_dhcp_guardian(interface=None, capture_seconds=6, learn=True, quick=False)
     elif not offers:
         reasons.append("no DHCP server answered — static addressing, or the "
                        "pool may be exhausted")
+
+    # Option-borne CVEs escalate the verdict: command injection is unambiguous
+    # (rogue-class), while a default-route-covering option 121 could be legitimate
+    # policy routing, so it only raises a clean verdict to suspicious.
+    if dhcp_cves and verdict != 'starvation':
+        if any(f['cve'] == 'CVE-2018-1111' for f in dhcp_cves):
+            verdict = 'rogue'
+        elif verdict == 'clean':
+            verdict = 'suspicious'
 
     return {
         'success': True, 'verdict': verdict, 'interface': iface,
@@ -2116,6 +2289,7 @@ def do_dhcp_guardian(interface=None, capture_seconds=6, learn=True, quick=False)
         'rogue_count': len(rogue_servers),
         'arp_verdict': arp.get('verdict'),
         'starvation': starv,
+        'dhcp_cves': dhcp_cves,
         'reasons': reasons,
     }
 
@@ -4443,6 +4617,39 @@ def _dhcp_selftest():
        len(offers) == 1 and offers[0]['server_id'] == '192.168.1.1', got=offers)
     ck('discover: DNS list parsed',
        offers and offers[0]['dns'] == ['1.1.1.1', '8.8.8.8'])
+
+    # -- v3 option-borne CVEs: TunnelVision (opt 121) + DynoRoot (metachars) --
+    ck('rfc3442 default-route covered',
+       _dhcp_covers_default(_dhcp_rfc3442_routes(b'\x00\x0a\x00\x00\x01')))
+    ck('rfc3442 specific route not default',
+       not _dhcp_covers_default(_dhcp_rfc3442_routes(b'\x18\x0a\x0a\x0a\xc0\xa8\x01\x01')))
+    ck('shell metachars detected', _dhcp_shell_metachars(b'pc`id`') == ['`'])
+    ck('clean hostname no metachars', _dhcp_shell_metachars(b'workstation-01') == [])
+    try:
+        from scapy.all import Ether, IP, UDP, Raw
+
+        def _dpkt(ob):
+            pl = b'\x00' * 236 + b'\x63\x82\x53\x63' + ob + b'\xff'
+            return (Ether() / IP(src='10.0.0.1', dst='10.0.0.9')
+                    / UDP(sport=67, dport=68) / Raw(pl))
+
+        def _o(c, v):
+            return bytes([c, len(v)]) + v
+
+        tv = _dpkt(_o(53, b'\x02') + _o(121, b'\x00' + bytes([10, 0, 0, 1])))
+        codes = {x['code'] for x in _dhcp_scan_frames([tv])}
+        ck('tunnelvision opt121 -> route-hijack',
+           'dhcp-option-route-hijack' in codes, got=codes)
+        dr = _dpkt(_o(53, b'\x02') + _o(12, b'pc`id`'))
+        codes = {x['code'] for x in _dhcp_scan_frames([dr])}
+        ck('dynoroot metachar -> command-injection',
+           'dhcp-option-command-injection' in codes, got=codes)
+        clean = _dpkt(_o(53, b'\x02') + _o(12, b'workstation-01')
+                      + _o(121, b'\x18\x0a\x0a\x0a\xc0\xa8\x01\x01'))
+        cf = _dhcp_scan_frames([clean])
+        ck('clean dhcp options -> no cve', not cf, got=[x['code'] for x in cf])
+    except Exception as _e:
+        ck('dhcp-cve-scapy-skip', True, got='scapy unavailable: %s' % _e)
 
     # -- verdict logic via monkeypatched discover/capture seams --
     import tempfile
@@ -8463,11 +8670,16 @@ def _decode_icmp6_redirect_frames(frames):
 
 _ICMP6_RA = 134            # Router Advertisement
 _ND_OPT_RDNSS = 25         # RFC 8106 Recursive DNS Server option
+_ND_OPT_DNSSL = 31         # RFC 8106 DNS Search List option
+# A DNSSL option >= this many 8-byte units carries > 256 bytes of domain-name data,
+# the CVE-2020-16899 (Windows TCP/IP) out-of-bounds-read trigger.
+_ND_DNSSL_OVERSIZE_UNITS = 35
 
 
 def _decode_icmp6_ra_findings(frames):
     """Parse raw ICMPv6 Router Advertisements (type 134) out of Ethernet frames for
-    CVE-2020-16898 'Bad Neighbor' and malformed ND-option lengths. The RDNSS option
+    CVE-2020-16898 'Bad Neighbor', the DNSSL-option DoS (CVE-2020-16899 Windows /
+    CVE-2020-25583 FreeBSD rtsold) and malformed ND-option lengths. The RDNSS option
     (type 25) carries N addresses, so RFC 8106 fixes its length field at 1+2N 8-byte
     units — always ODD; an EVEN value is the Windows TCP/IP stack buffer-overflow trigger.
     Pure bytes in, findings out — no scapy, unit-testable. Findings are shaped like the
@@ -8536,6 +8748,35 @@ def _decode_icmp6_ra_findings(frames):
                                             'TCP/IP stack buffer-overflow trigger'
                                             % (src, ounits)),
                                 'details': {'rdnss_length_units': ounits}})
+                if otype == _ND_OPT_DNSSL:
+                    # DNSSL option (type 31): Reserved(2)+Lifetime(4) then DNS-wire-format
+                    # domain names. CVE-2020-16899 (Windows) / CVE-2020-25583 (FreeBSD
+                    # rtsold): a domain-name field over 256 bytes, or a label length that
+                    # overruns the option, is the out-of-bounds-read / label-parse trigger.
+                    dns_field = icmp[o + 8:o + olen]
+                    issue = None
+                    if ounits >= _ND_DNSSL_OVERSIZE_UNITS:
+                        issue = 'oversized (%d 8-byte units, >256B of name data)' % ounits
+                    else:
+                        j = 0
+                        while j < len(dns_field):
+                            ll = dns_field[j]
+                            if ll == 0:
+                                j += 1
+                                continue
+                            if j + 1 + ll > len(dns_field):
+                                issue = 'label length %d overruns the option' % ll
+                                break
+                            j += 1 + ll
+                    if issue:
+                        out.append({'check': 'nd_ra_dnssl_malformed', 'severity': 'HIGH',
+                                    'src': src, 'src_mac': src_mac, 'cve': 'CVE-2020-16899',
+                                    'message': ('Router Advertisement from %s carries a '
+                                                'malformed DNSSL option (%s) — the CVE-2020-16899 '
+                                                '(Windows TCP/IP) / CVE-2020-25583 (FreeBSD '
+                                                'rtsold) label-parse out-of-bounds-read trigger'
+                                                % (src, issue)),
+                                    'details': {'dnssl_issue': issue, 'length_units': ounits}})
                 o += olen
         except Exception:
             continue
@@ -9378,6 +9619,20 @@ def _icmp_selftest():
     scenarios.append({'name': 'clean-ra-silent', 'expect': 'no findings',
                       'got': str([f['check'] for f in clean_ra]),
                       'pass': clean_ra == []})
+    # DNSSL option DoS (CVE-2020-16899 Windows / CVE-2020-25583 FreeBSD rtsold):
+    # an oversized DNSSL (>= 35 units => >256B of name data) is the OOB-read trigger.
+    dnssl = _decode_icmp6_ra_findings(
+        [(0.0, _v6_ra_frame(_ND_OPT_DNSSL, _ND_DNSSL_OVERSIZE_UNITS))])
+    scenarios.append({'name': 'dnssl-oversized-dos',
+                      'expect': 'nd_ra_dnssl_malformed/CVE-2020-16899',
+                      'got': str([f['check'] for f in dnssl]),
+                      'pass': any(f['check'] == 'nd_ra_dnssl_malformed'
+                                  and f.get('cve') == 'CVE-2020-16899' for f in dnssl)})
+    dnssl_ok = _decode_icmp6_ra_findings([(0.0, _v6_ra_frame(_ND_OPT_DNSSL, 3))])
+    scenarios.append({'name': 'dnssl-small-clean', 'expect': 'no dnssl finding',
+                      'got': str([f['check'] for f in dnssl_ok]),
+                      'pass': not any(f['check'] == 'nd_ra_dnssl_malformed'
+                                      for f in dnssl_ok)})
 
     # Optional Scapy end-to-end: craft a real Redirect -> pcap -> tcpdump -> parse.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
