@@ -13257,11 +13257,19 @@ def _isis_sysid_of_lsp(lspid):
     return '.'.join((lspid or '').split('.')[:3]) or None
 
 
+# Router-Capability (TLV 242) sub-TLVs that mark Segment Routing / Flexible-Algorithm
+# signalling — the CVE-2024-20406 exposure precondition. tcpdump renders these as e.g.
+# "SR-Capabilities subTLV #2", "SRv6 ... subTLV #25", "Flexible Algorithm Definition".
+_ISIS_SR_RE = re.compile(r'SR-Capabilities|SRv6|Flexible Algorithm|Prefix SID subTLV'
+                         r'|Segment Routing', re.I)
+
+
 def _parse_isis_capture(output):
     """Parse `tcpdump -e -t -v` text over IS-IS into per-PDU events. Block-structured:
     a header line (`<src> > <AllISs-mac>, 802.3, ... IS-IS (0x83)`) starts a PDU whose
     type line (`L1 Lan IIH` / `L2 LSP` / ...) and TLVs (area/auth/hostname/prefix)
-    follow indented."""
+    follow indented. Also flags the Instance Identifier TLV (7) and Router-Capability
+    SR sub-TLVs for the v5 IOS XR exposure CVEs."""
     events = []
     cur = None
     for raw in output.splitlines():
@@ -13274,7 +13282,7 @@ def _parse_isis_capture(output):
                    'level': None, 'kind': None, 'source_id': None, 'lsp_id': None,
                    'seq': None, 'areas': [], 'auth_present': False, 'auth': None,
                    'hostname': None, 'prefixes': [], 'lifetime': None,
-                   'overload': False}
+                   'overload': False, 'iid': False, 'sr': False}
             continue
         if cur is None:
             continue
@@ -13309,6 +13317,10 @@ def _parse_isis_capture(output):
             cur['auth'] = 'cleartext'
         elif 'HMAC' in line:
             cur['auth'] = 'hmac'
+        if 'Instance Identifier TLV' in line:      # RFC 6822 IID TLV #7
+            cur['iid'] = True
+        if _ISIS_SR_RE.search(line):               # SR / Flex-Algo Router-Capability
+            cur['sr'] = True
         hn = _ISIS_HOST_RE.search(line)
         if hn:
             cur['hostname'] = hn.group(1)
@@ -13372,8 +13384,13 @@ def _isis_analyze(events, seconds, baseline, learn=True):
         sid = e['system_id']
         r = routers.setdefault(sid, {
             'system_id': sid, 'hostname': None, 'areas': set(), 'levels': set(),
-            'macs': set(), 'kinds': set(), 'auth': set(), 'count': 0})
+            'macs': set(), 'kinds': set(), 'auth': set(), 'count': 0,
+            'iid': False, 'sr': False})
         r['count'] += 1
+        if e.get('iid'):
+            r['iid'] = True
+        if e.get('sr'):
+            r['sr'] = True
         if e['hostname']:
             r['hostname'] = e['hostname']
         for a in e['areas']:
@@ -13420,7 +13437,8 @@ def _isis_analyze(events, seconds, baseline, learn=True):
         base_prefixes = dict(baseline['prefixes'])
         had_baseline = True
 
-    PRIORITY = ['injection', 'rogue-router', 'storm', 'anomaly', 'weak-auth', 'clean']
+    PRIORITY = ['injection', 'rogue-router', 'storm', 'anomaly', 'weak-auth',
+                'exposure', 'clean']
     verdict = 'clean'
     reasons = []
 
@@ -13566,6 +13584,24 @@ def _isis_analyze(events, seconds, baseline, learn=True):
         reasons.append(
             f"IS-IS flood: {rate} PDUs/s — a hello/LSP storm (churn or a DoS against "
             f"the routing process)")
+
+    # v5 exposure (posture): the IOS XR feature preconditions visible on the wire.
+    iid_srcs = sorted({_name(s) for s, r in routers.items() if r.get('iid')})
+    if iid_srcs:
+        bump('exposure')
+        reasons.append(
+            f"Multi-instance IS-IS in use (Instance Identifier TLV #7) from "
+            f"{', '.join(iid_srcs)} — the CVE-2026-20074 precondition (Cisco IOS XR "
+            f"multi-instance IS-IS DoS). Confirm the device model/version; patch if "
+            f"affected IOS XR")
+    sr_srcs = sorted({_name(s) for s, r in routers.items() if r.get('sr')})
+    if sr_srcs:
+        bump('exposure')
+        reasons.append(
+            f"IS-IS Segment Routing / Flex-Algo signalling (Router Capability TLV #242 "
+            f"SR sub-TLVs) from {', '.join(sr_srcs)} — the CVE-2024-20406 precondition "
+            f"(Cisco IOS XR SR/Flex-Algo DoS). Confirm the device model/version; patch "
+            f"if affected IOS XR")
 
     advisories = []
     if routers:
@@ -13869,6 +13905,34 @@ def _isis_selftest():
     scenarios.append({'name': 'v6-parse', 'expect': 'family=6/down=True',
                       'got': f"family={pfx6.get('family')} down={pfx6.get('down')}",
                       'pass': v6p_ok})
+
+    # ---- v5 exposure CVEs (IOS XR feature preconditions, text-detected) ----
+    iid_lsp = (lsp('00:11:22:33:44:55', '0000.0000.0001', auth='hmac',
+                   prefixes=[('10.1.0.0/24', 10)])
+               + "\n\t    Instance Identifier TLV #7, length: 4"
+                 "\n\t      Instance ID: 1, ITIDs(1): 0")
+    r_iid = run('isis-iid-exposure', iid_lsp, 20, base, 'exposure')
+    scenarios.append({'name': 'isis-iid-cve', 'expect': 'CVE-2026-20074 named',
+                      'got': 'named' if any('CVE-2026-20074' in x for x in r_iid['reasons'])
+                      else 'missing',
+                      'pass': any('CVE-2026-20074' in x for x in r_iid['reasons'])})
+    sr_lsp = (lsp('00:11:22:33:44:55', '0000.0000.0001', auth='hmac',
+                  prefixes=[('10.1.0.0/24', 10)])
+              + "\n\t    IS-IS Router Capability TLV #242, length: 12"
+                "\n\t      Router-ID 10.0.0.1, Flags [none]"
+                "\n\t\tSR-Capabilities subTLV #2, length: 5, Range 10")
+    r_sr = run('isis-sr-exposure', sr_lsp, 20, base, 'exposure')
+    scenarios.append({'name': 'isis-sr-cve', 'expect': 'CVE-2024-20406 named',
+                      'got': 'named' if any('CVE-2024-20406' in x for x in r_sr['reasons'])
+                      else 'missing',
+                      'pass': any('CVE-2024-20406' in x for x in r_sr['reasons'])})
+    # negative: a clean LSP with neither TLV stays clean.
+    r_clean = run('isis-no-exposure', lsp('00:11:22:33:44:55', '0000.0000.0001',
+                  auth='hmac', prefixes=[('10.1.0.0/24', 10)]), 20, base, 'clean')
+    scenarios.append({'name': 'isis-no-exposure-clean', 'expect': 'no exposure CVE',
+                      'got': r_clean['verdict'],
+                      'pass': not any('CVE-2026-20074' in x or 'CVE-2024-20406' in x
+                                      for x in r_clean['reasons'])})
 
     # Scapy end-to-end: real IIH (no auth) + LSP with a prefix -> tcpdump -> parse.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
@@ -15985,6 +16049,9 @@ _EIGRP_WATCH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _eigrp_watch_lock = threading.Lock()
 _EIGRP_EVENTS_CAP = 200
 _EIGRP_STORM_RATE = 25          # EIGRP pkts/s above this (with volume) == flood
+# Unauthenticated Update-class (Update/Query/Reply) messages from one neighbour above
+# this count in the window == the CVE-2026-20222 (Cisco ASA/FTD) memory-leak DoS pattern.
+_EIGRP_UPDATE_FLOOD_MIN = 40
 _EIGRP_OPCODES = {1: 'update', 2: 'request', 3: 'query', 4: 'reply', 5: 'hello',
                   10: 'siaquery', 11: 'siareply'}
 _EIGRP_V4HDR_RE = re.compile(r'^(\d+\.\d+\.\d+\.\d+)\s*>\s*(\S+):\s*$')
@@ -16204,15 +16271,17 @@ def _eigrp_analyze(events, seconds, baseline, learn=True):
         bump('anomaly')
         reasons.append(
             "EIGRP K-value mismatch between speakers — K-values must match to form an "
-            "adjacency; a mismatch blocks peering (misconfig) or signals a crafted hello")
+            "adjacency; a mismatch blocks peering (misconfig), or a crafted K-value / "
+            "Goodbye hello is the CVE-2005-4436 adjacency-reset DoS shape")
 
     # Weak / no authentication.
     if noauth_any:
         bump('weak-auth')
         reasons.append(
             "EIGRP packets seen without an Authentication TLV — no HMAC-MD5/SHA "
-            "protection. This is what lets a forged Update win; configure an EIGRP "
-            "key-chain (authentication mode md5/hmac-sha-256) on every neighbor")
+            "protection (the weak-authentication class named by CVE-2005-4437). This is "
+            "what lets a forged Update win; configure an EIGRP key-chain (authentication "
+            "mode md5/hmac-sha-256) on every neighbor")
 
     # Flooding.
     rate = round(len(events) / seconds, 2)
@@ -16221,6 +16290,21 @@ def _eigrp_analyze(events, seconds, baseline, learn=True):
         reasons.append(
             f"EIGRP flood: {rate} pkts/s (hellos are normally every 5s) — a "
             f"hello/query storm (churn or DoS against the routing process)")
+
+    # CVE-2026-20222 (Cisco ASA/FTD): a sustained UNAUTHENTICATED Update-class flood
+    # (Update/Query/Reply) from one neighbour leaks memory until the device reloads.
+    # Gated on no-auth to match the CVE precondition and avoid FPing on a legitimate
+    # authenticated reconvergence burst.
+    for src in sorted(routers):
+        upd = sum(1 for e in events if e['src'] == src and not e['auth']
+                  and e.get('opcode_num') in (1, 3, 4))
+        if upd >= _EIGRP_UPDATE_FLOOD_MIN:
+            bump('storm')
+            reasons.append(
+                f"EIGRP UPDATE FLOOD: {src} sent {upd} unauthenticated Update-class "
+                f"messages in {seconds}s — the CVE-2026-20222 pattern (Cisco ASA/FTD "
+                f"EIGRP DoS: crafted high-rate updates leak memory until the device "
+                f"reloads)")
 
     advisories = []
     if routers:
@@ -16459,6 +16543,36 @@ def _eigrp_selftest():
     scenarios.append({'name': 'eigrp-v6-parse', 'expect': 'af=ipv6/src=fe80::9/v6-pfx',
                       'got': f"af={e6.get('af')} src={e6.get('src')} pfx={rt6.get('prefix')}",
                       'pass': v6p_ok})
+
+    # ---- v5 CVE naming on existing detections ----
+    # CVE-2026-20222: an unauthenticated Update-class flood from one neighbour -> storm.
+    flood = "\n".join(eigrp4('10.0.0.1', opcode='Update', opnum=1, auth=False)
+                      for _ in range(_EIGRP_UPDATE_FLOOD_MIN + 2))
+    r_uf = run('eigrp-update-flood', flood, 15, base, 'storm')
+    scenarios.append({'name': 'eigrp-update-flood-cve', 'expect': 'CVE-2026-20222 named',
+                      'got': 'named' if any('CVE-2026-20222' in x for x in r_uf['reasons'])
+                      else 'missing',
+                      'pass': any('CVE-2026-20222' in x for x in r_uf['reasons'])})
+    # CVE-2005-4437: the no-Authentication-TLV reason names the weak-auth CVE.
+    r_wa = run('eigrp-weak-auth-cve', eigrp4('10.0.0.1', auth=False,
+               routes=[('10.1.0.0/24', '10.0.0.1')]), 15, base, 'weak-auth')
+    scenarios.append({'name': 'eigrp-weak-auth-cve', 'expect': 'CVE-2005-4437 named',
+                      'got': 'named' if any('CVE-2005-4437' in x for x in r_wa['reasons'])
+                      else 'missing',
+                      'pass': any('CVE-2005-4437' in x for x in r_wa['reasons'])})
+    # CVE-2005-4436: a K-value mismatch (both speakers baselined so it isolates from
+    # rogue-router) names the crafted-K-value / Goodbye adjacency-reset CVE.
+    kbase = {'routers': {'10.0.0.1': {'as': [100], 'kvals': [[1, 0, 1, 0, 0]]},
+                         '10.0.0.2': {'as': [100], 'kvals': [[1, 1, 1, 0, 0]]}},
+             'prefixes': {}}
+    kr = _eigrp_analyze(_parse_eigrp_capture(
+        eigrp4('10.0.0.1', auth=True, kvals=(1, 0, 1, 0, 0)) + "\n"
+        + eigrp4('10.0.0.2', auth=True, kvals=(1, 1, 1, 0, 0))),
+        15, dict(kbase), learn=False)
+    scenarios.append({'name': 'eigrp-kvalue-cve', 'expect': 'CVE-2005-4436 named',
+                      'got': 'named' if any('CVE-2005-4436' in x for x in kr['reasons'])
+                      else str(kr['verdict']),
+                      'pass': any('CVE-2005-4436' in x for x in kr['reasons'])})
 
     # Scapy end-to-end.
     scapy_result = {'ran': False, 'reason': 'scapy or tcpdump unavailable'}
@@ -17578,11 +17692,18 @@ _OSPF_ADVISORIES = {
         'title': 'Opaque/TE LSAs present — patch ospfd for malformed-LSA crashes',
         'detail': ('Opaque (Type 9/10/11) / TE LSAs are on the segment. Several '
                    'FRRouting ospfd DoS crashes are triggered by malformed opaque '
-                   'LSAs (e.g. CVE-2024-27913, CVE-2025-61107, CVE-2025-61105). '
-                   'The software version is not visible on the wire — check OSV '
-                   'for your ospfd build and patch. Cisco ASA/FTD have had '
-                   'equivalent OSPF-LSA DoS advisories.'),
-        'refs': ['CVE-2024-27913', 'CVE-2025-61107', 'CVE-2025-61105', _OSPF_OSV_URL],
+                   'LSAs (e.g. CVE-2024-27913, CVE-2025-61107, CVE-2025-61105, and the '
+                   'v4 cluster CVE-2025-61099 / CVE-2025-61103 / CVE-2025-61104 / '
+                   'CVE-2025-61106 — TLV-length overruns and NULL-derefs in the opaque / '
+                   'extended-prefix / extended-link parsers). The malformed sub-TLV bytes '
+                   'are a byte-level signature this text watcher does not reconstruct, so '
+                   'these are named as exposure posture — check OSV for your ospfd build '
+                   'and patch. The OSPF Segment-Routing opaque-LSA sub-TLV overruns '
+                   '(CVE-2024-31950 / CVE-2024-31951) are byte-level detected by SR-MPLS '
+                   'Watch (SRM-SR-TLV-OVERRUN). Cisco ASA/FTD have had equivalent '
+                   'OSPF-LSA DoS advisories.'),
+        'refs': ['CVE-2024-27913', 'CVE-2025-61107', 'CVE-2025-61105', 'CVE-2025-61099',
+                 'CVE-2025-61103', 'CVE-2025-61104', 'CVE-2025-61106', _OSPF_OSV_URL],
     },
 }
 
@@ -18224,11 +18345,23 @@ _BGP_ADVISORIES = {
         'severity': 'medium',
         'title': 'Patch bgpd for malformed BGP-UPDATE attribute crashes',
         'detail': ('Malformed BGP path attributes have repeatedly crashed router '
-                   'BGP daemons (e.g. FRRouting CVE-2023-38802 via a corrupted '
-                   'Tunnel-Encapsulation attribute; CERT VU#347067 covers multiple '
-                   'implementations). The software version is not visible on the '
-                   'wire — check OSV for your bgpd build and patch.'),
-        'refs': ['CVE-2023-38802', 'VU#347067', _BGP_OSV_URL],
+                   'BGP daemons (e.g. FRRouting CVE-2023-38802 / Juniper rpd '
+                   'CVE-2024-30395 via a corrupted Tunnel-Encapsulation attribute; '
+                   'CERT VU#347067 covers multiple implementations). The v4 corpus '
+                   'spans FRR bgpd (zero-length path-attributes CVE-2023-41358, '
+                   'MP_UNREACH CVE-2023-47234, EOR-bypass CVE-2023-47235, Prefix-SID '
+                   'CVE-2024-31948, FlowSpec CVE-2026-37457, MP_REACH CVE-2026-37458, '
+                   'NHC-TLV CVE-2026-37459, OPEN optional-parameter CVE-2022-40302 / '
+                   'CVE-2022-43681) and GoBGP (IPv6 extended-community CVE-2026-37461, '
+                   'UPDATE length underflow CVE-2026-37462). The malformed bytes are a '
+                   'byte-level parser signature the passive text watcher does not '
+                   'reconstruct, and the software version is not visible on the wire — '
+                   'these are named as exposure posture; check OSV for your BGP build '
+                   'and patch, or run the standalone BGP tap for byte-level detection.'),
+        'refs': ['CVE-2023-38802', 'CVE-2024-30395', 'CVE-2023-41358', 'CVE-2023-47234',
+                 'CVE-2023-47235', 'CVE-2024-31948', 'CVE-2022-40302', 'CVE-2022-43681',
+                 'CVE-2026-37457', 'CVE-2026-37458', 'CVE-2026-37459', 'CVE-2026-37461',
+                 'CVE-2026-37462', 'VU#347067', _BGP_OSV_URL],
     },
 }
 

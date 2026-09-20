@@ -14,14 +14,15 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~189 CVEs actively detected.** 200 distinct CVE IDs are named across the detector code;
-  189 are actively detected. The gap is named-as-context, not a per-CVE identification: the
-  four Juniper ARP control-plane CVEs (shared request-rate/breadth shape) and the SR-MPLS
-  `CVE_REFERENCES` table (SR-plane CVEs recorded as rejected/disputed or owned by
-  bgpwatch/isiswatch/ospfwatch).
+- **~194 CVEs actively detected.** 220 distinct CVE IDs are named across the detector code;
+  194 are actively detected. The gap is named-as-context, not a per-CVE identification: the
+  four Juniper ARP control-plane CVEs (shared request-rate/breadth shape), the SR-MPLS
+  `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture advisories**
+  (byte-level parser CVEs the passive text watchers name for patch guidance but cannot
+  reconstruct on the wire — the standalone taps do the byte-level detection).
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **32 CVEs from 2023, 45 from 2024, 25 from 2025, and
-  10 from 2026.**
+- Weighted to the current threat wave: **35 CVEs from 2023, 47 from 2024, 29 from 2025, and
+  17 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
   in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba) and **Dell
@@ -85,6 +86,20 @@ behind them is Solarflere's work.
   Windows / CVE-2020-25583 FreeBSD rtsold) alongside the existing Bad Neighbor
   (CVE-2020-16898). The two Microsoft DHCP heap-overflow CVEs (CVE-2026-50518 /
   CVE-2026-56159) are deferred — no published trigger, so no passive signature exists yet.
+
+- **Routing / IGP wave** — **EIGRP Watch** names three CVEs on shapes it already detects:
+  the K-value / Goodbye adjacency-reset (CVE-2005-4436), weak/absent authentication
+  (CVE-2005-4437) and an unauthenticated Update-class flood (CVE-2026-20222, Cisco
+  ASA/FTD). **IS-IS Watch** adds two IOS XR feature-exposure detections read from the wire:
+  multi-instance IS-IS via the Instance-Identifier TLV #7 (CVE-2026-20074) and
+  SR/Flex-Algo signalling via Router-Capability TLV #242 sub-TLVs (CVE-2024-20406);
+  CVE-2024-20312 is excluded (no passive signature). **BGP Path Watch** and **OSPF Watch**
+  name their v4 malformed-attribute / opaque-LSA CVE corpora as posture advisories — FRR /
+  GoBGP / Juniper byte-level parser bugs (BGP: CVE-2022-40302/43681, CVE-2023-41358/47234/
+  47235, CVE-2024-30395, CVE-2026-37457/37458/37459/37461/37462; OSPF: CVE-2025-61099/61103/
+  61104/61106) — because the passive text watchers cannot reconstruct the malformed bytes;
+  the OSPF SR opaque-LSA overruns (CVE-2024-31950/31951) are byte-level detected by SR-MPLS
+  Watch, and the standalone BGP tap does the byte-level BGP detection.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
