@@ -158,6 +158,10 @@ ORPHAN_CODE_BUDGET = 10           # distinct sources per code before rollup
 CORRELATION_WINDOW_S = 120.0      # LAG-HIJACK correlation window
 MISMATCH_MIN_PDUS = 2             # PDUs the contradicting half must send
                                   # before a partner-view disagreement counts
+MALFORMED_FLAP_WINDOW_S = 30.0    # malformed PDU -> induced flap correlation.
+                                  # Deliberately short: in CVE-2024-30388 the
+                                  # flap follows receipt immediately, so a wide
+                                  # window would only buy coincidences.
 HALF_IDLE_TTL_S = 3600.0          # prune halves silent this long
 PRUNE_INTERVAL_S = 300.0
 MARKER_BURST_WINDOW_S = 10.0
@@ -299,6 +303,9 @@ CODES: Dict[str, Dict[str, str]] = {
     "LACP-LAG-HIJACK": {
         "severity": SEV_CRITICAL, "confidence": CONF_MEDIUM,
         "title": "Correlated aggregation takeover: identity manipulation with member disruption"},
+    "LACP-MALFORMED-INDUCED-FLAP": {
+        "severity": SEV_HIGH, "confidence": CONF_MEDIUM,
+        "title": "Malformed LACPDU followed by member flap (CVE-2024-30388 class)"},
     # --- housekeeping -------------------------------------------------------
     "LACP-ORPHAN-ROLLUP": {
         "severity": SEV_MEDIUM, "confidence": CONF_HIGH,
@@ -313,6 +320,19 @@ IDENTITY_CODES = frozenset({
     "LACP-SYSTEM-PRIORITY-IMPROVED",
     "LACP-PORT-PRIORITY-IMPROVED",
     "LACP-PARTNER-VIEW-MISMATCH",
+})
+# Parse failures that a vulnerable forwarding engine may act on. Used by the
+# malformed-induced-flap correlator, NOT by the hijack correlator.
+MALFORMED_CODES = frozenset({
+    "LACP-MALFORMED-SHORT",
+    "LACP-TLV-LENGTH-INVALID",
+    "LACP-TLV-ORDER-INVALID",
+    "LACP-BAD-VERSION",
+})
+# Disruptions that a malformed PDU could plausibly have induced.
+INDUCED_DISRUPTION_CODES = frozenset({
+    "LACP-SYNC-FLAPPING",
+    "LACP-SYNC-LOSS",
 })
 DISRUPTION_CODES = frozenset({
     "LACP-SYNC-LOSS",
@@ -702,6 +722,10 @@ class LacpWatch:
         self._claim_of: Dict[Tuple[bytes, int, int],
                              Optional[Tuple[bytes, int, int]]] = {}
         self._mismatch: Dict[Tuple[Any, ...], Tuple[float, int]] = {}
+        # Segment-scoped ring of malformed PDUs that were actually EMITTED
+        # (not merely observed), so a correlation can never name a finding the
+        # operator never saw.
+        self._malformed: Deque[Tuple[float, str, bytes]] = deque(maxlen=64)
         self.lag_posture_seen: set = set()
         self.marker_times: Deque[float] = deque(maxlen=1024)
         self.bidirectional_confirmed = False
@@ -846,8 +870,11 @@ class LacpWatch:
             self.stats["parse_errors"] += 1
             ev = dict(an.evidence)
             ev["src"] = mac_str(fr.src)
-            self.emit(an.code, ts, key=(fr.src, an.code), session=session,
-                      evidence=ev, orphan_src=fr.src)
+            rec = self.emit(an.code, ts, key=(fr.src, an.code), session=session,
+                            evidence=ev, orphan_src=fr.src)
+            # Only an emitted malformed finding can anchor a correlation.
+            if rec is not None and an.code in MALFORMED_CODES:
+                self._malformed.append((ts, an.code, fr.src))
         if not pdu.usable or pdu.actor is None or pdu.partner is None:
             return
 
@@ -1039,20 +1066,27 @@ class LacpWatch:
             window = [t for t in half.sync_transitions
                       if ts - t <= SYNC_FLAP_WINDOW_S]
             if len(window) >= SYNC_FLAP_THRESHOLD:
-                self.emit("LACP-SYNC-FLAPPING", ts, key=half.key, session=session,
-                          evidence={"transitions": len(window),
-                                    "window_s": SYNC_FLAP_WINDOW_S,
-                                    "state": state_str(cur),
-                                    "src": mac_str(fr.src)})
+                rec = self.emit("LACP-SYNC-FLAPPING", ts, key=half.key,
+                                session=session,
+                                evidence={"transitions": len(window),
+                                          "window_s": SYNC_FLAP_WINDOW_S,
+                                          "state": state_str(cur),
+                                          "src": mac_str(fr.src)})
                 self._half_event(half, ts, "LACP-SYNC-FLAPPING")
                 self._check_hijack(half, fr, ts)
+                if rec is not None:
+                    self._check_malformed_flap(half, fr, ts,
+                                               "LACP-SYNC-FLAPPING")
             elif (prev & S_SYNC) and not (cur & S_SYNC) and half.synced_once:
-                self.emit("LACP-SYNC-LOSS", ts, key=half.key, session=session,
-                          evidence={"previous_state": state_str(prev),
-                                    "current_state": state_str(cur),
-                                    "src": mac_str(fr.src)})
+                rec = self.emit("LACP-SYNC-LOSS", ts, key=half.key,
+                                session=session,
+                                evidence={"previous_state": state_str(prev),
+                                          "current_state": state_str(cur),
+                                          "src": mac_str(fr.src)})
                 self._half_event(half, ts, "LACP-SYNC-LOSS")
                 self._check_hijack(half, fr, ts)
+                if rec is not None:
+                    self._check_malformed_flap(half, fr, ts, "LACP-SYNC-LOSS")
         if (changed & (S_COLLECTING | S_DISTRIBUTING)) and (cur & S_SYNC):
             lost = [n for b, n in STATE_BITS
                     if b & (S_COLLECTING | S_DISTRIBUTING)
@@ -1238,6 +1272,55 @@ class LacpWatch:
                             "note": "aggregation selection parameters were "
                                     "manipulated and the member was disrupted "
                                     "inside the same window"})
+
+    def _check_malformed_flap(self, half: Half, fr: Frame, ts: float,
+                              disruption: str) -> None:
+        """Malformed LACPDU on the segment, then a member flaps.
+
+        This is the observable signature of CVE-2024-30388 (Junos QFX5000 /
+        EX4100 / EX4400 / EX4650: a specific malformed LACP packet causes an
+        LACP flap). Juniper never published the offending byte pattern, so a
+        packet signature here would be invention. The *effect* is observable
+        without it, and this also catches any future malformed-PDU flap bug in
+        any vendor's forwarding engine.
+
+        Scope note: unlike LAG-HIJACK this is SEGMENT-scoped, not member-scoped.
+        A malformed PDU fails to parse, so its sender never becomes a member and
+        there is no member to attach it to. That is looser, so the window is
+        short and two exclusions apply:
+          * the malformed sender must not be the flapping member itself - a
+            member emitting garbage as it dies is a failing NIC, not an
+            induced flap;
+          * the malformed finding must have been emitted, not merely observed.
+        """
+        recent = [(t, code, src) for t, code, src in self._malformed
+                  if 0 <= (ts - t) <= MALFORMED_FLAP_WINDOW_S]
+        # exclude the flapping member's own source MACs
+        own = set(half.src_macs)
+        external = [(t, code, src) for t, code, src in recent if src not in own]
+        if not external:
+            return
+        self.emit("LACP-MALFORMED-INDUCED-FLAP", ts, key=half.key,
+                  session=half.label(fr.src),
+                  evidence={
+                      "cve": "CVE-2024-30388",
+                      "cve_note": "Junos OS QFX5000 / EX4100 / EX4400 / EX4650: "
+                                  "a specific malformed LACP packet causes an "
+                                  "LACP flap. The byte pattern is undisclosed, "
+                                  "so this correlates the EFFECT, not a "
+                                  "signature. Platform cannot be confirmed "
+                                  "passively - verify the victim's model and "
+                                  "Junos version before treating as exploited.",
+                      "disruption": disruption,
+                      "window_s": MALFORMED_FLAP_WINDOW_S,
+                      "malformed_observations": [
+                          {"code": code, "src": mac_str(src),
+                           "seconds_before_flap": round(ts - t, 3)}
+                          for t, code, src in external],
+                      "victim_member": {"sys_id": mac_str(half.sys_id),
+                                        "key": half.oper_key,
+                                        "port": half.port_num},
+                  })
 
     # -- marker -------------------------------------------------------------
 
@@ -1836,7 +1919,32 @@ def selftest():
     v2, _ = _verdict_for(e2.findings)
     check("verdict-clean", v2 == "clean", "verdict=%s" % v2)
 
-    # 18. Every declared code carries a known severity (catalogue integrity).
+    # 18. Malformed LACPDU from an external MAC, then an established member flaps
+    #     -> LACP-MALFORMED-INDUCED-FLAP (CVE-2024-30388 class, effect-correlated).
+    est = b_frame(b_lacpdu(base, partner), src=b"\x00\xaa\x01\x01\x01\x01")
+    mal = b_frame(b_lacpdu(base, partner, actor_len=21),
+                  src=b"\x00\xcc\x03\x03\x03\x03")          # external malformed sender
+    loss = b_frame(b_lacpdu(b_port(state=0x35), partner),
+                   src=b"\x00\xaa\x01\x01\x01\x01")          # member loses SYNC
+    e = _run_frames([(est, 100.0), (mal, 101.0), (loss, 102.0)])
+    check("malformed-induced-flap",
+          "LACP-MALFORMED-INDUCED-FLAP" in codes_of(e), codes_of(e))
+
+    # 19. Negative: the flapping member is itself the malformed sender -> excluded
+    #     (a failing NIC, not an induced flap).
+    mal_self = b_frame(b_lacpdu(base, partner, actor_len=21),
+                       src=b"\x00\xaa\x01\x01\x01\x01")
+    e = _run_frames([(est, 100.0), (mal_self, 101.0), (loss, 102.0)])
+    check("malformed-flap-same-source-excluded",
+          "LACP-MALFORMED-INDUCED-FLAP" not in codes_of(e), codes_of(e))
+
+    # 20. Negative: a malformed PDU with no member flap following does not correlate.
+    clean_a = b_frame(b_lacpdu(base, partner), src=b"\x00\xaa\x01\x01\x01\x01")
+    e = _run_frames([(est, 100.0), (mal, 101.0), (clean_a, 102.0)])
+    check("malformed-alone-no-correlation",
+          "LACP-MALFORMED-INDUCED-FLAP" not in codes_of(e), codes_of(e))
+
+    # 21. Every declared code carries a known severity (catalogue integrity).
     bad = [c for c, s in CODES.items() if s["severity"] not in _SEV_RANK]
     check("catalogue-severity-integrity", not bad, "bad=%s" % bad)
 

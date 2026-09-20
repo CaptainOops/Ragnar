@@ -14,13 +14,13 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~184 CVEs actively detected.** 195 distinct CVE IDs are named across the detector code;
-  184 are actively detected. The gap is named-as-context, not a per-CVE identification: the
+- **~189 CVEs actively detected.** 200 distinct CVE IDs are named across the detector code;
+  189 are actively detected. The gap is named-as-context, not a per-CVE identification: the
   four Juniper ARP control-plane CVEs (shared request-rate/breadth shape) and the SR-MPLS
   `CVE_REFERENCES` table (SR-plane CVEs recorded as rejected/disputed or owned by
   bgpwatch/isiswatch/ospfwatch).
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **32 CVEs from 2023, 44 from 2024, 25 from 2025, and
+- Weighted to the current threat wave: **32 CVEs from 2023, 45 from 2024, 25 from 2025, and
   10 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
@@ -74,6 +74,17 @@ behind them is Solarflere's work.
   (CVE-2023-31490 / CVE-2024-31948) and OSPF SR opaque-LSA (CVE-2024-31950 / CVE-2024-31951)
   — with a further `CVE_REFERENCES` table recording the SR-plane CVEs that are disputed or
   owned by the BGP/IS-IS/OSPF watchers rather than claimed here.
+
+- **LAN / directory / first-hop wave** — **LACP Watch** correlates a malformed LACPDU
+  with a member flap into `LACP-MALFORMED-INDUCED-FLAP` (CVE-2024-30388 class, effect not
+  signature); **LDAP Watch** adds the OpenLDAP nested-filter slapd crash (CVE-2020-12243)
+  as `filter-nest-dos`; **DHCP Guardian** adds a passive DHCP-option scan for **TunnelVision**
+  (CVE-2024-3661, option 121/249 covering the default route — VPN decloaking) and
+  **DynoRoot-class** command injection (CVE-2018-1111, shell metacharacters in a text
+  option); and the in-app **ICMPv6 RA** parser adds the DNSSL-option DoS (CVE-2020-16899
+  Windows / CVE-2020-25583 FreeBSD rtsold) alongside the existing Bad Neighbor
+  (CVE-2020-16898). The two Microsoft DHCP heap-overflow CVEs (CVE-2026-50518 /
+  CVE-2026-56159) are deferred — no published trigger, so no passive signature exists yet.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
