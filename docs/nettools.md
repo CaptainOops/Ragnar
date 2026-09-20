@@ -2577,13 +2577,17 @@ this scanner sees route injection directly. What it flags:
   hijack*, since it attracts all unmatched traffic.
 - **rogue-router** — a new EIGRP speaker (source / AS) not in the baseline
   (adjacency spoofing).
-- **storm** — an EIGRP flood (hello / query storm) by rate.
+- **storm** — an EIGRP flood (hello / query storm) by rate; *(v5)* a sustained
+  **unauthenticated Update-class flood from one neighbour** is additionally named as
+  the **CVE-2026-20222** pattern (Cisco ASA/FTD EIGRP DoS — crafted high-rate updates
+  leak memory until the device reloads).
 - **anomaly** — a **K-value** or **AS-number** mismatch between speakers (a misconfig
-  that blocks peering, or a crafted hello probing the segment); or an **EIGRPv6
-  packet not sourced from a link-local `fe80::/10` address** — RFC 7868 §6.1 requires
-  it, so a global/off-link v6 source is spoofed or off-segment (zero-config, deterministic).
-- **weak-auth** — EIGRP packets with **no Authentication TLV** (the enabler for
-  every injection attack).
+  that blocks peering, or the crafted-K-value / Goodbye adjacency-reset shape of
+  **CVE-2005-4436**); or an **EIGRPv6 packet not sourced from a link-local `fe80::/10`
+  address** — RFC 7868 §6.1 requires it, so a global/off-link v6 source is spoofed or
+  off-segment (zero-config, deterministic).
+- **weak-auth** — EIGRP packets with **no Authentication TLV** (the weak-authentication
+  class of **CVE-2005-4437**, and the enabler for every injection attack).
 
 **Dual-stack (RFC 7868).** The BPF is `ip proto 88 or ip6 proto 88`, and **both IPv4
 and IPv6 route TLVs** (internal + external, with the prefix, next-hop, origin-router/AS
@@ -2632,6 +2636,12 @@ scanner sees injection directly and can name the routers. What it flags:
   one system seen both keyed and un-keyed (a spoofed PDU racing the real router's).
 - **weak-auth** — a PDU with **no Authentication TLV** or a **cleartext** password
   (the injection enabler).
+- **exposure** *(v5, posture — amber, doesn't page)* — an IOS XR feature precondition
+  visible on the wire: **multi-instance IS-IS** (RFC 6822 Instance-Identifier TLV #7 →
+  **CVE-2026-20074**) or **SR / Flexible-Algorithm signalling** (Router-Capability TLV
+  #242 SR/SRv6/FAD/Prefix-SID sub-TLVs → **CVE-2024-20406**). These say "this speaker has
+  the feature enabled, so an affected IOS XR build is exposed" — confirm the model/version
+  and patch. CVE-2024-20312 (IOS/IOS XE) is excluded: no passive signature.
 
 **Dual-stack (IPv6 reachability, TLV 236/237, RFC 5308).** IPv6 prefixes carried in
 the IPv6 Reachability TLVs are parsed and run through the same injection/re-home
@@ -2701,8 +2711,11 @@ SPAN/mirror** to observe OSPF.
 on the wire, so a version→CVE lookup isn't possible passively — the scanner
 detects the *exposure conditions* instead (weak auth; opaque/TE LSAs, which are
 the trigger for FRRouting ospfd DoS crashes such as CVE-2024-27913 /
-CVE-2025-61107 / CVE-2025-61105, and equivalent Cisco ASA/FTD OSPF-LSA advisories)
-and points at OSV for the version lookup. It **detects, never exploits**, and is
+CVE-2025-61107 / CVE-2025-61105 and the *(v4)* opaque-parser cluster
+CVE-2025-61099 / CVE-2025-61103 / CVE-2025-61104 / CVE-2025-61106, and equivalent
+Cisco ASA/FTD OSPF-LSA advisories) and points at OSV for the version lookup. The
+OSPF Segment-Routing opaque-LSA sub-TLV overruns (CVE-2024-31950 / CVE-2024-31951)
+are byte-level detected by [SR-MPLS Watch](#sr-mpls-watch), not re-named here. It **detects, never exploits**, and is
 harmless to the network.
 
 Small **CLI** (no web app / no root for the self-test):
@@ -2758,8 +2771,15 @@ link-local, `ff00::/8` multicast, IPv4-mapped, discard-only). It flags:
 The first scan learns the peers and prefix→origin map as the baseline
 (`data/bgp_watch.json`); **Trust current** re-learns after a legitimate change.
 As with OSPF, software-version CVEs aren't on the wire, so exposure conditions are
-flagged (weak auth; malformed-UPDATE crash class — **CVE-2023-38802** /
-**CERT VU#347067**) with an [OSV](https://osv.dev) pointer for the version lookup.
+flagged (weak auth; malformed-UPDATE crash class — **CVE-2023-38802** / Juniper rpd
+**CVE-2024-30395** and the *(v4)* FRR/GoBGP parser corpus: zero-length path-attributes
+**CVE-2023-41358**, MP_UNREACH **CVE-2023-47234**, EOR-bypass **CVE-2023-47235**,
+Prefix-SID **CVE-2024-31948**, FlowSpec **CVE-2026-37457**, MP_REACH **CVE-2026-37458**,
+NHC-TLV **CVE-2026-37459**, OPEN optional-parameter **CVE-2022-40302** / **CVE-2022-43681**,
+GoBGP IPv6-ext-community **CVE-2026-37461** and UPDATE-length underflow **CVE-2026-37462**;
+**CERT VU#347067**) with an [OSV](https://osv.dev) pointer. These are byte-level parser
+signatures the passive **text** watcher cannot reconstruct, so they are named as posture;
+run the standalone BGP tap for byte-level detection.
 
 **ASN enrichment:** origin ASNs and peer IPs are enriched with AS **owner names**
 + country via [Team Cymru's IP-to-ASN](https://team-cymru.com/community-services/ip-asn-mapping/)

@@ -10199,6 +10199,7 @@ async function vtpTrustBaseline() {
 const _ISIS_VERDICT_STYLE = {
     clean:          ['bg-green-950/40 border-green-900 text-green-400', '✓ No IS-IS anomalies detected'],
     'weak-auth':    ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ IS-IS without HMAC auth (or cleartext) — exposed to LSP injection'],
+    exposure:       ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ IS-IS feature exposure — multi-instance / SR-Flex-Algo (IOS XR CVE preconditions)'],
     anomaly:        ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ IS-IS anomaly — duplicate system-id / new area'],
     storm:          ['bg-red-950/60 border-red-800 text-red-300', '🛑 IS-IS flooding storm detected'],
     'rogue-router': ['bg-red-950/60 border-red-800 text-red-300', '🛑 Rogue IS-IS speaker — adjacency spoofing'],
