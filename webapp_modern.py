@@ -6405,6 +6405,81 @@ def _get_wifi_iface():
     from shared import detect_wifi_interface
     return detect_wifi_interface(shared_data.config.get('wifi_default_interface', 'auto'))
 
+
+def _get_lan_iface():
+    """Return the interface that actually carries the LAN, wired or wireless.
+
+    Host liveness used to be probed on ``_get_wifi_iface()`` unconditionally,
+    which meant a wired-only install (a Pi on Ethernet, an x86 box with no
+    Wi-Fi at all) ran every ARP sweep on a 'wlan0' that does not exist. Every
+    sweep then returned zero hosts and the whole target list flapped to
+    Offline. Prefer the interface owning the default route; fall back to the
+    Wi-Fi interface so behaviour on Wi-Fi-only boards is unchanged.
+    """
+    try:
+        result = subprocess.run(['ip', '-4', 'route', 'show', 'default'],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if 'dev' in parts:
+                    iface = parts[parts.index('dev') + 1]
+                    # Ignore virtual/container bridges — they carry no LAN hosts.
+                    if iface and not iface.startswith(('lo', 'docker', 'br-', 'veth', 'tailscale')):
+                        return iface
+    except Exception as exc:                                    # noqa: BLE001
+        logger.debug(f"_get_lan_iface: default-route lookup failed: {exc}")
+
+    try:
+        return _get_wifi_iface()
+    except Exception:                                           # noqa: BLE001
+        return DEFAULT_ARP_SCAN_INTERFACE
+
+
+# Neighbour states that mean "this host answered ARP recently". FAILED and
+# INCOMPLETE mean the opposite, and NONE/NOARP carry no evidence either way.
+_NEIGH_ALIVE_STATES = {'REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'}
+
+
+def read_neighbour_table(interface=None):
+    """Return live hosts from the kernel ARP/neighbour table.
+
+    ``arp-scan --localnet`` is a single broadcast sweep: over Wi-Fi (client
+    power-save, no ARP retries, AP-side ARP suppression / client isolation) it
+    routinely sees only a handful of the hosts that are genuinely up. The
+    kernel neighbour table remembers every host this box has actually
+    exchanged frames with, so it is used as a second, independent liveness
+    source rather than trusting one broadcast sweep.
+    """
+    hosts = {}
+    command = ['ip', '-4', 'neigh', 'show']
+    if interface:
+        command += ['dev', interface]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return hosts
+    except Exception as exc:                                    # noqa: BLE001
+        logger.debug(f"read_neighbour_table failed: {exc}")
+        return hosts
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or not _is_valid_ipv4(parts[0]):
+            continue
+        if 'lladdr' not in parts:
+            continue
+        mac = parts[parts.index('lladdr') + 1]
+        if not MAC_REGEX.match(mac):
+            continue
+        state = parts[-1].upper()
+        if state not in _NEIGH_ALIVE_STATES:
+            continue
+        hosts[parts[0]] = {'mac': _normalize_mac(mac), 'vendor': ''}
+
+    return hosts
+
+
 SEP_SCAN_COMMAND = ['sudo', 'sep-scan']
 MAC_REGEX = re.compile(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$')
 PWN_INSTALL_SCRIPT = os.path.join(shared_data.currentdir, 'scripts', 'install_pwnagotchi.sh')
@@ -9209,6 +9284,25 @@ def update_wifi_network_data():
         arp_hosts = network_scan_cache.get('arp_hosts', {})
         last_arp_scan_time = network_scan_cache.get('last_arp_scan', 0)
         arp_data_is_fresh = (current_timestamp - last_arp_scan_time) < ARP_SCAN_INTERVAL + 2  # +2 for timing tolerance
+        # An empty discovery result is a broken sensor (no arp-scan binary, no
+        # such interface, no sudo), not the whole LAN going down at once.
+        # Counting it as a failed ping for every host is what flipped every
+        # target to Offline within a couple of minutes of a successful scan.
+        if arp_data_is_fresh and not arp_hosts:
+            logger.warning(
+                "Host discovery returned 0 hosts — treating as a sensor failure "
+                "and NOT counting a failed ping against any host")
+            arp_data_is_fresh = False
+        # This function runs on the 60s background sweep AND on every
+        # /network_data request. Without this latch each extra call charged
+        # another failed ping for the SAME sweep, so a polled dashboard could
+        # burn through the 15-failure budget in about a minute and flip every
+        # target Offline. Count each sweep exactly once.
+        global _last_counted_arp_scan
+        if arp_data_is_fresh and last_arp_scan_time == _last_counted_arp_scan:
+            arp_data_is_fresh = False
+        elif arp_data_is_fresh:
+            _last_counted_arp_scan = last_arp_scan_time
         MAX_FAILED_PINGS = shared_data.config.get('network_max_failed_pings', 15)  # Changed to 15 for more stability
         
         for ip, data in existing_data.items():
@@ -13101,7 +13195,7 @@ def get_verbose_debug_logs():
         # Test ARP scan directly
         try:
             debug_info['api_traces'].append("=== TESTING ARP SCAN DIRECTLY ===")
-            test_arp_result = run_arp_scan_localnet(_get_wifi_iface())
+            test_arp_result = run_arp_scan_localnet(_get_lan_iface())
             debug_info['cache_state']['direct_arp_test'] = {
                 'success': bool(test_arp_result),
                 'host_count': len(test_arp_result) if test_arp_result else 0,
@@ -13582,7 +13676,7 @@ def force_arp_scan():
         }
         
         debug_info['steps'].append("Step 1: Running ARP scan...")
-        arp_hosts = run_arp_scan_localnet(_get_wifi_iface())
+        arp_hosts = run_arp_scan_localnet(_get_lan_iface())
         debug_info['steps'].append(f"Step 2: Found {len(arp_hosts) if arp_hosts else 0} hosts")
         
         if arp_hosts:
@@ -14600,25 +14694,49 @@ def wardriving_wipe_data():
 # ============================================================================
 
 def run_arp_scan_localnet(interface='wlan0'):
-    """Run arp-scan on local network to discover active hosts"""
-    command = ['sudo', 'arp-scan', f'--interface={interface}', '--localnet']
+    """Discover active hosts on the local network.
+
+    Two independent sources are merged: the active ``arp-scan`` broadcast
+    sweep (authoritative for vendor strings) and the kernel neighbour table
+    (catches the hosts the sweep missed). A single sweep misses most live
+    hosts on Wi-Fi, and treating that as ground truth is what made every
+    target flap to Offline between scans.
+    """
+    # --retry/--timeout: one probe per host at the 100ms default loses hosts
+    # behind a power-saving Wi-Fi client. --ignoredups keeps duplicate
+    # replies from being parsed twice.
+    command = ['sudo', 'arp-scan', f'--interface={interface}', '--localnet',
+               '--retry=3', '--timeout=500', '--ignoredups']
     logger.info(f"Running arp-scan localnet: {' '.join(command)}")
+    hosts = {}
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
-            return _parse_arp_scan_output(result.stdout)
+            hosts = _parse_arp_scan_output(result.stdout)
         else:
             logger.warning(f"arp-scan failed with return code {result.returncode}: {result.stderr}")
-            return {}
     except FileNotFoundError:
         logger.warning("arp-scan command not found")
-        return {}
     except subprocess.TimeoutExpired as e:
         logger.warning(f"arp-scan timed out: {e}")
-        return {}
     except Exception as e:
         logger.error(f"Error running arp-scan: {e}")
-        return {}
+
+    # Fold in the kernel neighbour table. arp-scan wins on conflicts because
+    # it carries the vendor string.
+    try:
+        neighbours = read_neighbour_table(interface)
+        added = 0
+        for ip, data in neighbours.items():
+            if ip not in hosts:
+                hosts[ip] = data
+                added += 1
+        if added:
+            logger.debug(f"Neighbour table added {added} host(s) the ARP sweep missed")
+    except Exception as e:                                      # noqa: BLE001
+        logger.debug(f"Could not merge neighbour table: {e}")
+
+    return hosts
 
 def _detect_local_cidr():
     """Return the local network CIDR derived from `ip` output, or None.
@@ -14628,7 +14746,9 @@ def _detect_local_cidr():
     silently scanned the wrong subnet on any non-192.168.1.x network.
     """
     try:
-        iface = _get_wifi_iface()
+        # Prefer the interface that actually carries the LAN (wired or
+        # wireless); a wired-only box has no Wi-Fi interface to key off.
+        iface = _get_lan_iface()
     except Exception:
         iface = None
     candidates = [iface] if iface else []
@@ -14748,12 +14868,15 @@ def _parse_nmap_ping_output(output):
 network_scan_cache = {}
 network_scan_last_update = 0
 ARP_SCAN_INTERVAL = 60  # seconds
+# Timestamp of the last ARP sweep that update_wifi_network_data() already
+# charged failed pings for, so repeat calls within one sweep don't double-count.
+_last_counted_arp_scan = 0
 
 @app.route('/api/scan/arp-localnet')
 def get_arp_scan_localnet():
     """Get ARP scan results for local network"""
     try:
-        interface = request.args.get('interface', _get_wifi_iface())
+        interface = request.args.get('interface', _get_lan_iface())
         hosts = run_arp_scan_localnet(interface)
         
         return jsonify({
@@ -14806,7 +14929,7 @@ def get_nmap_ping_scan():
 def get_combined_network_scan():
     """Get combined results from both ARP and nmap scans"""
     try:
-        interface = request.args.get('interface', _get_wifi_iface())
+        interface = request.args.get('interface', _get_lan_iface())
         network = request.args.get('network') or _detect_local_cidr()
         if not network:
             return jsonify({
@@ -20806,7 +20929,7 @@ def background_arp_scan_loop():
                 
                 def run_arp():
                     nonlocal arp_hosts
-                    arp_hosts = run_arp_scan_localnet(_get_wifi_iface())
+                    arp_hosts = run_arp_scan_localnet(_get_lan_iface())
                 
                 arp_thread = threading.Thread(target=run_arp, daemon=True)
                 arp_thread.start()

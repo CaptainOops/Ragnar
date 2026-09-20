@@ -62,6 +62,33 @@ alert that both a home lab and a SOC want.
 | `ASSET-OFFLINE` | a host goes non-alive | low, **high** if the asset is criticality ≥ high |
 | `ASSET-BACK-ONLINE` | a host returns to alive | info |
 
+### How a host's alive/degraded status is decided
+
+Liveness is not a single probe. Every discovery cycle unions two independent
+sources, so one unlucky sweep can't take the whole inventory down:
+
+1. **`arp-scan` broadcast sweep** on the interface that carries the LAN — the
+   one owning the default route, wired or wireless. It is run with retries
+   (`--retry=3 --timeout=500`) because a single 100 ms probe loses hosts behind
+   a power-saving Wi-Fi client.
+2. **The kernel neighbour table** (`ip -4 neigh`), which remembers every host
+   this box has actually exchanged frames with. Entries in `REACHABLE`,
+   `STALE`, `DELAY`, `PROBE` or `PERMANENT` count as alive; `FAILED` and
+   `INCOMPLETE` do not.
+
+A host only drops to **degraded** after `network_max_failed_pings` (default 15)
+*consecutive* cycles in which neither source saw it. Two cases are explicitly
+**not** counted as a failed ping:
+
+- a discovery cycle that returned **zero** hosts — that is a broken sensor (no
+  `arp-scan` binary, no `sudo`, wrong interface), not the whole LAN going down;
+- a repeat read of a sweep that has already been accounted for, so polling the
+  dashboard cannot burn through the failure budget.
+
+If every target flaps Offline and back on a cycle, check `arp-scan` is
+installed and that passwordless `sudo` works for it — the log line
+`Host discovery returned 0 hosts` names that condition directly.
+
 ¹ *Sensitive* ports are cleartext-admin / remote-desktop / file-share / database
 services (telnet, ftp, tftp, smb, rdp, vnc, mssql, mysql, postgres, redis, mongodb,
 snmp, ldap, …). SSH is deliberately **not** sensitive — it's normal everywhere and
