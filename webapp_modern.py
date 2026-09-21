@@ -22192,9 +22192,33 @@ def list_files_api():
         return jsonify({'error': str(e)}), 500
 
 
+# Video formats offered for inline playback in the Files preview. The stream is
+# served by the download endpoint (?inline=1), never base64'd into the preview
+# JSON — video files are far too large for that. Browser codec support varies:
+# mp4/H.264 and webm play everywhere; mov/avi/mkv/wmv/flv depend on the OS's
+# installed codecs, so the player degrades to a Download button on failure.
+# The explicit MIME types matter because X-Content-Type-Options: nosniff makes
+# the browser refuse to play a stream served as application/octet-stream.
+VIDEO_MIME_TYPES = {
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.webm': 'video/webm',
+    '.ogv': 'video/ogg',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.mkv': 'video/x-matroska',
+    '.wmv': 'video/x-ms-wmv',
+    '.flv': 'video/x-flv',
+    '.3gp': 'video/3gpp',
+    '.mpeg': 'video/mpeg',
+    '.mpg': 'video/mpeg',
+    '.ts': 'video/mp2t',
+}
+
+
 @app.route('/api/files/preview')
 def preview_file_api():
-    """Preview file contents inline — text, CSV, images"""
+    """Preview file contents inline — text, CSV, images, video"""
     import mimetypes, base64
     try:
         file_path = request.args.get('path')
@@ -22268,6 +22292,12 @@ def preview_file_api():
                 data = base64.b64encode(f.read()).decode('ascii')
             return jsonify({'type': 'image', 'mime': mime_type, 'data': data, 'name': os.path.basename(actual_path)})
 
+        elif ext in VIDEO_MIME_TYPES:
+            # Streamed inline by the browser <video> element via the download
+            # endpoint (?inline=1) — supports HTTP range requests for seeking.
+            return jsonify({'type': 'video', 'mime': VIDEO_MIME_TYPES[ext],
+                            'size': file_size, 'name': os.path.basename(actual_path)})
+
         elif ext in TEXT_EXTENSIONS or (mime_type and mime_type.startswith('text/')):
             if file_size > 512 * 1024:  # 512KB limit for text
                 # Return first 512KB with truncation notice
@@ -22339,13 +22369,21 @@ def download_file_api():
         if not os.path.isfile(actual_path):
             return jsonify({'error': 'File not found'}), 404
 
-        # inline=1 serves the file for in-browser display (e.g. PDF preview)
-        # instead of forcing a download.
+        # inline=1 serves the file for in-browser display (e.g. PDF preview,
+        # <video> playback) instead of forcing a download.
         inline = request.args.get('inline') in ('1', 'true', 'yes')
+        send_kwargs = {'as_attachment': not inline}
+        if inline:
+            # nosniff makes browsers honour the declared Content-Type strictly,
+            # so pin a proper video/* type for formats mimetypes may not know
+            # (e.g. .mkv, .webm) — otherwise the <video> element won't play.
+            vid_mime = VIDEO_MIME_TYPES.get(os.path.splitext(actual_path)[1].lower())
+            if vid_mime:
+                send_kwargs['mimetype'] = vid_mime
         return send_from_directory(
             os.path.dirname(actual_path),
             os.path.basename(actual_path),
-            as_attachment=not inline
+            **send_kwargs
         )
 
     except Exception as e:

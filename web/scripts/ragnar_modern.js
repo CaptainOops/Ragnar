@@ -23559,6 +23559,8 @@ function previewFile(filePath) {
                 renderPreviewImage(content, `data:${data.mime};base64,${data.data}`, name);
             } else if (data.type === 'pdf') {
                 renderPreviewPdf(content, resolveNetworkAwareEndpoint(`/api/files/download?path=${encodeURIComponent(filePath)}&inline=1`), name);
+            } else if (data.type === 'video') {
+                renderPreviewVideo(content, resolveNetworkAwareEndpoint(`/api/files/download?path=${encodeURIComponent(filePath)}&inline=1`), name, data.mime, filePath);
             } else if (data.type === 'text') {
                 if (data.truncated) truncBadge.classList.remove('hidden');
                 const isCSV = name.toLowerCase().endsWith('.csv');
@@ -23622,6 +23624,31 @@ function renderPreviewImage(content, src, name) {
 function renderPreviewPdf(content, url, name) {
     content.innerHTML = `<iframe src="${url}" title="${escapeHtml(name)}"
         class="w-full rounded bg-white" style="height:78vh;border:0"></iframe>`;
+}
+
+// Render a video inline via a <video> element pointed at the (same-origin)
+// download endpoint with inline disposition — the browser streams it with
+// range requests so scrubbing works. Codec support varies (mp4/H.264 and webm
+// are universal; mov/avi/mkv/wmv depend on the OS codecs), so on a decode/load
+// failure we swap in a Download button instead of a broken player.
+function renderPreviewVideo(content, url, name, mime, filePath) {
+    content.innerHTML = `<div class="flex items-center justify-center h-full p-2">
+        <video id="preview-video-el" controls playsinline preload="metadata"
+            class="max-w-full rounded bg-black" style="max-height:78vh">
+            <source src="${url}" type="${escapeAttr(mime || '')}">
+            Your browser can't play this video.
+        </video>
+    </div>`;
+    const vid = content.querySelector('#preview-video-el');
+    if (vid) {
+        vid.addEventListener('error', () => {
+            content.innerHTML = `<div class="text-center text-gray-400 py-12">
+                <p class="mb-1">This browser can't play <span class="text-gray-300">${escapeHtml(name)}</span>.</p>
+                <p class="text-sm mb-3">The format/codec (${escapeHtml(mime || 'unknown')}) isn't supported for in-browser playback.</p>
+                <button onclick="downloadFile('${escapeAttr(filePath)}')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm">Download</button>
+            </div>`;
+        });
+    }
 }
 
 // Full-screen image viewer — uses the native Fullscreen API when available and
@@ -23735,33 +23762,55 @@ function uploadFile() {
         const target = isWritablePath(currentDirectory) ? currentDirectory : '/uploads';
         formData.append('path', target);
 
-        fileOperationInProgress = true;
-        showFileLoading('Uploading files...');
+        let totalBytes = 0;
+        for (let file of files) totalBytes += file.size || 0;
+        const label = files.length === 1 ? files[0].name : `${files.length} files`;
+        const progress = createUploadProgressToast(`Uploading ${label}`);
 
-        networkAwareFetch('/api/files/upload', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
+        fileOperationInProgress = true;
+
+        // XMLHttpRequest (not fetch) — fetch can't report upload progress, and
+        // seeing the bytes climb is the whole point here. resolveNetworkAwareEndpoint
+        // keeps the same network-context routing networkAwareFetch would apply.
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', resolveNetworkAwareEndpoint('/api/files/upload'), true);
+
+        xhr.upload.onprogress = function (e) {
+            // e.total is the encoded body size (a bit larger than the raw file
+            // bytes because of the multipart envelope); fall back to our own sum
+            // if the browser can't compute it.
+            progress.setProgress(e.loaded, e.lengthComputable ? e.total : totalBytes);
+        };
+
+        // Body fully sent but the server is still writing to disk — switch to an
+        // indeterminate "finishing" state until the JSON response lands.
+        xhr.upload.onload = function () {
+            progress.finishing('Saving on device…');
+        };
+
+        xhr.onload = function () {
             // Clear the busy flag BEFORE refreshing — loadFiles() bails out while
             // it's set, which otherwise leaves the new file invisible until a
             // manual page refresh.
             fileOperationInProgress = false;
-            if (data.success) {
-                showFileSuccess(`Uploaded ${files.length} file(s)`);
+            let data = {};
+            try { data = JSON.parse(xhr.responseText); } catch (_) { /* non-JSON */ }
+            if (xhr.status >= 200 && xhr.status < 300 && data.success) {
+                progress.finish(true, `Uploaded ${files.length} file(s)`);
                 if (!isWritablePath(currentDirectory)) currentDirectory = target;
                 refreshFiles();
             } else {
-                showFileError(`Upload failed: ${data.error}`);
+                const msg = (data && data.error) ? data.error : `HTTP ${xhr.status}`;
+                progress.finish(false, `Upload failed: ${msg}`);
             }
-        })
-        .catch(error => {
-            showFileError(`Upload error: ${error.message}`);
-        })
-        .finally(() => {
+        };
+
+        xhr.onerror = function () {
             fileOperationInProgress = false;
-        });
+            progress.finish(false, 'Upload error: network failure');
+        };
+
+        xhr.send(formData);
     };
 
     input.click();
@@ -25258,6 +25307,62 @@ function showFileError(message) {
 
 function showFileLoading(message) {
     showNotification(message, 'info');
+}
+
+// A live upload-progress card (bottom-right) driven by XHR upload events. Only
+// one exists at a time. Colours are inline hex (slate/blue/green/red) so it
+// doesn't depend on Tailwind arbitrary-value classes being in the prebuilt CSS.
+// Returns handles the caller drives: setProgress during upload, finishing() once
+// the body is sent, finish(ok, msg) on completion (auto-dismisses).
+function createUploadProgressToast(title) {
+    const existing = document.getElementById('upload-progress-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'upload-progress-toast';
+    toast.className = 'fixed bottom-4 right-4 z-50 p-4 rounded-lg bg-slate-800 border border-slate-600 shadow-lg text-white';
+    toast.style.width = '20rem';
+    toast.style.maxWidth = '90vw';
+    toast.innerHTML = `
+        <div class="flex items-center justify-between mb-2 gap-2">
+            <span class="text-sm font-medium truncate">${escapeHtml(title)}</span>
+            <span id="upl-pct" class="text-xs text-gray-300 flex-shrink-0">0%</span>
+        </div>
+        <div class="w-full rounded overflow-hidden" style="height:8px;background:#334155">
+            <div id="upl-bar" style="height:100%;width:0%;background:#3b82f6;transition:width .15s ease"></div>
+        </div>
+        <div id="upl-detail" class="mt-1 text-xs text-gray-400">Preparing…</div>`;
+    document.body.appendChild(toast);
+
+    const bar = toast.querySelector('#upl-bar');
+    const pctEl = toast.querySelector('#upl-pct');
+    const detailEl = toast.querySelector('#upl-detail');
+
+    return {
+        setProgress(loaded, total) {
+            if (total > 0) {
+                const pct = Math.min(100, Math.round((loaded / total) * 100));
+                bar.style.width = pct + '%';
+                pctEl.textContent = pct + '%';
+                detailEl.textContent = `${formatBytes(loaded)} of ${formatBytes(total)}`;
+            } else {
+                detailEl.textContent = `${formatBytes(loaded)} uploaded`;
+            }
+        },
+        finishing(text) {
+            bar.style.width = '100%';
+            pctEl.textContent = '100%';
+            detailEl.textContent = text || 'Finishing…';
+        },
+        finish(ok, text) {
+            bar.style.width = '100%';
+            bar.style.background = ok ? '#22c55e' : '#ef4444';
+            pctEl.textContent = ok ? '100%' : '';
+            if (text) detailEl.textContent = text;
+            setTimeout(() => { if (toast.parentElement) toast.remove(); }, ok ? 1500 : 5000);
+        },
+        remove() { if (toast.parentElement) toast.remove(); }
+    };
 }
 
 function showFileConfirmModal(title, content, onConfirm) {
