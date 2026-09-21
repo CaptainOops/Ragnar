@@ -17761,13 +17761,18 @@ def _parse_ospf_capture(output):
             cur = {'src': h.group(1), 'version': int(h.group(2)),
                    'type': _ospf_pkt_type(h.group(3)), 'router_id': None,
                    'area': None, 'auth': None,
-                   'hello': None, 'adv_router': None, 'lsas': []}
+                   'hello': None, 'adv_router': None, 'lsas': [], 'instance': None}
             continue
         if cur is None:
             continue
         rid = re.search(r'Router-ID\s+' + _OSPF_IPRE, line)
         if rid:
             cur['router_id'] = rid.group(1)
+        # OSPFv3 carries a header Instance ID; tcpdump prints "Instance N" only for
+        # a non-default (non-zero) instance, so absence == instance 0.
+        im = re.search(r'\bInstance\s+(\d+)', line)
+        if im and cur.get('instance') is None:
+            cur['instance'] = int(im.group(1))
         if cur['area'] is None:
             if re.search(r'Backbone Area', line):
                 cur['area'] = '0.0.0.0'
@@ -17886,6 +17891,14 @@ def _ospf_analyze(packets, seconds, baseline, learn=True):
             rid_srcs.setdefault(p['router_id'], set()).add(p.get('src'))
     routers_seen = set(rid_srcs.keys())
 
+    # OSPFv3 Instance ID per router (v3 only; tcpdump omits the default, so absence
+    # == instance 0). A change on an established speaker, or a new instance on the
+    # link, is a rogue parallel-instance tell (OSPFv3 Watch v5: OSPFV3_INSTANCE_ANOMALY).
+    rid_instance = {}
+    for p in hellos:
+        if p.get('version') == 3 and p.get('router_id'):
+            rid_instance.setdefault(p['router_id'], set()).add(p.get('instance') or 0)
+
     # auth posture
     auth_types = sorted({p['auth'] for p in packets if p.get('auth') is not None})
 
@@ -17911,11 +17924,13 @@ def _ospf_analyze(packets, seconds, baseline, learn=True):
         baseline['routers'] = sorted(routers_seen)
         baseline['advs'] = sorted(adv_routers | routers_seen)
         baseline['asbrs'] = sorted(asbrs_seen)
+        baseline['v3_instances'] = {r: sorted(v) for r, v in rid_instance.items()}
         learned = True
         trusted_routers = set(routers_seen)
         known_advs = adv_routers | routers_seen
         trusted_asbrs = set(asbrs_seen)
         have_baseline = True
+    known_v3_instances = {r: set(v) for r, v in (baseline.get('v3_instances') or {}).items()}
 
     findings = []      # (level, category, text)
     categories = set()
@@ -17959,6 +17974,24 @@ def _ospf_analyze(packets, seconds, baseline, learn=True):
             findings.append(('crit', 'anomaly',
                              f'Router-ID {rid} claimed by multiple sources '
                              f'({", ".join(sorted(real))}) — Router-ID conflict or spoof'))
+    # OSPFv3 Instance-ID anomaly (v5): a change on an established speaker, or a new
+    # instance on the link — a rogue running a parallel OSPFv3 instance.
+    for rid, insts in sorted(rid_instance.items()):
+        if len(insts) > 1:
+            categories.add('anomaly')
+            findings.append(('warn', 'anomaly',
+                             f'OSPFv3 speaker {rid} changed Instance ID within the window '
+                             f'({", ".join(str(i) for i in sorted(insts))}) — a rogue '
+                             'parallel-instance / spoofing tell'))
+        elif have_baseline and rid in trusted_routers:
+            base_insts = known_v3_instances.get(rid)
+            if base_insts and not insts.issubset(base_insts):
+                new = ", ".join(str(i) for i in sorted(insts - base_insts))
+                categories.add('anomaly')
+                findings.append(('warn', 'anomaly',
+                                 f'OSPFv3 Instance ID {new} from established speaker {rid} '
+                                 'not in the learned baseline — a rogue parallel OSPFv3 '
+                                 'instance on the link'))
     # Hello parameter mismatch on the segment
     hp_params = {(p['hello'].get('hello_timer'), p['hello'].get('dead_timer'), p.get('area'))
                  for p in hellos if p.get('hello')}
@@ -18191,6 +18224,30 @@ def _ospf_selftest():
     scenarios.append({'name': 'ospfv3-parse', 'expect': 'v2+v3, IPv6 src',
                       'got': 'versions=%s' % sorted({x['version'] for x in v3_parse}),
                       'pass': v3_ok})
+
+    # OSPFv3 Instance-ID anomaly (v5): an established speaker changing/adding a
+    # non-default instance is a rogue parallel-instance tell.
+    v3ibase = {'routers': ['10.0.0.1'], 'advs': ['10.0.0.1'], 'asbrs': [],
+               'v3_instances': {'10.0.0.1': [0]}}
+    v3_inst = "\n".join([
+        "IP6 fe80::1 > ff02::5: OSPFv3, Hello, length 36",
+        "\tRouter-ID 10.0.0.1, Backbone Area, Instance 5",
+        "\tHello Timer 10s, Dead Timer 40s, Interface-ID 0.0.0.5, Priority 1",
+    ])
+    run('ospfv3-instance-anomaly', v3_inst, 15, v3ibase, 'anomaly')
+    v3_flip = "\n".join([
+        "IP6 fe80::1 > ff02::5: OSPFv3, Hello, length 36",
+        "\tRouter-ID 10.0.0.1, Backbone Area",
+        "IP6 fe80::1 > ff02::5: OSPFv3, Hello, length 36",
+        "\tRouter-ID 10.0.0.1, Backbone Area, Instance 7",
+    ])
+    run('ospfv3-instance-flip', v3_flip, 15, v3ibase, 'anomaly')
+    v3_defclean = "\n".join([
+        "IP6 fe80::1 > ff02::5: OSPFv3, Hello, length 36",
+        "\tRouter-ID 10.0.0.1, Backbone Area",
+        "\tHello Timer 10s, Dead Timer 40s, Interface-ID 0.0.0.5, Priority 1",
+    ])
+    run('ospfv3-default-instance-clean', v3_defclean, 15, v3ibase, 'clean')
 
     # parser check: a full LS-Update parses out the LSA fields.
     p = _parse_ospf_capture(clean)

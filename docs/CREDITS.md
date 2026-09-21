@@ -14,14 +14,14 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~194 CVEs actively detected.** 220 distinct CVE IDs are named across the detector code;
+- **~194 CVEs actively detected.** 221 distinct CVE IDs are named across the detector code;
   194 are actively detected. The gap is named-as-context, not a per-CVE identification: the
   four Juniper ARP control-plane CVEs (shared request-rate/breadth shape), the SR-MPLS
   `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture advisories**
   (byte-level parser CVEs the passive text watchers name for patch guidance but cannot
   reconstruct on the wire — the standalone taps do the byte-level detection).
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **35 CVEs from 2023, 47 from 2024, 29 from 2025, and
+- Weighted to the current threat wave: **35 CVEs from 2023, 47 from 2024, 30 from 2025, and
   17 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
@@ -100,6 +100,16 @@ behind them is Solarflere's work.
   61104/61106) — because the passive text watchers cannot reconstruct the malformed bytes;
   the OSPF SR opaque-LSA overruns (CVE-2024-31950/31951) are byte-level detected by SR-MPLS
   Watch, and the standalone BGP tap does the byte-level BGP detection.
+
+- **SR / MPLS control plane, now OSPFv3** — **SR-MPLS Watch** extends its byte-level SR
+  TLV-overrun detector (`SRM-SR-TLV-OVERRUN`) to **OSPFv3 Segment Routing** (RFC 5340 /
+  RFC 8362 extended LSAs / RFC 8666 SR) alongside MPLS, SRv6 and OSPFv2-SR — so an
+  overrunning OSPFv3 Prefix-SID / Adj-SID / Router-Information sub-TLV is caught on the
+  IPv6 wire (the RI path names CVE-2024-31950; the FRR ospf6d crash CVEs
+  CVE-2025-61101 / -61103 / -61106 / -61107 are recorded in `CVE_REFERENCES` as
+  reference-only, their receiver-side `debug` precondition being unobservable passively).
+  Separately, the in-app **OSPF Watch** adds an OSPFv3 **Instance-ID anomaly** detection
+  (a rogue parallel-instance / spoofing tell, read from the tcpdump `Instance N` token).
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
