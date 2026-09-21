@@ -16,10 +16,14 @@ an operator needs to know at a glance. Separate prefix, separate
 registry, no collisions.
 
 Code ranges by detector class:
-  001-009  structural record analysis (KeyTrap, NXNSAttack, MaginotDNS, TuDoor)
+  001-009  structural record analysis (KeyTrap, NXNSAttack, MaginotDNS,
+           TuDoor, compression pointers, DNSKEY rdata)
   010-019  parameter / posture checks (NSEC3 iterations, algorithm downgrade)
   020-029  behavioural flood detection (DNSBomb, NSEC3 encloser, water torture)
   030-039  response integrity (SAD DNS)
+  040-049  DNSSEC structural integrity (RRSIG labels, NSEC/NSEC3 chain)
+  050-059  protocol abuse (SVCB alias fan-out, EDNS options, duplicate RRs, TKEY)
+  060-069  zone transfer integrity (TSIG coverage across multi-message XFR)
 
 CONFIDENCE is separate from SEVERITY on purpose (LESSON T): severity
 says how bad it would be if real, confidence says how sure the wire
@@ -41,7 +45,7 @@ FINDINGS = {
     # --- structural record analysis -------------------------------
     "DNSD-001": {
         "name": "KEYTRAP_DNSKEY_COLLISION", "severity": "critical", "confidence": "high",
-        "cve": "CVE-2023-50387", "klass": "structural", "stateful": False,
+        "cve": "CVE-2023-50387, CVE-2026-19668", "klass": "structural", "stateful": False,
         "desc": "Multiple DNSKEY records share one key tag -- the KeyTrap colliding-key-tag signature, which forces a validator into quadratic signature verification",
     },
     "DNSD-002": {
@@ -66,8 +70,8 @@ FINDINGS = {
     },
     "DNSD-006": {
         "name": "MAGINOTDNS_OUT_OF_BAILIWICK", "severity": "critical", "confidence": "high",
-        "cve": "CVE-2021-25220", "klass": "structural", "stateful": False,
-        "desc": "Response carries an authority or additional record outside the queried zone's bailiwick -- cache-poisoning record injection",
+        "cve": "CVE-2021-25220, CVE-2025-40778", "klass": "structural", "stateful": False,
+        "desc": "Response carries an authority or additional record outside the queried zone's bailiwick, or an unsolicited RR the query never asked for -- cache-poisoning record injection",
     },
     "DNSD-007": {
         "name": "TUDOOR_MALFORMED_PACKET", "severity": "notice", "confidence": "low",
@@ -111,9 +115,72 @@ FINDINGS = {
         "desc": "Two responses to one outstanding query carry conflicting answers -- a forged response raced the legitimate one",
     },
     "DNSD-031": {
-        "name": "SAD_DNS_SOURCE_PORT_ENTROPY_LOW", "severity": "notice", "confidence": "low",
-        "cve": "CVE-2020-25705", "klass": "integrity", "stateful": True,
-        "desc": "Outbound query source ports show low entropy -- port prediction is easier than it should be; posture only, not evidence of an attack",
+        "name": "SAD_DNS_SOURCE_PORT_ENTROPY_LOW", "severity": "warning", "confidence": "medium",
+        "cve": "CVE-2020-25705, CVE-2025-40780", "klass": "integrity", "stateful": True,
+        "desc": "Outbound query source ports show low entropy -- port prediction is easier than it should be. Raised from low to medium: CVE-2025-40780 is a weak PRNG for BOTH source port and query ID, which makes observed low entropy evidence of a defective resolver rather than merely a tuning preference",
+    },
+
+    # --- structural, continued ------------------------------------
+    "DNSD-008": {
+        "name": "COMPRESSION_POINTER_ANOMALY", "severity": "critical", "confidence": "high",
+        "cve": "CVE-2026-81642, CVE-2026-2291, CVE-2026-5172", "klass": "structural", "stateful": False,
+        "desc": "A name compression pointer loops, points forward, or points into a resource record's RDATA -- the shape behind the Unbound DNSKEY-owner-pointer RCE and two dnsmasq extract_name/extract_addresses memory bugs",
+    },
+    "DNSD-009": {
+        "name": "DNSKEY_MALFORMED", "severity": "critical", "confidence": "high",
+        "cve": "CVE-2025-8677, CVE-2026-4890, CVE-2026-4891", "klass": "structural", "stateful": False,
+        "desc": "DNSKEY rdata is structurally invalid (bad protocol byte, empty or truncated key, revoked-and-SEP contradiction) -- drives CPU exhaustion in BIND and an infinite loop plus a heap over-read in dnsmasq",
+    },
+
+    # --- DNSSEC structural integrity (040-049) --------------------
+    "DNSD-040": {
+        "name": "RRSIG_LABEL_COUNT_MISMATCH", "severity": "critical", "confidence": "high",
+        "cve": "CVE-2026-11721, CVE-2026-52688", "klass": "dnssec-integrity", "stateful": False,
+        "desc": "An RRSIG's labels field claims MORE labels than its owner name actually has, which RFC 4034 forbids -- a validator computing the signed name from it reads past the name",
+    },
+    "DNSD-041": {
+        "name": "NSEC_NEXT_OUT_OF_ZONE", "severity": "critical", "confidence": "high",
+        "cve": "CVE-2026-13321", "klass": "dnssec-integrity", "stateful": False,
+        "desc": "An NSEC record's next-domain name points outside the zone it belongs to -- the NSEC chain is supposed to be closed within the zone, so this walks a validator out of it",
+    },
+    "DNSD-042": {
+        "name": "NSEC3_APEX_HASH_IMPERSONATION", "severity": "warning", "confidence": "medium",
+        "cve": "CVE-2026-10723", "klass": "dnssec-integrity", "stateful": False,
+        "desc": "An NSEC3 record's owner name sits outside the queried zone, claiming to be an apex hash of a parent -- DNSSEC validation bypass by parent impersonation (CWE-345)",
+    },
+    "DNSD-043": {
+        "name": "NSEC_NSEC3_COEXISTENCE", "severity": "warning", "confidence": "high",
+        "cve": "CVE-2026-13204", "klass": "dnssec-integrity", "stateful": False,
+        "desc": "One response carries both NSEC and NSEC3 denial records for the same zone while RRSIGs cover only one of the two types -- the unsigned half is attacker-substitutable",
+    },
+
+    # --- protocol abuse (050-059) ---------------------------------
+    "DNSD-050": {
+        "name": "SVCB_ALIASMODE_ABUSE", "severity": "warning", "confidence": "medium",
+        "cve": "CVE-2026-81563, CVE-2026-81736", "klass": "protocol-abuse", "stateful": False,
+        "desc": "An SVCB/HTTPS AliasMode record fans out to an excessive number of ServiceMode records in one response -- drives a qpcache leak and forces CPU on subsequent root queries",
+    },
+    "DNSD-051": {
+        "name": "EDNS_OPTION_DUPLICATION", "severity": "warning", "confidence": "high",
+        "cve": "CVE-2026-42944", "klass": "protocol-abuse", "stateful": False,
+        "desc": "The EDNS0 OPT record repeats an option code (NSID, cookie or padding) that may appear at most once -- the duplication itself is the denial-of-service primitive",
+    },
+    "DNSD-052": {
+        "name": "DUPLICATE_RR_FLOOD", "severity": "warning", "confidence": "medium",
+        "cve": "CVE-2026-75029", "klass": "protocol-abuse", "stateful": False,
+        "desc": "One response repeats identical SOA, CNAME or DNAME records many times -- each copy is stored separately and bloats the negative cache",
+    },
+    "DNSD-053": {
+        "name": "TKEY_QUERY_ANOMALY", "severity": "warning", "confidence": "medium",
+        "cve": "CVE-2026-76163", "klass": "protocol-abuse", "stateful": False,
+        "desc": "A query of QTYPE TKEY was observed. TKEY is legitimate for GSS-TSIG, so this reports an attack ATTEMPT against the BIND assertion failure, not a vulnerable resolver -- correlate with your own BIND version before acting",
+    },
+
+    # --- zone transfer integrity (060-069) ------------------------
+    "DNSD-060": {
+        "name": "XFR_TSIG_ABSENT_MULTIMESSAGE", "severity": "critical", "confidence": "high",
+        "cve": "CVE-2026-19033", "klass": "transfer", "stateful": True,
+        "desc": "A multi-message TCP zone transfer completed with unsigned intermediate messages and no final TSIG -- a secondary applying this has already served unrolled-back data (RFC 8945). Detects the COMPLETED attack, not an attempt",
     },
 }
 
@@ -138,7 +205,8 @@ def _validate():
         )
         assert m["name"] not in seen_names, f"{code}: duplicate name {m['name']}"
         seen_names.add(m["name"])
-        assert m["klass"] in ("structural", "posture", "behavioural", "integrity")
+        assert m["klass"] in ("structural", "posture", "behavioural", "integrity",
+                              "dnssec-integrity", "protocol-abuse", "transfer")
     assert BASELINE_DEPENDENT <= set(FINDINGS), "BASELINE_DEPENDENT names an unknown code"
 
 

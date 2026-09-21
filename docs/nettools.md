@@ -425,8 +425,30 @@ its no-transmit invariant is AST-enforced in its own conformance. Findings (code
 - **DNSBomb** (`CVE-2024-33655`) — `DNSD-020` a short-TTL burst far above a zone's learned
   rate: the pulsing-amplification accumulation phase (baseline-gated).
 - **SAD DNS** (`CVE-2020-25705`) — `DNSD-030` two conflicting responses to one outstanding
-  query (a forged response raced the real one), `DNSD-031` low outbound source-port entropy.
-  Plus `DNSD-007` a malformed/truncated response and `DNSD-011` an unsupported DNSSEC algorithm.
+  query (a forged response raced the real one), `DNSD-031` low outbound source-port entropy
+  (medium confidence — `CVE-2025-40780`, a weak PRNG for both source port and query ID, makes
+  low entropy evidence of a defective resolver). `DNSD-006` also flags unsolicited RRs the
+  query never asked for (`CVE-2025-40778`); `DNSD-001` also names `CVE-2026-19668`.
+- **Malformed records aimed at resolver parsers** — `DNSD-008` a compression pointer that
+  loops, points forward or into RDATA (`CVE-2026-81642` Unbound, `CVE-2026-2291` /
+  `CVE-2026-5172` dnsmasq); `DNSD-009` structurally invalid DNSKEY rdata (`CVE-2025-8677`
+  BIND, `CVE-2026-4890` / `CVE-2026-4891` dnsmasq).
+- **DNSSEC structural integrity** — `DNSD-040` an RRSIG claiming more labels than its owner
+  (`CVE-2026-11721` BIND, `CVE-2026-52688` PowerDNS Recursor); `DNSD-041` an NSEC next-name
+  outside its zone (`CVE-2026-13321`); `DNSD-042` an NSEC3 owner outside the queried zone —
+  parent apex-hash impersonation (`CVE-2026-10723`); `DNSD-043` NSEC and NSEC3 for one zone in
+  one response with only one half signed (`CVE-2026-13204`).
+- **Protocol abuse** — `DNSD-050` an SVCB/HTTPS AliasMode fanning out to many ServiceMode
+  records (`CVE-2026-81563` / `CVE-2026-81736`); `DNSD-051` a repeated single-instance EDNS
+  option (`CVE-2026-42944`); `DNSD-052` identical SOA/CNAME/DNAME records repeated
+  (`CVE-2026-75029`); `DNSD-053` a TKEY query — an attack *attempt*, not a vulnerable
+  resolver (`CVE-2026-76163`).
+- **Zone transfer** — `DNSD-060` a multi-message TCP AXFR/IXFR that completed with unsigned
+  intermediate messages and no final TSIG (`CVE-2026-19033`). TCP is parsed per segment (no
+  stream reassembly); the capture uses a full 65535-byte snaplen so large transfer segments
+  are not truncated.
+  Plus `DNSD-007` a malformed/truncated response (TuDoor class) and `DNSD-011` an unsupported
+  DNSSEC algorithm.
 
 The stateless detectors (KeyTrap, NSEC3 iteration, bailiwick, algorithm) fire on a single
 response; the **baseline-gated** ones (DNSBomb, NXNS burst, NSEC3-encloser, water-torture,

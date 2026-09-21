@@ -17,7 +17,7 @@ import unittest
 
 from scapy.all import Ether, IP, IPv6, UDP, raw
 from scapy.layers.dns import (DNS, DNSQR, DNSRR, DNSRRDNSKEY, DNSRRRSIG,
-                              DNSRRNSEC3, DNSRRSOA)
+                              DNSRRNSEC3, DNSRRSOA, DNSRRNSEC, DNSRROPT, EDNS0TLV)
 
 import parse
 from state import Config
@@ -190,6 +190,112 @@ class TestNsec3AndAlgo(unittest.TestCase, DualStackMixin):
                   an=rrsig(algorithm=13), ancount=1)   # ECDSA P-256
         eng = Engine(Config())
         self.assertNotIn("DNSD-011", codes(eng.handle_frame(frame(dns))))
+
+
+class TestNewCveCodes(unittest.TestCase, DualStackMixin):
+    """
+    The 11 codes added from the Sept 2026 CVE register. Every one runs
+    over BOTH stacks and asserts identical verdicts -- the register
+    claims dual-stack parity "holds by construction" because these are
+    record-layer checks, and this is where that claim is tested rather
+    than trusted.
+    """
+
+    def test_dnskey_malformed_dnsd009(self):
+        k = DNSRRDNSKEY(rrname="example.com.", flags=257, protocol=4,
+                        algorithm=8, publickey=b"\x01" * 64)
+        dns = DNS(qr=1, qd=DNSQR(qname="example.com.", qtype="DNSKEY"), an=k, ancount=1)
+        self.assert_both_stacks(dns, "DNSD-009")
+
+    def test_wellformed_dnskey_is_silent(self):
+        k = DNSRRDNSKEY(rrname="example.com.", flags=257, protocol=3,
+                        algorithm=8, publickey=b"\x01" * 64)
+        dns = DNS(qr=1, qd=DNSQR(qname="example.com.", qtype="DNSKEY"), an=k, ancount=1)
+        eng = Engine(Config())
+        self.assertNotIn("DNSD-009", codes(eng.handle_frame(frame(dns))))
+
+    def test_rrsig_label_mismatch_dnsd040(self):
+        sig = DNSRRRSIG(rrname="www.example.com.", typecovered="A", algorithm=8, labels=9,
+                        originalttl=3600, expiration=1800000000, inception=1700000000,
+                        keytag=1, signersname="example.com.", signature=b"\x11" * 32)
+        dns = DNS(qr=1, qd=DNSQR(qname="www.example.com.", qtype="A"), an=sig, ancount=1)
+        self.assert_both_stacks(dns, "DNSD-040")
+
+    def test_wildcard_rrsig_labels_are_silent(self):
+        """labels < owner count is how wildcard expansion is signalled.
+        Firing here would alert on every wildcard zone on the internet."""
+        sig = DNSRRRSIG(rrname="a.b.example.com.", typecovered="A", algorithm=8, labels=2,
+                        originalttl=3600, expiration=1800000000, inception=1700000000,
+                        keytag=1, signersname="example.com.", signature=b"\x11" * 32)
+        dns = DNS(qr=1, qd=DNSQR(qname="a.b.example.com.", qtype="A"), an=sig, ancount=1)
+        eng = Engine(Config())
+        self.assertNotIn("DNSD-040", codes(eng.handle_frame(frame(dns))))
+
+    def test_nsec_out_of_zone_dnsd041(self):
+        n = DNSRRNSEC(rrname="a.example.com.", nextname="evil.attacker.net.")
+        dns = DNS(qr=1, rcode=3, qd=DNSQR(qname="example.com.", qtype="A"), ns=n, nscount=1)
+        self.assert_both_stacks(dns, "DNSD-041")
+
+    def test_nsec_apex_wrap_is_silent(self):
+        n = DNSRRNSEC(rrname="z.example.com.", nextname="example.com.")
+        dns = DNS(qr=1, rcode=3, qd=DNSQR(qname="example.com.", qtype="A"), ns=n, nscount=1)
+        eng = Engine(Config())
+        self.assertNotIn("DNSD-041", codes(eng.handle_frame(frame(dns))))
+
+    def test_nsec3_apex_impersonation_dnsd042(self):
+        n = DNSRRNSEC3(rrname="HASH.attacker.net.", hashalg=1, flags=0, iterations=0,
+                       saltlength=0, salt=b"", hashlength=20,
+                       nexthashedownername=b"\x02" * 20)
+        dns = DNS(qr=1, rcode=3, qd=DNSQR(qname="example.com.", qtype="A"), ns=n, nscount=1)
+        self.assert_both_stacks(dns, "DNSD-042")
+
+    def test_edns_option_duplication_dnsd051(self):
+        opt = DNSRROPT(rclass=4096, rdata=[EDNS0TLV(optcode=3, optdata=b"abcd"),
+                                           EDNS0TLV(optcode=3, optdata=b"efgh")])
+        dns = DNS(qr=1, qd=DNSQR(qname="example.com.", qtype="A"), ar=opt, arcount=1)
+        self.assert_both_stacks(dns, "DNSD-051")
+
+    def test_distinct_edns_options_are_silent(self):
+        opt = DNSRROPT(rclass=4096, rdata=[EDNS0TLV(optcode=3, optdata=b"abcd"),
+                                           EDNS0TLV(optcode=12, optdata=b"\x00" * 8)])
+        dns = DNS(qr=1, qd=DNSQR(qname="example.com.", qtype="A"), ar=opt, arcount=1)
+        eng = Engine(Config())
+        self.assertNotIn("DNSD-051", codes(eng.handle_frame(frame(dns))))
+
+    def test_duplicate_soa_flood_dnsd052(self):
+        chain = DNSRRSOA(rrname="example.com.", mname="ns.example.com.",
+                         rname="hostmaster.example.com.", serial=1)
+        for _ in range(11):
+            chain = chain / DNSRRSOA(rrname="example.com.", mname="ns.example.com.",
+                                     rname="hostmaster.example.com.", serial=1)
+        dns = DNS(qr=1, rcode=3, qd=DNSQR(qname="example.com.", qtype="SOA"),
+                  an=chain, ancount=12)
+        self.assert_both_stacks(dns, "DNSD-052")
+
+    def test_round_robin_a_records_are_silent(self):
+        chain = DNSRR(rrname="example.com.", type="A", ttl=60, rdata="192.0.2.1")
+        for _ in range(19):
+            chain = chain / DNSRR(rrname="example.com.", type="A", ttl=60, rdata="192.0.2.1")
+        dns = DNS(qr=1, qd=DNSQR(qname="example.com.", qtype="A"), an=chain, ancount=20)
+        eng = Engine(Config())
+        self.assertNotIn("DNSD-052", codes(eng.handle_frame(frame(dns))))
+
+    def test_tkey_query_dnsd053(self):
+        dns = DNS(qr=0, qd=DNSQR(qname="example.com.", qtype=249))
+        for l3 in (V4, V6):
+            eng = Engine(Config())
+            out = codes(eng.handle_frame(frame(dns, l3, sport=40000, dport=53)))
+            self.assertIn("DNSD-053", out)
+
+    def test_pointer_anomaly_is_not_merely_malformed(self):
+        """DNSD-008 must be SEPARATE from DNSD-007: one is a
+        memory-safety primitive, the other is network noise."""
+        payload = b"\xab\xcd\x81\x80\x00\x01\x00\x00\x00\x00\x00\x00" + b"\xc0\x0c"
+        for l3 in (V4, V6):
+            eng = Engine(Config())
+            f = raw(Ether() / l3 / UDP(sport=53, dport=33333)) + payload
+            out = codes(eng.handle_frame(f))
+            self.assertIn("DNSD-008", out)
 
 
 class TestMalformed(unittest.TestCase):

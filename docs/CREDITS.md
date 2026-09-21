@@ -14,15 +14,15 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~194 CVEs actively detected.** 221 distinct CVE IDs are named across the detector code;
-  194 are actively detected. The gap is named-as-context, not a per-CVE identification: the
+- **~214 CVEs actively detected.** 241 distinct CVE IDs are named across the detector code;
+  214 are actively detected. The gap is named-as-context, not a per-CVE identification: the
   four Juniper ARP control-plane CVEs (shared request-rate/breadth shape), the SR-MPLS
   `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture advisories**
   (byte-level parser CVEs the passive text watchers name for patch guidance but cannot
   reconstruct on the wire — the standalone taps do the byte-level detection).
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **35 CVEs from 2023, 47 from 2024, 30 from 2025, and
-  17 from 2026.**
+- Weighted to the current threat wave: **35 CVEs from 2023, 47 from 2024, 33 from 2025, and
+  34 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
   in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba) and **Dell
@@ -34,7 +34,18 @@ behind them is Solarflere's work.
 - **DNS / DNSSEC** — a passive DNS-response detector for **KeyTrap** (CVE-2023-50387),
   **NSEC3** DoS (CVE-2023-50868), **NXNSAttack** (CVE-2020-8616), **MaginotDNS**
   cache-poisoning (CVE-2021-25220), **DNSBomb** (CVE-2024-33655) and **SAD DNS**
-  (CVE-2020-25705), plus KeyTrap/NSEC3 posture folded into the active DNS Doctor.
+  (CVE-2020-25705), plus KeyTrap/NSEC3 posture folded into the active DNS Doctor. **DNS
+  Watch v5** adds 20 more, all read from the wire: malformed-record parser bugs —
+  compression-pointer loops (CVE-2026-81642 Unbound, CVE-2026-2291 / CVE-2026-5172 dnsmasq)
+  and malformed DNSKEY rdata (CVE-2025-8677 BIND, CVE-2026-4890 / CVE-2026-4891 dnsmasq);
+  DNSSEC structural integrity — RRSIG label overrun (CVE-2026-11721 / CVE-2026-52688), NSEC
+  chain escape (CVE-2026-13321), NSEC3 apex-hash impersonation (CVE-2026-10723) and
+  NSEC/NSEC3 coexistence (CVE-2026-13204); protocol abuse — SVCB AliasMode fan-out
+  (CVE-2026-81563 / CVE-2026-81736), duplicated EDNS options (CVE-2026-42944), duplicate-RR
+  floods (CVE-2026-75029) and TKEY queries (CVE-2026-76163); an unsigned multi-message zone
+  transfer (CVE-2026-19033); and three CVEs named on existing detections — excessive key-tag
+  matching (CVE-2026-19668), unsolicited-RR acceptance (CVE-2025-40778) and the weak
+  source-port/query-ID PRNG (CVE-2025-40780).
 - **SNMP / multicast / time-plane** — the in-app **SNMP Watch** now reads raw BER off the
   wire for **USM HMAC truncation** (CVE-2008-0960), **Cisco SNMP RCE** (CVE-2017-6736..6744,
   CISA KEV), **snmptrapd overflow** (CVE-2025-68615) and **net-snmp VACM malformed-OID**
