@@ -14,14 +14,16 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **~214 CVEs actively detected.** 241 distinct CVE IDs are named across the detector code;
-  214 are actively detected. The gap is named-as-context, not a per-CVE identification: the
-  four Juniper ARP control-plane CVEs (shared request-rate/breadth shape), the SR-MPLS
-  `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture advisories**
-  (byte-level parser CVEs the passive text watchers name for patch guidance but cannot
-  reconstruct on the wire — the standalone taps do the byte-level detection).
-- **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-7668**.
-- Weighted to the current threat wave: **35 CVEs from 2023, 47 from 2024, 33 from 2025, and
+- **202 CVEs detected from the wire.** 241 distinct CVE IDs are named across Ragnar's
+  code; 202 of them a passive detector actually identifies. The rest are named, not detected:
+  30 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
+  shape, the SR-MPLS `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture
+  advisories** — byte-level parser CVEs the passive text watchers name for patch guidance but
+  cannot reconstruct on the wire), 3 in card prose as related context, and 6 **active** BLE
+  checks in the BLE Pentest action. Every one is listed, with its detector and status, in the
+  generated **[CVE Index](CVE.md)**.
+- **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-81736**.
+- Weighted to the current threat wave (all named IDs): **35 CVEs from 2023, 47 from 2024, 33 from 2025, and
   34 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
