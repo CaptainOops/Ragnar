@@ -331,6 +331,78 @@ OSPF_PSID_FLAG_M = 0x20
 OSPF_PSID_FLAG_E = 0x10
 OSPF_PSID_FLAG_V = 0x08
 OSPF_PSID_FLAG_L = 0x04
+# -- OSPFv3 SR (RFC 5340 framing, RFC 8362 extended LSAs, RFC 8666 SR) -----
+# OSPFv3 LS Type is a 2-octet field: U(1) S2(1) S1(1) + 13-bit function code.
+OSPFV3_VERSION = 3
+OSPFV3_HDR_LEN = 16              # RFC 5340 sA.3.1 (v2 is 24)
+OSPFV3_LSA_HDR_LEN = 20
+OSPFV3_LS_TYPE_FC_MASK = 0x1FFF
+
+OSPFV3_FC_ROUTER_INFO = 12       # RFC 7770
+OSPFV3_FC_E_ROUTER = 33          # RFC 8362 - LS Type 0xA021
+OSPFV3_FC_E_NETWORK = 34         # 0xA022
+OSPFV3_FC_E_INTER_AREA_PREFIX = 35   # 0xA023
+OSPFV3_FC_E_INTER_AREA_ROUTER = 36   # 0xA024
+OSPFV3_FC_E_AS_EXTERNAL = 37     # 0xC025
+OSPFV3_FC_E_TYPE_7 = 39          # 0xA027
+OSPFV3_FC_E_LINK = 40            # 0x8028
+OSPFV3_FC_E_INTRA_AREA_PREFIX = 41   # 0xA029
+
+# RFC 8362 s4: octets of fixed body BEFORE the TLV block, per LSA.  Getting
+# one of these wrong shifts every sub-TLV silently, which is why they are
+# transcribed from the RFC rather than assumed uniform.
+OSPFV3_BODY_PREFIX: Dict[int, int] = {
+    OSPFV3_FC_ROUTER_INFO: 0,
+    OSPFV3_FC_E_ROUTER: 4,           # flags + options
+    OSPFV3_FC_E_NETWORK: 4,          # 0 + options
+    OSPFV3_FC_E_INTER_AREA_PREFIX: 0,
+    OSPFV3_FC_E_INTER_AREA_ROUTER: 0,
+    OSPFV3_FC_E_AS_EXTERNAL: 0,
+    OSPFV3_FC_E_TYPE_7: 0,
+    OSPFV3_FC_E_LINK: 4,             # router priority + options
+    OSPFV3_FC_E_INTRA_AREA_PREFIX: 12,   # 0(2) RefLSType(2) RefLSID(4) RefAdvRtr(4)
+}
+
+# "OSPFv3 Extended-LSA TLVs" registry (RFC 8362 s8.1, RFC 8666 s9.1)
+OSPFV3_TLV_ROUTER_LINK = 1
+OSPFV3_TLV_ATTACHED_ROUTERS = 2
+OSPFV3_TLV_INTER_AREA_PREFIX = 3
+OSPFV3_TLV_INTER_AREA_ROUTER = 4
+OSPFV3_TLV_EXTERNAL_PREFIX = 5
+OSPFV3_TLV_INTRA_AREA_PREFIX = 6
+OSPFV3_TLV_IPV6_LINK_LOCAL = 7
+OSPFV3_TLV_IPV4_LINK_LOCAL = 8
+OSPFV3_TLV_EXT_PREFIX_RANGE = 9  # RFC 8666 s5
+OSPFV3_PREFIX_TLVS = frozenset((OSPFV3_TLV_INTER_AREA_PREFIX,
+                                OSPFV3_TLV_EXTERNAL_PREFIX,
+                                OSPFV3_TLV_INTRA_AREA_PREFIX))
+
+# "OSPFv3 Extended-LSA Sub-TLVs" registry (RFC 8666 s9.2)
+OSPFV3_SUB_PREFIX_SID = 4
+OSPFV3_SUB_ADJ_SID = 5
+OSPFV3_SUB_LAN_ADJ_SID = 6
+OSPFV3_SUB_SID_LABEL = 7
+
+# RFC 8666 s6: Prefix-SID flags   |  |NP|M |E |V |L |  |  |  (same bit
+# positions as OSPFv2, but the FIELD ORDER after them differs - see the
+# parser).
+OSPFV3_PSID_FLAG_NP = 0x40
+OSPFV3_PSID_FLAG_M = 0x20
+OSPFV3_PSID_FLAG_E = 0x10
+OSPFV3_PSID_FLAG_V = 0x08
+OSPFV3_PSID_FLAG_L = 0x04
+# RFC 8666 s7.1: Adj-SID flags  |B|V|L|G|P|  |  |  |  -- DIFFERENT bit
+# positions from OSPFv2 s6.1, and OSPFv3 has a P (persistent) flag where
+# OSPFv2 has an S (set/group) flag.
+OSPFV3_ASID_FLAG_B = 0x80
+OSPFV3_ASID_FLAG_V = 0x40
+OSPFV3_ASID_FLAG_L = 0x20
+OSPFV3_ASID_FLAG_G = 0x10
+OSPFV3_ASID_FLAG_P = 0x08
+
+OSPFV3_AF_IPV4 = 0               # RFC 8666 s5
+OSPFV3_AF_IPV6 = 1
+
 # RFC 8665 s6.1: OSPFv2 Adj-SID flags    |  |B|V|L|S|  |  |
 OSPF_ASID_FLAG_B = 0x40
 OSPF_ASID_FLAG_V = 0x20
@@ -354,6 +426,14 @@ SR_TLV_MIN_LEN: Dict[Tuple[str, str, int], int] = {
     # RFC 8665 s3.2/s3.3: RANGE SIZE(3) RESERVED(1) + a SID/Label sub-TLV header
     ("ospf", "router-info", OSPF_RI_TLV_SID_LABEL_RANGE): 8,
     ("ospf", "router-info", OSPF_RI_TLV_SR_LOCAL_BLOCK): 8,
+    # RFC 8666 s6: Flags(1) Algorithm(1) Reserved(2) SID(3 or 4) -> 7 or 8
+    ("ospfv3", "prefix-tlv", OSPFV3_SUB_PREFIX_SID): 7,
+    # RFC 8666 s7.1: Flags(1) Weight(1) Reserved(2) SID(3 or 4) -> 7 or 8
+    ("ospfv3", "router-link", OSPFV3_SUB_ADJ_SID): 7,
+    # RFC 8666 s7.2: adds a 4-octet Neighbor ID -> 11 or 12
+    ("ospfv3", "router-link", OSPFV3_SUB_LAN_ADJ_SID): 11,
+    ("ospfv3", "router-info", OSPF_RI_TLV_SID_LABEL_RANGE): 8,
+    ("ospfv3", "router-info", OSPF_RI_TLV_SR_LOCAL_BLOCK): 8,
     # RFC 8667 s2.1: FLAGS(1) ALGORITHM(1) SID(4 index or 3 label)
     ("isis", "prefix-reach", ISIS_SUB_PREFIX_SID): 5,
     # RFC 8667 s2.2.1: FLAGS(1) WEIGHT(1) SID
@@ -510,6 +590,51 @@ CVE_REFERENCES: Dict[str, Dict[str, Any]] = {
         "component": "Juniper - 'a specific MPLS packet' causes a PFE crash",
         "owner": None, "detected_here": False,
         "rejected": "The advisory never says which packet. No signature exists.",
+    },
+    # The October 2025 FRR ospfd NULL-dereference cluster (the four recorded
+    # below and siblings, all v4.0-v10.4.1, all scored 7.5 by MITRE).  Only
+    # ids actually verified against NVD are recorded; the registry check
+    # rejects a bare range, which is how a stray unverified id was caught here.
+    # Several sit in exactly our structures - Extended Prefix Prefix-SID and
+    # Extended Link Adj-SID / LAN-Adj-SID - and the malformed advertisements
+    # that reach them ALREADY fire SRM-SR-TLV-OVERRUN's minimum-length half.
+    # They are not CLAIMED, because the crash is conditional on the receiver
+    # running "debug ospf packet all send/recv detail": these are show/dump
+    # helpers, not the packet-processing path. A tap cannot see a receiver's
+    # debug configuration, so claiming them would assert a risk we cannot
+    # condition. The 7.5 vector models no such precondition.
+    "CVE-2025-61103": {
+        "score": 7.5, "source": "NVD",
+        "component": "FRRouting ospfd - NULL deref in show_vty_ext_link_lan_adj_sid "
+                     "(ospf_ext.c) via a crafted LSA Update",
+        "owner": "sr-mplswatch", "detected_here": False,
+        "rejected": "Crash requires 'debug ospf packet ... detail' on the receiver, "
+                    "which a passive tap cannot observe. The wire shape is already "
+                    "reported by SRM-SR-TLV-OVERRUN without claiming the CVE.",
+    },
+    "CVE-2025-61106": {
+        "score": 7.5, "source": "NVD",
+        "component": "FRRouting ospfd - NULL deref in show_vty_ext_pref_pref_sid "
+                     "(ospf_ext.c) via a crafted OSPF packet",
+        "owner": "sr-mplswatch", "detected_here": False,
+        "rejected": "Same debug-dump precondition as CVE-2025-61103; wire shape "
+                    "already covered by SRM-SR-TLV-OVERRUN.",
+    },
+    "CVE-2025-61107": {
+        "score": 7.5, "source": "NVD",
+        "component": "FRRouting ospfd - NULL deref in show_vty_pref_info "
+                     "(ospf_ext.c) via a crafted LSA Update",
+        "owner": "sr-mplswatch", "detected_here": False,
+        "rejected": "The reporter documents the attack vector as requiring "
+                    "'debug ospf packet all send/recv detail' on the victim.",
+    },
+    "CVE-2025-61101": {
+        "score": 7.5, "source": "NVD",
+        "component": "FRRouting ospfd - NULL deref in show_vty_ext_link_rmt_itf_addr "
+                     "(ospf_ext.c) via a crafted OSPF packet",
+        "owner": "ospfwatch", "detected_here": False,
+        "rejected": "Remote Interface Address sub-TLV (RFC 7684) is not a Segment "
+                    "Routing structure, plus the same debug-dump precondition.",
     },
     "CVE-2024-27913": {
         "score": None, "source": "MITRE",
@@ -1068,22 +1193,34 @@ def parse_ethernet(frame: bytes) -> Tuple[int, bytes, List[int]]:
     return etype, frame[off:], vlans
 
 
-def walk_ipv6_headers(data: bytes) -> Tuple[Optional[Dict[str, Any]], int, Optional[bytes]]:
-    """Walk the IPv6 extension-header chain looking for a Routing Header.
+def walk_ipv6_headers(data: bytes) -> Tuple[Optional[Dict[str, Any]], int,
+                                            Optional[bytes], int, bool]:
+    """Walk the whole IPv6 extension-header chain.
 
-    Returns (srh_or_None, final_next_header, raw_srh_bytes_or_None).
+    Returns (srh_or_None, final_next_header, raw_srh_or_None, payload_offset,
+    is_later_fragment).  Unlike the first revision this does NOT stop at the
+    Routing Header: it records the SRH and keeps walking, because the upper
+    layer protocol behind the chain is what carries LDP, BGP and RSVP-TE over
+    IPv6 and the module was blind to all three.
     """
     if len(data) < 40:
         raise ParseError("truncated IPv6 header")
     nh = data[6]
     off = 40
     hops = 0
+    srh: Optional[Dict[str, Any]] = None
+    raw: Optional[bytes] = None
+    later_fragment = False
     while hops < _MAX_IPV6_EXT_CHAIN:
         if nh not in IPV6_EXT_HEADERS:
-            return None, nh, None
+            return srh, nh, raw, off, later_fragment
         if nh == IPPROTO_IPV6_FRAG:
             if off + 8 > len(data):
                 raise ParseError("truncated fragment header")
+            # RFC 8200 s4.5: only the FIRST fragment carries the upper-layer
+            # header, so a later fragment must never be dissected as one.
+            if (struct.unpack_from("!H", data, off + 2)[0] >> 3) != 0:
+                later_fragment = True
             nh = data[off]
             off += 8
             hops += 1
@@ -1096,13 +1233,16 @@ def walk_ipv6_headers(data: bytes) -> Tuple[Optional[Dict[str, Any]], int, Optio
         if nh == IPPROTO_IPV6_ROUTE:
             if off + 8 > len(data):
                 raise ParseError("truncated routing header")
-            if data[off + 2] == SRH_ROUTING_TYPE:
+            if data[off + 2] == SRH_ROUTING_TYPE and srh is None:
                 raw = data[off:off + ext_len]
                 srh = parse_srh(data, off, len(data))
-                return srh, this_nh, raw
         if nh == IPPROTO_AH:
             ext_len = (hdr_ext_len + 2) * 4
         if ext_len <= 0 or off + ext_len > len(data):
+            # A malformed header AFTER a valid SRH must not suppress the SRH
+            # finding; report what was parsed and dispatch no transport.
+            if srh is not None:
+                return srh, this_nh, raw, len(data), later_fragment
             raise ParseError("extension header length overruns packet")
         nh = this_nh
         off += ext_len
@@ -1935,6 +2075,148 @@ def parse_ospf_sid_range(value: bytes) -> Dict[str, Any]:
     return out
 
 
+# -- IGP-SR: OSPFv3 (RFC 5340 / RFC 8362 extended LSAs / RFC 8666 SR) ------
+
+def parse_ospfv3_header(data: bytes) -> Dict[str, Any]:
+    """RFC 5340 sA.3.1: Version(1) Type(1) Length(2) RouterID(4) AreaID(4)
+    Checksum(2) InstanceID(1) Reserved(1) - 16 octets, not 24 like OSPFv2."""
+    if len(data) < OSPFV3_HDR_LEN:
+        raise ParseError("truncated OSPFv3 header")
+    if data[0] != OSPFV3_VERSION:
+        raise ParseError("not OSPFv3")
+    return {"version": data[0], "type": data[1],
+            "length": struct.unpack_from("!H", data, 2)[0],
+            "router_id": str(ipaddress.IPv4Address(data[4:8])),
+            "area_id": str(ipaddress.IPv4Address(data[8:12])),
+            "instance_id": data[12]}
+
+
+def parse_ospfv3_lsas(data: bytes) -> List[Dict[str, Any]]:
+    """LS Update body: count(4) then LSAs.  The OSPFv3 LSA header puts a
+    TWO-octet LS Type at offset 2; OSPFv2 puts a one-octet type at offset 3."""
+    if len(data) < OSPFV3_HDR_LEN + 4:
+        return []
+    count = struct.unpack_from("!I", data, OSPFV3_HDR_LEN)[0]
+    off = OSPFV3_HDR_LEN + 4
+    out: List[Dict[str, Any]] = []
+    guard = 0
+    while off + OSPFV3_LSA_HDR_LEN <= len(data) and guard < min(count, _MAX_OSPF_LSAS):
+        guard += 1
+        ls_type = struct.unpack_from("!H", data, off + 2)[0]
+        length = struct.unpack_from("!H", data, off + 18)[0]
+        if length < OSPFV3_LSA_HDR_LEN:
+            break
+        end = min(len(data), off + length)
+        fc = ls_type & OSPFV3_LS_TYPE_FC_MASK
+        body = data[off + OSPFV3_LSA_HDR_LEN:end]
+        prefix = OSPFV3_BODY_PREFIX.get(fc)
+        out.append({"ls_type": ls_type, "function_code": fc,
+                    "adv_router": str(ipaddress.IPv4Address(data[off + 8:off + 12])),
+                    "length": length, "body": body,
+                    "tlv_block": body[prefix:] if prefix is not None
+                                 and prefix <= len(body) else None})
+        off += length
+    return out
+
+
+def parse_ospfv3_prefix_tlv(value: bytes) -> Optional[Dict[str, Any]]:
+    """RFC 8362 s3.4/3.6/3.7 - Inter-Area-Prefix, External-Prefix and
+    Intra-Area-Prefix TLVs share one shape:
+      Metric word(4) | PrefixLength(1) PrefixOptions(1) 0(2) | Prefix | subTLVs
+    The prefix occupies ((PrefixLength + 31) / 32) 32-bit words."""
+    if len(value) < 8:
+        return None
+    plen, popts = value[4], value[5]
+    if plen > 128:
+        return None
+    nwords = (plen + 31) // 32
+    off = 8 + nwords * 4
+    if off > len(value):
+        return None
+    raw = value[8:8 + nwords * 4] + b"\x00" * 16
+    try:
+        net = ipaddress.ip_network(
+            "%s/%d" % (ipaddress.IPv6Address(raw[:16]), plen), strict=False)
+    except (ValueError, ipaddress.AddressValueError):
+        return None
+    return {"prefix": str(net), "prefix_options": popts,
+            "subtlvs": parse_ospf_tlvs(value[off:])}
+
+
+def parse_ospfv3_ext_prefix_range(value: bytes) -> Optional[Dict[str, Any]]:
+    """RFC 8666 s5: PrefixLength(1) AF(1) RangeSize(2) Flags(1) Reserved(3)
+    Prefix(variable) subTLVs.  Used by the SR Mapping Server."""
+    if len(value) < 8:
+        return None
+    plen, af = value[0], value[1]
+    range_size = struct.unpack_from("!H", value, 2)[0]
+    if plen > 128 or af not in (OSPFV3_AF_IPV4, OSPFV3_AF_IPV6):
+        return None
+    nwords = (plen + 31) // 32
+    off = 8 + nwords * 4
+    if off > len(value):
+        return None
+    raw = value[8:8 + nwords * 4]
+    try:
+        if af == OSPFV3_AF_IPV4:
+            net = ipaddress.ip_network(
+                "%s/%d" % (ipaddress.IPv4Address((raw + b"\x00" * 4)[:4]), plen),
+                strict=False)
+        else:
+            net = ipaddress.ip_network(
+                "%s/%d" % (ipaddress.IPv6Address((raw + b"\x00" * 16)[:16]), plen),
+                strict=False)
+    except (ValueError, ipaddress.AddressValueError):
+        return None
+    return {"prefix": str(net), "range_size": range_size, "af": af,
+            "subtlvs": parse_ospf_tlvs(value[off:])}
+
+
+def parse_ospfv3_router_link(value: bytes) -> Optional[Dict[str, Any]]:
+    """RFC 8362 s3.2: Type(1) 0(1) Metric(2) InterfaceID(4)
+    NeighborInterfaceID(4) NeighborRouterID(4) then sub-TLVs."""
+    if len(value) < 16:
+        return None
+    return {"link_type": value[0],
+            "interface_id": struct.unpack_from("!I", value, 4)[0],
+            "neighbor_router_id": str(ipaddress.IPv4Address(value[12:16])),
+            "subtlvs": parse_ospf_tlvs(value[16:])}
+
+
+def parse_ospfv3_prefix_sid(value: bytes) -> Optional[Dict[str, Any]]:
+    """RFC 8666 s6: Flags(1) Algorithm(1) Reserved(2) SID(4 or 3).
+
+    NOTE the field order: OSPFv2 (RFC 8665 s5) is Flags, Reserved, MT-ID,
+    Algorithm - the algorithm sits at offset 3 there and offset 1 here.
+    Reusing the OSPFv2 parser would read the wrong octet as the algorithm and
+    file every SID under a bogus one."""
+    if len(value) < 7:
+        return None
+    flags, algorithm = value[0], value[1]
+    kind, sid = sid_from_flags(flags, value[4:], OSPFV3_PSID_FLAG_V,
+                               OSPFV3_PSID_FLAG_L)
+    return {"flags": flags, "algorithm": algorithm, "kind": kind, "sid": sid,
+            "mapping_server": bool(flags & OSPFV3_PSID_FLAG_M)}
+
+
+def parse_ospfv3_adj_sid(value: bytes, lan: bool = False
+                         ) -> Optional[Dict[str, Any]]:
+    """RFC 8666 s7.1: Flags(1) Weight(1) Reserved(2) SID(4 or 3).
+    s7.2 LAN form inserts a 4-octet Neighbor ID before the SID."""
+    need = 11 if lan else 7
+    if len(value) < need:
+        return None
+    flags, weight = value[0], value[1]
+    off = 8 if lan else 4
+    neighbor = str(ipaddress.IPv4Address(value[4:8])) if lan else None
+    kind, sid = sid_from_flags(flags, value[off:], OSPFV3_ASID_FLAG_V,
+                               OSPFV3_ASID_FLAG_L)
+    return {"flags": flags, "weight": weight, "kind": kind, "sid": sid,
+            "neighbor": neighbor,
+            "persistent": bool(flags & OSPFV3_ASID_FLAG_P),
+            "group": bool(flags & OSPFV3_ASID_FLAG_G)}
+
+
 # ---------------------------------------------------------------------------
 # Detection engine
 # ---------------------------------------------------------------------------
@@ -2224,13 +2506,24 @@ class SRMPLSEngine:
         self.stats["ipv6"] += 1
         src = str(ipaddress.IPv6Address(data[8:24]))
         dst = str(ipaddress.IPv6Address(data[24:40]))
-        srh, final_nh, _raw = walk_ipv6_headers(data)
-        if srh is None:
-            if final_nh == IPPROTO_RSVP:
-                pass                                   # RSVP over IPv6: rare, see README
+        srh, final_nh, _raw, l4_off, later_fragment = walk_ipv6_headers(data)
+        if srh is not None:
+            self.stats["srh"] += 1
+            self._check_srh(srh, src, dst, ts, under_mpls)
+
+        # PRIME DIRECTIVE: LDP (RFC 7552), BGP with IPv6 transport and RSVP-TE
+        # all run over IPv6, and every one of them used to be invisible here
+        # because the transport dispatch lived only in handle_ipv4.  Both
+        # families now go through the SAME function - parity by construction
+        # rather than by two copies that drift.
+        if later_fragment or l4_off >= len(data):
             return
-        self.stats["srh"] += 1
-        self._check_srh(srh, src, dst, ts, under_mpls)
+        plen = struct.unpack_from("!H", data, 4)[0]
+        end = min(len(data), 40 + plen) if plen else len(data)
+        if end <= l4_off:
+            return
+        self.stats["v6_transport"] += 1
+        self._dispatch_transport(final_nh, data[l4_off:end], src, dst, ts)
 
     def _check_srh(self, srh: Dict[str, Any], src: str, dst: str,
                    ts: float, under_mpls: bool) -> None:
@@ -2343,6 +2636,17 @@ class SRMPLSEngine:
         total = struct.unpack_from("!H", data, 2)[0]
         body = data[ihl:total] if 0 < total <= len(data) else data[ihl:]
 
+        self._dispatch_transport(proto, body, src, dst, ts)
+
+    # -- shared transport dispatch (both address families) ------------------
+
+    def _dispatch_transport(self, proto: int, body: bytes, src: str, dst: str,
+                            ts: float) -> None:
+        """The ONE place an upper-layer protocol is selected.
+
+        handle_ipv4 and handle_ipv6 both land here, so an IPv4-only blind spot
+        cannot be reintroduced without deleting a call site that the
+        conformance harness counts."""
         if proto == IPPROTO_RSVP:
             self.handle_rsvp(body, src, dst, ts)
         elif proto == IPPROTO_OSPF:
@@ -2617,6 +2921,95 @@ class SRMPLSEngine:
             self._record_prefix_sid(originator, "bgp", prefix, SR_ALGO_SPF,
                                     "index", idx, ts)
 
+
+    # -- OSPFv3 -------------------------------------------------------------
+
+    def handle_ospfv3(self, data: bytes, src: str, dst: str, ts: float) -> None:
+        hdr = parse_ospfv3_header(data)
+        self.stats["ospfv3"] += 1
+        if hdr["type"] != OSPF_TYPE_LS_UPDATE:
+            return
+        saw_sr = False
+        last_originator = hdr["router_id"]
+        for lsa in parse_ospfv3_lsas(data):
+            block = lsa["tlv_block"]
+            if block is None:
+                continue                  # LSA type whose body layout we do not model
+            fc = lsa["function_code"]
+            originator = lsa["adv_router"]
+            last_originator = originator
+            tlvs = parse_ospf_tlvs(block)
+
+            if fc == OSPFV3_FC_ROUTER_INFO:
+                # RFC 8666 s4: SR capabilities live in the OSPFv3 RI LSA and
+                # reuse the OSPF RI TLV registry, so the same codepoints and
+                # the same ledger apply as for OSPFv2.
+                self._check_sr_tlvs("ospfv3", "router-info", tlvs, ts,
+                                    cves=self.CVES_OSPF_RI, originator=originator)
+                for tlv in tlvs:
+                    if tlv["type"] == OSPF_RI_TLV_SID_LABEL_RANGE:
+                        saw_sr = True
+                        self._record_srgb(
+                            originator, parse_ospf_sid_range(tlv["value"])["ranges"],
+                            ts, "ospfv3")
+                    elif tlv["type"] == OSPF_RI_TLV_SR_LOCAL_BLOCK:
+                        saw_sr = True
+                        self.srlb_adv[originator] = \
+                            parse_ospf_sid_range(tlv["value"])["ranges"]
+                    elif tlv["type"] == OSPF_RI_TLV_SR_ALGORITHM:
+                        saw_sr = True
+                        self._record_algos(originator, list(tlv["value"][:32]))
+                continue
+
+            self._check_sr_tlvs("ospfv3", "extended-lsa", tlvs, ts,
+                                originator=originator)
+            for tlv in tlvs:
+                t = tlv["type"]
+                entry = None
+                if t in OSPFV3_PREFIX_TLVS:
+                    entry = parse_ospfv3_prefix_tlv(tlv["value"])
+                elif t == OSPFV3_TLV_EXT_PREFIX_RANGE:
+                    entry = parse_ospfv3_ext_prefix_range(tlv["value"])
+                elif t == OSPFV3_TLV_ROUTER_LINK:
+                    rl = parse_ospfv3_router_link(tlv["value"])
+                    if not rl:
+                        continue
+                    self._check_sr_tlvs("ospfv3", "router-link", rl["subtlvs"], ts,
+                                        originator=originator)
+                    for sub in rl["subtlvs"]:
+                        if sub["type"] == OSPFV3_SUB_ADJ_SID:
+                            a = parse_ospfv3_adj_sid(sub["value"])
+                        elif sub["type"] == OSPFV3_SUB_LAN_ADJ_SID:
+                            a = parse_ospfv3_adj_sid(sub["value"], lan=True)
+                        else:
+                            continue
+                        if not a:
+                            continue
+                        saw_sr = True
+                        self._record_adj_sid(
+                            originator,
+                            a.get("neighbor") or rl["neighbor_router_id"],
+                            a, ts, "ospfv3")
+                    continue
+                if not entry:
+                    continue
+                self._check_sr_tlvs("ospfv3", "prefix-tlv", entry["subtlvs"], ts,
+                                    originator=originator, prefix=entry["prefix"])
+                for sub in entry["subtlvs"]:
+                    if sub["type"] != OSPFV3_SUB_PREFIX_SID:
+                        continue
+                    p = parse_ospfv3_prefix_sid(sub["value"])
+                    if not p:
+                        continue
+                    saw_sr = True
+                    extra: Dict[str, Any] = {"mapping_server": p["mapping_server"]}
+                    if "range_size" in entry:
+                        extra["range_size"] = entry["range_size"]
+                    self._record_prefix_sid(originator, "ospfv3", entry["prefix"],
+                                            p["algorithm"], p["kind"], p["sid"], ts,
+                                            **extra)
+        if saw_sr:
+            self._igp_sr_seen(ts, "ospfv3", last_originator)
 
     # -- shared SR ledger ---------------------------------------------------
 
@@ -2901,6 +3294,11 @@ class SRMPLSEngine:
     # -- OSPFv2 -------------------------------------------------------------
 
     def handle_ospf(self, data: bytes, src: str, dst: str, ts: float) -> None:
+        # OSPFv3 (RFC 5340) rides ip proto 89 over IPv6 and carries its SR
+        # extensions in a completely different LSA set (RFC 8362 / RFC 8666).
+        if data and data[0] == OSPFV3_VERSION:
+            self.handle_ospfv3(data, src, dst, ts)
+            return
         hdr = parse_ospf_header(data)
         self.stats["ospf"] += 1
         if hdr["type"] != OSPF_TYPE_LS_UPDATE:
@@ -3130,13 +3528,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     finally:
         emitter.close()
         sys.stderr.write("[%s] frames=%d mpls=%d srh=%d ldp=%d rsvp=%d "
-                         "isis=%d ospf=%d igp_sr=%d "
+                         "isis=%d ospf=%d ospfv3=%d igp_sr=%d v6_transport=%d "
                          "bgp_update=%d parse_errors=%d findings=%d suppressed=%d "
                          "evictions=%d\n"
                          % (MODULE_NAME, engine.stats["frames"], engine.stats["mpls"],
                             engine.stats["srh"], engine.stats["ldp"], engine.stats["rsvp"],
                             engine.stats["isis"], engine.stats["ospf"],
-                            engine.stats["igp_sr"], engine.stats["bgp_update"], engine.stats["parse_errors"],
+                            engine.stats["ospfv3"], engine.stats["igp_sr"],
+                            engine.stats["v6_transport"], engine.stats["bgp_update"], engine.stats["parse_errors"],
                             sum(emitter.counts.values()), emitter.suppressed,
                             engine.stats["evictions"] + emitter.evictions))
     return 0
@@ -3520,5 +3919,73 @@ def selftest():
     check("sr-tlv-overrun-cve",
           bool(ov) and "CVE-2024-31948" in (ov[0]["evidence"].get("cves") or []),
           str(ov[0]["evidence"]) if ov else "no finding")
+
+
+    # -- OSPFv3-SR (RFC 5340 framing / RFC 8362 extended LSAs / RFC 8666 SR) --
+    # OSPFv3 rides IP proto 89 over IPv6 and carries SR in a different LSA set
+    # than OSPFv2; these exercise the whole dispatch: frame -> IPv6 ext-header
+    # walk -> shared transport dispatch -> OSPFv3 handler -> SR-TLV checks.
+    def _o3_tlv(ttype, value, declared=None):
+        dl = len(value) if declared is None else declared
+        return (_struct.pack("!HH", ttype, dl) + value
+                + b"\x00" * ((-len(value)) % 4))
+
+    def _ospfv3_lsa(fc, body, adv="203.0.113.9"):
+        ls_type = 0xA000 | (fc & OSPFV3_LS_TYPE_FC_MASK)
+        return (_struct.pack("!HH4s4sIHH", 0, ls_type,
+                             _ipaddress.IPv4Address("0.0.0.1").packed,
+                             _ipaddress.IPv4Address(adv).packed,
+                             0x80000001, 0, OSPFV3_LSA_HDR_LEN + len(body)) + body)
+
+    def _ospfv3_lsu(*lsas):
+        upd = _struct.pack("!I", len(lsas)) + b"".join(lsas)
+        hdr = _struct.pack("!BBH4s4sHBB", OSPFV3_VERSION, OSPF_TYPE_LS_UPDATE,
+                           OSPFV3_HDR_LEN + len(upd),
+                           _ipaddress.IPv4Address("203.0.113.9").packed,
+                           _ipaddress.IPv4Address("0.0.0.0").packed, 0, 0, 0)
+        return _eth(ETHERTYPE_IPV6,
+                    _ipv6("2001:db8:a::1", "ff02::5", IPPROTO_OSPF, hdr + upd))
+
+    # 10. An OSPFv3 Extended-Prefix (Intra-Area-Prefix) LSA whose Prefix-SID
+    #     sub-TLV declares a length that overruns the prefix TLV -> the OSPFv3
+    #     SR sub-TLV overrun path fires SRM-SR-TLV-OVERRUN (protocol 'ospfv3').
+    _psid = _o3_tlv(OSPFV3_SUB_PREFIX_SID, b"\x00\x00\x00\x00", declared=100)
+    _ptlv = _struct.pack("!IBBH", 10, 0, 0, 0) + _psid
+    _iap = _ospfv3_lsa(OSPFV3_FC_E_INTRA_AREA_PREFIX,
+                       _struct.pack("!HH4s4s", 0, 0, b"\x00" * 4, b"\x00" * 4)
+                       + _o3_tlv(OSPFV3_TLV_INTRA_AREA_PREFIX, _ptlv))
+    r = _run([_ospfv3_lsu(_iap)], role="core")
+    ov = [x for x in r if x["code"] == "SRM-SR-TLV-OVERRUN"]
+    check("ospfv3-sr-subtlv-overrun",
+          bool(ov) and any(x["evidence"].get("protocol") == "ospfv3" for x in ov),
+          sorted(_codes(r)))
+
+    # 11. An OSPFv3 Router-Information LSA whose SID/Label-Range TLV overruns.
+    #     The RI LSA reuses the OSPF RI TLV registry (RFC 8666 s4), so the
+    #     finding carries CVE-2024-31950 - an SR-TLV-length CVE now detected on
+    #     the OSPFv3 path.  (The 2025 FRR ospf6d CVEs sit in CVE_REFERENCES as
+    #     reference-only: detected_here=False, the crash needing a receiver
+    #     debug config a passive tap cannot observe.)
+    _ri = _ospfv3_lsa(OSPFV3_FC_ROUTER_INFO,
+                      _o3_tlv(OSPF_RI_TLV_SID_LABEL_RANGE, b"\x00\x00\x64\x00",
+                              declared=200))
+    r = _run([_ospfv3_lsu(_ri)], role="core")
+    ov = [x for x in r if x["code"] == "SRM-SR-TLV-OVERRUN"]
+    check("ospfv3-ri-overrun-cve",
+          bool(ov) and "CVE-2024-31950" in (ov[0]["evidence"].get("cves") or []),
+          str(ov[0]["evidence"]) if ov else "no finding")
+
+    # 12. A well-formed OSPFv3 SR-LSA (valid SID/Label-Range) on a CE port must
+    #     NOT false-positive: it is recognised as SR topology (SRM-IGP-SR-
+    #     TOPOLOGY, proving the frame was fully parsed) with no overrun finding.
+    _sidlabel = _o3_tlv(OSPF_SUB_SID_LABEL, b"\x00\x03\xe8")
+    _good = _ospfv3_lsa(OSPFV3_FC_ROUTER_INFO,
+                        _o3_tlv(OSPF_RI_TLV_SID_LABEL_RANGE,
+                                b"\x00\x00\x64\x00" + _sidlabel))
+    r = _run([_ospfv3_lsu(_good)], role="ce")
+    check("ospfv3-wellformed-no-overrun",
+          "SRM-SR-TLV-OVERRUN" not in _codes(r)
+          and "SRM-IGP-SR-TOPOLOGY" in _codes(r),
+          sorted(_codes(r)))
 
     return {"success": all(s["pass"] for s in scen), "scenarios": scen}

@@ -2407,7 +2407,7 @@ control plane — is a forwarding-path injection. It parses the full data plane 
 type 4, RFC 8754, including under an MPLS shim) and the SR control plane from scratch:
 **LDP** (udp/tcp 646, RFC 5036), **RSVP-TE** (ip-proto 46), **BGP-SR** (Prefix-SID
 attribute, RFC 8669; labelled-unicast + VPN SAFIs), **IS-IS-SR** (RFC 8667 sub-TLVs) and
-**OSPFv2-SR** (RFC 7684/8665 opaque LSAs). Reduced to a single card **verdict**:
+**OSPFv2-SR** (RFC 7684/8665 opaque LSAs) and *(v3)* **OSPFv3-SR** (RFC 5340 / RFC 8362 extended LSAs / RFC 8666 SR — Prefix-SID / Adj-SID / Router-Information sub-TLVs over IPv6 proto 89). An overrunning OSPFv3 SR sub-TLV fires `SRM-SR-TLV-OVERRUN` (protocol `ospfv3`; the RI path names CVE-2024-31950, and the FRR ospf6d crash CVEs CVE-2025-61101/61103/61106/61107 are reference-only — their receiver `debug`-dump precondition isn't passively observable). Reduced to a single card **verdict**:
 
 - **segment-injection** (critical — the one that should page you) — an MPLS-labelled
   frame (`SRM-MPLS-ON-CE-PORT`) or an **SRH** (`SRM-SRH-ON-CE-PORT`) on an interface
@@ -2692,7 +2692,10 @@ traffic. What it flags:
   it surfaces a CVE/OSV advisory. **OSPFv2 only** — OSPFv3 has no header auth field
   (it relies on IPsec AH/ESP or the RFC 7166 auth trailer), so it is not faked for v3.
 - **Anomaly** — a new/rogue OSPF router (adjacency spoofing), a **duplicate
-  Router-ID** (conflict/spoof), Hello parameter mismatch, or mixed OSPF versions.
+  Router-ID** (conflict/spoof), Hello parameter mismatch, mixed OSPF versions, or
+  *(v5)* an **OSPFv3 Instance-ID anomaly** — an established speaker changing or adding a
+  non-default Instance ID (read from the tcpdump `Instance N` token) is a rogue
+  parallel-instance / spoofing tell. (OSPFv3 SR-LSA byte-parsing is owned by SR-MPLS Watch.)
 - **Injection** — an LSA whose **Advertising Router** never announced itself (a
   spoofed/injected LSA), a **MaxSequence** (0x7fffffff) or **MaxAge** fight-provoking
   LSA, **fight-back** (one LSA re-originated rapidly = the owner countering an
