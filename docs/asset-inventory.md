@@ -107,6 +107,14 @@ adapter, say) is one network reached two ways, and is scanned as one:
   the scan's temporary one, and only a real change runs the
   "mark every host degraded" hand-off between network stores.
 
+- The network's identity is its **SSID**, never the NetworkManager
+  *connection name*. Adding a USB Wi-Fi dongle moves the client role onto it,
+  and its profile is often named differently from the SSID — netplan on Ubuntu
+  names them `netplan-wlan1-<SSID>`, and NetworkManager auto-names a second
+  profile for a known network `"<SSID> 1"`. Reading that label as the SSID made
+  the dongle joining the *same* network look like a switch to a new one, which
+  degraded every host and opened a duplicate network store.
+
 Before this (issue #818), the Ethernet job ran as a separate `LAN` context;
 the Wi-Fi loop read that as a switch away from the SSID and degraded every
 host once per scan cycle — Degraded in the inventory, Offline on the

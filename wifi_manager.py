@@ -1616,45 +1616,101 @@ class WiFiManager:
         except Exception as exc:
             self.logger.debug(f"Unable to re-enable Wi-Fi interfaces: {exc}")
     
-    def get_current_ssid(self):
-        """Get the current connected SSID"""
+    def _ssid_of_connection(self, name):
+        """Resolve a NetworkManager connection NAME to the SSID it joins.
+
+        A connection name is a label, not the network: netplan (Ubuntu) names
+        them ``netplan-<iface>-<SSID>``, NetworkManager auto-names a second
+        profile for an SSID it already knows ``"<SSID> 1"``, and users rename
+        them freely. Treating the name as the SSID made a USB Wi-Fi dongle
+        joining the SAME network look like a switch to a different one — the
+        client radio moves to the dongle, its profile name differs, and after
+        the debounce every host was marked degraded (issue #818).
+        """
+        if not name:
+            return None
         try:
-            # Method 1: SSID from the active connection on the CLIENT radio —
-            # the dongle when one is fitted, since the built-in may be hosting
-            # the AP and would report the AP's own name instead.
-            result = subprocess.run(['nmcli', '-t', '-f', 'GENERAL.CONNECTION', 'dev', 'show', self._client_wifi_interface()],
+            result = subprocess.run(
+                ['nmcli', '-g', '802-11-wireless.ssid', 'connection', 'show', name],
+                capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                ssid = result.stdout.strip()
+                if ssid and ssid != '--':
+                    return ssid
+        except Exception as e:
+            self.logger.debug(f"Could not resolve SSID of connection {name!r}: {e}")
+        return None
+
+    def _ssid_on_interface(self, iface):
+        """The SSID the radio is actually associated to, straight from the kernel."""
+        if not iface:
+            return None
+        try:
+            result = subprocess.run(['iw', 'dev', iface, 'link'],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith('SSID:'):
+                        ssid = line[len('SSID:'):].strip()
+                        if ssid:
+                            return ssid
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.logger.debug(f"iw link failed on {iface}: {e}")
+        return None
+
+    def get_current_ssid(self):
+        """Get the current connected SSID — the network's name, never a profile label."""
+        try:
+            client_iface = self._client_wifi_interface()
+
+            # Method 1: the connection active on the CLIENT radio — the dongle
+            # when one is fitted, since the built-in may be hosting the AP and
+            # would report the AP's own name instead. Resolve its SSID; the
+            # connection NAME is not the SSID (see _ssid_of_connection).
+            result = subprocess.run(['nmcli', '-t', '-f', 'GENERAL.CONNECTION', 'dev', 'show', client_iface],
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0 and result.stdout.strip():
-                # Extract connection name (which is usually the SSID for WiFi)
                 for line in result.stdout.strip().split('\n'):
                     if line.startswith('GENERAL.CONNECTION:'):
-                        ssid = line.split(':', 1)[1].strip()
-                        if ssid and ssid != '--':
-                            return ssid
-            
-            # Method 2: Try using iwgetid as fallback
+                        conn = line.split(':', 1)[1].strip()
+                        if conn and conn != '--':
+                            ssid = (self._ssid_of_connection(conn)
+                                    or self._ssid_on_interface(client_iface))
+                            if ssid:
+                                return ssid
+
+            # Method 2: what the client radio is associated to, from the kernel.
+            ssid = self._ssid_on_interface(client_iface)
+            if ssid:
+                return ssid
+
+            # Method 3: iwgetid, scoped to the client radio so a second adapter
+            # on another network can't answer for it.
             try:
-                result = subprocess.run(['iwgetid', '-r'], 
+                result = subprocess.run(['iwgetid', client_iface, '-r'],
                                       capture_output=True, text=True, timeout=5)
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
             except FileNotFoundError:
                 pass  # iwgetid not available
-            
-            # Method 3: Parse from nmcli connection show (active connections)
-            result = subprocess.run(['nmcli', '-t', '-f', 'ACTIVE,NAME,TYPE', 'con', 'show'], 
+
+            # Method 4: any active Wi-Fi connection, resolved to its SSID.
+            result = subprocess.run(['nmcli', '-t', '-f', 'ACTIVE,NAME,TYPE', 'con', 'show'],
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 for line in result.stdout.strip().split('\n'):
                     parts = line.split(':')
                     if len(parts) >= 3 and parts[0] == 'yes' and '802-11-wireless' in parts[2]:
-                        return parts[1]
-            
+                        return self._ssid_of_connection(parts[1]) or parts[1]
+
             return None
         except Exception as e:
             self.logger.error(f"Error getting current SSID: {e}")
             return None
-    
+
     def scan_networks(self, interface=None):
         """Scan for available Wi-Fi networks and mark those with system profiles"""
         try:

@@ -214,3 +214,58 @@ def test_jobs_without_a_known_subnet_are_left_alone():
         [_eth(None), _wlan(None)])
 
     assert len(jobs) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_current_ssid returns the SSID, never the NetworkManager profile name
+# ---------------------------------------------------------------------------
+# Reproduced live on the dev box: an Alfa joined the SAME network via a profile
+# named 'skynet_5G-alfa'; the client radio moved to the dongle, the profile name
+# was read as the SSID, and 35s later every host was marked degraded under a
+# phantom 'skynet_5g_alfa' store. netplan's 'netplan-wlan1-<SSID>' names (Ubuntu)
+# and NetworkManager's '<SSID> 1' auto-names do the same.
+
+import subprocess as _sp
+
+
+def _nmcli_stub(conn_name, ssid, iw_ssid=None):
+    def run(cmd, *a, **k):
+        if cmd[:2] == ['nmcli', '-t'] and 'GENERAL.CONNECTION' in cmd:
+            return _sp.CompletedProcess(cmd, 0, stdout=f'GENERAL.CONNECTION:{conn_name}\n', stderr='')
+        if cmd[:3] == ['nmcli', '-g', '802-11-wireless.ssid']:
+            return _sp.CompletedProcess(cmd, 0 if ssid else 10, stdout=(ssid or '') + '\n', stderr='')
+        if cmd[:2] == ['iw', 'dev']:
+            out = f'Connected to aa:bb:cc:dd:ee:ff (on wlan1)\n\tSSID: {iw_ssid}\n' if iw_ssid else 'Not connected.\n'
+            return _sp.CompletedProcess(cmd, 0, stdout=out, stderr='')
+        return _sp.CompletedProcess(cmd, 1, stdout='', stderr='')
+    return run
+
+
+@pytest.mark.parametrize('conn_name', [
+    'skynet_5G-alfa',                 # a hand-named clone
+    'netplan-wlan1-skynet_5G',        # Ubuntu / netplan
+    'skynet_5G 1',                    # NetworkManager's auto-name for a 2nd profile
+])
+def test_current_ssid_is_the_network_not_the_profile_name(wifi, conn_name):
+    with patch.object(type(wifi), '_client_wifi_interface', return_value='wlan1'), \
+         patch('wifi_manager.subprocess.run', side_effect=_nmcli_stub(conn_name, 'skynet_5G')):
+        assert wifi.get_current_ssid() == 'skynet_5G'
+
+
+def test_current_ssid_falls_back_to_the_kernel_link(wifi):
+    """Profile lookup failing must not hand back the profile name."""
+    with patch.object(type(wifi), '_client_wifi_interface', return_value='wlan1'), \
+         patch('wifi_manager.subprocess.run',
+               side_effect=_nmcli_stub('netplan-wlan1-skynet_5G', None, iw_ssid='skynet_5G')):
+        assert wifi.get_current_ssid() == 'skynet_5G'
+
+
+def test_dongle_joining_the_same_network_is_not_a_switch(box, wifi, db):
+    """The full live sequence: dongle takes the client role on the same SSID."""
+    with patch.object(type(wifi), '_client_wifi_interface', return_value='wlan1'), \
+         patch('wifi_manager.subprocess.run', side_effect=_nmcli_stub('skynet_5G 1', 'HomeNet')):
+        for _ in range(3):
+            wifi._set_current_ssid(wifi.get_current_ssid())
+
+    db.mark_all_hosts_degraded.assert_not_called()
+    assert box.storage_manager.active_ssid == 'HomeNet'
