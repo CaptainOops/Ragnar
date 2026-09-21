@@ -356,7 +356,7 @@ class WiFiManager:
         if not hasattr(self.shared_data, 'set_active_network'):
             return
 
-        active_ssid = getattr(self.shared_data, 'active_network_ssid', None)
+        active_ssid = self._durable_active_ssid()
 
         # Same SSID as what storage already considers active → clear pending.
         if ssid == active_ssid:
@@ -396,6 +396,25 @@ class WiFiManager:
         self._propagate_active_network(ssid)
         self._pending_ssid_change = None
         self._pending_ssid_first_seen = 0.0
+
+    def _durable_active_ssid(self):
+        """The SSID storage is really on — never a scan job's temporary one.
+
+        In multi-interface mode the orchestrator scans each interface inside
+        ``context_registry.activate(<job ssid>)``, which temporarily rewrites
+        ``shared_data.active_network_ssid`` for the duration of the scan. With
+        wired Ethernet AND Wi-Fi up on the same LAN, the Ethernet job runs as
+        'LAN' while this loop keeps reporting the real SSID every tick. Reading
+        the overridden value, a scan of a minute or more looked like a
+        confirmed network switch once the debounce ran out, so
+        set_active_network() fired and mark_all_hosts_degraded() flipped every
+        host Degraded/Offline — once per scan cycle (issue #818). The storage
+        manager's own active SSID is never touched by an override.
+        """
+        storage = getattr(self.shared_data, 'storage_manager', None)
+        if storage is not None and getattr(storage, 'active_slug', None) is not None:
+            return getattr(storage, 'active_ssid', None)
+        return getattr(self.shared_data, 'active_network_ssid', None)
 
     def _propagate_active_network(self, ssid):
         try:

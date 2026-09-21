@@ -89,6 +89,29 @@ If every target flaps Offline and back on a cycle, check `arp-scan` is
 installed and that passwordless `sudo` works for it — the log line
 `Host discovery returned 0 hosts` names that condition directly.
 
+### Wired Ethernet and Wi-Fi on the same network
+
+A box plugged in by cable **and** joined to the same LAN over Wi-Fi (an Alfa
+adapter, say) is one network reached two ways, and is scanned as one:
+
+- In multi-interface mode, scan jobs that share a subnet collapse to **one
+  scan per cycle** over the preferred interface (Ethernet, when
+  `ethernet_prefer_over_wifi` is on — the default), filed under the Wi-Fi SSID
+  so its hosts land in that network's store. The log names the merge:
+  `wlan1 (HomeNet) is on the same network 192.168.1.0/24 as eth0 — scanning it
+  once via eth0`. Interfaces on **different** subnets are still scanned
+  separately.
+- A scan temporarily switches the active network context to the one it is
+  scanning. That override is never mistaken for the box changing networks:
+  the Wi-Fi monitor compares against the storage layer's durable network, not
+  the scan's temporary one, and only a real change runs the
+  "mark every host degraded" hand-off between network stores.
+
+Before this (issue #818), the Ethernet job ran as a separate `LAN` context;
+the Wi-Fi loop read that as a switch away from the SSID and degraded every
+host once per scan cycle — Degraded in the inventory, Offline on the
+dashboard — until the next scan brought them back.
+
 ¹ *Sensitive* ports are cleartext-admin / remote-desktop / file-share / database
 services (telnet, ftp, tftp, smb, rdp, vnc, mssql, mysql, postgres, redis, mongodb,
 snmp, ldap, …). SSH is deliberately **not** sensitive — it's normal everywhere and

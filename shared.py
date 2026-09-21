@@ -584,14 +584,26 @@ class SharedData:
             if self.storage_manager is None:
                 logger.error("Storage manager not available, cannot switch network")
                 return
+            # Durable state BEFORE activating. self.active_network_* can be a
+            # scan job's temporary context (context_registry.activate), so it
+            # is not a safe baseline for "did the network change?".
+            prev_slug = self.storage_manager.active_slug
+            prev_ssid = self.storage_manager.active_ssid
             context = self.storage_manager.activate_network(ssid)
         except Exception as exc:
             logger.error(f"Unable to activate network storage for '{ssid}': {exc}")
             return
 
-        # Skip reconfiguration if the slug did not change
-        if (context.get('slug') == self.active_network_slug and
-                context.get('ssid') == self.active_network_ssid):
+        # Skip reconfiguration if the network did not really change. Comparing
+        # against the overridable self.active_network_* here is what let a
+        # multi-interface Ethernet scan ('LAN') read as a switch away from the
+        # Wi-Fi SSID and degrade every host once per cycle (issue #818).
+        if prev_slug is not None and (context.get('slug') == prev_slug and
+                                      context.get('ssid') == prev_ssid):
+            registry = getattr(self, 'context_registry', None)
+            if registry is None or not registry.is_overridden():
+                # Keep the in-memory context aligned; no storage switch.
+                self._apply_network_context(context, configure_db=False)
             return
 
         # Mark every alive host in the OUTGOING database as degraded so
