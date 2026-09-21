@@ -23231,7 +23231,10 @@ def _ipsec_selftest():
 # observer of DNS responses on port 53 that flags DNSSEC-CVE signatures and over-DNS attacks
 # visible in the record structure — KeyTrap (CVE-2023-50387), NSEC3 iteration abuse
 # (CVE-2023-50868), DNSBomb (CVE-2024-33655), NXNSAttack (CVE-2020-8616), MaginotDNS
-# cache-poisoning (CVE-2021-25220) and SAD DNS (CVE-2020-25705). Dual-stack; the engine
+# cache-poisoning (CVE-2021-25220) and SAD DNS (CVE-2020-25705). v5 adds malformed-record
+# parser CVEs (compression-pointer loops, malformed DNSKEY, RRSIG label overrun, NSEC/NSEC3
+# chain escape and coexistence), protocol abuse (SVCB AliasMode fan-out, duplicate EDNS
+# options, duplicate-RR floods, TKEY queries) and unsigned multi-message XFR. Dual-stack; the engine
 # never transmits (AST-enforced in its conformance). Complements the ACTIVE do_dns_doctor.
 _DNS_PASSIVE_PKG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'python', 'dns_doctor_passive')
@@ -23281,7 +23284,7 @@ def _dns_passive_normalize(f):
     return {'code': f.get('code'), 'name': f.get('name') or f.get('code'),
             'severity': _DNS_PASSIVE_SEV.get(str(sev).lower(), 'MEDIUM'),
             'klass': _dns_passive_klass(sev), 'src': f.get('src') or None,
-            'cves': [f['cve']] if f.get('cve') else [],
+            'cves': [c.strip() for c in str(f.get('cve') or '').split(',') if c.strip()],
             'detail': {'zone': f.get('zone'), 'confidence': f.get('confidence'),
                        'evidence': f.get('evidence'), 'text': f.get('detail')}}
 
@@ -23316,7 +23319,7 @@ def do_dns_watch(interface=None, seconds=20, learn=True, quick=False):
     os.close(fd)
     # Large snaplen: DNSSEC responses (DNSKEY/RRSIG bundles) are big and must not truncate.
     res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-p',
-                '-s', '4096', '-c', '20000', '-w', pcap, 'udp port 53 or tcp port 53'],
+                '-s', '65535', '-c', '20000', '-w', pcap, 'udp port 53 or tcp port 53'],
                timeout=seconds + 8)
     if (os.path.getsize(pcap) <= 24 and res['err'] and any(
             k in res['err'].lower() for k in ('permission', "couldn't",

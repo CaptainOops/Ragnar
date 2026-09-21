@@ -546,3 +546,431 @@ def detect_source_port_entropy(cfg, zone, zstate, sport, now):
         {"distinct_ports": distinct, "samples": len(ring),
          "distinct_ratio": round(ratio, 3)},
     )]
+
+
+# ======================================================================
+# STRUCTURAL, continued -- DNSD-008 / DNSD-009
+# ======================================================================
+
+def detect_pointer_anomaly(msg, cfg, zone):
+    """
+    CVE-2026-81642 (Unbound, DNSKEY owner name is a compression pointer
+    into its own RDATA -- possible RCE), CVE-2026-2291 and CVE-2026-5172
+    (dnsmasq extract_name / extract_addresses memory bugs).
+
+    Deliberately SEPARATE from DNSD-007. A truncated record is ordinary
+    on a real network and rates notice/low; a pointer loop, a forward
+    pointer, or a pointer into RDATA is a memory-safety primitive and
+    rates critical/high. Folding them together would bury the second
+    under the volume of the first.
+
+    Note which check does the work. Loops and forward pointers are
+    rejected by the parser's strictly-decreasing rule. A pointer into an
+    EARLIER record's RDATA is not -- it points backwards perfectly
+    legally -- so it takes an explicit span check, and that is precisely
+    the Unbound shape.
+    """
+    if msg.pointer_anomaly is None:
+        return []
+    return [finding(
+        "DNSD-008", zone,
+        f"compression pointer anomaly: {msg.pointer_anomaly}",
+        {"reason": msg.pointer_anomaly, "txid": msg.txid,
+         "pointer_targets": list(msg.pointer_targets)[:8],
+         "qname": _qname_text(msg)},
+    )]
+
+
+def detect_dnskey_malformed(msg, cfg, zone):
+    """
+    CVE-2025-8677 (BIND, CPU exhaustion), CVE-2026-4890 (dnsmasq DNSSEC
+    infinite loop), CVE-2026-4891 (dnsmasq heap over-read).
+
+    Checks the DNSKEY rdata invariants RFC 4034 s2.1 actually fixes,
+    rather than guessing at key material:
+      - protocol octet MUST be 3; any other value makes the record
+        undefined, and a resolver that keeps parsing it is the bug
+      - the public key MUST be non-empty
+      - the REVOKE bit with SEP set is contradictory: a revoked key
+        cannot also be a valid secure entry point
+      - a zone key must have the ZONE bit set
+    """
+    out = []
+    for rr in msg.all_rrs():
+        if rr.rtype != parse.T_DNSKEY:
+            continue
+        p = rr.parsed
+        if "algorithm" not in p:
+            continue
+        problems = []
+        if p.get("protocol") != 3:
+            problems.append(f"protocol octet is {p.get('protocol')}, RFC 4034 requires 3")
+        if p.get("keylen", 0) == 0:
+            problems.append("public key field is empty")
+        flags = p.get("flags", 0)
+        if (flags & 0x0080) and (flags & 0x0001):
+            problems.append("REVOKE and SEP both set -- a revoked key cannot be a secure entry point")
+        if p.get("keylen", 0) and p.get("algorithm") in (8, 10) and p["keylen"] < 64:
+            problems.append(f"RSA key material is {p['keylen']} bytes, far below any valid modulus")
+        if problems:
+            out.append(finding(
+                "DNSD-009", zone,
+                f"malformed DNSKEY for {rr.name.text()}: " + "; ".join(problems),
+                {"owner": rr.name.text(), "flags": flags,
+                 "protocol": p.get("protocol"), "algorithm": p.get("algorithm"),
+                 "keylen": p.get("keylen"), "problems": problems},
+            ))
+    return out
+
+
+# ======================================================================
+# DNSSEC STRUCTURAL INTEGRITY (040-049)
+# ======================================================================
+
+def detect_rrsig_label_mismatch(msg, cfg, zone):
+    """
+    CVE-2026-11721 (BIND), CVE-2026-52688 (PowerDNS Recursor).
+
+    RFC 4034 s3.1.3: the labels field holds the number of labels in the
+    original owner name, NOT counting the root and NOT counting a
+    leading wildcard.
+
+    THE FALSE-POSITIVE CONTROL THAT MATTERS: labels LESS than the owner
+    name's label count is entirely legal and completely routine -- it is
+    how wildcard expansion is signalled, and firing on it would alert on
+    every wildcard-served zone on the internet. Only labels GREATER than
+    the owner's count is impossible, and that is the direction a
+    validator reconstructing the signed name reads off the end.
+    """
+    out = []
+    for rr in msg.all_rrs():
+        if rr.rtype != parse.T_RRSIG:
+            continue
+        claimed = rr.parsed.get("labels")
+        if claimed is None:
+            continue
+        actual = len(normalize(rr.name))
+        if claimed > actual:
+            out.append(finding(
+                "DNSD-040", zone,
+                f"RRSIG over {rr.name.text()} claims {claimed} labels but the owner name "
+                f"has {actual} -- a validator reconstructing the signed name reads past it",
+                {"owner": rr.name.text(), "claimed_labels": claimed,
+                 "actual_labels": actual,
+                 "type_covered": rr.parsed.get("type_covered"),
+                 "note": "labels < actual is legal wildcard signalling and is not reported"},
+            ))
+    return out
+
+
+def detect_nsec_next_out_of_zone(msg, cfg, zone):
+    """
+    CVE-2026-13321 (BIND). The NSEC chain is a closed loop WITHIN a
+    zone: every next-domain name is another name in the same zone, and
+    the last one wraps back to the apex. A next-domain outside the zone
+    walks a validator out of the zone it was authenticating.
+
+    Bailiwick is judged against the NSEC record's own OWNER name's zone,
+    derived from the question, rather than against the record owner
+    itself -- a subdomain owner legitimately points to a sibling.
+    """
+    q = _question(msg)
+    if q is None:
+        return []
+    zone_name = q["name"]
+    out = []
+    for rr in msg.all_rrs():
+        if rr.rtype != parse.T_NSEC:
+            continue
+        nxt = rr.parsed.get("next")
+        if nxt is None:
+            continue
+        # The apex wrap is the normal terminating case and is in zone.
+        if in_bailiwick(nxt, zone_name):
+            continue
+        # An NSEC proving a delegation may legitimately sit at or above
+        # the queried name; judge against the RECORD's own apex too
+        # before reporting, to avoid firing on referral-side NSECs.
+        if in_bailiwick(nxt, rr.name) or in_bailiwick(rr.name, nxt):
+            continue
+        out.append(finding(
+            "DNSD-041", zone,
+            f"NSEC at {rr.name.text()} points to next-domain {nxt.text()}, which is outside "
+            f"the zone {zone_name.text()} -- the NSEC chain should close within the zone",
+            {"owner": rr.name.text(), "next": nxt.text(), "zone": zone_name.text()},
+        ))
+    return out
+
+
+def detect_nsec3_apex_impersonation(msg, cfg, zone):
+    """
+    CVE-2026-10723 (BIND). ISC's internal title: DNSSEC validation
+    bypass via NSEC3 apex hash label parent impersonation (CWE-345).
+
+    An NSEC3 record's owner is <base32-hash>.<zone>. If that owner sits
+    OUTSIDE the queried zone, the record is claiming to be an apex hash
+    belonging to a parent -- a denial proof for a zone the responder
+    does not hold.
+
+    MEDIUM confidence, matching the CVE's AC:H. Judging a zone cut
+    passively is inherently partial: we can see that the owner is out of
+    bailiwick, not whether the responder was genuinely authoritative.
+    """
+    q = _question(msg)
+    if q is None:
+        return []
+    zone_name = q["name"]
+    out = []
+    for rr in msg.all_rrs():
+        if rr.rtype != parse.T_NSEC3:
+            continue
+        if in_bailiwick(rr.name, zone_name):
+            continue
+        labels = normalize(rr.name)
+        if not labels:
+            continue
+        out.append(finding(
+            "DNSD-042", zone,
+            f"NSEC3 record owned by {rr.name.text()} is outside the queried zone "
+            f"{zone_name.text()} -- claiming an apex hash for a parent it does not hold",
+            {"owner": rr.name.text(), "zone": zone_name.text(),
+             "hash_label": labels[0].decode("ascii", "replace"),
+             "iterations": rr.parsed.get("iterations")},
+        ))
+    return out
+
+
+def detect_nsec_nsec3_coexistence(msg, cfg, zone):
+    """
+    CVE-2026-13204 (BIND). Three conditions, all three required:
+      1. the response carries NSEC records, AND
+      2. it carries NSEC3 records for the same zone, AND
+      3. RRSIGs cover only ONE of the two denial types.
+
+    A zone uses NSEC or NSEC3, never both. When both appear and only one
+    is signed, the unsigned half is attacker-substitutable while still
+    looking like a complete denial proof.
+
+    Requiring all three is what keeps this quiet: an NSEC3-only or
+    NSEC-only response, however odd, produces nothing here.
+    """
+    nsec = [r for r in msg.all_rrs() if r.rtype == parse.T_NSEC]
+    nsec3 = [r for r in msg.all_rrs() if r.rtype == parse.T_NSEC3]
+    if not nsec or not nsec3:
+        return []
+
+    covered = {r.parsed.get("type_covered") for r in msg.all_rrs()
+               if r.rtype == parse.T_RRSIG}
+    nsec_signed = parse.T_NSEC in covered
+    nsec3_signed = parse.T_NSEC3 in covered
+    if nsec_signed == nsec3_signed:
+        return []          # both signed, or neither -- not this CVE
+
+    unsigned = "NSEC3" if nsec_signed else "NSEC"
+    return [finding(
+        "DNSD-043", zone,
+        f"response carries both NSEC ({len(nsec)}) and NSEC3 ({len(nsec3)}) denial records "
+        f"but RRSIGs cover only the {'NSEC' if nsec_signed else 'NSEC3'} half -- "
+        f"the {unsigned} records are unsigned and substitutable",
+        {"nsec_count": len(nsec), "nsec3_count": len(nsec3),
+         "nsec_signed": nsec_signed, "nsec3_signed": nsec3_signed,
+         "unsigned_type": unsigned, "qname": _qname_text(msg)},
+    )]
+
+
+# ======================================================================
+# PROTOCOL ABUSE (050-059)
+# ======================================================================
+
+def detect_svcb_alias_abuse(msg, cfg, zone):
+    """
+    CVE-2026-81563 and CVE-2026-81736 (BIND). An SVCB/HTTPS AliasMode
+    record (SvcPriority 0) that fans out to a large number of
+    ServiceMode records in one response drives a qpcache leak, and the
+    cached alias tree makes a later root query burn CPU.
+
+    Bounded by construction: the chain is counted WITHIN one response,
+    never followed across responses, so there is no unbounded traversal
+    and no per-zone state.
+    """
+    svcb = [r for r in msg.all_rrs() if r.rtype in (parse.T_SVCB, parse.T_HTTPS)]
+    if not svcb:
+        return []
+    alias = [r for r in svcb if r.parsed.get("alias_mode")]
+    service = [r for r in svcb if r.parsed.get("service_mode")]
+    if not alias:
+        return []
+    if len(service) < cfg.svcb_max_servicemode:
+        return []
+    return [finding(
+        "DNSD-050", zone,
+        f"SVCB/HTTPS AliasMode record fans out to {len(service)} ServiceMode records in one "
+        f"response (threshold {cfg.svcb_max_servicemode}) -- qpcache fan-out abuse",
+        {"alias_count": len(alias), "servicemode_count": len(service),
+         "threshold": cfg.svcb_max_servicemode,
+         "alias_targets": [r.parsed.get("target").text() for r in alias[:4]
+                           if r.parsed.get("target")],
+         "qname": _qname_text(msg)},
+    )]
+
+
+def detect_edns_option_duplication(msg, cfg, zone):
+    """
+    CVE-2026-42944 (Unbound). An option code that RFC permits at most
+    once, appearing more than once in a single OPT record, is itself the
+    denial-of-service primitive -- no payload needed.
+
+    Only SINGLETON option codes are checked. Some options legitimately
+    repeat, and reporting those would be wrong rather than merely noisy.
+    """
+    out = []
+    for rr in msg.all_rrs():
+        if rr.rtype != parse.T_OPT:
+            continue
+        opts = rr.parsed.get("options") or []
+        counts = Counter(c for c, _ln in opts if isinstance(c, int))
+        dupes = {c: n for c, n in counts.items()
+                 if n > 1 and c in parse.EDNS_SINGLETON_OPTIONS}
+        if not dupes:
+            continue
+        named = {parse.EDNS_OPTION_NAMES.get(c, str(c)): n for c, n in dupes.items()}
+        out.append(finding(
+            "DNSD-051", zone,
+            f"EDNS0 OPT record repeats single-use option(s): "
+            f"{', '.join(f'{k} x{v}' for k, v in sorted(named.items()))}",
+            {"duplicates": named, "total_options": len(opts),
+             "qname": _qname_text(msg)},
+        ))
+    return out
+
+
+def detect_duplicate_rr_flood(msg, cfg, zone):
+    """
+    CVE-2026-75029 (BIND). Identical SOA, CNAME or DNAME records
+    repeated in one response each get stored separately and bloat the
+    negative cache.
+
+    Scoped to those three types on purpose. Repeated A or AAAA records
+    for one name are ordinary round-robin, and including them would turn
+    this into a false-positive generator.
+    """
+    # ONE table, not two. An earlier version kept the set of watched
+    # types and the rtype->name map as separate literals; adding a type
+    # to one and not the other raised KeyError inside the detector
+    # instead of reporting, and engine.handle_frame's try/except would
+    # have swallowed that in production -- findings silently gone while
+    # every test still passed. Deriving the set from the map's keys
+    # makes the divergence impossible to write.
+    DUP_TYPE_NAMES = {parse.T_SOA: "SOA", parse.T_CNAME: "CNAME", parse.T_DNAME: "DNAME"}
+    interesting = tuple(DUP_TYPE_NAMES)
+    counts = Counter()
+    for rr in msg.all_rrs():
+        if rr.rtype in interesting:
+            counts[(tuple(normalize(rr.name)), rr.rtype, bytes(rr.rdata))] += 1
+    worst = [(k, n) for k, n in counts.items() if n >= cfg.duplicate_rr_threshold]
+    if not worst:
+        return []
+    (owner, rtype, _rd), n = max(worst, key=lambda kv: kv[1])
+    tname = DUP_TYPE_NAMES.get(rtype, f"type-{rtype}")
+    return [finding(
+        "DNSD-052", zone,
+        f"{n} byte-identical {tname} records for "
+        f"{b'.'.join(owner).decode('ascii', 'replace') or '.'} in one response -- "
+        f"each copy is cached separately",
+        {"record_type": tname, "duplicate_count": n,
+         "threshold": cfg.duplicate_rr_threshold,
+         "distinct_duplicated_sets": len(worst), "qname": _qname_text(msg)},
+    )]
+
+
+def detect_tkey_query(msg, cfg, zone):
+    """
+    CVE-2026-76163 (BIND 9.20.0-9.20.27 / 9.21.0-9.21.25): a QTYPE TKEY
+    query trips an assertion failure when named.conf has no global
+    options block.
+
+    MEDIUM confidence, and the wording says why: TKEY is a legitimate
+    QTYPE for GSS-TSIG, and the vulnerable condition is a CONFIG state
+    this sensor cannot see. So this reports an attack ATTEMPT reaching a
+    resolver, not a vulnerable resolver. The operator correlates with
+    their own BIND version.
+    """
+    if msg.qr:
+        return []          # queries only
+    q = _question(msg)
+    if q is None or q["qtype"] != parse.QT_TKEY:
+        return []
+    return [finding(
+        "DNSD-053", zone,
+        f"QTYPE TKEY query for {q['name'].text()} -- trips a BIND assertion failure where "
+        f"named.conf has no global options block. TKEY is legitimate for GSS-TSIG, so this "
+        f"is an attempt reaching the resolver, not proof it is vulnerable",
+        {"qname": q["name"].text(), "qtype": q["qtype"],
+         "affected": "BIND 9.20.0-9.20.27, 9.21.0-9.21.25 (+ -S1)"},
+    )]
+
+
+# ======================================================================
+# ZONE TRANSFER INTEGRITY (060-069)
+# ======================================================================
+
+def detect_xfr_tsig_absent(msg, cfg, zone, xstream, now, is_tcp):
+    """
+    CVE-2026-19033 (BIND 9.11.0-9.18.50, 9.20.0-9.20.27, 9.21.0-9.21.25
+    and -S1 equivalents).
+
+    RFC 8945 requires every message of a multi-message transfer to be
+    TSIG-signed. A secondary with TSIG-restricted transfers that applies
+    data from unsigned intermediate messages has already served it and
+    never rolls back -- so this detects a COMPLETED attack, not an
+    attempt, which is why it is critical/high.
+
+    Near-zero false positive by ISC's own assessment: modern name
+    servers already sign every message, so a correctly-behaving transfer
+    simply never reaches the reporting condition.
+
+    WHAT THIS CAN AND CANNOT SEE. Completion is judged by the transfer's
+    terminating SOA (AXFR opens and closes with SOA; IXFR closes with
+    the final SOA), because a passive observer has no connection-close
+    signal it can rely on. A transfer whose terminating SOA never
+    crosses the tap is not reported at all -- the failure mode is
+    silence, not a false alarm.
+    """
+    if not is_tcp or xstream is None:
+        return []
+    q = _question(msg)
+    qtype = q["qtype"] if q else xstream.qtype
+    if qtype not in (parse.QT_IXFR, parse.QT_AXFR):
+        return []
+    if not msg.qr:
+        xstream.qtype = qtype
+        return []
+
+    xstream.messages += 1
+    signed = any(rr.rtype == parse.T_TSIG for rr in msg.additional)
+    xstream.last_signed = signed
+    if signed:
+        xstream.signed_messages += 1
+    xstream.soa_count += sum(1 for rr in msg.answers if rr.rtype == parse.T_SOA)
+
+    # Terminating SOA seen and this was genuinely multi-message.
+    complete = xstream.soa_count >= 2 and xstream.messages >= 2
+    if not complete or xstream.reported:
+        return []
+
+    unsigned = xstream.messages - xstream.signed_messages
+    if unsigned == 0 or xstream.last_signed:
+        return []          # fully signed, or properly closed with a TSIG
+
+    xstream.reported = True
+    kind = "IXFR" if qtype == parse.QT_IXFR else "AXFR"
+    return [finding(
+        "DNSD-060", zone,
+        f"multi-message TCP {kind} completed with {unsigned} of {xstream.messages} messages "
+        f"unsigned and no final TSIG -- a secondary applying this has already served "
+        f"data it will not roll back",
+        {"transfer_type": kind, "messages": xstream.messages,
+         "signed_messages": xstream.signed_messages, "unsigned_messages": unsigned,
+         "final_message_signed": xstream.last_signed,
+         "soa_records_seen": xstream.soa_count, "qname": _qname_text(msg)},
+    )]

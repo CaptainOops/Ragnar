@@ -30,7 +30,7 @@ import time
 import parse
 import detect
 from bailiwick import zone_of_query
-from state import Config, ZoneTable, InFlight
+from state import Config, ZoneTable, InFlight, XferTable
 from findings import FINDINGS, BASELINE_DEPENDENT
 
 BPF_FILTER = "(udp or tcp) and port 53"
@@ -57,6 +57,7 @@ class Engine:
         self.cfg = cfg or Config()
         self.zones = ZoneTable(self.cfg)
         self.inflight = InFlight(self.cfg)
+        self.xfers = XferTable(self.cfg)
         self.stats = Stats()
         self._emit = emit or (lambda f: None)
         self._last_sweep = 0.0
@@ -71,6 +72,7 @@ class Engine:
             self.stats.not_dns += 1
             return []
         src, dst, sport, dport, proto, payload = r
+        is_tcp = proto == "tcp"
 
         msg = parse.parse_dns(payload)
         self.stats.parsed += 1
@@ -87,6 +89,10 @@ class Engine:
         # sections worth looking at, but the malformation is itself
         # the finding and should be reported even if nothing else is.
         out += detect.detect_tudoor(msg, cfg, zone)
+        # DNSD-008 is deliberately evaluated alongside (not instead of)
+        # DNSD-007: a pointer anomaly is a memory-safety primitive and
+        # must not be buried under the generic malformed-packet notice.
+        out += detect.detect_pointer_anomaly(msg, cfg, zone)
 
         if msg.qr:
             # ---- response path ----
@@ -95,14 +101,31 @@ class Engine:
             out += detect.detect_maginotdns(msg, cfg, zone)
             out += detect.detect_nsec3_iterations(msg, cfg, zone)
             out += detect.detect_algo_downgrade(msg, cfg, zone)
+            out += detect.detect_dnskey_malformed(msg, cfg, zone)
+            out += detect.detect_rrsig_label_mismatch(msg, cfg, zone)
+            out += detect.detect_nsec_next_out_of_zone(msg, cfg, zone)
+            out += detect.detect_nsec3_apex_impersonation(msg, cfg, zone)
+            out += detect.detect_nsec_nsec3_coexistence(msg, cfg, zone)
+            out += detect.detect_svcb_alias_abuse(msg, cfg, zone)
+            out += detect.detect_edns_option_duplication(msg, cfg, zone)
+            out += detect.detect_duplicate_rr_flood(msg, cfg, zone)
             out += detect.detect_dnsbomb(msg, cfg, zone, zstate, now)
             out += detect.detect_nsec3_encloser(msg, cfg, zone, zstate, now)
             out += detect.detect_water_torture(msg, cfg, zone, zstate, now)
             if q is not None:
                 key = (msg.txid, tuple(q["name"].lower_labels()), q["qtype"], dport)
                 out += detect.detect_sad_dns_conflict(msg, cfg, zone, self.inflight, key, now)
+            if is_tcp and q is not None and q["qtype"] in (parse.QT_IXFR, parse.QT_AXFR):
+                xkey = (bytes(src), bytes(dst), sport, dport)
+                xs = self.xfers.get(xkey, now, q["qtype"])
+                out += detect.detect_xfr_tsig_absent(msg, cfg, zone, xs, now, is_tcp)
         else:
             # ---- query path ----
+            out += detect.detect_tkey_query(msg, cfg, zone)
+            if is_tcp and q is not None and q["qtype"] in (parse.QT_IXFR, parse.QT_AXFR):
+                # Register the transfer from the QUERY side so the
+                # response stream is keyed on the same conversation.
+                self.xfers.get((bytes(dst), bytes(src), dport, sport), now, q["qtype"])
             if q is not None:
                 key = (msg.txid, tuple(q["name"].lower_labels()), q["qtype"], sport)
                 self.inflight.note_query(key, now)
@@ -111,6 +134,7 @@ class Engine:
 
         if now - self._last_sweep > 5.0:
             self.inflight.sweep(now)
+            self.xfers.sweep(now)
             self._last_sweep = now
 
         for f in out:

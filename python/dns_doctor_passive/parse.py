@@ -41,6 +41,20 @@ ETH_P_VLAN = 0x8100
 # DNS rdata type numbers we care about.
 T_A, T_NS, T_CNAME, T_SOA, T_AAAA = 1, 2, 5, 6, 28
 T_DS, T_RRSIG, T_NSEC, T_DNSKEY, T_NSEC3 = 43, 46, 47, 48, 50
+T_OPT, T_DNAME, T_SVCB, T_HTTPS, T_TKEY, T_TSIG = 41, 39, 64, 65, 249, 250
+QT_IXFR, QT_AXFR, QT_TKEY = 251, 252, 249
+
+# EDNS0 option codes that RFC permits AT MOST ONCE in one OPT record.
+# Repeating one is CVE-2026-42944's denial-of-service primitive.
+EDNS_SINGLETON_OPTIONS = {
+    3: "NSID", 8: "ECS", 9: "DAU", 10: "DHU", 11: "N3U",
+    10500: "PADDING", 12: "PADDING", 10: "DHU", 11: "N3U",
+}
+EDNS_OPTION_NAMES = {3: "NSID", 8: "ECS", 9: "DAU", 10: "DHU", 11: "N3U",
+                     12: "PADDING", 13: "CHAIN", 14: "KEY-TAG",
+                     15: "EXTENDED-ERROR", 10: "DHU", 10500: "PADDING"}
+# DNS COOKIE is option 10 in some drafts and 10 (COOKIE) in RFC 7873 == 10.
+EDNS_COOKIE = 10
 
 # DNSSEC algorithms a modern validator can actually verify. Anything
 # outside this set and not in DEPRECATED_ALGOS is simply unknown to us.
@@ -50,6 +64,21 @@ DEPRECATED_ALGOS = {1, 3, 6, 12}
 
 class MalformedDNS(Exception):
     """Carried as a value, not raised past parse_dns()."""
+
+
+class PointerAnomaly(MalformedDNS):
+    """
+    A compression-pointer failure specifically, as opposed to any other
+    malformation.
+
+    Kept as its own type because the two get very different findings.
+    A truncated record is DNSD-007 (notice/low, malformed packets are
+    ordinary on real networks). A pointer loop, a forward pointer, or a
+    pointer into RDATA is DNSD-008 (critical/high) -- that is the shape
+    behind an Unbound RCE and two dnsmasq memory-safety bugs, and
+    collapsing it into the generic malformed bucket would bury a
+    critical finding under an informational one.
+    """
 
 
 class Name:
@@ -88,7 +117,8 @@ class RR:
 class DNSMessage:
     __slots__ = ("txid", "flags", "qr", "opcode", "aa", "tc", "rd", "ra", "ad", "cd",
                  "rcode", "questions", "answers", "authority", "additional",
-                 "malformed", "malformed_reason")
+                 "malformed", "malformed_reason", "pointer_anomaly",
+                 "pointer_targets", "rdata_spans", "counts")
 
     def __init__(self):
         self.questions = []
@@ -97,6 +127,10 @@ class DNSMessage:
         self.additional = []
         self.malformed = False
         self.malformed_reason = None
+        self.pointer_anomaly = None
+        self.pointer_targets = []
+        self.rdata_spans = []
+        self.counts = (0, 0, 0, 0)
 
     def all_rrs(self):
         return self.answers + self.authority + self.additional
@@ -188,7 +222,7 @@ def parse_l3_l4(frame):
     return None
 
 
-def parse_name(buf, offset, _jumps=0, _min_ptr=None):
+def parse_name(buf, offset, _jumps=0, _min_ptr=None, ptr_sink=None):
     """
     Returns (Name, next_offset). next_offset is the offset AFTER the
     name in the ORIGINAL stream (pointer jumps don't advance it).
@@ -216,20 +250,22 @@ def parse_name(buf, offset, _jumps=0, _min_ptr=None):
 
         if (ln & 0xC0) == 0xC0:
             if cur + 1 >= len(buf):
-                raise MalformedDNS("compression pointer truncated")
+                raise PointerAnomaly("compression pointer truncated")
             ptr = ((ln & 0x3F) << 8) | buf[cur + 1]
             if next_offset is None:
                 next_offset = cur + 2
             jumps += 1
+            if ptr_sink is not None:
+                ptr_sink.append(ptr)
             if jumps > MAX_POINTER_JUMPS:
-                raise MalformedDNS("compression pointer jump budget exhausted")
+                raise PointerAnomaly("compression pointer jump budget exhausted")
             # STRICTLY DECREASING: a pointer must point earlier than
             # the pointer itself, and earlier than any pointer already
             # followed. This makes loops structurally impossible, and
             # rejects the forward-pointer parser-differential evasion.
             limit = cur if min_ptr is None else min(cur, min_ptr)
             if ptr >= limit:
-                raise MalformedDNS(
+                raise PointerAnomaly(
                     f"compression pointer must point strictly backwards "
                     f"(ptr={ptr}, limit={limit})")
             min_ptr = ptr
@@ -262,8 +298,8 @@ def _u32(buf, off):
     return int.from_bytes(buf[off:off + 4], "big")
 
 
-def parse_rr(buf, off, section):
-    name, off = parse_name(buf, off)
+def parse_rr(buf, off, section, ptr_sink=None, rdata_spans=None):
+    name, off = parse_name(buf, off, ptr_sink=ptr_sink)
     rtype = _u16(buf, off)
     rclass = _u16(buf, off + 2)
     ttl = _u32(buf, off + 4)
@@ -272,11 +308,13 @@ def parse_rr(buf, off, section):
     if off + rdlength > len(buf):
         raise MalformedDNS("rdlength runs past end of message")
     rr = RR(name, rtype, rclass, ttl, buf[off:off + rdlength], rdlength, section)
-    _parse_rdata(rr, buf, off)
+    if rdata_spans is not None and rdlength:
+        rdata_spans.append((off, off + rdlength, rtype))
+    _parse_rdata(rr, buf, off, ptr_sink=ptr_sink)
     return rr, off + rdlength
 
 
-def _parse_rdata(rr, buf, rdoff):
+def _parse_rdata(rr, buf, rdoff, ptr_sink=None):
     """
     Decode the rdata fields the detectors actually read. Anything we
     don't decode stays available as raw bytes. Failures here are
@@ -320,11 +358,31 @@ def _parse_rdata(rr, buf, rdoff):
                 "opt_out": bool(buf[rdoff + 1] & 0x01),
             }
         elif rr.rtype == T_NS:
-            target, _ = parse_name(buf, rdoff)
+            target, _ = parse_name(buf, rdoff, ptr_sink=ptr_sink)
             rr.parsed = {"target": target}
-        elif rr.rtype == T_CNAME:
-            target, _ = parse_name(buf, rdoff)
+        elif rr.rtype in (T_CNAME, T_DNAME):
+            target, _ = parse_name(buf, rdoff, ptr_sink=ptr_sink)
             rr.parsed = {"target": target}
+        elif rr.rtype == T_NSEC and rr.rdlength >= 1:
+            # RFC 4034 s4.1.1: next-domain is NOT compressible.
+            nxt, after = parse_name(buf, rdoff)
+            rr.parsed = {"next": nxt, "bitmap_len": rr.rdlength - (after - rdoff)}
+        elif rr.rtype in (T_SVCB, T_HTTPS) and rr.rdlength >= 3:
+            prio = _u16(buf, rdoff)
+            target, _ = parse_name(buf, rdoff + 2)
+            rr.parsed = {"priority": prio, "target": target,
+                         "alias_mode": prio == 0, "service_mode": prio != 0}
+        elif rr.rtype == T_OPT:
+            opts, p, end = [], rdoff, rdoff + rr.rdlength
+            while p + 4 <= end:
+                ocode = _u16(buf, p)
+                olen = _u16(buf, p + 2)
+                if p + 4 + olen > end:
+                    opts.append(("truncated", ocode))
+                    break
+                opts.append((ocode, olen))
+                p += 4 + olen
+            rr.parsed = {"options": opts}
         elif rr.rtype == T_SOA:
             mname, o2 = parse_name(buf, rdoff)
             rname, _ = parse_name(buf, o2)
@@ -369,6 +427,7 @@ def parse_dns(payload):
     if len(payload) < 12:
         msg.malformed = True
         msg.malformed_reason = "shorter than a DNS header"
+        msg.pointer_anomaly = None
         msg.txid = None
         msg.qr = msg.opcode = msg.rcode = None
         msg.flags = 0
@@ -389,10 +448,14 @@ def parse_dns(payload):
     msg.rcode = flags & 0x000F
 
     qd, an, ns, ar = (int.from_bytes(payload[i:i + 2], "big") for i in (4, 6, 8, 10))
+    msg.counts = (qd, an, ns, ar)
     off = 12
+    ptr_sink, rdata_spans = [], []
+    msg.pointer_targets = ptr_sink
+    msg.rdata_spans = rdata_spans
     try:
         for _ in range(qd):
-            name, off = parse_name(payload, off)
+            name, off = parse_name(payload, off, ptr_sink=ptr_sink)
             qtype = _u16(payload, off)
             qclass = _u16(payload, off + 2)
             off += 4
@@ -401,9 +464,29 @@ def parse_dns(payload):
                                        (ns, "authority", msg.authority),
                                        (ar, "additional", msg.additional)):
             for _ in range(count):
-                rr, off = parse_rr(payload, off, section)
+                rr, off = parse_rr(payload, off, section,
+                                   ptr_sink=ptr_sink, rdata_spans=rdata_spans)
                 bucket.append(rr)
+    except PointerAnomaly as e:
+        msg.malformed = True
+        msg.malformed_reason = str(e)
+        msg.pointer_anomaly = str(e)
     except MalformedDNS as e:
         msg.malformed = True
         msg.malformed_reason = str(e)
+
+    # A pointer that resolves INTO a resource record's RDATA is the
+    # CVE-2026-81642 shape. It is not caught by the strictly-backward
+    # rule, because a pointer into an EARLIER record's rdata points
+    # backwards quite legally as far as that rule is concerned.
+    if msg.pointer_anomaly is None:
+        for ptr in ptr_sink:
+            for start, end, rtype in rdata_spans:
+                if start <= ptr < end:
+                    msg.pointer_anomaly = (
+                        f"compression pointer {ptr} resolves into the RDATA of a "
+                        f"type-{rtype} record (bytes {start}..{end})")
+                    break
+            if msg.pointer_anomaly:
+                break
     return msg

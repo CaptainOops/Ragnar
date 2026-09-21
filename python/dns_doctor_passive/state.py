@@ -43,7 +43,9 @@ class Config:
                  "keytrap_crypto_product", "nsec3_max_iterations",
                  "nsec3_encloser_min_rrs", "short_ttl_seconds",
                  "port_entropy_min_samples", "port_entropy_min_distinct_ratio",
-                 "ring_size", "inflight_max", "inflight_ttl_seconds")
+                 "ring_size", "inflight_max", "inflight_ttl_seconds",
+                 "svcb_max_servicemode", "duplicate_rr_threshold",
+                 "xfr_max_streams", "xfr_ttl_seconds")
 
     def __init__(self, **kw):
         # LRU cap. MEASURED per-zone cost after lazy ring allocation:
@@ -97,6 +99,12 @@ class Config:
 
         self.inflight_max = 4096
         self.inflight_ttl_seconds = 10.0
+
+        # --- new-code thresholds (all stateless structural checks) --
+        self.svcb_max_servicemode = 14      # per CVE-2026-81563
+        self.duplicate_rr_threshold = 8
+        self.xfr_max_streams = 512
+        self.xfr_ttl_seconds = 300.0
 
         for k, v in kw.items():
             if not hasattr(self, k):
@@ -313,4 +321,61 @@ class InFlight:
                 if now - e["t"] > self.cfg.inflight_ttl_seconds]
         for k in dead:
             del self.entries[k]
+        return len(dead)
+
+
+class XferStream:
+    """
+    One TCP zone-transfer conversation, keyed by 4-tuple.
+
+    Fixed size: five scalars, no buffers. This is the ONLY per-stream
+    state in the module and it exists solely for DNSD-060.
+    """
+    __slots__ = ("started", "last_seen", "messages", "signed_messages",
+                 "last_signed", "soa_count", "qtype", "reported")
+
+    def __init__(self, now, qtype):
+        self.started = now
+        self.last_seen = now
+        self.messages = 0
+        self.signed_messages = 0
+        self.last_signed = False
+        self.soa_count = 0
+        self.qtype = qtype
+        self.reported = False
+
+
+class XferTable:
+    """
+    Bounded table of in-progress transfers, LRU-capped and TTL-swept.
+
+    SCOPE LIMIT, stated because it decides where this is worth
+    deploying: this only sees transfers that cross the tap. On an ISP's
+    own DNS infrastructure that is the primary-to-secondary path and is
+    exactly in scope; carrier-internal transfers inside a customer cage
+    are not visible and never will be.
+    """
+    __slots__ = ("cfg", "streams")
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.streams = OrderedDict()
+
+    def get(self, key, now, qtype=None):
+        st = self.streams.get(key)
+        if st is None:
+            if len(self.streams) >= self.cfg.xfr_max_streams:
+                self.streams.popitem(last=False)
+            st = XferStream(now, qtype)
+            self.streams[key] = st
+        else:
+            self.streams.move_to_end(key)
+        st.last_seen = now
+        return st
+
+    def sweep(self, now):
+        dead = [k for k, s in self.streams.items()
+                if now - s.last_seen > self.cfg.xfr_ttl_seconds]
+        for k in dead:
+            del self.streams[k]
         return len(dead)
