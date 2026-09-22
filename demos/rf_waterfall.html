@@ -391,7 +391,15 @@
   var running=true, HZ=12, DEMO_ON=false, OVERLAYS={};
   var reduce=window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function fmtF(mhz){return (mhz>=1000)?(mhz/1000).toFixed(mhz%1000?2:0)+"G":(mhz>=100?mhz.toFixed(1):mhz.toFixed(2));}
-  function genTicks(lo,hi){var n=6,out=[];for(var i=0;i<=n;i++)out.push(lo+(hi-lo)*i/n);return out;}
+  // "Nice" ruler ticks: a 1-2-5 step giving ~6-8 labels, so labels are round
+  // numbers and never repeat when zoomed in.
+  function niceStep(span,target){var raw=span/(target||7),p=Math.pow(10,Math.floor(Math.log10(raw))),m=raw/p;
+    return (m<1.5?1:(m<3?2:(m<7?5:10)))*p;}
+  function genTicks(lo,hi,target){var st=niceStep(hi-lo,target),out=[];for(var v=Math.ceil(lo/st)*st;v<=hi+st*1e-6;v+=st)out.push(+v.toFixed(9));return out;}
+  // decimals needed to tell apart two frequencies `step` MHz apart
+  function fDec(step){return Math.max(0,Math.min(6,Math.ceil(-Math.log10(step)-1e-9)));}
+  function fmtTick(mhz,step){ if(mhz>=1000&&step>=1) return (mhz/1000).toFixed(Math.max(0,fDec(step/1000)))+'G'; return mhz.toFixed(fDec(step)); }
+  function fmtSpan(lo,hi){var d=fDec(Math.max((hi-lo)/100,1e-6)); d=Math.max(d,(lo>=100?1:2)); return lo.toFixed(d)+'–'+hi.toFixed(d);}
   function nowHM(){var d=new Date();return String(d.getHours()).padStart(2,'0')+":"+String(d.getMinutes()).padStart(2,'0')+":"+String(d.getSeconds()).padStart(2,'0');}
 
   function Scope(cfg){
@@ -524,8 +532,45 @@
     });
     this.buildTune();   // free-frequency "Manual tune" box next to the presets
 
-    this.fall.addEventListener('click',function(e){ self.onPick(e,self.fall); });
-    this.trace.addEventListener('click',function(e){ self.onPick(e,self.trace); });
+    this.fall.addEventListener('click',function(e){ if(self._noClick){ self._noClick=false; return; } self.onPick(e,self.fall); });
+    this.trace.addEventListener('click',function(e){ if(self._noClick){ self._noClick=false; return; } self.onPick(e,self.trace); });
+    this._pts={};
+    [this.fall,this.trace].forEach(function(cv){
+      cv.addEventListener('wheel',function(e){
+        if(e.shiftKey) return;                        // Shift+wheel = history (handled on the fall)
+        if(self.mode==='idle'||self.decoding) return;
+        e.preventDefault();
+        var r=cv.getBoundingClientRect(), fx=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+        var dy=e.deltaMode===1?e.deltaY*16:e.deltaY, span=self.hi-self.lo, ns=span*Math.exp(dy*0.0015), fc=self.lo+fx*span;
+        self.zoomTo(fc-fx*ns,fc-fx*ns+ns);
+      },{passive:false});
+      cv.addEventListener('dblclick',function(e){ e.preventDefault(); self.resetZoom(); });
+      cv.addEventListener('pointerdown',function(e){
+        if(e.pointerType==='mouse'&&e.button!==0) return;
+        self._pts[e.pointerId]={x:e.clientX,y:e.clientY};
+        var ids=Object.keys(self._pts), r=cv.getBoundingClientRect();
+        if(ids.length===1) self._drag={x:e.clientX,y:e.clientY,lo:self.lo,hi:self.hi,back:self.scrollBack,moved:false,type:e.pointerType,w:r.width,cv:cv,id:e.pointerId};
+        else if(ids.length===2){ var a=self._pts[ids[0]],b=self._pts[ids[1]];
+          self._pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,lo:self.lo,hi:self.hi,fx:(((a.x+b.x)/2)-r.left)/r.width}; self._drag=null; }
+      });
+      cv.addEventListener('pointermove',function(e){
+        if(!self._pts[e.pointerId]) return; self._pts[e.pointerId]={x:e.clientX,y:e.clientY};
+        var ids=Object.keys(self._pts);
+        if(self._pinch && ids.length===2){ var a=self._pts[ids[0]],b=self._pts[ids[1]], pz=self._pinch;
+          var ns=(pz.hi-pz.lo)*pz.d/(Math.hypot(a.x-b.x,a.y-b.y)||1), fc=pz.lo+pz.fx*(pz.hi-pz.lo);
+          self.zoomTo(fc-pz.fx*ns,fc-pz.fx*ns+ns); return; }
+        var dg=self._drag; if(!dg) return;
+        var dx=e.clientX-dg.x, dy=e.clientY-dg.y;
+        if(!dg.moved){ if(Math.hypot(dx,dy)<5) return; dg.moved=true; dg.vert=(dg.type==='mouse'&&Math.abs(dy)>Math.abs(dx)&&cv===self.fall&&!self.threeD);
+          try{ cv.setPointerCapture(e.pointerId); }catch(_e){} self.hideHover(); }
+        if(dg.vert){ self.setScrollBack(dg.back+Math.round(dy*self.d/(self.STEP||1))); }
+        else if(self.mode!=='idle'&&!self.decoding){ var sh=-dx/dg.w*(dg.hi-dg.lo); self.zoomTo(dg.lo+sh,dg.hi+sh); }
+      });
+      var up=function(e){ if(self._drag&&self._drag.moved) self._noClick=true;
+        delete self._pts[e.pointerId]; if(Object.keys(self._pts).length<2) self._pinch=null;
+        if(!Object.keys(self._pts).length) self._drag=null; };
+      cv.addEventListener('pointerup',up); cv.addEventListener('pointercancel',up);
+    });
     this.zoomBtn.addEventListener('click',function(){ self.doZoom(); });
     this.resetBtn.addEventListener('click',function(){ self.resetZoom(); });
     this.fsBtn.addEventListener('click',function(){ self.toggleFullscreen(); });
@@ -620,7 +665,7 @@
     // caption band: label + span + timestamp
     o.fillStyle='#0d1420'; o.fillRect(0,h,out.width,34*this.d);
     o.fillStyle='#9fb0c8'; o.font=(12*this.d)+'px monospace'; o.textBaseline='middle';
-    var cap=this.cfg.short+'  '+fmtF(this.lo)+'–'+fmtF(this.hi)
+    var cap=this.cfg.short+'  '+fmtSpan(this.lo,this.hi)
       +(this.zwave?('  ['+(this.zwave.name||'')+']'):'')+'   '+new Date().toLocaleString();
     o.fillText(cap, 8*this.d, h+17*this.d);
     var name='ragnar-rf-'+this.cfg.short.toLowerCase().replace(/[^a-z0-9]+/g,'')+'-'+Date.now()+'.png';
@@ -666,7 +711,7 @@
     if(this.mode==='idle') this.setMode(DEMO_ON?'synth':'live');
     this.marker=null; if(this.markEl) this.markEl.style.display='none';
     this.applyZoom([lo,hi]);                         // reuses the zoom path -> lo_hz/hi_hz sweep
-    this.markTxt.innerHTML='Tuned <span class="mk">'+fmtMHz((lo+hi)/2)+'</span> · '+fmtF(lo)+'–'+fmtF(hi);
+    this.markTxt.innerHTML='Tuned <span class="mk">'+fmtMHz((lo+hi)/2)+'</span> · '+fmtSpan(lo,hi);
   };
   Scope.prototype.buildTuner=function(){
     var self=this, g=this.tunerGrp; if(!g) return;
@@ -958,10 +1003,46 @@
   };
   Scope.prototype.resetCanvas=function(){
     this.t0=performance.now();
-    this.fctx.fillStyle="#05080d"; this.fctx.fillRect(0,0,this.W,this.H);
     this.tctx.clearRect(0,0,this.trace.width,this.trace.height);
-    this._resetMeas();
+    this._resetMeas(); this.hist=[];
+    this.repaint();                        // history resampled onto the current span (black where none)
     this.drawRuler(); this.placeMarker();
+  };
+  // The source span changed (band / zoom / retune): bin-indexed maths restart,
+  // the waterfall is redrawn from history onto the new span.
+  Scope.prototype._spanChanged=function(){
+    this._resetMeas(); this.hist=[]; this.repaint(); this.drawRuler(); this.placeMarker();
+  };
+  // Paint one row that was captured on a different span than the view.
+  Scope.prototype._paintRowResampled=function(p,rlo,rhi){
+    var f=this.fctx, W=this.W, S=this.STEP||1, cols=Math.max(1,Math.min(W,2048));
+    f.drawImage(this.fall,0,0,W,this.H-S,0,S,W,this.H-S);
+    if(!this._rrCv) this._rrCv=document.createElement('canvas');
+    var cv=this._rrCv; if(cv.width!==cols) cv.width=cols; cv.height=1;
+    var g=cv.getContext('2d'), id=g.createImageData(cols,1), d=id.data, N=p.length, bw=(rhi-rlo)/N;
+    var clo=this.rangeLo(), cs=(this.rangeHi()-clo)||1, fw=(this.hi-this.lo)/cols;
+    for(var c=0;c<cols;c++){ var o=c*4, f0=this.lo+c*fw, f1=f0+fw;
+      if(f1<=rlo||f0>=rhi){ d[o]=5;d[o+1]=8;d[o+2]=13;d[o+3]=255; continue; }
+      var i0=Math.max(0,Math.floor((f0-rlo)/bw)), i1=Math.min(N-1,Math.max(i0,Math.floor((f1-rlo)/bw))), v=p[i0];
+      for(var i=i0+1;i<=i1;i++) if(p[i]>v) v=p[i];
+      var t=(v-clo)/cs; t=t<0?0:(t>1?1:t); var col=LUTrgb[(t*255)|0]; d[o]=col[0]; d[o+1]=col[1]; d[o+2]=col[2]; d[o+3]=255; }
+    g.putImageData(id,0,0); var sm=f.imageSmoothingEnabled; f.imageSmoothingEnabled=false;
+    f.drawImage(cv,0,0,cols,1,0,0,W,S); f.imageSmoothingEnabled=sm;
+  };
+  // Set the view to [lo,hi] now (history redrawn onto it, throttled to one
+  // repaint per frame) and retune the radio once the gesture settles (or at once).
+  Scope.prototype.zoomTo=function(lo,hi,now){
+    if(this.mode==='idle'||this.decoding||!(this.homeHi>this.homeLo)) return;
+    var hLo=this.homeLo, hHi=this.homeHi, full=hHi-hLo, sp=Math.max(Math.min(this.cfg.minSpan,full),Math.min(full,hi-lo)), c=(lo+hi)/2;
+    lo=c-sp/2; hi=c+sp/2; if(lo<hLo){lo=hLo;hi=lo+sp;} if(hi>hHi){hi=hHi;lo=hi-sp;}
+    this._pend=[lo,hi]; this.lo=lo; this.hi=hi;
+    this.tctx.clearRect(0,0,this.trace.width,this.trace.height);
+    this.drawRuler(); this.placeMarker(); this.updateReadout();
+    var self=this;
+    if(!this._rpReq){ this._rpReq=requestAnimationFrame(function(){ self._rpReq=0; self.repaint(); }); }
+    clearTimeout(this._zt);
+    var commit=function(){ var home=(self.hi-self.lo)>=full*0.999; self.applyZoom(home?null:[self.lo,self.hi]); };
+    if(now) commit(); else this._zt=setTimeout(commit,450);
   };
   // Drop all trace-math accumulators + tracked signals (on start / band / zoom).
   Scope.prototype._resetMeas=function(){
@@ -1040,16 +1121,14 @@
   };
   Scope.prototype.doZoom=function(){
     if(this.marker==null) return;
-    var cur=this.hi-this.lo, span=Math.max(this.cfg.minSpan, cur/6);
-    var lo=this.marker-span/2, hi=this.marker+span/2;
-    if(lo<this.homeLo){lo=this.homeLo;hi=lo+span;} if(hi>this.homeHi){hi=this.homeHi;lo=hi-span;}
-    lo=Math.max(this.homeLo,lo); hi=Math.min(this.homeHi,hi);
-    this.applyZoom([lo,hi]);
+    var span=Math.max(this.cfg.minSpan,(this.hi-this.lo)/6);
+    this.zoomTo(this.marker-span/2,this.marker+span/2,true);
   };
-  Scope.prototype.resetZoom=function(){ this.applyZoom(null); };
+  Scope.prototype.resetZoom=function(){ this.zoomTo(this.homeLo,this.homeHi,true); };
   Scope.prototype.applyZoom=function(z){
     this.zoom=z; this.resetBtn.disabled=!z;
-    if(this.mode==='live'){ this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); }
+    if(this.mode==='live'){ this._pend=z?[z[0],z[1]]:[this.homeLo,this.homeHi]; this.lo=this._pend[0]; this.hi=this._pend[1];
+      this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); }
     else if(this.mode==='synth'){
       this.model=this.cfg.synth(this.synthBand||this.cfg.synthDefault, z&&z[0], z&&z[1]);
       this.lo=this.model.lo; this.hi=this.model.hi; this.floor=this.model.floor; this.resetCanvas();
@@ -1166,8 +1245,8 @@
     var self=this; this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
     this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};
-    if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
-    else if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
+    if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
+    else if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
     fetch(this.cfg.api.start,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(res){
         if(res&&res.error){ self.liveErr=res.error; self.showVeil('Could not start '+self.cfg.short,res.error); }
@@ -1191,12 +1270,12 @@
       if(d.engine && self.devEl){ self.devEl.textContent = (d.engine==='iq')
         ? 'RTL-SDR · IQ FFT · real-time' : 'RTL-SDR · rtl_power sweep'; }
       if(frames.length){
-        if(!self._rangeKnown||lo!==self.lo||hi!==self.hi){ self.lo=lo;self.hi=hi;self.floor=floor;self._rangeKnown=true;self.drawRuler();self.placeMarker(); }
+        if(!self._rangeKnown){ self._rangeKnown=true; self.floor=floor; }
         self.hideVeil();
         // Enqueue instead of painting per-poll — loop() releases rows at one
         // steady rate, so poll/network jitter never shows as speed changes.
         var _wall=performance.now()/1000;
-        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:self.lo,hi:self.hi,floor:floor});
+        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:lo,hi:hi,floor:floor});
           self._tsWin.push((typeof f.ts==='number')?f.ts:_wall); });
         // Data rate from the producer's own timestamps over the last ~5 s — a
         // smooth, true rows/s (per-poll counts swing 0..3 and made the pace wobble).
@@ -1260,8 +1339,18 @@
     var _t=performance.now();
     if(this._lastRowT){ var _inst=1000/Math.max(1,_t-this._lastRowT); this._fpsEma=this._fpsEma?this._fpsEma*0.8+_inst*0.2:_inst; }
     this._lastRowT=_t;
-    this.lo=lo;this.hi=hi;this.floor=(typeof floor==='number')?floor:-110;
-    if(!this.zoom){ this.homeLo=lo; this.homeHi=hi; }
+    this.floor=(typeof floor==='number')?floor:-110;
+    // Display span vs this row's span. A zoom/pan sets a pending display span at
+    // once (history is redrawn onto it) while the radio retunes; rows still on
+    // the old span are resampled onto the view until the retuned rows arrive.
+    var _tol=1e-4, _same=Math.abs(lo-this.lo)<_tol && Math.abs(hi-this.hi)<_tol;
+    if(this._pend && Math.abs(lo-this._pend[0])<_tol && Math.abs(hi-this._pend[1])<_tol){ this._pend=null; if(!_same){ this.lo=lo; this.hi=hi; } this._spanChanged(); _same=true; }
+    if(!_same && !this._pend){ this.lo=lo; this.hi=hi; this._spanChanged(); _same=true; }
+    if(!this.zoom && !this._pend){ this.homeLo=lo; this.homeHi=hi; }
+    if(!_same){                                  // stale-span row during a zoom: show it, skip span-bound maths
+      if(!this.threeD && this.scrollBack===0) this._paintRowResampled(power,lo,hi);
+      this.updateReadout(); if(!this.threeD) this._drawTimeGrid(); return;
+    }
     var N=power.length,f=this.fctx;
     // measured noise floor (robust low-percentile) drives SNR + signal detection
     var nf=this._noiseFloor(power); this.noiseDb=nf;
@@ -1680,7 +1769,7 @@
     if(this.snrEl) this.snrEl.textContent=(this.snr!=null)?(Math.round(this.snr)+" dB"):"—";
     if(this.nfEl) this.nfEl.textContent=(this.noiseDb!=null)?(Math.round(this.noiseDb)+" dB"):"—";
     this.busyEl.textContent=this.busy.toFixed(0)+"%";
-    this.spanEl.textContent=fmtF(this.lo)+"–"+fmtF(this.hi)+(this.zoom?" ⤢":"");
+    this.spanEl.textContent=fmtSpan(this.lo,this.hi)+(this.zoom?" ⤢":"");
     this.nowEl.textContent="t="+((performance.now()-this.t0)/1000).toFixed(1)+"s";
   };
   Scope.prototype.setRate=function(hz){
@@ -1706,7 +1795,7 @@
         d.innerHTML='<span class="il">'+esc(c.label)+'</span>';r.appendChild(d);
         var t=document.createElement('div');t.className='tick';t.style.left=x+"%";t.style.background="var(--cyan)";r.appendChild(t);
         var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=c.freq_mhz.toFixed(2);r.appendChild(l);});
-      genTicks(lo,hi).forEach(function(fq){var x=(fq-lo)/span*100;if(x<0||x>100)return;
+      genTicks(lo,hi,Math.max(4,Math.min(9,Math.round((r.clientWidth||700)/110)))).forEach(function(fq){var x=(fq-lo)/span*100;if(x<0||x>100)return;
         var t=document.createElement('div');t.className='tick';t.style.left=x+"%";r.appendChild(t);});
       return;
     }
@@ -1718,10 +1807,11 @@
       (m.chLabels||[]).forEach(function(c){var x=(c[0]-lo)/span*100;if(x<0||x>100)return;
         var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.style.top="18px";l.style.color="var(--cyan)";l.textContent=c[1];r.appendChild(l);});
     }
-    var ticks=(showBands&&m.ticks)?m.ticks:genTicks(lo,hi);
+    var tgt=Math.max(4,Math.min(9,Math.round((r.clientWidth||700)/110)));   // fewer labels on a phone
+    var ticks=(showBands&&m.ticks)?m.ticks:genTicks(lo,hi,tgt), tst=niceStep(span,tgt);
     ticks.forEach(function(fq){var x=(fq-lo)/span*100;if(x<0||x>100)return;
       var t=document.createElement('div');t.className='tick';t.style.left=x+"%";r.appendChild(t);
-      var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=fmtF(fq);r.appendChild(l);});
+      var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=(showBands&&m.ticks)?fmtF(fq):fmtTick(fq,tst);r.appendChild(l);});
   };
   Scope.prototype.showVeil=function(t,s){this.veilT.textContent=t;this.veilS.textContent=s||'';this.veil.classList.add('show');};
   Scope.prototype.hideVeil=function(){this.veil.classList.remove('show');};

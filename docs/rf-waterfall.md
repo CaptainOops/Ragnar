@@ -165,7 +165,7 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 **Tier 1 — basics**
 - [x] Hover readout: frequency / level / time under the cursor
 - [x] Display range: Auto, or manual Ref level + Range, plus *Fit to signal*
-- [ ] Mouse-wheel zoom, drag to pan, pinch on touch
+- [x] Mouse-wheel zoom, drag to pan, pinch on touch
 - [ ] Resolution: FFT size (RBW), averaging, window, display bins
 - [ ] Markers: several, delta marker, peak search / next peak, marker → centre
 - [ ] HackRF gain (LNA / VGA / amp) in the UI
@@ -199,6 +199,21 @@ The page keeps a history of every row it has shown (about 10 MB per panel), so a
 range or palette change **recolours the whole waterfall at once**, not just new
 rows. The same history is redrawn when the window is resized or goes full screen,
 instead of starting blank.
+
+## Zoom and pan
+
+- **Mouse wheel** over the waterfall or trace zooms in and out around the
+  cursor. **Drag** left/right pans; **double-click** returns to the full band.
+  On a phone, **pinch** zooms and a one-finger sideways drag pans (an up/down
+  swipe still scrolls the page). *Zoom here* / *Reset zoom* still work.
+- The view changes **instantly**: past rows are redrawn onto the new span
+  (coarser until fresh data arrives), and the radio is retuned once the gesture
+  settles (~0.45 s), so a series of wheel notches is one retune, not ten.
+- Zoom stays within the selected band (use *Tune* to go elsewhere), down to the
+  panel's minimum span.
+- The frequency ruler uses round 1-2-5 steps with as many decimals as the zoom
+  needs, and fewer labels on a narrow screen. The Span readout is precise too
+  (e.g. `433.790–434.050`).
 
 ## Hover readout, time axis and history
 
