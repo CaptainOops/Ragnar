@@ -4327,6 +4327,133 @@ def mesh_unit_self():
     return jsonify({'success': True, **_mesh_local_health()})
 
 
+# ---------------------------------------------------------------------------
+# Mesh direction finding (RSSI). A peer-readable measurement endpoint (any GET
+# under /api/mesh/ is allowed for tagged peers, HMAC-proofed when a mesh secret
+# is set), and a session-only coordinator that asks every unit and locates.
+# ---------------------------------------------------------------------------
+
+def _df_position():
+    """This unit's position for DF: live GPS fix, else the manual one, else last known."""
+    try:
+        eng = _get_wardriving_engine()
+        gps = getattr(eng, '_gps', None)
+        if gps:
+            pos = gps.get_position()
+            if pos and pos.get('lat') is not None:
+                return {'lat': float(pos['lat']), 'lon': float(pos['lon']), 'source': 'gps'}
+    except Exception:
+        pass
+    man = shared_data.config.get('rf_df_position')
+    if isinstance(man, dict) and man.get('lat') is not None and man.get('lon') is not None:
+        try:
+            return {'lat': float(man['lat']), 'lon': float(man['lon']), 'source': 'manual'}
+        except (TypeError, ValueError):
+            pass
+    try:
+        eng = _get_wardriving_engine()
+        lk = getattr(getattr(eng, '_gps', None), 'last_known', None)
+        if lk and lk.get('lat') is not None:
+            return {'lat': float(lk['lat']), 'lon': float(lk['lon']), 'source': 'last-known'}
+    except Exception:
+        pass
+    return None
+
+
+@app.route('/api/mesh/rf/level', methods=['GET'])
+def mesh_rf_level():
+    """Level of a signal at freq_hz on THIS unit's RTL-SDR + this unit's position."""
+    import rtl_sdr
+    a = request.args
+    try:
+        r = rtl_sdr.measure_level(a.get('freq_hz'), a.get('bw_hz', 25000), a.get('secs', 2))
+    except Exception as exc:
+        r = {'ok': False, 'error': str(exc)}
+    r['unit'] = _mesh_unit_name()
+    r['position'] = _df_position()
+    return jsonify(r)
+
+
+@app.route('/api/net/rtl/df/position', methods=['GET', 'POST'])
+def rtl_df_position():
+    """Get / set this unit's manual DF position (for a unit without GPS)."""
+    if request.method == 'POST':
+        d = request.get_json(silent=True) or {}
+        if d.get('clear'):
+            shared_data.config.pop('rf_df_position', None)
+        else:
+            try:
+                lat, lon = float(d.get('lat')), float(d.get('lon'))
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return jsonify({'ok': False, 'error': 'lat / lon out of range'}), 400
+            shared_data.config['rf_df_position'] = {'lat': lat, 'lon': lon}
+        try:
+            shared_data.save_config()
+        except Exception:
+            pass
+    return jsonify({'ok': True, 'position': _df_position(), 'manual': shared_data.config.get('rf_df_position')})
+
+
+@app.route('/api/net/rtl/df', methods=['POST'])
+def rtl_df_locate():
+    """Ask every mesh unit (and this one) for the level at a frequency, then locate."""
+    import rtl_sdr
+    import threading
+    import urllib.parse
+    import urllib.request
+    d = request.get_json(silent=True) or {}
+    try:
+        f_hz = int(float(d.get('freq_mhz')) * 1e6)
+        bw_hz = int(float(d.get('bw_khz', 25)) * 1e3)
+        secs = max(0.5, min(10.0, float(d.get('secs', 2))))
+        n_exp = max(1.6, min(4.5, float(d.get('n', 2.5))))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'freq_mhz / bw_khz / secs / n must be numbers'}), 400
+    units, lock = [], threading.Lock()
+
+    def _self():
+        try:
+            r = rtl_sdr.measure_level(f_hz, bw_hz, secs)
+        except Exception as exc:
+            r = {'ok': False, 'error': str(exc)}
+        r.update({'unit': _mesh_unit_name(), 'position': _df_position(), 'is_self': True})
+        with lock:
+            units.append(r)
+
+    def _peer(node):
+        path = '/api/mesh/rf/level'
+        url = mesh_manager.peer_url(node, _mesh_node_port(), path)
+        r = {'ok': False, 'unit': node.get('hostname') or node.get('dns_name') or node.get('ip')}
+        if url:
+            qs = urllib.parse.urlencode({'freq_hz': f_hz, 'bw_hz': bw_hz, 'secs': secs})
+            headers = {'User-Agent': 'Ragnar-Mesh'}
+            headers.update(mesh_manager.auth_headers('GET', path))       # proof is over the path only
+            try:
+                req = urllib.request.Request(url + '?' + qs, headers=headers)
+                with urllib.request.urlopen(req, timeout=secs + 12) as resp:
+                    r = json.loads(resp.read().decode('utf-8'))
+            except Exception as exc:
+                r['error'] = 'unreachable (%s)' % type(exc).__name__
+        with lock:
+            units.append(r)
+
+    threads = [threading.Thread(target=_self, daemon=True)]
+    if mesh_available and _mesh_enabled():
+        threads += [threading.Thread(target=_peer, args=(p,), daemon=True) for p in _mesh_tagged_peers()]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=secs + 15)
+    meas = [{'unit': u.get('unit'), 'lat': u['position']['lat'], 'lon': u['position']['lon'], 'level_db': u['level_db']}
+            for u in units if u.get('ok') and u.get('position') and u.get('snr_db', 0) >= 3]
+    fix = rtl_sdr.df_locate(meas, n=n_exp)
+    return jsonify({'ok': True, 'freq_mhz': f_hz / 1e6, 'bw_khz': bw_hz / 1e3, 'n': n_exp,
+                    'units': sorted(units, key=lambda u: (not u.get('ok'), -(u.get('level_db') or -999))),
+                    'used': len(meas), 'fix': fix})
+
+
 @app.route('/api/mesh/alerts', methods=['GET'])
 def mesh_unit_alerts():
     """This unit's recent Watchtower alerts, for mesh-wide correlation.

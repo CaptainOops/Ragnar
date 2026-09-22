@@ -85,11 +85,38 @@
   .stat .v.peak{color:var(--accent)} .stat .v.cy{color:var(--cyan)} .stat .v.busy{color:var(--live)}
   .scope-body{display:flex;flex-direction:column}
   .fall-wrap{position:relative;background:#05080d}
-  canvas.fall{display:block;width:100%;height:420px;cursor:crosshair}
+  canvas.fall{display:block;width:100%;height:420px;cursor:crosshair;touch-action:pan-y}
   canvas.trace{display:block;width:100%;height:56px;background:var(--panel-2);border-top:1px solid var(--line-soft);cursor:crosshair}
   .now{position:absolute;top:0;left:8px;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:rgba(205,214,228,.55);pointer-events:none;text-shadow:0 1px 3px #000}
+  /* hover crosshair + readout, time axis, colour bar */
+  .hline{position:absolute;top:0;bottom:0;width:1px;background:rgba(205,214,228,.45);pointer-events:none;display:none}
+  .hov{position:fixed;z-index:50;pointer-events:none;display:none;font-family:var(--mono);font-size:11px;line-height:1.45;color:var(--ink);
+    background:rgba(10,14,20,.92);border:1px solid var(--line);border-radius:6px;padding:5px 8px;white-space:nowrap;box-shadow:0 6px 18px -8px #000}
+  .hov b{color:var(--cyan);font-weight:600} .hov .hk{color:var(--muted)} .hov .ha{color:var(--accent)}
+  canvas.tgrid{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .cbar{position:absolute;top:6px;bottom:6px;right:6px;width:9px;border-radius:3px;border:1px solid rgba(255,255,255,.12);pointer-events:none}
+  .cbar .cb-hi,.cbar .cb-lo{position:absolute;right:13px;font-family:var(--mono);font-size:9.5px;color:rgba(205,214,228,.75);text-shadow:0 1px 3px #000;white-space:nowrap}
+  .cbar .cb-hi{top:-2px} .cbar .cb-lo{bottom:-2px}
+  .histgrp{display:inline-flex;align-items:center;gap:5px}
+  .histgrp input[type=range]{width:110px;accent-color:var(--accent)}
+  .histgrp .hstat{font-size:10.5px;color:var(--accent)}
   .marker{position:absolute;top:0;bottom:0;width:1px;background:var(--accent);box-shadow:0 0 6px rgba(245,185,66,.7);display:none;pointer-events:none}
   .marker .ml{position:absolute;top:2px;left:3px;font-family:var(--mono);font-size:10px;color:var(--accent);white-space:nowrap;text-shadow:0 1px 3px #000}
+  .marker.m2{background:var(--cyan);box-shadow:0 0 6px rgba(56,189,201,.7)} .marker.m2 .ml{color:var(--cyan)}
+  .marker.m3{background:var(--live);box-shadow:0 0 6px rgba(63,181,107,.7)} .marker.m3 .ml{color:var(--live)}
+  .marker.m4{background:var(--rose);box-shadow:0 0 6px rgba(251,113,133,.7)} .marker.m4 .ml{color:var(--rose)}
+  .marker.act{width:2px}
+  .marker .ml{top:calc(2px + var(--mi,0) * 13px)}
+  /* marker strip: buttons + table (freq, level, delta vs M1) */
+  .mstrip{display:flex;flex-direction:column;gap:6px;padding:8px 14px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
+  .mbtns{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
+  .mtab{width:auto;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  .mtab td{padding-right:18px}
+  .mtab td{padding:3px 8px 3px 0;white-space:nowrap}
+  .mtab tr{cursor:pointer} .mtab tr.act td{color:var(--ink)} .mtab tr:hover td{background:rgba(56,189,201,.06)}
+  .mtab .mn{font-weight:600} .mtab .mn.m1{color:var(--accent)} .mtab .mn.m2{color:var(--cyan)} .mtab .mn.m3{color:var(--live)} .mtab .mn.m4{color:var(--rose)}
+  .mtab .dl{color:var(--muted)} .mtab button{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);background:transparent;border:1px solid var(--line);border-radius:5px;padding:1px 6px;cursor:pointer}
+  .mtabwrap{overflow-x:auto}
   .veil{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:rgba(5,8,13,.72);text-align:center;padding:16px}
   .veil.show{display:flex}
   .veil .vt{font-family:var(--head);font-size:15px;letter-spacing:.04em;color:var(--ink-dim)}
@@ -98,6 +125,12 @@
   .ruler .tick{position:absolute;top:0;bottom:0;width:1px;background:var(--line)}
   .ruler .tlab{position:absolute;top:7px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap}
   .ruler .ism{position:absolute;top:0;bottom:0;background:rgba(56,189,201,.09);border-left:1px solid rgba(56,189,201,.35);border-right:1px solid rgba(56,189,201,.35)}
+  .bplan{position:relative;height:17px;background:var(--panel-2);border-top:1px solid var(--line-soft);overflow:hidden;font-family:var(--mono)}
+  .bplan[hidden]{display:none}
+  .bplan .bp{position:absolute;height:13px;border-radius:3px;border:1px solid rgba(56,189,201,.28);background:rgba(56,189,201,.07);overflow:hidden;white-space:nowrap}
+  .bplan .bp span{position:absolute;left:4px;top:1px;font-size:9.5px;letter-spacing:.04em;color:var(--ink-dim)}
+  .bplan .bp.ham{border-color:rgba(245,185,66,.35);background:rgba(245,185,66,.08)} .bplan .bp.bc{border-color:rgba(129,140,248,.35);background:rgba(129,140,248,.08)}
+  .bplan .bp.ism{border-color:rgba(63,181,107,.35);background:rgba(63,181,107,.08)} .bplan .bp.cell{border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
   .ruler .ism .il{position:absolute;bottom:3px;left:50%;transform:translateX(-50%);font-size:9px;letter-spacing:.1em;color:var(--cyan);text-transform:uppercase;white-space:nowrap}
   /* toolbar + log */
   .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:9px 14px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
@@ -108,6 +141,38 @@
   button.mini:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   button.mini[aria-pressed="true"]{border-color:var(--cyan);color:var(--cyan);background:rgba(56,189,201,.12)}
   .toolbar .holdgrp,.toolbar .d3grp,.toolbar .npgrp{display:inline-flex;align-items:center;gap:5px}
+  /* per-panel settings drawer (display range, resolution, hardware, limits, export) */
+  .drawer{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:10px;padding:10px 14px 12px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
+  .drawer[hidden]{display:none}
+  .dsec{border:1px solid var(--line);border-radius:8px;padding:8px 10px 10px;margin:0;min-width:0;display:flex;flex-direction:column;gap:7px}
+  .dsec legend{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);padding:0 4px}
+  .drow{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap}
+  .drow label{min-width:64px;color:var(--muted);font-size:10.5px}
+  .drow input[type=range]{flex:1 1 90px;min-width:70px;accent-color:var(--cyan)}
+  .drow input[type=number],.drow input[type=text],.drow select{width:72px;font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+  .drow select{width:auto;max-width:100%;min-width:0}
+  .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
+  .dnote b{color:var(--ink-dim);font-weight:500}
+  .svbands{display:flex;flex-wrap:wrap;gap:4px 10px} .svbands label{min-width:0;color:var(--ink-dim);font-size:11px;display:inline-flex;align-items:center;gap:3px}
+  .svrep{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,8,13,.72);padding:16px}
+  .svrep[hidden]{display:none}
+  .svbox{max-width:980px;width:100%;max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .svbox h4{margin:0 0 4px;font-family:var(--head);font-size:16px;color:var(--ink)} .svbox h5{margin:14px 0 6px;color:var(--cyan);font-size:12px;letter-spacing:.06em}
+  .svbox table{border-collapse:collapse;font-variant-numeric:tabular-nums;width:100%} .svbox td,.svbox th{padding:3px 12px 3px 0;text-align:left;white-space:nowrap}
+  .svbox th{color:var(--muted);font-weight:500;font-size:10.5px;letter-spacing:.06em} .svbox .occ{display:inline-block;height:6px;border-radius:3px;background:var(--cyan);vertical-align:middle;margin-right:6px}
+  .svtw{overflow-x:auto}
+  canvas.zspan{display:block;width:100%;height:78px;background:var(--panel-2);border-top:1px solid var(--line-soft)}
+  canvas.zspan[hidden]{display:none}
+  .kbhelp{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,8,13,.72);padding:16px}
+  .kbhelp[hidden]{display:none}
+  .kbbox{max-width:620px;width:100%;max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .kbbox h4{margin:0 0 10px;font-family:var(--head);font-size:15px;color:var(--ink)}
+  .kbgrid{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;align-items:center}
+  .kbgrid kbd{font-family:var(--mono);font-size:11px;color:var(--cyan);background:var(--panel-2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;white-space:nowrap}
+  .tag.limtag{margin-left:6px} .tag.limtag.pass{color:var(--live);border-color:rgba(63,181,107,.5)} .tag.limtag.fail{color:#fb7185;border-color:rgba(251,113,133,.6);background:rgba(251,113,133,.12)}
+  .scope.limfail .fall-wrap{box-shadow:inset 0 0 0 2px rgba(251,113,133,.75)}
+  .limlog{font-size:10.5px;line-height:1.55;max-height:92px;overflow:auto;color:var(--ink-dim)} .limlog .lx{color:#fb7185}
+  .dsec .tunergrp{flex-wrap:wrap;row-gap:6px;min-width:0} .dsec .drow>.tunergrp{flex:1 1 100%}
   .toolbar .npgrp select{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 4px}
   .toolbar .npgrp input[type=range]{width:74px;accent-color:var(--cyan)}
   .toolbar .npgrp .npstat{font-size:10.5px;color:var(--muted)} .toolbar .npgrp .npstat b{color:var(--cyan);font-weight:500}
@@ -183,7 +248,7 @@
     button.mini{padding:8px 12px}
     .scope-head .fsbtn{padding:8px 12px}
     /* inline-flex control groups must wrap, not overflow the screen edge */
-    .tunergrp,.tunesel,.holdgrp,.npgrp,.zwavesel,.recbar .transport{flex-wrap:wrap}
+    .tunergrp,.tunesel,.holdgrp,.npgrp,.histgrp,.zwavesel,.recbar .transport{flex-wrap:wrap}
     /* readout: even tiles across the full width, no fixed min that forces overflow */
     .readout{gap:10px 14px;width:100%;order:5}
     .stat{min-width:0;flex:1 0 27%}
@@ -233,7 +298,7 @@
       <div class="seg" id="palette" role="group" aria-label="Waterfall colour palette"></div>
     </div>
     <div class="spacer"></div>
-    <div class="legend"><span>&minus;110&nbsp;dBm</span><span class="grad" aria-hidden="true"></span><span>&minus;20&nbsp;dBm</span></div>
+    <div class="legend" title="Colour key. Each panel's own dB range is on its waterfall's right edge (set it in ⚙ Settings → Display range)."><span>weak</span><span class="grad" aria-hidden="true"></span><span>strong</span></div>
     <span class="clock" id="clock">--:--:--</span>
   </div>
 
@@ -241,12 +306,14 @@
     <span class="rtag">📻 Local Radio</span>
     <div class="grp"><span class="lbl">Freq</span><input class="rf" id="r-freq" type="number" step="0.001" value="98.0"><span class="lbl">MHz</span></div>
     <div class="seg" id="r-mode" role="group" aria-label="Mode">
-      <button data-m="wfm" aria-pressed="true">FM</button><button data-m="nfm">NFM</button><button data-m="am">AM</button>
+      <button data-m="wfm" aria-pressed="true">FM</button><button data-m="nfm">NFM</button><button data-m="am">AM</button><button data-m="usb" title="Upper sideband — HF ham / marine / aviation voice above 10 MHz">USB</button><button data-m="lsb" title="Lower sideband — HF ham voice below 10 MHz">LSB</button><button data-m="cw" title="Morse (CW): heard as a 700 Hz tone">CW</button>
     </div>
     <select id="r-preset"><option value="">Stations…</option></select>
     <button class="rlisten" id="r-save" title="Save this station to your presets">&#9734;&nbsp;Save</button>
     <button class="rlisten" id="r-listen" aria-pressed="false" title="Listen — uses the RTL-SDR (pauses the sub-GHz sweep)">&#9654;&nbsp;Listen</button>
     <div class="grp"><span class="lbl">Vol</span><input type="range" id="r-vol" min="0" max="100" value="80"></div>
+    <div class="grp" title="Squelch: mute the audio until a signal is stronger than this (0 = open). Useful on NFM / AM channels."><span class="lbl">Squelch</span><input type="range" id="r-sq" min="0" max="500" step="10" value="0"><span class="lbl" id="r-sqv">off</span></div>
+    <button class="rlisten" id="r-rec" disabled title="Record what you're hearing to an audio file (starts with Listen)">&#9679;&nbsp;Rec</button>
     <span class="rnow" id="r-now">off · one dongle, so listening pauses the sub-GHz sweep</span>
     <audio id="r-audio" style="display:none"></audio>
   </div>
@@ -304,12 +371,14 @@
   try{var _sp=localStorage.getItem('ragnar_rf_palette'); if(_sp&&PALETTES[_sp]) activePalette=_sp;}catch(e){}
   var LUT=buildLUT(PALETTES[activePalette].stops);
   var LUTrgb=buildLUTrgb(PALETTES[activePalette].stops);
-  function color(db,floor){var t=(db-floor)/(CEIL-floor);if(t<0)t=0;if(t>1)t=1;return LUT[(t*255)|0];}
-  function colorRGB(db,floor){var t=(db-floor)/(CEIL-floor);if(t<0)t=0;if(t>1)t=1;return LUTrgb[(t*255)|0];}
+  // colour for a dB value inside the panel's display range [lo (bottom), hi (top)]
+  function color(db,lo,hi){var t=(db-lo)/((hi-lo)||1);if(t<0)t=0;if(t>1)t=1;return LUT[(t*255)|0];}
+  function colorRGB(db,lo,hi){var t=(db-lo)/((hi-lo)||1);if(t<0)t=0;if(t>1)t=1;return LUTrgb[(t*255)|0];}
   function setPalette(id){
     if(!PALETTES[id]) return;
     activePalette=id; LUT=buildLUT(PALETTES[id].stops); LUTrgb=buildLUTrgb(PALETTES[id].stops);
-    try{ if(typeof scopes!=='undefined'&&scopes) scopes.forEach(function(s){ if(s.threeD) s.draw3D(); }); }catch(e){}
+    // recolour what's already on screen from the row history (not just new rows)
+    try{ if(typeof scopes!=='undefined'&&scopes) scopes.forEach(function(s){ s.repaint(); s._cbarUI(true); }); }catch(e){}
     var g=document.querySelector('.legend .grad'); if(g) g.style.background=gradCss(PALETTES[id].stops);
     var seg=document.getElementById('palette');
     if(seg) Array.prototype.forEach.call(seg.querySelectorAll('button'),function(x){
@@ -365,17 +434,40 @@
   var running=true, HZ=12, DEMO_ON=false, OVERLAYS={};
   var reduce=window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function fmtF(mhz){return (mhz>=1000)?(mhz/1000).toFixed(mhz%1000?2:0)+"G":(mhz>=100?mhz.toFixed(1):mhz.toFixed(2));}
-  function genTicks(lo,hi){var n=6,out=[];for(var i=0;i<=n;i++)out.push(lo+(hi-lo)*i/n);return out;}
+  // "Nice" ruler ticks: a 1-2-5 step giving ~6-8 labels, so labels are round
+  // numbers and never repeat when zoomed in.
+  function niceStep(span,target){var raw=span/(target||7),p=Math.pow(10,Math.floor(Math.log10(raw))),m=raw/p;
+    return (m<1.5?1:(m<3?2:(m<7?5:10)))*p;}
+  function genTicks(lo,hi,target){var st=niceStep(hi-lo,target),out=[];for(var v=Math.ceil(lo/st)*st;v<=hi+st*1e-6;v+=st)out.push(+v.toFixed(9));return out;}
+  // decimals needed to tell apart two frequencies `step` MHz apart
+  function fDec(step){return Math.max(0,Math.min(6,Math.ceil(-Math.log10(step)-1e-9)));}
+  function fmtTick(mhz,step){ if(mhz>=1000&&step>=1) return (mhz/1000).toFixed(Math.max(0,fDec(step/1000)))+'G'; return mhz.toFixed(fDec(step)); }
+  function fmtSpan(lo,hi){var d=fDec(Math.max((hi-lo)/100,1e-6)); d=Math.max(d,(lo>=100?1:2)); return lo.toFixed(d)+'–'+hi.toFixed(d);}
   function nowHM(){var d=new Date();return String(d.getHours()).padStart(2,'0')+":"+String(d.getMinutes()).padStart(2,'0')+":"+String(d.getSeconds()).padStart(2,'0');}
 
   function Scope(cfg){
     var self=this;
     this.cfg=cfg; this.mode='idle'; this.available=false; this.board=''; this.detErr='';
     this.liveBand=cfg.defaultBand; this.synthBand=cfg.synthDefault;
-    this.zoom=null; this.marker=null; this.decoding=false; this.zwave=null; this.zwaveRegion=null;
+    this.zoom=null; this.decoding=false;
+    // Markers M1..M4. `this.marker` stays the ACTIVE marker's frequency so every
+    // existing use (click-measure, Zoom here, Calibrate, IQ capture, Tune) works;
+    // setting it to null clears them all.
+    this.marks=[]; this.mAct=0;
+    Object.defineProperty(this,'marker',{configurable:true,
+      get:function(){ var m=self.marks[self.mAct]; return m?m.f:null; },
+      set:function(v){ if(v==null){ self.marks=[]; self.mAct=0; return; }
+        if(!self.marks.length){ self.marks.push({f:v}); self.mAct=0; } else self.marks[self.mAct].f=v; }}); this.zwave=null; this.zwaveRegion=null;
     this.replaying=false; this.replay=null; this._recPoll=null;
     this.busy=0; this.log=[]; this._lastLog=0; this._ismPoll=null;
     this.hist=[]; this.threeD=false; this._last3D=0;   // 3D terrain waterfall state
+    // Row history: every raw row with its span + timestamp. Drives repaint (range /
+    // palette / resize / zoom keep what's on screen), hover values and scroll-back.
+    this.hrows=[]; this.scrollBack=0;
+    this.hwLo=null; this.hwHi=null; this.dz=false;   // what the radio sweeps vs. a display-only zoom
+    this.disp={auto:true,ref:-20,range:90};
+    try{ var _d=JSON.parse(localStorage.getItem('rfwf.disp.'+cfg.short)||'null');
+      if(_d&&isFinite(_d.ref)&&isFinite(_d.range)) this.disp={auto:!!_d.auto,ref:+_d.ref,range:+_d.range}; }catch(e){}
     this._liveQ=[]; this._acc=0; this._arrEma=0; this._lastPoll=0;   // de-jitter buffer for even live scroll
     this._tsWin=[]; this._nom=0;                                      // producer-timestamp rate estimate
     this.model=cfg.synth(cfg.synthDefault);
@@ -386,7 +478,7 @@
     var el=document.createElement('div'); el.className='scope';
     el.innerHTML=
       '<div class="scope-head">'
-      +'<div class="scope-title"><span class="name">'+cfg.name+' <span class="tag idle scope-tag">idle</span></span><span class="dev">'+cfg.dev+'</span></div>'
+      +'<div class="scope-title"><span class="name">'+cfg.name+' <span class="tag idle scope-tag">idle</span><span class="tag limtag" hidden></span></span><span class="dev">'+cfg.dev+'</span></div>'
       +'<div class="seg viewsel" role="group" aria-label="View"></div>'
       +'<div class="seg bandsel" role="group" aria-label="Band"></div>'
       +'<div class="tunesel hidden" role="group" aria-label="Manual tune"></div>'
@@ -400,20 +492,21 @@
         +'<div class="stat"><span class="k">Busy</span><span class="v busy busyv">&mdash;</span></div>'
         +'<div class="stat"><span class="k">Span</span><span class="v cy span">&mdash;</span></div>'
         +'<div class="stat"><span class="k">Rows/s</span><span class="v rate">&mdash;</span></div>'
+        +'<div class="stat" title="Resolution bandwidth: the frequency width of one FFT bin"><span class="k">RBW</span><span class="v rbwv">&mdash;</span></div>'
       +'</div>'
       +'<button class="fsbtn" title="Expand this waterfall to full screen">&#9974;&nbsp;Full screen</button>'
       +'</div>'
       +'<div class="scope-body">'
         +'<div class="fall-wrap">'
-          +'<canvas class="fall"></canvas><span class="now">t=0.0s</span>'
+          +'<canvas class="fall"></canvas><canvas class="tgrid"></canvas><span class="now">t=0.0s</span>'
+          +'<div class="hline"></div><div class="cbar"><span class="cb-hi"></span><span class="cb-lo"></span></div>'
           +'<div class="marker"><span class="ml"></span></div>'
           +'<div class="veil"><div class="vt"></div><div class="vs"></div></div>'
         +'</div>'
-        +'<div class="ruler"></div>'
-        +'<canvas class="trace"></canvas>'
+        +'<div class="ruler"></div><div class="bplan" title="Band plan"></div>'
+        +'<canvas class="trace"></canvas><canvas class="zspan" hidden></canvas>'
         +'<div class="toolbar">'
           +'<span class="marktxt">Click a signal to measure it (freq · level · SNR · bandwidth).</span>'
-          +'<span class="tunergrp"></span>'
           +'<span class="spacer"></span>'
           +'<span class="holdgrp"><span class="hlbl">Hold</span>'
             +'<button class="mini hbtn" data-h="avg" aria-pressed="false" title="Averaged trace — digs weak carriers out of the noise">Avg</button>'
@@ -433,8 +526,64 @@
             +'<button class="mini d3btn" data-3d="1" aria-pressed="false" title="3D terrain waterfall — signal power as height, older sweeps recede into the distance">3D</button>'
           +'</span>'
           +'<button class="mini snapbtn" title="Save the waterfall as a PNG">⇩ PNG</button>'
+          +'<button class="mini cfgbtn" aria-expanded="false" title="Display range, resolution, hardware, limit lines and export">&#9881; Settings</button>'
+          +'<span class="histgrp"><span class="hlbl">History</span>'
+            +'<input type="range" class="hscroll" min="0" max="0" value="0" title="Scroll back through the waterfall history (Shift+wheel or drag up/down on the waterfall)">'
+            +'<button class="mini livebtn" disabled title="Back to the live edge">&#9650; Live</button><span class="hstat"></span></span>'
           +'<button class="mini zoombtn" disabled>Zoom here</button>'
           +'<button class="mini resetbtn" disabled>Reset zoom</button>'
+        +'</div>'
+        +'<div class="mstrip"><div class="mbtns"><span class="hlbl">Markers</span>'
+          +'<button class="mini madd" title="Add a marker (then click the waterfall to place it). Shift+click also adds one.">＋ Marker</button>'
+          +'<button class="mini mpeak" title="Peak search: move the active marker to the strongest signal on screen (key P)">Peak</button>'
+          +'<button class="mini mprev" title="Next peak to the left (key [)">&#9664; Next</button>'
+          +'<button class="mini mnext" title="Next peak to the right (key ])">Next &#9654;</button>'
+          +'<button class="mini mctr" title="Centre the view on the active marker (key C)">&#8596; Centre</button>'
+          +'<button class="mini mclr" title="Remove all markers">Clear</button>'
+          +'<button class="mini mzs" aria-pressed="false" title="Zero-span: level at the active marker\'s frequency over time (key Z)">Zero-span</button>'
+          +'<button class="mini kbq" title="Keyboard shortcuts (?)">&#9000; Keys</button>'
+          +(cfg.tuner?'<button class="mini mdf" title="Ask every Ragnar in the mesh for this signal\'s level at the active marker and estimate where it is (RSSI)">&#128225; Locate (mesh)</button>':'')+'</div>'
+          +'<div class="mtabwrap"><table class="mtab"><tbody></tbody></table></div></div>'
+        +'<div class="drawer" hidden>'
+          +'<fieldset class="dsec dsp"><legend>Display range</legend>'
+            +'<div class="drow"><button class="mini dauto" aria-pressed="true" title="Follow the measured noise floor automatically">Auto</button>'
+              +'<button class="mini dfit" title="Fit the colour scale to what is on screen now: top just above the strongest signal, bottom just under the noise floor">Fit to signal</button></div>'
+            +'<div class="drow"><label>Ref level</label><input type="range" class="dref" min="-160" max="40" step="1"><input type="number" class="drefn" step="1"><span>dB</span></div>'
+            +'<div class="drow"><label>Range</label><input type="range" class="drng" min="10" max="150" step="1"><input type="number" class="drngn" step="1"><span>dB</span></div>'
+            +'<div class="dnote">Top of the colour scale = <b>Ref level</b>, bottom = Ref − <b>Range</b>. Narrow the range to dig weak signals out; the whole waterfall recolours at once.</div>'
+            +'<div class="drow"><label>Band plan</label><button class="mini bpon" aria-pressed="true" title="Show frequency allocations under the ruler">On</button>'
+              +'<select class="bpreg" title="Allocations differ slightly by ITU region"><option value="1">Region 1 (Europe / Africa)</option><option value="2">Region 2 (Americas)</option><option value="3">Region 3 (Asia-Pacific)</option></select></div>'
+          +'</fieldset>'
+          +'<fieldset class="dsec dres"><legend>Resolution</legend></fieldset>'
+          +'<fieldset class="dsec dcal"><legend>Level calibration</legend>'
+            +'<div class="drow"><label>Offset</label><input type="number" class="coff" step="0.1"><span>dB</span><button class="mini capply">Apply</button><button class="mini creset">Reset</button></div>'
+            +'<div class="drow"><label>Known level</label><input type="number" class="ctrue" step="0.1" placeholder="dBm"><span>dBm</span><button class="mini ccal" title="Set the active marker on a signal whose true level you know (signal generator, calibrated source), then enter that level">Calibrate to marker</button></div>'
+            +'<div class="dnote cstat">Levels are relative (dB / dBFS) until calibrated. Put a marker on a signal of known strength and enter its true level to read <b>dBm</b>. Re-calibrate after changing gain or the antenna.</div>'
+          +'</fieldset>'
+          +'<fieldset class="dsec dlim"><legend>Limit line / mask</legend>'
+            +'<div class="drow"><label>Mode</label><select class="lmode"><option value="off">Off</option><option value="level">Level line</option><option value="mask">Mask (learned)</option></select></div>'
+            +'<div class="drow lrow-level"><label>Limit</label><input type="number" class="llevel" step="1"><span class="lunit">dB</span></div>'
+            +'<div class="drow lrow-mask"><label>Margin</label><input type="number" class="lmargin" step="1" value="6"><span>dB</span><button class="mini llearn" title="Learn the mask from the current Max-hold trace (+ margin). Let Max-hold run a while first so it has seen the normal traffic.">Learn from Max-hold</button></div>'
+            +'<div class="drow"><label class="lalert"><input type="checkbox" class="lwt"> Alert to Watchtower</label><button class="mini lclr">Clear log</button></div>'
+            +'<div class="dnote lstat">Anything above the line is a <b>FAIL</b>: the trace turns red there, the panel gets a red outline and a FAIL tag, and each violation is logged below (and to Watchtower if ticked).</div>'
+            +'<div class="limlog"></div>'
+          +'</fieldset>'
+          +(cfg.tuner?'<fieldset class="dsec dsurv"><legend>Unattended survey</legend>'
+            +'<div class="svbands"></div>'
+            +'<div class="drow"><label>Dwell</label><input type="number" class="svdw" min="5" max="3600" value="30"><span>s / band</span>'
+              +'<select class="svrn"><option value="1">1 round</option><option value="3">3 rounds</option><option value="10">10 rounds</option><option value="0">continuous</option></select></div>'
+            +'<div class="drow"><label>Name</label><input type="text" class="svnm" placeholder="optional" style="width:130px"><button class="mini svgo">&#9654; Start</button><button class="mini svst" disabled>&#9632; Stop</button></div>'
+            +'<div class="dnote svstat">Sweeps each ticked band for the dwell time and writes a report: noise floor, occupancy and every emitter (frequency, bandwidth, peak, % of time on, first/last seen). The waterfall follows the survey while it runs.</div>'
+            +'<div class="drow"><label>Reports</label><select class="svls" style="max-width:190px"><option value="">—</option></select><button class="mini svvw">View</button><button class="mini svcsv">CSV</button><button class="mini svdel">&#128465;</button></div>'
+          +'</fieldset>':'')
+          +'<fieldset class="dsec dexp"><legend>Export (CSV)</legend>'
+            +'<div class="drow"><button class="mini xspec" title="Frequency + live / avg / max / min trace values">Spectrum</button>'
+              +'<button class="mini xsig" title="The Signals list">Signals</button>'
+              +'<button class="mini xmark" title="Markers with Δ to M1">Markers</button>'
+              +'<button class="mini xfall" title="The whole row history: one row per time, one column per frequency">Waterfall</button></div>'
+            +'<div class="dnote">Opens in a spreadsheet, Python / MATLAB etc. Levels are in the units shown on screen (dBm once calibrated). The waterfall export covers the whole history (see <b>History</b>), resampled onto the current span.</div>'
+          +'</fieldset>'
+          +'<fieldset class="dsec dhw"><legend>Hardware</legend><div class="drow"><span class="tunergrp"></span></div></fieldset>'
         +'</div>'
         +'<div class="recbar hidden"></div>'
         +'<div class="logwrap"><div class="logcap"><span class="logtitle">Signals</span><span class="logcount"></span></div>'
@@ -445,6 +594,34 @@
     this.nowEl=el.querySelector('.now'); this.tagEl=el.querySelector('.scope-tag'); this.devEl=el.querySelector('.dev');
     this.veil=el.querySelector('.veil'); this.veilT=el.querySelector('.vt'); this.veilS=el.querySelector('.vs');
     this.markEl=el.querySelector('.marker'); this.markLbl=el.querySelector('.marker .ml');
+    this.markEls=[this.markEl];
+    for(var _mi=1;_mi<4;_mi++){ var _me=this.markEl.cloneNode(true); _me.classList.add('m'+(_mi+1)); this.markEl.parentNode.appendChild(_me); this.markEls.push(_me); }
+    this.mTab=el.querySelector('.mtab tbody'); this.bplan=el.querySelector('.bplan');
+    var bpb=el.querySelector('.bpon'), bps=el.querySelector('.bpreg');
+    bps.value=String(bpRegion); bpb.setAttribute('aria-pressed',bpShow?'true':'false'); bpb.textContent=bpShow?'On':'Off';
+    bpb.addEventListener('click',function(){ bpShow=!bpShow; try{ localStorage.setItem('rfwf.bpshow',bpShow?'1':'0'); }catch(e){}
+      scopes.forEach(function(s){ var b=s.el.querySelector('.bpon'); b.setAttribute('aria-pressed',bpShow?'true':'false'); b.textContent=bpShow?'On':'Off'; s.drawBandPlan(); }); });
+    bps.addEventListener('change',function(){ bpRegion=+bps.value; try{ localStorage.setItem('rfwf.bpreg',String(bpRegion)); }catch(e){}
+      scopes.forEach(function(s){ s.el.querySelector('.bpreg').value=String(bpRegion); s.drawBandPlan(); }); });
+    this.zs=el.querySelector('.zspan'); this.zsOn=false;
+    el.querySelector('.mzs').addEventListener('click',function(){ self.toggleZeroSpan(); });
+    el.querySelector('.kbq').addEventListener('click',function(){ showKeys(true); });
+    if(el.querySelector('.mdf')) el.querySelector('.mdf').addEventListener('click',function(){ self.meshLocate(); });
+    // the panel keyboard shortcuts act on: the last one you pointed at / touched
+    el.addEventListener('pointerenter',function(){ activeScope=self; });
+    el.addEventListener('pointerdown',function(){ activeScope=self; });
+    el.querySelector('.madd').addEventListener('click',function(){ self.addMarker(); });
+    el.querySelector('.mpeak').addEventListener('click',function(){ self.peakSearch(); });
+    el.querySelector('.mprev').addEventListener('click',function(){ self.nextPeak(-1); });
+    el.querySelector('.mnext').addEventListener('click',function(){ self.nextPeak(1); });
+    el.querySelector('.mctr').addEventListener('click',function(){ self.markerToCentre(); });
+    el.querySelector('.mclr').addEventListener('click',function(){ self.marker=null; self.placeMarker(); self.markTxt.textContent='Markers cleared.'; });
+    this.mTab.addEventListener('click',function(e){ var b=e.target.closest('button'), tr=e.target.closest('tr'); if(!tr) return;
+      var i=+tr.getAttribute('data-i');
+      if(b&&b.getAttribute('data-a')==='del'){ self.marks.splice(i,1); if(self.mAct>=self.marks.length) self.mAct=Math.max(0,self.marks.length-1); }
+      else if(b&&b.getAttribute('data-a')==='ctr'){ self.mAct=i; self.markerToCentre(); }
+      else self.mAct=i;
+      self.placeMarker(); });
     this.pkF=el.querySelector('.pk-f'); this.pkD=el.querySelector('.pk-d'); this.busyEl=el.querySelector('.busyv');
     this.spanEl=el.querySelector('.span'); this.rateEl=el.querySelector('.rate');
     this.snrEl=el.querySelector('.snrv'); this.nfEl=el.querySelector('.nf'); this.holdGrp=el.querySelector('.holdgrp');
@@ -478,8 +655,45 @@
     });
     this.buildTune();   // free-frequency "Manual tune" box next to the presets
 
-    this.fall.addEventListener('click',function(e){ self.onPick(e,self.fall); });
-    this.trace.addEventListener('click',function(e){ self.onPick(e,self.trace); });
+    this.fall.addEventListener('click',function(e){ if(self._noClick){ self._noClick=false; return; } if(e.shiftKey) self._addNext=true; self.onPick(e,self.fall); });
+    this.trace.addEventListener('click',function(e){ if(self._noClick){ self._noClick=false; return; } if(e.shiftKey) self._addNext=true; self.onPick(e,self.trace); });
+    this._pts={};
+    [this.fall,this.trace].forEach(function(cv){
+      cv.addEventListener('wheel',function(e){
+        if(e.shiftKey) return;                        // Shift+wheel = history (handled on the fall)
+        if(self.mode==='idle'||self.decoding) return;
+        e.preventDefault();
+        var r=cv.getBoundingClientRect(), fx=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+        var dy=e.deltaMode===1?e.deltaY*16:e.deltaY, span=self.hi-self.lo, ns=span*Math.exp(dy*0.0015), fc=self.lo+fx*span;
+        self.zoomTo(fc-fx*ns,fc-fx*ns+ns);
+      },{passive:false});
+      cv.addEventListener('dblclick',function(e){ e.preventDefault(); self.resetZoom(); });
+      cv.addEventListener('pointerdown',function(e){
+        if(e.pointerType==='mouse'&&e.button!==0) return;
+        self._pts[e.pointerId]={x:e.clientX,y:e.clientY};
+        var ids=Object.keys(self._pts), r=cv.getBoundingClientRect();
+        if(ids.length===1) self._drag={x:e.clientX,y:e.clientY,lo:self.lo,hi:self.hi,back:self.scrollBack,moved:false,type:e.pointerType,w:r.width,cv:cv,id:e.pointerId};
+        else if(ids.length===2){ var a=self._pts[ids[0]],b=self._pts[ids[1]];
+          self._pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,lo:self.lo,hi:self.hi,fx:(((a.x+b.x)/2)-r.left)/r.width}; self._drag=null; }
+      });
+      cv.addEventListener('pointermove',function(e){
+        if(!self._pts[e.pointerId]) return; self._pts[e.pointerId]={x:e.clientX,y:e.clientY};
+        var ids=Object.keys(self._pts);
+        if(self._pinch && ids.length===2){ var a=self._pts[ids[0]],b=self._pts[ids[1]], pz=self._pinch;
+          var ns=(pz.hi-pz.lo)*pz.d/(Math.hypot(a.x-b.x,a.y-b.y)||1), fc=pz.lo+pz.fx*(pz.hi-pz.lo);
+          self.zoomTo(fc-pz.fx*ns,fc-pz.fx*ns+ns); return; }
+        var dg=self._drag; if(!dg) return;
+        var dx=e.clientX-dg.x, dy=e.clientY-dg.y;
+        if(!dg.moved){ if(Math.hypot(dx,dy)<5) return; dg.moved=true; dg.vert=(dg.type==='mouse'&&Math.abs(dy)>Math.abs(dx)&&cv===self.fall&&!self.threeD);
+          try{ cv.setPointerCapture(e.pointerId); }catch(_e){} self.hideHover(); }
+        if(dg.vert){ self.setScrollBack(dg.back+Math.round(dy*self.d/(self.STEP||1))); }
+        else if(self.mode!=='idle'&&!self.decoding){ var sh=-dx/dg.w*(dg.hi-dg.lo); self.zoomTo(dg.lo+sh,dg.hi+sh); }
+      });
+      var up=function(e){ if(self._drag&&self._drag.moved) self._noClick=true;
+        delete self._pts[e.pointerId]; if(Object.keys(self._pts).length<2) self._pinch=null;
+        if(!Object.keys(self._pts).length) self._drag=null; };
+      cv.addEventListener('pointerup',up); cv.addEventListener('pointercancel',up);
+    });
     this.zoomBtn.addEventListener('click',function(){ self.doZoom(); });
     this.resetBtn.addEventListener('click',function(){ self.resetZoom(); });
     this.fsBtn.addEventListener('click',function(){ self.toggleFullscreen(); });
@@ -511,11 +725,67 @@
     this.npStrEl.addEventListener('input',function(){ self._npStr=(+self.npStrEl.value)/100;
       try{ localStorage.setItem('rfwf.np.str.'+cfg.short,self.npStrEl.value); }catch(e){} self._npUI(); });
     this._npUI();
+    // Hover readout + time axis + history scroll-back + colour bar
+    this.hline=el.querySelector('.hline'); this.tgrid=el.querySelector('.tgrid'); this.cbar=el.querySelector('.cbar');
+    this.cbHi=el.querySelector('.cb-hi'); this.cbLo=el.querySelector('.cb-lo');
+    this.hov=document.createElement('div'); this.hov.className='hov'; document.body.appendChild(this.hov);
+    this.hScroll=el.querySelector('.hscroll'); this.liveBtn=el.querySelector('.livebtn'); this.hStat=el.querySelector('.hstat');
+    this.hScroll.addEventListener('input',function(){ self.setScrollBack((+self.hScroll.max)-(+self.hScroll.value)); });
+    this.liveBtn.addEventListener('click',function(){ self.setScrollBack(0); });
+    ['fall','trace'].forEach(function(k){ var cv=self[k];
+      cv.addEventListener('pointermove',function(e){ if(e.pointerType==='touch') return; self.onHover(e,k); });
+      cv.addEventListener('pointerleave',function(){ self.hideHover(); });
+      cv.addEventListener('wheel',function(e){ if(e.shiftKey && k==='fall' && !self.threeD){ e.preventDefault();
+        self.setScrollBack(self.scrollBack+Math.round((e.deltaY||e.deltaX)/(self.STEP/self.d)*0.5)); } },{passive:false});
+    });
+    // Settings drawer
+    this.cfgBtn=el.querySelector('.cfgbtn'); this.drawer=el.querySelector('.drawer');
+    this.cfgBtn.addEventListener('click',function(){ var open=self.drawer.hidden; self.drawer.hidden=!open;
+      self.cfgBtn.setAttribute('aria-expanded',open?'true':'false'); self.cfgBtn.setAttribute('aria-pressed',open?'true':'false'); });
+    this.dAuto=el.querySelector('.dauto'); this.dRef=el.querySelector('.dref'); this.dRefN=el.querySelector('.drefn');
+    this.dRng=el.querySelector('.drng'); this.dRngN=el.querySelector('.drngn');
+    this.dAuto.addEventListener('click',function(){ self.setDisplay({auto:!self.disp.auto}); });
+    el.querySelector('.dfit').addEventListener('click',function(){ self.fitDisplay(); });
+    function _manual(ref,rng){ self.setDisplay({auto:false,ref:ref,range:rng}); }
+    this.dRef.addEventListener('input',function(){ _manual(+self.dRef.value,self.rangeHi()-self.rangeLo()); });
+    this.dRefN.addEventListener('change',function(){ if(isFinite(+self.dRefN.value)) _manual(+self.dRefN.value,self.rangeHi()-self.rangeLo()); });
+    this.dRng.addEventListener('input',function(){ _manual(self.rangeHi(),+self.dRng.value); });
+    this.dRngN.addEventListener('change',function(){ if(+self.dRngN.value>0) _manual(self.rangeHi(),+self.dRngN.value); });
+    this._dispUI();
+    this.rbwEl=el.querySelector('.rbwv'); this.dRes=el.querySelector('.dres'); this.dHw=el.querySelector('.dhw');
+    this.hw={lna:24,vga:20,amp:false,antenna:false,bin_hz:0};          // HackRF: page-held, sent on start
+    try{ var _h=JSON.parse(localStorage.getItem('rfwf.hw.'+cfg.short)||'null'); if(_h) for(var _k in this.hw) if(_k in _h) this.hw[_k]=_h[_k]; }catch(e){}
+    this.rtlSet=null;                                                    // RTL: server-held settings
+    this.buildResolution(); this.buildHardware();
+    // level calibration
+    this.cal=0; this.calOn=false;
+    try{ var _cb=JSON.parse(localStorage.getItem('rfwf.cal.'+cfg.short)||'null'); if(_cb){ this.cal=+_cb.off||0; this.calOn=!!_cb.on; } }catch(e){}
+    var cq=function(c){return el.querySelector(c);};
+    cq('.capply').addEventListener('click',function(){ var v=parseFloat(cq('.coff').value); if(isFinite(v)) self.setCal(v,true); });
+    cq('.creset').addEventListener('click',function(){ self.setCal(0,false); });
+    cq('.ccal').addEventListener('click',function(){ self.calToMarker(parseFloat(cq('.ctrue').value)); });
+    this._calUI();
+    // limit line / mask
+    this.lim={mode:'off',level:-40,margin:6,alert:false}; this.limLog=[]; this._limIn=false; this._limOut=0; this.limCount=0;
+    try{ var _lm=JSON.parse(localStorage.getItem('rfwf.lim.'+cfg.short)||'null'); if(_lm) for(var _k2 in this.lim) if(_k2 in _lm) this.lim[_k2]=_lm[_k2]; }catch(e){}
+    this.limTag=el.querySelector('.limtag');
+    cq('.lmode').addEventListener('change',function(){ self.setLimit({mode:cq('.lmode').value}); });
+    cq('.llevel').addEventListener('change',function(){ var v=parseFloat(cq('.llevel').value); if(isFinite(v)) self.setLimit({level:v}); });
+    cq('.lmargin').addEventListener('change',function(){ var v=parseFloat(cq('.lmargin').value); if(isFinite(v)) self.setLimit({margin:v}); });
+    cq('.llearn').addEventListener('click',function(){ self.learnMask(); });
+    cq('.lwt').addEventListener('change',function(){ self.setLimit({alert:cq('.lwt').checked}); });
+    cq('.lclr').addEventListener('click',function(){ self.limLog=[]; self.limCount=0; self._limUI(); });
+    this._limUI();
+    if(cfg.tuner) this.buildSurvey();
+    cq('.xspec').addEventListener('click',function(){ self.exportCSV('spectrum'); });
+    cq('.xsig').addEventListener('click',function(){ self.exportCSV('signals'); });
+    cq('.xmark').addEventListener('click',function(){ self.exportCSV('markers'); });
+    cq('.xfall').addEventListener('click',function(){ self.exportCSV('waterfall'); });
     if(cfg.tuner) this.buildTuner();
     if(cfg.record){ this.buildRecorder(); this.recBar.classList.remove('hidden'); }
 
     this.resize(); this.resetCanvas();
-    this._ro=new ResizeObserver(function(){ if(self.resize()){ self.drawRuler(); self.placeMarker(); } });
+    this._ro=new ResizeObserver(function(){ if(self.resize()){ self.drawRuler(); self.placeMarker(); self.repaint(); } });
     this._ro.observe(this.fall);
   }
 
@@ -534,7 +804,7 @@
     this.fsBtn.innerHTML=full?'&#10005;&nbsp;Exit full screen':'&#9974;&nbsp;Full screen';
     var self=this;
     // let the layout settle, then regrow the canvas to the new size
-    requestAnimationFrame(function(){ if(self.resize()){ self.resetCanvas(); self.drawRuler(); self.placeMarker(); } });
+    requestAnimationFrame(function(){ if(self.resize()){ self.drawRuler(); self.placeMarker(); self.repaint(); } });
   };
   // Save the waterfall (with its ruler labels baked on) as a PNG the browser
   // downloads. Same-origin page, so a normal <a download> works.
@@ -547,7 +817,7 @@
     // caption band: label + span + timestamp
     o.fillStyle='#0d1420'; o.fillRect(0,h,out.width,34*this.d);
     o.fillStyle='#9fb0c8'; o.font=(12*this.d)+'px monospace'; o.textBaseline='middle';
-    var cap=this.cfg.short+'  '+fmtF(this.lo)+'–'+fmtF(this.hi)
+    var cap=this.cfg.short+'  '+fmtSpan(this.lo,this.hi)
       +(this.zwave?('  ['+(this.zwave.name||'')+']'):'')+'   '+new Date().toLocaleString();
     o.fillText(cap, 8*this.d, h+17*this.d);
     var name='ragnar-rf-'+this.cfg.short.toLowerCase().replace(/[^a-z0-9]+/g,'')+'-'+Date.now()+'.png';
@@ -559,7 +829,7 @@
   // ---- manual tune: sweep an arbitrary centre freq the radio can reach ----
   Scope.prototype.buildTune=function(){
     var self=this, g=this.tuneSel; if(!g) return;
-    var lo=this.cfg.hwLo, hi=this.cfg.hwHi;
+    var rr=this.rfRange(), lo=rr[0], hi=rr[1];
     g.innerHTML='<span class="tlbl">Tune</span>'
       +'<input class="tin freq" type="number" step="any" inputmode="decimal" placeholder="'+lo+'–'+hi+'" '
         +'title="Centre frequency in MHz — anywhere the '+this.cfg.short+' can sweep ('+lo+'–'+hi+' MHz)">'
@@ -578,8 +848,8 @@
     var sp=parseFloat(this.spanTune.value);
     if(!isFinite(sp)||sp<=0) sp=this.cfg.tuneSpan;
     sp=Math.max(this.cfg.minSpan, sp);
-    var hwLo=this.cfg.hwLo, hwHi=this.cfg.hwHi;
-    c=Math.max(hwLo,Math.min(hwHi,c));            // centre into hardware reach
+    var _rr=this.rfRange(), hwLo=_rr[0], hwHi=_rr[1];
+    c=Math.max(hwLo,Math.min(hwHi,c));            // centre into the radio's (RF) reach
     var lo=c-sp/2, hi=c+sp/2;                       // window, clamped to the edges
     if(lo<hwLo){ lo=hwLo; hi=Math.min(hwHi,lo+sp); }
     if(hi>hwHi){ hi=hwHi; lo=Math.max(hwLo,hi-sp); }
@@ -591,9 +861,9 @@
     this.synthBand='__tune__';                      // synth: render a generic scene for this span
     if(this.decoding) this.setView('wf');           // decode can't free-tune; back to the sweep
     if(this.mode==='idle') this.setMode(DEMO_ON?'synth':'live');
-    this.marker=null; if(this.markEl) this.markEl.style.display='none';
+    this.marker=null; this.placeMarker();
     this.applyZoom([lo,hi]);                         // reuses the zoom path -> lo_hz/hi_hz sweep
-    this.markTxt.innerHTML='Tuned <span class="mk">'+fmtMHz((lo+hi)/2)+'</span> · '+fmtF(lo)+'–'+fmtF(hi);
+    this.markTxt.innerHTML='Tuned <span class="mk">'+fmtMHz((lo+hi)/2)+'</span> · '+fmtSpan(lo,hi);
   };
   Scope.prototype.buildTuner=function(){
     var self=this, g=this.tunerGrp; if(!g) return;
@@ -610,17 +880,15 @@
     this.calIn=g.querySelector('.calf'); this.calStat=g.querySelector('.calstat');
     g.querySelector('.tapply').addEventListener('click',function(){ self.applyTuner(); });
     g.querySelector('.tcal').addEventListener('click',function(){ self.calibrate(); });
-    // load current
-    fetch('/api/net/rtl/tuning').then(function(r){return r.json();}).then(function(t){
-      if(!t) return; self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain;
-    }).catch(function(){});
+    // load current (PPM / gain + resolution / hardware settings)
+    this.rtlLoad();
   };
   Scope.prototype.applyTuner=function(){
     var self=this, body={ppm:this.ppmIn.value, gain:this.gainIn.value};
     var b=this.tunerGrp.querySelector('.tapply'); if(b){b.textContent='…';}
     fetch('/api/net/rtl/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(t){
-        if(t){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; }
+        if(t){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; self.rtlSet=t; self._hwUI(); }
         if(b){b.textContent='Apply';}
       }).catch(function(){ if(b){b.textContent='Apply';} });
   };
@@ -748,7 +1016,10 @@
     fetch('/api/net/rtl/iq/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(res){
         if(!res||res.error){ self.iqStat.innerHTML='<span style="color:#fb7185">'+esc((res&&res.error)||'failed')+'</span>'; return; }
-        self._iqWasLive=(self.mode==='live'); if(self._iqWasLive) self.stopLive();  // the capture holds the dongle
+        // The capture owns the dongle, but it feeds its own FFT rows to the
+        // waterfall — so keep polling frames and watch what is being recorded.
+        self._iqWasLive=(self.mode==='live'); self._followOnly=true;
+        if(self._iqWasLive){ self.stopLive(); self._rangeKnown=false; self.startLive(); }
         self._iqPoll=setInterval(function(){ self.iqPoll(); },400); self.iqPoll();
       }).catch(function(){ self.iqStat.textContent='start failed'; });
   };
@@ -756,6 +1027,7 @@
     fetch('/api/net/rtl/iq/status').then(function(r){return r.json();}).then(function(st){
       if(st.capturing){ self.iqStat.innerHTML='<span class="recdot">&#9679;</span> capturing '+(st.progress||0)+'%'; return; }
       if(self._iqPoll){ clearInterval(self._iqPoll); self._iqPoll=null; }
+      self._followOnly=false;                       // the dongle is ours again
       if(st.error){ self.iqStat.innerHTML='<span style="color:#fb7185">'+esc(st.error)+'</span>'; }
       else if(st.done && st.name){ var n=encodeURIComponent(st.name), mb=(st.bytes/1e6).toFixed(1);
         self.iqStat.innerHTML='<span style="color:var(--live)">&#10003; '+mb+' MB</span> '
@@ -764,7 +1036,7 @@
           +'<a href="/rf-analyzer?name='+n+'" target="_blank" style="color:var(--accent);margin-left:10px;font-weight:600">&#128200; Open in Analyzer</a>';
         self.refreshSessions(st.name); }   // add the fresh capture to the Sessions dropdown
       // resume the sweep the capture interrupted
-      if(self._iqWasLive && self.available){ self._iqWasLive=false; self._rangeKnown=false; self.resetCanvas(); self.startLive(); }
+      if(self._iqWasLive && self.available){ self._iqWasLive=false; self.stopLive(); self._rangeKnown=false; self.resetCanvas(); self.startLive(); }
     }).catch(function(){ if(self._iqPoll){clearInterval(self._iqPoll);self._iqPoll=null;} });
   };
   // ---- spectrum baseline / anomaly watch ----
@@ -885,10 +1157,70 @@
   };
   Scope.prototype.resetCanvas=function(){
     this.t0=performance.now();
-    this.fctx.fillStyle="#05080d"; this.fctx.fillRect(0,0,this.W,this.H);
     this.tctx.clearRect(0,0,this.trace.width,this.trace.height);
-    this._resetMeas();
+    this._resetMeas(); this.hist=[];
+    this.repaint();                        // history resampled onto the current span (black where none)
     this.drawRuler(); this.placeMarker();
+  };
+  // The source span changed (band / zoom / retune): bin-indexed maths restart,
+  // the waterfall is redrawn from history onto the new span.
+  Scope.prototype._spanChanged=function(){
+    this._resetMeas(); this.hist=[]; this.repaint(); this.drawRuler(); this.placeMarker();
+  };
+  // Paint one row that was captured on a different span than the view.
+  Scope.prototype._paintRowResampled=function(p,rlo,rhi){
+    var f=this.fctx, W=this.W, S=this.STEP||1, cols=Math.max(1,Math.min(W,2048));
+    f.drawImage(this.fall,0,0,W,this.H-S,0,S,W,this.H-S);
+    if(!this._rrCv) this._rrCv=document.createElement('canvas');
+    var cv=this._rrCv; if(cv.width!==cols) cv.width=cols; cv.height=1;
+    var g=cv.getContext('2d'), id=g.createImageData(cols,1), d=id.data, N=p.length, bw=(rhi-rlo)/N;
+    var clo=this.rangeLo(), cs=(this.rangeHi()-clo)||1, fw=(this.hi-this.lo)/cols;
+    for(var c=0;c<cols;c++){ var o=c*4, f0=this.lo+c*fw, f1=f0+fw;
+      if(f1<=rlo||f0>=rhi){ d[o]=5;d[o+1]=8;d[o+2]=13;d[o+3]=255; continue; }
+      var i0=Math.max(0,Math.floor((f0-rlo)/bw)), i1=Math.min(N-1,Math.max(i0,Math.floor((f1-rlo)/bw))), v=p[i0];
+      for(var i=i0+1;i<=i1;i++) if(p[i]>v) v=p[i];
+      var t=(v-clo)/cs; t=t<0?0:(t>1?1:t); var col=LUTrgb[(t*255)|0]; d[o]=col[0]; d[o+1]=col[1]; d[o+2]=col[2]; d[o+3]=255; }
+    g.putImageData(id,0,0); var sm=f.imageSmoothingEnabled; f.imageSmoothingEnabled=false;
+    f.drawImage(cv,0,0,cols,1,0,0,W,S); f.imageSmoothingEnabled=sm;
+  };
+  // Set the view to [lo,hi] now (history redrawn onto it, throttled to one
+  // repaint per frame) and retune the radio once the gesture settles (or at once).
+  Scope.prototype.zoomTo=function(lo,hi,now){
+    if(this.mode==='idle'||this.decoding||!(this.homeHi>this.homeLo)) return;
+    var hLo=this.homeLo, hHi=this.homeHi, full=hHi-hLo, sp=Math.max(Math.min(this.cfg.minSpan,full),Math.min(full,hi-lo)), c=(lo+hi)/2;
+    lo=c-sp/2; hi=c+sp/2; if(lo<hLo){lo=hLo;hi=lo+sp;} if(hi>hHi){hi=hHi;lo=hi-sp;}
+    this._pend=[lo,hi]; this.lo=lo; this.hi=hi;
+    this.tctx.clearRect(0,0,this.trace.width,this.trace.height);
+    this.drawRuler(); this.placeMarker(); this.updateReadout();
+    var self=this;
+    if(!this._rpReq){ this._rpReq=requestAnimationFrame(function(){ self._rpReq=0; self.repaint(); }); }
+    clearTimeout(this._zt);
+    // Retuning means stopping and restarting the capture — i.e. closing and
+    // reopening the USB dongle. Do it only when it actually buys something:
+    //   * the window has moved outside what the radio is already sweeping, or
+    //   * we've zoomed in far enough that a narrower capture gives real extra
+    //     resolution (the FFT then covers a smaller span).
+    // Everything else is a display-only zoom/pan on data we already have, so a
+    // wheel spin no longer hammers the hardware.
+    var commit=function(){
+      var home=(self.hi-self.lo)>=full*0.999;
+      var hwLo=(self.hwLo!=null)?self.hwLo:hLo, hwHi=(self.hwHi!=null)?self.hwHi:hHi, hwSpan=(hwHi-hwLo)||full;
+      var inside=(self.lo>=hwLo-1e-9 && self.hi<=hwHi+1e-9);
+      var worthIt=(self.hi-self.lo) < hwSpan*0.55;
+      if(inside && !worthIt && !(home && Math.abs(hwSpan-full)>full*0.001)){
+        self._pend=null; self.dz=!(Math.abs(self.lo-hwLo)<1e-9 && Math.abs(self.hi-hwHi)<1e-9);
+        self.zoom=(Math.abs(self.lo-hLo)<1e-9 && Math.abs(self.hi-hHi)<1e-9)?null:[self.lo,self.hi];
+        self.resetBtn.disabled=!self.zoom; self.updateReadout(); return;         // display-only: no retune
+      }
+      var since=Date.now()-(self._lastRetune||0);
+      if(since<1200){ clearTimeout(self._zt); self._zt=setTimeout(commit,1200-since); return; }   // never thrash the dongle
+      self._lastRetune=Date.now();
+      if(home){ self.dz=false; self.applyZoom(null); return; }
+      var m=(self.hi-self.lo)*0.10, wl=self.lo-m, wh=self.hi+m;    // ~20% wider than shown
+      if(wl<hLo) wl=hLo; if(wh>hHi) wh=hHi;
+      self.applyZoom([wl,wh],[self.lo,self.hi]);
+    };
+    if(now) commit(); else this._zt=setTimeout(commit,800);
   };
   // Drop all trace-math accumulators + tracked signals (on start / band / zoom).
   Scope.prototype._resetMeas=function(){
@@ -897,26 +1229,30 @@
   };
 
   // ---- click -> frequency marker ----
-  Scope.prototype.onPick=function(e,canvas){
+  Scope.prototype.onPick=function(e,canvas,keep){
     var r=canvas.getBoundingClientRect(); var frac=(e.clientX-r.left)/r.width;
     frac=Math.max(0,Math.min(1,frac)); var fClick=this.lo+frac*(this.hi-this.lo);
     // Snap to the strongest bin near the click and measure the signal there.
     var meas=this.measureAt(fClick), f=(meas?meas.peakF:fClick);
-    this.marker=f; this.placeMarker();
+    if(keep){ f=this.marker; }
+    else if(this._addNext && this.marks.length && this.marks.length<4){ this.marks.push({f:f}); this.mAct=this.marks.length-1; }
+    else this.marker=f;
+    this._addNext=false; this.placeMarker();
     if(meas){
       var fb=function(khz){return khz>=1000?(khz/1000).toFixed(2)+' MHz':Math.round(khz)+' kHz';};
       var cls=this.classifySignal(f, meas.bw20);
       this.markTxt.innerHTML='<span class="markmeas"><b>'+fmtMHz(f)+'</b> · '+Math.round(meas.pk)
-        +' dB · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−20 <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
-        +' · ChPwr '+Math.round(meas.chPwr)+' dB · <span class="zi">'+esc(cls.label)+'</span></span>';
+        +this.unit()+' · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−'+meas.bwDrop+' <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
+        +' · ChPwr '+Math.round(meas.chPwr)+this.unit()+' · <span class="zi">'+esc(cls.label)+'</span></span>';
       this._markDecode(cls, f);   // offer a jump to the matching decoder
+      this._markWiki(f);
     } else {
       this.markTxt.innerHTML='Marked <span class="mk">'+fmtMHz(f)+'</span>';
     }
     // On the RTL panel, a marker also loads the Local Radio bar (sweep → click →
     // Listen). One dongle, so listening pauses this sweep.
     if(this.cfg.tuner && window.RADIO && f>=0.5 && f<=1766){
-      var mode=(f>=88&&f<=108)?'wfm':((f>108&&f<=137)||f<30?'am':'nfm');
+      var mode=(f>=88&&f<=108)?'wfm':((f>108&&f<=137)?'am':(f<30?hfMode(f):'nfm'));
       window.RADIO.set(f, mode);
       this.markTxt.innerHTML+=' <span class="zi">→ radio '+mode.toUpperCase()+'</span>';
     }
@@ -931,14 +1267,20 @@
     if(fMHz>=88&&fMHz<=108) return {label:'FM broadcast', act:{radio:'wfm'}};
     if(fMHz>=108&&fMHz<=118) return {label:'VHF airband / VOR', act:{page:'/vor-radial',name:'VOR Radial'}};
     if(near(131.55,1.6)||near(136.9,1.6)) return {label:'likely ACARS (aircraft datalink)', act:{page:'/adsb-radar',name:'ADS-B / ACARS'}};
-    if(bw20Khz<40 && (near(929,15)||near(931,15)||near(148,12)||near(153,12)))
+    // POCSAG / FLEX paging allocations (was a blanket 136-165 MHz match that
+    // called marine ch 16, AIS, APRS and 2 m ham voice "pager").
+    var pag=(bpRegion===2)?[[152.0,152.9],[157.7,158.7],[929.0,932.0]]:[[169.4,169.825],[465.9,466.3],[147.5,147.9]];
+    if(bw20Khz<40 && pag.some(function(r){ return fMHz>=r[0]&&fMHz<=r[1]; }))
       return {label:'likely POCSAG/FLEX pager', act:{page:'/pager-decode',name:'Pager Decode'}};
     if(bw20Khz>=90 && (near(869.5,0.7)||(fMHz>=902&&fMHz<=928)||near(433.2,0.4)))
       return {label:'wideband chirp — likely LoRa/mesh (energy only)', act:null};
     if(bw20Khz<45 && (near(433.92,1.0)||near(315,2)||near(345,6)||near(390,6)||near(868.3,1.2)||(fMHz>=902&&fMHz<=928)))
       return {label:'narrowband OOK/FSK ISM — remote / TPMS / sensor', act:{ism:true}};
-    if(bw20Khz<25) return {label:'narrowband carrier', act:null};
-    return {label:'wideband signal', act:null};
+    for(var si=0;si<SIGNATURES.length;si++){ var sg=SIGNATURES[si];
+      if(fMHz>=sg[0]&&fMHz<=sg[1]&&bw20Khz>=sg[2]&&bw20Khz<=sg[3]) return {label:sg[4], act:sg[5]}; }
+    var bands=bandsAt(fMHz), where=bands.length?' — in '+bands[0][2]+' ('+bands[0][3]+')':'';
+    if(bw20Khz<25) return {label:'narrowband carrier'+where, act:null};
+    return {label:'wideband signal'+where, act:null};
   };
   // Render a decoder hand-off next to the marker measurement, per classification.
   Scope.prototype._markDecode=function(cls, fMHz){
@@ -958,25 +1300,89 @@
     }
     // a.radio is already wired by the Local Radio hand-off below the measurement.
   };
+  Scope.prototype._markWiki=function(fMHz){
+    var w=document.createElement('a'); w.className='zi'; w.style.marginLeft='8px'; w.target='_blank'; w.rel='noopener';
+    w.href='https://www.sigidwiki.com/index.php?search='+encodeURIComponent(fMHz.toFixed(3)+' MHz');
+    w.textContent='🔎 Signal ID wiki'; w.title='Look this frequency up on the Signal Identification Wiki (needs internet)';
+    this.markTxt.appendChild(w); };
   Scope.prototype.placeMarker=function(){
-    if(this.marker==null || !(this.hi>this.lo)){ this.markEl.style.display='none'; return; }
-    var pct=(this.marker-this.lo)/(this.hi-this.lo);
-    if(pct<0||pct>1){ this.markEl.style.display='none'; return; }
-    this.markEl.style.display='block'; this.markEl.style.left=(pct*100)+'%';
-    this.markLbl.textContent=fmtMHz(this.marker);
+    var self=this;
+    (this.markEls||[this.markEl]).forEach(function(el,i){
+      var m=self.marks[i], pct=(m&&self.hi>self.lo)?(m.f-self.lo)/(self.hi-self.lo):-1;
+      if(!m||pct<0||pct>1){ el.style.display='none'; return; }
+      el.style.display='block'; el.style.left=(pct*100)+'%'; el.style.setProperty('--mi',i);
+      el.classList.toggle('act',i===self.mAct);
+      el.querySelector('.ml').textContent='M'+(i+1)+' '+fmtMHz(m.f);
+    });
+    this._markTable();
   };
+  // Level at a frequency on the live (displayed) row.
+  Scope.prototype.levelAt=function(f){ var p=this.shown||this.row; if(!p||!p.length||!(this.hi>this.lo)) return null;
+    var i=Math.floor((f-this.lo)/((this.hi-this.lo)/p.length)); return (i>=0&&i<p.length)?p[i]:null; };
+  Scope.prototype._markTable=function(){
+    if(!this.mTab) return; var self=this, ref=this.marks[0], refL=ref?this.levelAt(ref.f):null;
+    var fk=function(dMHz){ var a=Math.abs(dMHz)*1000; return (dMHz>=0?'+':'−')+(a>=1000?(a/1000).toFixed(4)+' MHz':a.toFixed(a<10?2:1)+' kHz'); };
+    this.mTab.innerHTML=this.marks.map(function(m,i){ var L=self.levelAt(m.f);
+      var lv=(L==null)?'—':(Math.round(L*10)/10).toFixed(1)+self.unit();
+      var dl=(i===0)?'<span class="dl">reference</span>':('<span class="dl">Δ</span> '+fk(m.f-ref.f)+'  '+((L!=null&&refL!=null)?((L-refL>=0?'+':'−')+Math.abs(L-refL).toFixed(1)+' dB'):''));
+      return '<tr data-i="'+i+'" class="'+(i===self.mAct?'act':'')+'"><td class="mn m'+(i+1)+'">'+(i===self.mAct?'▸':'&nbsp;')+'M'+(i+1)+'</td>'
+        +'<td>'+fmtMHz(m.f)+'</td><td>'+lv+'</td><td>'+dl+'</td>'
+        +'<td><button data-a="ctr" title="Centre on this marker">↔</button> <button data-a="del" title="Remove">✕</button></td></tr>'; }).join('');
+  };
+  Scope.prototype.addMarker=function(f){
+    if(this.marks.length>=4){ this.markTxt.textContent='Up to 4 markers (M1 is the reference for Δ).'; return; }
+    if(f==null){ f=(this.lo+this.hi)/2; var p=this.peakFreq(); if(p!=null) f=p; }
+    this.marks.push({f:f}); this.mAct=this.marks.length-1; this.placeMarker();
+    this.markTxt.innerHTML='Added <span class="mk">M'+this.marks.length+'</span> — click the waterfall to move it, or use Peak / Next.';
+  };
+  // Strongest bin on the live row -> its centre frequency.
+  Scope.prototype.peakFreq=function(){ var p=this.shown||this.row; if(!p||!p.length) return null;
+    var bi=0; for(var i=1;i<p.length;i++) if(p[i]>p[bi]) bi=i; return this.lo+(bi+0.5)*(this.hi-this.lo)/p.length; };
+  Scope.prototype.peakSearch=function(){ var f=this.peakFreq(); if(f==null) return;
+    if(!this.marks.length) this.marks.push({f:f}); else this.marks[this.mAct].f=f;
+    this.placeMarker(); this._measureMarker(); };
+  // Next peak left/right of the active marker, analyser-style "peak excursion":
+  // a new peak must rise >= 6 dB above the lowest point between it and where
+  // we started, and sit >= 6 dB over the noise floor — so a signal's own
+  // sidelobes / ripple aren't counted as separate peaks.
+  var PEAK_EXC=6;
+  Scope.prototype.nextPeak=function(dir){
+    var p=this.shown||this.row; if(!p||!p.length) return;
+    if(!this.marks.length){ this.peakSearch(); return; }
+    var n=p.length, bw=(this.hi-this.lo)/n, i=Math.floor((this.marker-this.lo)/bw), nf=(this.noiseDb!=null)?this.noiseDb:this.floor, thr=nf+PEAK_EXC;
+    i=Math.max(0,Math.min(n-1,i));
+    var mn=p[i], found=-1;
+    for(var j=i+dir;j>=0&&j<n;j+=dir){
+      if(p[j]<mn) mn=p[j];
+      if(p[j]>thr && p[j]-mn>=PEAK_EXC){ var best=j;               // rising edge of a new peak: climb to its top
+        while(j+dir>=0&&j+dir<n&&p[j+dir]>=p[j]-0.5){ j+=dir; if(p[j]>p[best]) best=j; }
+        found=best; break; }
+    }
+    if(found<0){ this.markTxt.textContent='No further peak '+(dir>0?'to the right':'to the left')+' (needs ≥'+PEAK_EXC+' dB excursion over noise).'; return; }
+    this.marks[this.mAct].f=this.lo+(found+0.5)*bw; this.placeMarker(); this._measureMarker();
+  };
+  // Marker -> centre. At full band span there is nowhere to pan, so zoom 4x
+  // onto the marker instead.
+  Scope.prototype.markerToCentre=function(){ if(this.marker==null) return;
+    var sp=this.hi-this.lo, full=this.homeHi-this.homeLo, m=this.marker;
+    if(sp>=full*0.999){ sp=full/4; this.markTxt.innerHTML='Zoomed 4× on <span class="mk">'+fmtMHz(m)+'</span> (already the full band).'; }
+    this.zoomTo(m-sp/2,m+sp/2,true); };
+  // Re-run the click measurement for the active marker (readout text).
+  Scope.prototype._measureMarker=function(){ var r=this.fall.getBoundingClientRect(), f=this.marker; if(f==null) return;
+    this.onPick({clientX:r.left+(f-this.lo)/(this.hi-this.lo)*r.width},this.fall,true); };
   Scope.prototype.doZoom=function(){
     if(this.marker==null) return;
-    var cur=this.hi-this.lo, span=Math.max(this.cfg.minSpan, cur/6);
-    var lo=this.marker-span/2, hi=this.marker+span/2;
-    if(lo<this.homeLo){lo=this.homeLo;hi=lo+span;} if(hi>this.homeHi){hi=this.homeHi;lo=hi-span;}
-    lo=Math.max(this.homeLo,lo); hi=Math.min(this.homeHi,hi);
-    this.applyZoom([lo,hi]);
+    var span=Math.max(this.cfg.minSpan,(this.hi-this.lo)/6);
+    this.zoomTo(this.marker-span/2,this.marker+span/2,true);
   };
-  Scope.prototype.resetZoom=function(){ this.applyZoom(null); };
-  Scope.prototype.applyZoom=function(z){
-    this.zoom=z; this.resetBtn.disabled=!z;
-    if(this.mode==='live'){ this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); }
+  Scope.prototype.resetZoom=function(){ this.zoomTo(this.homeLo,this.homeHi,true); };
+  Scope.prototype.applyZoom=function(z,view){
+    if(this._surveyOn||this._followOnly){ this.markTxt.innerHTML='<span class="mk">'+(this._followOnly?'Recording':'Survey running')+'</span> — the waterfall follows it; retune when it finishes.'; this._pend=null; return; }
+    this.zoom=z; this.resetBtn.disabled=!z; this._lastRetune=Date.now();
+    this.dz=!!(view && z && (view[0]>z[0]+1e-9 || view[1]<z[1]-1e-9));
+    if(this.mode==='live'){ this._pend=z?[z[0],z[1]]:[this.homeLo,this.homeHi];
+      this.lo=this.dz?view[0]:this._pend[0]; this.hi=this.dz?view[1]:this._pend[1];
+      this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); }
     else if(this.mode==='synth'){
       this.model=this.cfg.synth(this.synthBand||this.cfg.synthDefault, z&&z[0], z&&z[1]);
       this.lo=this.model.lo; this.hi=this.model.hi; this.floor=this.model.floor; this.resetCanvas();
@@ -985,6 +1391,7 @@
 
   // ---- band / view selection ----
   Scope.prototype.selectBand=function(bandId,synthId){
+    if(this._surveyOn||this._followOnly){ this.markTxt.innerHTML='<span class="mk">'+(this._followOnly?'Recording':'Survey running')+'</span> — wait for it to finish to change band.'; return; }
     Array.prototype.forEach.call(this.bandSel.querySelectorAll('button'),function(x){x.setAttribute('aria-pressed',x.getAttribute('data-band')===bandId?'true':'false');});
     if(this.ovDropdown) this.ovDropdown.value='';
     this.liveBand=bandId; this.synthBand=synthId||bandId; this.zoom=null; this.zwave=null; this.zwaveRegion=null; this.resetBtn.disabled=true;
@@ -1022,7 +1429,7 @@
   };
   Scope.prototype.selectOverlay=function(id){
     var e=OVERLAYS[id]; if(!e) return;
-    this.zwave=e; this.zwaveRegion=e.sweepLabel; this.zoom=null; this.marker=null; this.markEl.style.display='none'; this.resetBtn.disabled=true;
+    this.zwave=e; this.zwaveRegion=e.sweepLabel; this.zoom=null; this.marker=null; this.placeMarker(); this.resetBtn.disabled=true;
     if(this.ovDropdown) this.ovDropdown.value=id;
     if(this.decoding) this.setView('wf');   // decode can't do these; back to sweep
     Array.prototype.forEach.call(this.bandSel.querySelectorAll('button'),function(x){x.setAttribute('aria-pressed','false');});
@@ -1090,11 +1497,14 @@
 
   // ---- live sweep ----
   Scope.prototype.startLive=function(){
-    var self=this; this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
+    var self=this;
+    if(this._surveyOn||this._followOnly){ this.seq=0; this._liveQ.length=0; this._rangeKnown=false;   // follow whatever owns the dongle
+      if(this._poll) clearInterval(this._poll); this._poll=setInterval(function(){ self.livePoll(); },120); return; } this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
     this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};
-    if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
-    else if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
+    if(!this.cfg.tuner){ body.lna=this.hw.lna; body.vga=this.hw.vga; body.amp=this.hw.amp?1:0; body.antenna=this.hw.antenna?1:0; if(this.hw.bin_hz) body.bin_hz=this.hw.bin_hz; }
+    if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
+    else if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
     fetch(this.cfg.api.start,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(res){
         if(res&&res.error){ self.liveErr=res.error; self.showVeil('Could not start '+self.cfg.short,res.error); }
@@ -1118,12 +1528,13 @@
       if(d.engine && self.devEl){ self.devEl.textContent = (d.engine==='iq')
         ? 'RTL-SDR · IQ FFT · real-time' : 'RTL-SDR · rtl_power sweep'; }
       if(frames.length){
-        if(!self._rangeKnown||lo!==self.lo||hi!==self.hi){ self.lo=lo;self.hi=hi;self.floor=floor;self._rangeKnown=true;self.drawRuler();self.placeMarker(); }
+        if(!self._rangeKnown){ self._rangeKnown=true; self.floor=floor; }
+        self.rbw=(typeof d.rbw_hz==='number')?d.rbw_hz:null;
         self.hideVeil();
         // Enqueue instead of painting per-poll — loop() releases rows at one
         // steady rate, so poll/network jitter never shows as speed changes.
         var _wall=performance.now()/1000;
-        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:self.lo,hi:self.hi,floor:floor});
+        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:lo,hi:hi,floor:floor});
           self._tsWin.push((typeof f.ts==='number')?f.ts:_wall); });
         // Data rate from the producer's own timestamps over the last ~5 s — a
         // smooth, true rows/s (per-poll counts swing 0..3 and made the pace wobble).
@@ -1175,19 +1586,38 @@
 
   // ---- paint one row ----
   Scope.prototype.pushRow=function(power,lo,hi,floor){
+    if(this.cal){ var _c=this.cal, _a=new Float32Array(power.length); for(var _i=0;_i<_a.length;_i++) _a[_i]=power[_i]+_c;
+      power=_a; if(typeof floor==='number') floor+=_c; }
     var raw=power;
     if(this._npRec) this._npCollect(raw,lo,hi);
     var _sk=lo+'_'+hi+'_'+raw.length;           // span changed (zoom/band/retune) -> load its print
     if(_sk!==this._npSpan){ this._npSpan=_sk; this._npLoadFor(lo,hi,raw.length); }
     if(this._np && this._npOn && this._npStr>0) power=this._npApply(raw);
+    this._histPush(raw,lo,hi,(typeof floor==='number')?floor:-110);
     if(this._np && !this._npRec && _t0np()-this._npStatT>15000){ this._npStatT=_t0np(); this._npUI(); }   // keep the age label current
     // Measure the true row cadence (EMA) so the Rows/s readout reflects the
     // data rate actually arriving — not the scroll-speed setting.
     var _t=performance.now();
     if(this._lastRowT){ var _inst=1000/Math.max(1,_t-this._lastRowT); this._fpsEma=this._fpsEma?this._fpsEma*0.8+_inst*0.2:_inst; }
     this._lastRowT=_t;
-    this.lo=lo;this.hi=hi;this.floor=(typeof floor==='number')?floor:-110;
-    if(!this.zoom){ this.homeLo=lo; this.homeHi=hi; }
+    this.floor=(typeof floor==='number')?floor:-110;
+    // Display span vs this row's span. A zoom/pan sets a pending display span at
+    // once (history is redrawn onto it) while the radio retunes; rows still on
+    // the old span are resampled onto the view until the retuned rows arrive.
+    var _tol=1e-4, _same=Math.abs(lo-this.lo)<_tol && Math.abs(hi-this.hi)<_tol;
+    if(this._pend && Math.abs(lo-this._pend[0])<_tol && Math.abs(hi-this._pend[1])<_tol){
+      this._pend=null; this.hwLo=lo; this.hwHi=hi;
+      if(!_same && !this.dz){ this.lo=lo; this.hi=hi; }        // no display zoom: show what's captured
+      this._spanChanged(); _same=(Math.abs(lo-this.lo)<_tol && Math.abs(hi-this.hi)<_tol); }
+    if(!_same && !this._pend && this.dz && lo<=this.lo+1e-9 && hi>=this.hi-1e-9){
+      this.hwLo=lo; this.hwHi=hi;                 // display-only zoom inside what the radio sweeps: keep the view
+    } else if(!_same && !this._pend){ this.lo=lo; this.hi=hi; this.dz=false; this._spanChanged(); _same=true; }
+    if(_same){ this.hwLo=lo; this.hwHi=hi; }      // the radio is sweeping exactly what we're showing
+    if(!this.zoom && !this._pend && !this.dz){ this.homeLo=lo; this.homeHi=hi; }
+    if(!_same){                                  // stale-span row during a zoom: show it, skip span-bound maths
+      if(!this.threeD && this.scrollBack===0) this._paintRowResampled(power,lo,hi);
+      this.updateReadout(); if(!this.threeD) this._drawTimeGrid(); return;
+    }
     var N=power.length,f=this.fctx;
     // measured noise floor (robust low-percentile) drives SNR + signal detection
     var nf=this._noiseFloor(power); this.noiseDb=nf;
@@ -1196,18 +1626,579 @@
     if(this.threeD){                          // 3D terrain view: measure, then redraw the surface (throttled)
       for(var cm=0;cm<N;cm++){ if(power[cm]>peakDb){peakDb=power[cm];peakIdx=cm;} if(power[cm]>thr)busyC++; }
       var _t3=performance.now(); if(_t3-this._last3D>=60){ this._last3D=_t3; this.draw3D(); }
+    } else if(this.scrollBack>0){             // looking back in history: hold the view steady
+      for(var cb=0;cb<N;cb++){ if(power[cb]>peakDb){peakDb=power[cb];peakIdx=cb;} if(power[cb]>thr)busyC++; }
+      this.scrollBack=Math.min(this.scrollBack+1,this.hrows.length-1);
     } else {                                  // classic 2D waterfall: scroll the canvas + paint the new row
+      var _clo=this.rangeLo(), _chi=this.rangeHi();
       f.drawImage(this.fall,0,0,this.W,this.H-this.STEP,0,this.STEP,this.W,this.H-this.STEP);
       for(var c=0;c<N;c++){var x0=(c*this.W/N)|0,x1=((c+1)*this.W/N)|0;
-        f.fillStyle=color(power[c],this.floor); f.fillRect(x0,0,(x1-x0)||1,this.STEP);
+        f.fillStyle=color(power[c],_clo,_chi); f.fillRect(x0,0,(x1-x0)||1,this.STEP);
         if(power[c]>peakDb){peakDb=power[c];peakIdx=c;} if(power[c]>thr)busyC++;}
     }
     this.row=raw; this.shown=power;          // measurements read true levels; display/detection use the filtered row
     this.peak={db:peakDb,idx:peakIdx}; this.snr=peakDb-nf;
     this.busy=this.busy*0.8 + (busyC/N*100)*0.2;
     this._updateTraces(power);
+    if(this.lim.mode!=='off') this._limitCheck(power);
+    if(this.zsOn) this.drawZeroSpan();
     this.updateSignals(power,nf);        // track emitters (CFAR) + throttled render
     this.drawTrace(power); this.updateReadout();
+    if(!this.threeD) this._drawTimeGrid();
+    this._cbarUI();
+    var _nh=performance.now(); if(_nh-(this._histT||0)>400){ this._histT=_nh; this._histUI(); }
+    if(this.marks.length && _nh-(this._mtT||0)>250){ this._mtT=_nh; this._markTable(); }
+  };
+
+  // ---- level calibration (dB offset -> dBm) --------------------------------
+  Scope.prototype.unit=function(){ return this.calOn?' dBm':' dB'; };
+  // Change the offset: everything already on screen / in history shifts by the
+  // difference, so the waterfall, holds, markers and exports stay consistent.
+  Scope.prototype.setCal=function(off,on){
+    var d=off-(this.cal||0), add=function(a){ if(a) for(var i=0;i<a.length;i++) a[i]+=d; };
+    if(d){ this.hrows.forEach(function(h){ add(h.p); h.floor+=d; });
+      add(this.avgRow); add(this.maxRow); add(this.minRow);
+      if(this.row){ this.row=Float32Array.from(this.row,function(v){return v+d;}); }
+      if(this.shown){ this.shown=Float32Array.from(this.shown,function(v){return v+d;}); }
+      (this.hist||[]).forEach(function(r){ for(var i=0;i<r.length;i++) r[i]+=d; });
+      if(this._np){ add(this._np.ref); this._np.nf0+=d; }
+      if(this.noiseDb!=null) this.noiseDb+=d; this.floor+=d;
+      if(!this.disp.auto){ this.disp.ref+=d; }
+      if(this.peak) this.peak.db+=d;
+      var sg=this.signals||{}; for(var k in sg){ if(sg[k].pk!=null) sg[k].pk+=d; } }
+    this.cal=off; this.calOn=!!on;
+    try{ localStorage.setItem('rfwf.cal.'+this.cfg.short,JSON.stringify({off:off,on:this.calOn})); localStorage.setItem('rfwf.disp.'+this.cfg.short,JSON.stringify(this.disp)); }catch(e){}
+    this._calUI(); this._dispUI(); this.repaint(); this._cbarUI(true);
+    if(this.shown||this.row){ this.drawTrace(this.shown||this.row); this.updateReadout(); }
+    this._markTable(); this.renderSignals();
+  };
+  Scope.prototype.calToMarker=function(trueDbm){
+    var st=this.el.querySelector('.cstat');
+    if(this.marker==null){ st.innerHTML='<span style="color:#fb7185">Set a marker on the known signal first (click it, or Peak).</span>'; return; }
+    if(!isFinite(trueDbm)){ st.innerHTML='<span style="color:#fb7185">Enter the signal\'s true level in dBm.</span>'; return; }
+    var L=this.levelAt(this.marker); if(L==null){ st.textContent='No live level at the marker yet.'; return; }
+    var off=Math.round(((this.cal||0)+(trueDbm-L))*10)/10;
+    this.setCal(off,true);
+    st.innerHTML='<span style="color:var(--live)">&#10003; Calibrated: '+fmtMHz(this.marker)+' now reads '+trueDbm+' dBm (offset '+(off>=0?'+':'')+off+' dB).</span>';
+  };
+  Scope.prototype._calUI=function(){ var o=this.el.querySelector('.coff'); if(!o) return;
+    o.value=this.cal||0;
+    var st=this.el.querySelector('.cstat');
+    if(this.calOn && st && !/Calibrated/.test(st.textContent)) st.innerHTML='Calibrated: offset <b>'+(this.cal>=0?'+':'')+this.cal+' dB</b>; levels read in <b>dBm</b>. Re-calibrate after changing gain or the antenna.'; };
+
+  // ---- zero-span: level at the active marker's frequency over time --------
+  // Built from the row history, so its time resolution is the row rate (~16 /s
+  // on the real-time engine) — a live level/duty view of one channel. For
+  // sample-rate detail, take a raw IQ capture into the Signal Analyzer.
+  Scope.prototype.toggleZeroSpan=function(on){
+    this.zsOn=(on==null)?!this.zsOn:!!on; this.zs.hidden=!this.zsOn;
+    this.el.querySelector('.mzs').setAttribute('aria-pressed',this.zsOn?'true':'false');
+    if(this.zsOn){ if(this.marker==null) this.peakSearch(); this.drawZeroSpan(); }
+  };
+  Scope.prototype.drawZeroSpan=function(){
+    if(!this.zsOn||!this.zs) return;
+    var cv=this.zs, d=this.d||1, W=Math.max(1,Math.round(cv.clientWidth*d)), H=Math.max(1,Math.round(cv.clientHeight*d));
+    if(cv.width!==W) cv.width=W; if(cv.height!==H) cv.height=H;
+    var g=cv.getContext('2d'); g.clearRect(0,0,W,H);
+    var f=this.marker; g.font=(10*d)+'px "IBM Plex Mono",monospace'; g.textBaseline='top';
+    if(f==null||!this.hrows.length){ g.fillStyle='rgba(139,152,171,.8)'; g.fillText('Zero-span: set a marker',6*d,6*d); return; }
+    var n=Math.min(this.hrows.length,Math.max(20,Math.round(W/(2*d)))), end=this.hrows.length-1, vals=[], mn=1e9, mx=-1e9;
+    for(var k=n-1;k>=0;k--){ var h=this.hrows[end-k], p=this._shownOf(h), N=p.length, i=Math.floor((f-h.lo)/((h.hi-h.lo)/N));
+      var v=(i>=0&&i<N)?p[i]:null; vals.push(v); if(v!=null){ if(v<mn)mn=v; if(v>mx)mx=v; } }
+    var nfz=(this.noiseDb!=null)?this.noiseDb:mn, lo=Math.min(mn,nfz)-3, hi=Math.max(mx,nfz+10)+3, yf=function(v){ var t=(v-lo)/((hi-lo)||1); t=t<0?0:(t>1?1:t); return H-2*d-t*(H-16*d); };
+    var LA=(this.lim&&this.lim.mode!=='off')?this.limitArr((this.shown||this.row||[]).length):null;
+    if(LA&&this.row){ var li=Math.floor((f-this.lo)/((this.hi-this.lo)/this.row.length)), lv=LA.a?LA.a[li]:LA.c;
+      if(lv!=null){ g.setLineDash([5,4]); g.strokeStyle='rgba(251,113,133,.85)'; g.beginPath(); g.moveTo(0,yf(lv)); g.lineTo(W,yf(lv)); g.stroke(); g.setLineDash([]); } }
+    if(this.noiseDb!=null){ g.setLineDash([3,3]); g.strokeStyle='rgba(139,152,171,.5)'; g.beginPath(); g.moveTo(0,yf(this.noiseDb)); g.lineTo(W,yf(this.noiseDb)); g.stroke(); g.setLineDash([]); }
+    g.strokeStyle='#f5b942'; g.lineWidth=Math.max(1,d); g.beginPath(); var st=false;
+    for(var j=0;j<vals.length;j++){ if(vals[j]==null){ st=false; continue; } var x=j*W/(vals.length-1||1), y=yf(vals[j]); if(!st){ g.moveTo(x,y); st=true; } else g.lineTo(x,y); }
+    g.stroke();
+    var secs=(this.hrows[end].t-this.hrows[end-n+1].t)/1000, U=this.unit();
+    g.fillStyle='rgba(205,214,228,.8)';
+    g.fillText('ZERO-SPAN '+fmtMHz(f)+'  now '+(vals[vals.length-1]!=null?Math.round(vals[vals.length-1]*10)/10+U:'—')
+      +'  min '+(mn<1e9?Math.round(mn)+U:'—')+'  max '+(mx>-1e9?Math.round(mx)+U:'—'),6*d,3*d);
+    var right='−'+secs.toFixed(1)+' s … now'; g.fillText(right,W-g.measureText(right).width-6*d,3*d);
+  };
+
+  // ---- limit line / mask (pass / fail) --------------------------------------
+  Scope.prototype.setLimit=function(o){ for(var k in o) this.lim[k]=o[k];
+    try{ localStorage.setItem('rfwf.lim.'+this.cfg.short,JSON.stringify(this.lim)); }catch(e){}
+    this._limIn=false; this._limOut=0; this.el.classList.remove('limfail'); this._limUI(); if(this.shown||this.row) this.drawTrace(this.shown||this.row); };
+  Scope.prototype._maskKey=function(){ return 'rfwf.mask.'+this.cfg.short+'.'+(+this.lo).toFixed(4)+'_'+(+this.hi).toFixed(4); };
+  // Learn a mask from Max-hold + margin, stored per span (like the noise print).
+  Scope.prototype.learnMask=function(){
+    var st=this.el.querySelector('.lstat');
+    if(!this.maxRow){ st.innerHTML='<span style="color:#fb7185">No Max-hold yet: let the waterfall run first.</span>'; return; }
+    var m=Array.prototype.map.call(this.maxRow,function(v){return Math.round(v*10)/10;}), mg=+this.lim.margin||0;
+    this._mask={lo:this.lo,hi:this.hi,vals:m.map(function(v){return v+mg;})};
+    try{ localStorage.setItem(this._maskKey(),JSON.stringify(this._mask)); }catch(e){}
+    this.setLimit({mode:'mask'});
+    st.innerHTML='<span style="color:var(--live)">&#10003; Mask learned for '+fmtSpan(this.lo,this.hi)+' (Max-hold + '+mg+' dB).</span>';
+  };
+  // The limit (per bin) for the current span, or null.
+  Scope.prototype.limitArr=function(n){
+    if(this.lim.mode==='level') return {c:this.lim.level};
+    if(this.lim.mode==='mask'){
+      var mk=this._mask;
+      if(!mk||Math.abs(mk.lo-this.lo)>1e-4||Math.abs(mk.hi-this.hi)>1e-4){
+        try{ mk=JSON.parse(localStorage.getItem(this._maskKey())||'null'); }catch(e){ mk=null; }
+        this._mask=mk; }
+      if(mk&&mk.vals&&mk.vals.length===n) return {a:mk.vals};
+    }
+    return null;
+  };
+  // Evaluate one displayed row; start / end violation events.
+  Scope.prototype._limitCheck=function(p){
+    var L=this.limitArr(p.length); if(!L){ if(this._limIn){ this._limIn=false; this.el.classList.remove('limfail'); } this._limUI(); return; }
+    var worst=-1e9, wi=-1;
+    for(var i=0;i<p.length;i++){ var lv=L.a?L.a[i]:L.c, ex=p[i]-lv; if(ex>worst){ worst=ex; wi=i; } }
+    var now=Date.now();
+    if(worst>0){
+      this._limOut=0;
+      if(!this._limIn){ this._limIn=true; this.limCount++;
+        var f=this.lo+(wi+0.5)*(this.hi-this.lo)/p.length, lim=L.a?L.a[wi]:L.c;
+        var ev={t:now,f:f,level:p[wi],limit:lim,excess:worst};
+        this.limLog.unshift(ev); this.limLog.length=Math.min(this.limLog.length,50);
+        if(this.lim.alert && now-(this._limPost||0)>10000){ this._limPost=now;
+          fetch('/api/net/rtl/limit/alarm',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({panel:this.cfg.short,freq_mhz:f,level:p[wi],limit:lim,unit:this.calOn?'dBm':'dB',kind:this.lim.mode,span:[this.lo,this.hi]})}).catch(function(){}); }
+      }
+    } else if(this._limIn){ if(!this._limOut) this._limOut=now; else if(now-this._limOut>1000){ this._limIn=false; this._limOut=0; } }
+    this.el.classList.toggle('limfail',this._limIn);
+    if(now-(this._limUIt||0)>300||this._limIn!==this._limWas){ this._limUIt=now; this._limWas=this._limIn; this._limUI(); }
+  };
+  Scope.prototype._limUI=function(){
+    var q=function(c,e){return e.el.querySelector(c);}, self=this, on=this.lim.mode!=='off', L=on?this.limitArr((this.shown||this.row||[]).length||1):null;
+    if(!q('.lmode',this)) return;
+    q('.lmode',this).value=this.lim.mode; q('.llevel',this).value=this.lim.level; q('.lmargin',this).value=this.lim.margin; q('.lwt',this).checked=!!this.lim.alert;
+    q('.lunit',this).textContent=this.unit().trim();
+    q('.lrow-level',this).style.display=this.lim.mode==='level'?'':'none'; q('.lrow-mask',this).style.display=this.lim.mode==='mask'?'':'none';
+    this.limTag.hidden=!on;
+    if(on){ var armed=!!L||this.lim.mode==='level';
+      this.limTag.className='tag limtag '+(this._limIn?'fail':'pass');
+      this.limTag.textContent=!armed?'no mask':(this._limIn?'FAIL':'PASS')+(this.limCount?' · '+this.limCount:''); }
+    var U=this.unit();
+    q('.limlog',this).innerHTML=this.limLog.slice(0,20).map(function(e){ var d=new Date(e.t);
+      return '<div><span class="lx">'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')
+        +'</span> '+fmtMHz(e.f)+' · '+(Math.round(e.level*10)/10)+U+' · <b>+'+(Math.round(e.excess*10)/10)+' dB</b></div>'; }).join('');
+  };
+
+  // ---- unattended survey (RTL) --------------------------------------------------
+  Scope.prototype.buildSurvey=function(){
+    var self=this, g=this.el.querySelector('.dsurv'); if(!g) return;
+    var q=function(c){return g.querySelector(c);};
+    q('.svbands').innerHTML=this.cfg.liveBands.map(function(b){
+      return '<label><input type="checkbox" value="'+b.id+'"'+(/^(433|868|915|315)$/.test(b.id)?' checked':'')+'> '+esc(b.label)+'</label>'; }).join('');
+    q('.svgo').addEventListener('click',function(){
+      var bands=Array.prototype.filter.call(q('.svbands').querySelectorAll('input'),function(i){return i.checked;}).map(function(i){return i.value;});
+      if(!bands.length){ q('.svstat').textContent='Tick at least one band.'; return; }
+      fetch('/api/net/rtl/survey/start',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({bands:bands,dwell_s:+q('.svdw').value||30,rounds:+q('.svrn').value,name:q('.svnm').value})})
+        .then(function(r){return r.json();}).then(function(r){
+          if(!r.ok){ q('.svstat').innerHTML='<span style="color:#fb7185">'+esc(r.error||'could not start')+'</span>'; return; }
+          self._surveyName=r.name; self.surveyPoll(); }).catch(function(){ q('.svstat').textContent='start failed'; }); });
+    q('.svst').addEventListener('click',function(){ fetch('/api/net/rtl/survey/stop',{method:'POST'}).then(function(){ self.surveyPoll(); }); });
+    q('.svvw').addEventListener('click',function(){ if(q('.svls').value) self.surveyShow(q('.svls').value); });
+    q('.svcsv').addEventListener('click',function(){ if(!q('.svls').value) return; var a=document.createElement('a');
+      a.href='/api/net/rtl/survey/report.csv?name='+encodeURIComponent(q('.svls').value); a.download=q('.svls').value+'.csv'; document.body.appendChild(a); a.click(); a.remove(); });
+    q('.svdel').addEventListener('click',function(){ var n=q('.svls').value; if(!n||!window.confirm('Delete survey report "'+n+'"?')) return;
+      fetch('/api/net/rtl/survey/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})}).then(function(){ self.surveyList(); }); });
+    this.surveyList(); this.surveyPoll();
+  };
+  Scope.prototype.surveyList=function(sel){ var self=this, g=this.el.querySelector('.dsurv'); if(!g) return;
+    fetch('/api/net/rtl/survey/list').then(function(r){return r.json();}).then(function(d){ var ls=g.querySelector('.svls');
+      ls.innerHTML=(d.surveys||[]).length?(d.surveys||[]).map(function(v){ return '<option value="'+esc(v.name)+'">'+esc(v.name)+' · '+v.bands+' band'+(v.bands===1?'':'s')+' · '+v.emitters+' emitters'+(v.status==='running'?' · running':'')+'</option>'; }).join(''):'<option value="">— none yet —</option>';
+      if(sel) ls.value=sel; }).catch(function(){}); };
+  Scope.prototype.surveyPoll=function(){ var self=this, g=this.el.querySelector('.dsurv'); if(!g) return;
+    fetch('/api/net/rtl/survey/status').then(function(r){return r.json();}).then(function(st){
+      var on=st.state==='running', was=self._surveyOn; self._surveyOn=on;
+      g.querySelector('.svgo').disabled=on; g.querySelector('.svst').disabled=!on;
+      var stt=g.querySelector('.svstat');
+      if(on){ var c=st.current||{};
+        stt.innerHTML='<b>Surveying '+esc(c.band||'…')+'</b> ('+Math.round(c.elapsed_s||0)+' / '+(st.plan.dwell_s||'?')+' s) · round '+st.round+(st.plan.rounds?' / '+st.plan.rounds:' (continuous)')+' · '+st.bands_done+' band result'+(st.bands_done===1?'':'s')+' so far';
+        if(!was && self.mode==='live'){ self.stopLive(); self.startLive(); }   // follow it
+        clearTimeout(self._svT); self._svT=setTimeout(function(){ self.surveyPoll(); },2000);
+      } else {
+        if(was){ stt.innerHTML=(st.error?'<span style="color:#fb7185">Survey ended: '+esc(st.error)+'</span>':'<span style="color:var(--live)">&#10003; Survey finished</span>')+' — report <b>'+esc(st.name||'')+'</b> below.';
+          self.surveyList(st.name); if(self.mode==='live'){ self._rangeKnown=false; self.startLive(); } }
+      }
+    }).catch(function(){}); };
+  Scope.prototype.surveyShow=function(name){
+    var self=this;
+    fetch('/api/net/rtl/survey/report?name='+encodeURIComponent(name)).then(function(r){return r.json();}).then(function(d){
+      if(!d.ok) return; var r=d.report, box=document.querySelector('.svrep');
+      if(!box){ box=document.createElement('div'); box.className='svrep'; document.body.appendChild(box);
+        box.addEventListener('click',function(e){ if(e.target===box||e.target.classList.contains('svx')) box.hidden=true; }); }
+      var tm=function(t){ if(!t) return '—'; var x=new Date(t*1000); return x.toLocaleString(); };
+      var tt=function(t){ if(!t) return '—'; var x=new Date(t*1000); return String(x.getHours()).padStart(2,'0')+':'+String(x.getMinutes()).padStart(2,'0')+':'+String(x.getSeconds()).padStart(2,'0'); };
+      var html='<div class="svbox"><div style="display:flex;align-items:center;gap:10px"><h4>Survey: '+esc(r.name)+'</h4><span class="spacer" style="flex:1"></span>'
+        +'<a class="mini" style="text-decoration:none;padding:4px 10px;border:1px solid var(--line);border-radius:6px;color:var(--ink)" href="/api/net/rtl/survey/report.csv?name='+encodeURIComponent(r.name)+'" download>CSV</a>'
+        +'<button class="mini svx">&#10005; Close</button></div>'
+        +'<div>'+tm(r.started)+' → '+tm(r.finished)+' · '+esc(r.status||'')+' · dwell '+r.dwell_s+' s'+(r.device?' · '+esc(r.device):'')+'</div>';
+      (r.bands||[]).forEach(function(b){
+        var em=(b.emitters||[]).slice().sort(function(a,c){ return c.occupancy_pct-a.occupancy_pct; });
+        html+='<h5>'+esc(b.band)+' · '+b.lo_mhz+'–'+b.hi_mhz+' MHz · round '+b.round+'</h5>'
+          +'<div>noise '+b.noise_db+' dB · '+b.occupancy_pct+'% of the band busy · '+em.length+' emitter'+(em.length===1?'':'s')+' · '+b.rows+' rows · '+(b.engine||'?')+(b.rbw_hz?' · RBW '+(b.rbw_hz>=1000?(b.rbw_hz/1000).toFixed(1)+' kHz':Math.round(b.rbw_hz)+' Hz'):'')+'</div>'
+          +(em.length?'<div class="svtw"><table><thead><tr><th>FREQ</th><th>BW</th><th>PEAK</th><th>ON</th><th>FIRST</th><th>LAST</th><th>LIKELY</th></tr></thead><tbody>'
+            +em.slice(0,60).map(function(e){
+              // duty is evidence too: a narrow emitter that's on ~all the time isn't a bursty remote
+              var cl=(e.occupancy_pct>=95&&e.bw_khz<25)?'constant carrier — likely a local birdie / always-on transmitter'
+                :self.classifySignal(e.freq_mhz,e.bw_khz).label;
+              return '<tr><td>'+e.freq_mhz.toFixed(4)+' MHz</td><td>'+e.bw_khz+' kHz</td><td>'+e.peak_db+' dB</td>'
+                +'<td><span class="occ" style="width:'+Math.max(2,Math.round(e.occupancy_pct*0.6))+'px"></span>'+e.occupancy_pct+'%</td>'
+                +'<td>'+tt(e.first_seen)+'</td><td>'+tt(e.last_seen)+'</td><td>'+esc(cl)+'</td></tr>'; }).join('')+'</tbody></table></div>':'');
+      });
+      html+='<p class="dnote" style="margin-top:12px">"ON" = share of the dwell the emitter was ≥10 dB over the noise floor. Constant lines at ~100% are often local birdies (see Noise print). Wide bands use the slower rtl_power sweep, so short bursts can be missed there.</p></div>';
+      box.innerHTML=html; box.hidden=false; }).catch(function(){});
+  };
+
+  // ---- mesh direction finding -------------------------------------------------
+  Scope.prototype.meshLocate=function(){
+    var self=this; if(this.marker==null) this.peakSearch(); if(this.marker==null) return;
+    var f=this.marker, m=this.measureAt(f), bw=Math.max(5,Math.min(500,(m&&m.bw20)||25));
+    var box=this._dfBox(); box.hidden=false;
+    box.querySelector('.svbox').innerHTML='<h4>Locating '+fmtMHz(f)+'</h4><div>Asking every Ragnar in the mesh to measure ~'+Math.round(bw)+' kHz around it (a few seconds)…</div>';
+    fetch('/api/net/rtl/df',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({freq_mhz:f,bw_khz:bw,secs:2})})
+      .then(function(r){return r.json();}).then(function(d){ self._dfShow(d,f); })
+      .catch(function(){ box.querySelector('.svbox').innerHTML='<h4>Locate failed</h4><button class="mini svx">Close</button>'; });
+  };
+  Scope.prototype._dfBox=function(){ var box=document.querySelector('.dfrep');
+    if(!box){ box=document.createElement('div'); box.className='svrep dfrep'; box.hidden=true; box.innerHTML='<div class="svbox"></div>'; document.body.appendChild(box);
+      box.addEventListener('click',function(e){ if(e.target===box||e.target.classList.contains('svx')) box.hidden=true; }); }
+    return box; };
+  Scope.prototype._dfShow=function(d,f){
+    var self=this, box=this._dfBox(), fx=d.fix||{}, units=d.units||[], U=' dB';
+    var h='<div style="display:flex;align-items:center;gap:10px"><h4>'+fmtMHz(f)+' — mesh direction finding</h4><span style="flex:1"></span><button class="mini svx">&#10005; Close</button></div>';
+    if(fx.ok){
+      h+='<div style="margin:6px 0 10px"><b style="color:var(--ink)">'+esc(fx.method)+'</b>: '+fx.lat.toFixed(5)+', '+fx.lon.toFixed(5)
+        +(fx.radius_m!=null?' · ±'+fx.radius_m+' m (1σ)':'')+' · <a class="zi" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat='+fx.lat+'&mlon='+fx.lon+'#map=15/'+fx.lat+'/'+fx.lon+'">open map</a></div>'
+        +'<div class="dnote">'+esc(fx.note||'')+'</div>';
+    } else h+='<div style="margin:6px 0 10px;color:#fb7185">No fix: '+esc(fx.error||'not enough positioned units heard it')+'</div>';
+    // small offline map: units, estimate, 1-sigma circle (local metres)
+    var pts=units.filter(function(u){return u.position;}).map(function(u){return {n:u.unit,lat:u.position.lat,lon:u.position.lon,ok:u.ok&&u.snr_db>=3,l:u.level_db};});
+    if(fx.ok) pts.push({n:'estimate',lat:fx.lat,lon:fx.lon,est:true});
+    if(pts.length){
+      var lat0=pts.reduce(function(a,p){return a+p.lat;},0)/pts.length, lon0=pts.reduce(function(a,p){return a+p.lon;},0)/pts.length, k=111320;
+      var xy=pts.map(function(p){ return {x:(p.lon-lon0)*k*Math.cos(lat0*Math.PI/180), y:(p.lat-lat0)*k, p:p}; });
+      var ext=150; xy.forEach(function(q){ var pad=q.p.est?(fx.radius_m||0):0;   // the circle must fit too
+        ext=Math.max(ext,(Math.abs(q.x)+pad)*1.15,(Math.abs(q.y)+pad)*1.15); });
+      var S=300, sc=(S/2-24)/ext, X=function(x){return S/2+x*sc;}, Y=function(y){return S/2-y*sc;}, svg='';
+      var est=xy.filter(function(q){return q.p.est;})[0];
+      if(est&&fx.radius_m) svg+='<circle cx="'+X(est.x)+'" cy="'+Y(est.y)+'" r="'+Math.max(3,fx.radius_m*sc)+'" fill="rgba(245,185,66,.12)" stroke="rgba(245,185,66,.6)" stroke-dasharray="4 3"/>';
+      xy.forEach(function(q){ var p=q.p;
+        if(p.est) svg+='<path d="M'+(X(q.x)-7)+' '+Y(q.y)+'h14M'+X(q.x)+' '+(Y(q.y)-7)+'v14" stroke="#f5b942" stroke-width="2"/>';
+        else { var lft=X(q.x)>S*0.58;                                            // label inwards near the edge
+          svg+='<circle cx="'+X(q.x)+'" cy="'+Y(q.y)+'" r="5" fill="'+(p.ok?'#38bdc9':'#56647a')+'"/>'
+            +'<text x="'+(X(q.x)+(lft?-8:8))+'" y="'+(Y(q.y)+4)+'" font-size="10" fill="#cdd6e4" font-family="monospace"'+(lft?' text-anchor="end"':'')+'>'
+            +esc(String(p.n).split(' (')[0])+(p.l!=null?' '+Math.round(p.l)+U:'')+'</text>'; } });
+      var sb=Math.pow(10,Math.floor(Math.log10(ext))), sbp=sb*sc;
+      svg+='<path d="M12 '+(S-12)+'h'+sbp+'" stroke="#8b98ab"/><text x="12" y="'+(S-16)+'" font-size="9" fill="#8b98ab" font-family="monospace">'+(sb>=1000?(sb/1000)+' km':sb+' m')+'</text>';
+      h+='<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start"><svg viewBox="0 0 '+S+' '+S+'" width="'+S+'" height="'+S+'" style="max-width:100%;background:#0b1220;border:1px solid var(--line);border-radius:8px">'+svg+'</svg>';
+    } else h+='<div>';
+    h+='<div class="svtw" style="flex:1;min-width:260px"><table><thead><tr><th>UNIT</th><th>LEVEL</th><th>SNR</th><th>POSITION</th><th></th></tr></thead><tbody>'
+      +units.map(function(u){ return '<tr><td>'+esc(u.unit||'?')+(u.is_self?' <span class="hk">(this)</span>':'')+'</td>'
+        +'<td>'+(u.ok?Math.round(u.level_db)+U:'—')+'</td><td>'+(u.ok?Math.round(u.snr_db)+' dB':'—')+'</td>'
+        +'<td>'+(u.position?esc(u.position.source):'<span style="color:#fb7185">none</span>')+'</td>'
+        +'<td class="hk">'+esc(u.ok?'':(u.error||''))+'</td></tr>'; }).join('')+'</tbody></table>'
+      +'<p class="dnote">Used '+d.used+' unit'+(d.used===1?'':'s')+' (SNR ≥ 3 dB, with a position). Three or more units around the transmitter give a real fix. RSSI ranging assumes similar antennas/gains: calibrate units (⚙ Level calibration) and expect hundreds of metres, worse indoors.</p>'
+      +'<div class="drow"><label>This unit</label><input type="number" step="any" class="dflat" placeholder="lat" style="width:96px"><input type="number" step="any" class="dflon" placeholder="lon" style="width:96px"><button class="mini dfset">Set position</button><button class="mini dfclr">Use GPS</button></div>'
+      +'<div class="dnote">Units without GPS need a manual position (fixed sites).</div></div></div>';
+    box.querySelector('.svbox').innerHTML=h; box.hidden=false;
+    var q=function(c){return box.querySelector(c);};
+    var self_u=units.filter(function(u){return u.is_self;})[0];
+    if(self_u&&self_u.position){ q('.dflat').value=self_u.position.lat; q('.dflon').value=self_u.position.lon; }
+    q('.dfset').addEventListener('click',function(){ fetch('/api/net/rtl/df/position',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:+q('.dflat').value,lon:+q('.dflon').value})}).then(function(r){return r.json();}).then(function(r){ q('.dfset').textContent=r.ok?'✓ Saved':'Invalid'; }); });
+    q('.dfclr').addEventListener('click',function(){ fetch('/api/net/rtl/df/position',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"clear":true}'})
+      .then(function(){ q('.dfclr').textContent='✓ GPS / last-known'; }); });
+  };
+
+  // ---- CSV export ------------------------------------------------------------
+  function fq(mhz){ return {csvRaw:(+mhz).toFixed(6)}; }      // frequencies keep full (Hz) precision
+  function csvCell(v){ if(v==null) return ''; if(v&&v.csvRaw!=null) return v.csvRaw; if(typeof v==='number') return isFinite(v)?String(Math.round(v*100)/100):''; var s=String(v); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+  function csvDownload(name,rows){ var txt=rows.map(function(r){return r.map(csvCell).join(',');}).join('\n')+'\n';
+    var a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv'})); a.download=name;
+    document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000); return txt; }
+  Scope.prototype.exportCSV=function(kind){
+    var U=this.calOn?'dBm':'dB', self=this, stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    var base='ragnar-rf-'+this.cfg.short.toLowerCase().replace(/[^a-z0-9]+/g,'')+'-'+kind+'-'+stamp+'.csv', rows;
+    if(kind==='spectrum'){
+      var p=this.shown||this.row; if(!p) return null; var n=p.length, bw=(this.hi-this.lo)/n;
+      rows=[['freq_mhz','live_'+U,'avg_'+U,'max_'+U,'min_'+U]];
+      for(var i=0;i<n;i++) rows.push([fq(this.lo+(i+0.5)*bw),p[i],this.avgRow?this.avgRow[i]:null,this.maxRow?this.maxRow[i]:null,this.minRow?this.minRow[i]:null]);
+    } else if(kind==='signals'){
+      var sg=this.signals||{}, arr=[]; for(var k in sg) arr.push(sg[k]); arr.sort(function(a,b){return a.fMHz-b.fMHz;});
+      rows=[['freq_mhz','bandwidth_khz','peak_'+U,'snr_db','duty_pct']];
+      arr.forEach(function(v){ rows.push([fq(v.fMHz),v.bwKhz,v.pk,v.snr,v.duty!=null?v.duty*100:null]); });
+    } else if(kind==='markers'){
+      var r0=this.marks[0], l0=r0?this.levelAt(r0.f):null;
+      rows=[['marker','freq_mhz','level_'+U,'delta_khz_vs_m1','delta_db_vs_m1']];
+      this.marks.forEach(function(m,i){ var L=self.levelAt(m.f); rows.push(['M'+(i+1),fq(m.f),L,i?(m.f-r0.f)*1000:null,(i&&L!=null&&l0!=null)?L-l0:null]); });
+    } else {
+      if(!this.hrows.length) return null;
+      var cols=(this.shown||this.row||this.hrows[this.hrows.length-1].p).length, fw=(this.hi-this.lo)/cols, head=['time_utc'];
+      for(var c=0;c<cols;c++) head.push(fq(this.lo+(c+0.5)*fw));
+      rows=[head];
+      for(var k2=0;k2<this.hrows.length;k2++){ var h=this.hrows[k2], hp=this._shownOf(h), N=hp.length, hb=(h.hi-h.lo)/N, line=[new Date(h.t).toISOString()];
+        for(var c2=0;c2<cols;c2++){ var f0=this.lo+c2*fw, f1=f0+fw;
+          if(f1<=h.lo||f0>=h.hi){ line.push(null); continue; }
+          var i0=Math.max(0,Math.floor((f0-h.lo)/hb)), i1=Math.min(N-1,Math.max(i0,Math.floor((f1-h.lo)/hb))), v=hp[i0];
+          for(var j=i0+1;j<=i1;j++) if(hp[j]>v) v=hp[j];
+          line.push(v); }
+        rows.push(line); }
+    }
+    return csvDownload(base,rows);
+  };
+
+  // ---- RF reach: hardware range shifted by the converter offset; HF via direct sampling
+  Scope.prototype.rfRange=function(){
+    var lo=this.cfg.hwLo, hi=this.cfg.hwHi, t=this.rtlSet;
+    if(this.cfg.tuner && t){ if(t.direct!=='off') lo=0.5; var c=(t.conv_hz||0)/1e6; lo-=c; hi-=c; }
+    return [Math.max(0.01,lo),hi];
+  };
+  // ---- Resolution section ----------------------------------------------------
+  Scope.prototype.buildResolution=function(){
+    var self=this, g=this.dRes; if(!g) return;
+    if(this.cfg.tuner){
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>FFT size</label><select class="rfft"><option value="0">Auto</option>'
+          +[256,512,1024,2048,4096,8192,16384,32768].map(function(n){return '<option value="'+n+'">'+n+'</option>';}).join('')+'</select>'
+          +'<span class="rbwnote dnote"></span></div>'
+        +'<div class="drow"><label>Averaging</label><input type="range" class="ravg" min="1" max="64" step="1"><span class="ravgn">24</span></div>'
+        +'<div class="drow"><label>Window</label><select class="rwin"><option value="hann">Hann</option><option value="blackman-harris">Blackman-Harris</option><option value="flattop">Flat-top (accurate level)</option><option value="rect">Rectangular</option></select></div>'
+        +'<div class="drow"><label>Columns</label><select class="rbins"><option>240</option><option>480</option><option>960</option><option>1920</option></select></div>'
+        +'<div class="dnote"><b>Auto FFT</b> keeps ≥2 FFT bins per column at any zoom (finer RBW when zoomed in). More <b>averaging</b> = smoother, slower to react. <b>Flat-top</b> reads signal levels most accurately; <b>Blackman-Harris</b> best separates a weak signal next to a strong one. Applies to the whole dongle.</div>');
+      var fft=g.querySelector('.rfft'), avg=g.querySelector('.ravg'), win=g.querySelector('.rwin'), bins=g.querySelector('.rbins');
+      fft.addEventListener('change',function(){ self.rtlApply({fft:+fft.value}); });
+      avg.addEventListener('input',function(){ g.querySelector('.ravgn').textContent=avg.value; });
+      avg.addEventListener('change',function(){ self.rtlApply({avg:+avg.value}); });
+      win.addEventListener('change',function(){ self.rtlApply({window:win.value}); });
+      bins.addEventListener('change',function(){ self.rtlApply({bins:+bins.value}); });
+    } else {
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>RBW</label><select class="rhb"><option value="0">Auto</option>'
+          +[2500,5000,10000,25000,50000,100000,250000,500000,1000000].map(function(n){return '<option value="'+n+'">'+(n>=1e6?(n/1e6)+' MHz':(n/1000)+' kHz')+'</option>';}).join('')+'</select></div>'
+        +'<div class="dnote">hackrf_sweep FFT bin width. <b>Auto</b> keeps it finer than a display column. Finer = more detail, slower sweeps.</div>');
+      var hb=g.querySelector('.rhb'); hb.value=String(this.hw.bin_hz||0);
+      hb.addEventListener('change',function(){ self.hwSet({bin_hz:+hb.value}); });
+    }
+  };
+  // ---- Hardware section ------------------------------------------------------
+  Scope.prototype.buildHardware=function(){
+    var self=this, g=this.dHw; if(!g) return;
+    if(this.cfg.tuner){
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>Bias-T</label><button class="mini hbias" aria-pressed="false" title="Power an LNA / active antenna through the coax">Off</button>'
+          +'<span class="dnote">4.5 V on the antenna port. <b>RTL-SDR Blog V3/V4 or a bias-tee dongle only</b>, and only with an LNA / active antenna that expects it.</span></div>'
+        +'<div class="drow"><label>Direct samp.</label><select class="hdir"><option value="auto">Auto (HF only)</option><option value="on">On</option><option value="off">Off</option></select>'
+          +'<span class="dnote">Receives HF (0.5–28.8 MHz) without an upconverter on dongles that support it.</span></div>'
+        +'<div class="drow"><label>Converter</label><select class="hconv"><option value="0">None</option>'
+          +'<option value="125000000">Upconverter +125 MHz (Ham It Up)</option><option value="120000000">Upconverter +120 MHz (SpyVerter)</option>'
+          +'<option value="-9750000000">LNB 9750 MHz (Ku low)</option><option value="-10600000000">LNB 10600 MHz (Ku high)</option>'
+          +'<option value="custom">Custom…</option></select><input type="number" class="hconvc" step="any" placeholder="LO MHz" hidden></div>'
+        +'<div class="dnote">With a converter the waterfall, markers, tune box and radio all read the <b>real RF frequency</b>; the dongle is tuned to RF + LO.</div>');
+      var b=g.querySelector('.hbias'), d=g.querySelector('.hdir'), c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc');
+      b.addEventListener('click',function(){ var on=b.getAttribute('aria-pressed')!=='true';
+        if(on && !window.confirm('Turn on bias-T? This puts 4.5 V DC on the antenna port. Only do this with an LNA or active antenna that expects it, on an RTL-SDR Blog V3/V4 or bias-tee dongle.')) return;
+        self.rtlApply({bias_t:on?1:0}); });
+      d.addEventListener('change',function(){ self.rtlApply({direct:d.value}); });
+      c.addEventListener('change',function(){ if(c.value==='custom'){ cc.hidden=false; cc.focus(); return; } cc.hidden=true; self.rtlApply({conv_hz:+c.value}); });
+      cc.addEventListener('change',function(){ if(isFinite(+cc.value)) self.rtlApply({conv_hz:Math.round(+cc.value*1e6)}); });
+    } else {
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>LNA gain</label><input type="range" class="hlna" min="0" max="40" step="8"><span class="hlnan"></span><span>dB</span></div>'
+        +'<div class="drow"><label>VGA gain</label><input type="range" class="hvga" min="0" max="62" step="2"><span class="hvgan"></span><span>dB</span></div>'
+        +'<div class="drow"><label>RF amp</label><button class="mini hamp" aria-pressed="false" title="+~11 dB front-end amplifier for weak signals (overloads on strong ones)">Off</button>'
+          +'<label>Ant. power</label><button class="mini hant" aria-pressed="false" title="3.3 V on the antenna port for an active antenna / LNA">Off</button></div>'
+        +'<div class="dnote">Raise <b>LNA</b> first, then VGA. The <b>RF amp</b> helps weak signals but can overload near strong ones. <b>Antenna power</b> only for active antennas / LNAs.</div>');
+      var ln=g.querySelector('.hlna'), vg=g.querySelector('.hvga'), am=g.querySelector('.hamp'), an=g.querySelector('.hant');
+      ln.addEventListener('input',function(){ g.querySelector('.hlnan').textContent=ln.value; });
+      vg.addEventListener('input',function(){ g.querySelector('.hvgan').textContent=vg.value; });
+      ln.addEventListener('change',function(){ self.hwSet({lna:+ln.value}); });
+      vg.addEventListener('change',function(){ self.hwSet({vga:+vg.value}); });
+      am.addEventListener('click',function(){ self.hwSet({amp:!self.hw.amp}); });
+      an.addEventListener('click',function(){ var on=!self.hw.antenna;
+        if(on && !window.confirm('Turn on antenna port power? This puts 3.3 V DC on the HackRF antenna port. Only with an active antenna or LNA that expects it.')) return;
+        self.hwSet({antenna:on}); });
+    }
+    this._hwUI();
+  };
+  // RTL: settings live on the server (one dongle). POST, then reflect the result.
+  Scope.prototype.rtlApply=function(o){ var self=this;
+    fetch('/api/net/rtl/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)})
+      .then(function(r){return r.json();}).then(function(t){ self.rtlSet=t; self._hwUI(); self.buildTune(); }).catch(function(){}); };
+  Scope.prototype.rtlLoad=function(){ var self=this;
+    fetch('/api/net/rtl/tuning').then(function(r){return r.json();}).then(function(t){ self.rtlSet=t; self._hwUI(); self.buildTune();
+      if(self.ppmIn){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; } }).catch(function(){}); };
+  // HackRF: settings live in the page and ride along on the sweep start.
+  Scope.prototype.hwSet=function(o){ for(var k in o) this.hw[k]=o[k];
+    try{ localStorage.setItem('rfwf.hw.'+this.cfg.short,JSON.stringify(this.hw)); }catch(e){}
+    this._hwUI(); if(this.mode==='live'){ this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); } };
+  Scope.prototype._hwUI=function(){
+    var g=this.dHw, r=this.dRes; if(!g) return;
+    var pr=function(b,on){ if(b){ b.setAttribute('aria-pressed',on?'true':'false'); b.textContent=on?'On':'Off'; } };
+    if(this.cfg.tuner){ var t=this.rtlSet; if(!t) return;
+      pr(g.querySelector('.hbias'),!!t.bias_t); g.querySelector('.hdir').value=t.direct||'auto';
+      var c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc'), cv=String(t.conv_hz||0), known=Array.prototype.some.call(c.options,function(o){return o.value===cv;});
+      if(known){ c.value=cv; cc.hidden=true; } else { c.value='custom'; cc.hidden=false; cc.value=(t.conv_hz||0)/1e6; }
+      if(r){ var f=r.querySelector('.rfft'); if(f){ f.value=String(t.fft||0); r.querySelector('.ravg').value=t.avg; r.querySelector('.ravgn').textContent=t.avg;
+        r.querySelector('.rwin').value=t.window; r.querySelector('.rbins').value=String(t.bins); } }
+    } else { var h=this.hw;
+      g.querySelector('.hlna').value=h.lna; g.querySelector('.hlnan').textContent=h.lna; g.querySelector('.hvga').value=h.vga; g.querySelector('.hvgan').textContent=h.vga;
+      pr(g.querySelector('.hamp'),!!h.amp); pr(g.querySelector('.hant'),!!h.antenna); }
+  };
+
+  // ---- display range (colour scale) ----------------------------------------
+  // Auto: bottom follows the measured/backend noise floor, top is the fixed
+  // ceiling (the long-standing default). Manual: Ref level (top) + Range (dB).
+  Scope.prototype.rangeHi=function(){ return this.disp.auto?CEIL+(this.cal||0):this.disp.ref; };
+  Scope.prototype.rangeLo=function(){ return this.disp.auto?this.floor:(this.disp.ref-this.disp.range); };
+  Scope.prototype.setDisplay=function(o){
+    if(o.auto===false && this.disp.auto){ this.disp.ref=this.rangeHi(); this.disp.range=Math.max(10,this.rangeHi()-this.rangeLo()); }
+    if(o.auto!=null) this.disp.auto=!!o.auto;
+    if(o.ref!=null&&isFinite(o.ref)) this.disp.ref=Math.max(-200,Math.min(60,Math.round(o.ref)));
+    if(o.range!=null&&isFinite(o.range)) this.disp.range=Math.max(5,Math.min(200,Math.round(o.range)));
+    try{ localStorage.setItem('rfwf.disp.'+this.cfg.short,JSON.stringify(this.disp)); }catch(e){}
+    this._dispUI(); this.repaint(); this._cbarUI(); if(this.shown||this.row) this.drawTrace(this.shown||this.row);
+  };
+  Scope.prototype.fitDisplay=function(){
+    var src=this.maxRow||this.shown||this.row; if(!src||!src.length) return;
+    var pk=-1e9; for(var i=0;i<src.length;i++) if(src[i]>pk) pk=src[i];
+    var nf=(this.noiseDb!=null)?this.noiseDb:this.floor;
+    var top=Math.ceil((pk+3)/5)*5, bot=Math.floor((nf-5)/5)*5;
+    this.setDisplay({auto:false,ref:top,range:Math.max(10,top-bot)});
+  };
+  Scope.prototype._dispUI=function(){
+    if(!this.dAuto) return; var hi=Math.round(this.rangeHi()), rg=Math.round(this.rangeHi()-this.rangeLo());
+    this.dAuto.setAttribute('aria-pressed',this.disp.auto?'true':'false');
+    this.dRef.value=hi; this.dRefN.value=hi; this.dRng.value=rg; this.dRngN.value=rg;
+  };
+
+  // ---- row history + full repaint ------------------------------------------
+  Scope.prototype._histPush=function(raw,lo,hi,floor){
+    var r=Float32Array.from(raw);        // own copy: never aliases the live row (calibration shifts both)
+    this.hrows.push({t:Date.now(),p:r,lo:lo,hi:hi,floor:floor});
+    var cap=Math.max(300,Math.min(4000,Math.floor(10e6/(r.length*4))));   // ~10 MB per panel
+    if(this.hrows.length>cap) this.hrows.splice(0,this.hrows.length-cap);
+  };
+  // The value shown for a stored row (noise print applied when it matches the row's span).
+  Scope.prototype._shownOf=function(h){
+    var np=this._np; if(np && this._npOn && this._npStr>0 && np.n===h.p.length && np.lo===h.lo && np.hi===h.hi) return this._npApply(h.p);
+    return h.p;
+  };
+  // Redraw the visible waterfall from history: each stored row is resampled onto
+  // the CURRENT span (so after a zoom the past stays visible, just coarser) with a
+  // peak detector when several bins share a pixel column. One ImageData pass,
+  // scaled up — fast enough to run on every range / palette / resize change.
+  Scope.prototype.repaint=function(){
+    if(this.threeD){ this.draw3D(); return; }
+    var f=this.fctx, W=this.W, H=this.H, S=this.STEP||1; if(!W||!H) return;
+    f.fillStyle='#05080d'; f.fillRect(0,0,W,H);
+    var end=this.hrows.length-1-this.scrollBack; if(end<0){ this._drawTimeGrid(); return; }
+    var nrows=Math.min(end+1,Math.ceil(H/S)), cols=Math.max(1,Math.min(W,2048));
+    if(!this._rpCv) this._rpCv=document.createElement('canvas');
+    var cv=this._rpCv; if(cv.width!==cols) cv.width=cols; if(cv.height!==nrows) cv.height=nrows;
+    var ctx=cv.getContext('2d'), id=ctx.createImageData(cols,nrows), d=id.data;
+    var clo=this.rangeLo(), chi=this.rangeHi(), cs=(chi-clo)||1, flo=this.lo, fw=(this.hi-this.lo)/cols;
+    for(var k=0;k<nrows;k++){
+      var h=this.hrows[end-k], p=this._shownOf(h), N=p.length, bw=(h.hi-h.lo)/N;
+      for(var c=0;c<cols;c++){
+        var o=(k*cols+c)*4, f0=flo+c*fw, f1=f0+fw;
+        if(f1<=h.lo || f0>=h.hi){ d[o]=5;d[o+1]=8;d[o+2]=13;d[o+3]=255; continue; }
+        var i0=Math.floor((f0-h.lo)/bw), i1=Math.floor((f1-h.lo)/bw);
+        if(i0<0) i0=0; if(i1>=N) i1=N-1; if(i1<i0) i1=i0;
+        var v=p[i0]; for(var i=i0+1;i<=i1;i++) if(p[i]>v) v=p[i];
+        var t=(v-clo)/cs; t=t<0?0:(t>1?1:t); var col=LUTrgb[(t*255)|0];
+        d[o]=col[0]; d[o+1]=col[1]; d[o+2]=col[2]; d[o+3]=255;
+      }
+    }
+    ctx.putImageData(id,0,0);
+    var sm=f.imageSmoothingEnabled; f.imageSmoothingEnabled=false;
+    f.drawImage(cv,0,0,cols,nrows,0,0,W,nrows*S); f.imageSmoothingEnabled=sm;
+    this._drawTimeGrid();
+  };
+  // ---- hover readout -------------------------------------------------------
+  // Frequency under the cursor; on the 2D waterfall also the exact stored level
+  // and time of that cell (from the row history); on the trace the live level
+  // plus any hold traces. Mouse / pen only — a touch tap still measures.
+  Scope.prototype.onHover=function(e,which){
+    var cv=(which==='trace')?this.trace:this.fall, r=cv.getBoundingClientRect();
+    var fx=(e.clientX-r.left)/r.width; if(fx<0||fx>1||!(this.hi>this.lo)){ this.hideHover(); return; }
+    var f=this.lo+fx*(this.hi-this.lo), lines=['<b>'+fmtMHz(f)+'</b>'], _bh=bandsAt(f);
+    if(_bh.length) lines.push('<span class="hk">'+esc(_bh[0][2]+' · '+_bh[0][3])+'</span>');
+    var lvl=function(p,lo,hi){ if(!p||!p.length) return null; var i=Math.floor((f-lo)/((hi-lo)/p.length)); return (i>=0&&i<p.length)?p[i]:null; };
+    var _u=this.unit(), dbs=function(v){ return (v==null)?'—':(Math.round(v*10)/10)+_u; };
+    if(which==='fall' && !this.threeD){
+      var back=Math.floor((e.clientY-r.top)*this.d/(this.STEP||1))+this.scrollBack, h=this.hrows[this.hrows.length-1-back];
+      if(h){ var shown=lvl(this._shownOf(h),h.lo,h.hi), raw=lvl(h.p,h.lo,h.hi);
+        lines.push(dbs(shown)+(raw!=null&&shown!=null&&Math.abs(raw-shown)>0.5?' <span class="hk">(raw '+dbs(raw)+')</span>':''));
+        var ago=(Date.now()-h.t)/1000, d=new Date(h.t);
+        lines.push('<span class="hk">'+(ago<0.5?'now':'−'+ago.toFixed(1)+' s')+' · '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')+'</span>');
+      }
+    } else {
+      lines.push('live '+dbs(lvl(this.shown||this.row,this.lo,this.hi)));
+      var hd=this.holds||{};
+      if(hd.max&&this.maxRow) lines.push('<span class="ha">max '+dbs(lvl(this.maxRow,this.lo,this.hi))+'</span>');
+      if(hd.avg&&this.avgRow) lines.push('<span class="hk">avg '+dbs(lvl(this.avgRow,this.lo,this.hi))+'</span>');
+    }
+    this.hov.innerHTML=lines.join('<br>'); this.hov.style.display='block';
+    var bx=e.clientX+14, by=e.clientY+14, bw=this.hov.offsetWidth, bh=this.hov.offsetHeight;
+    if(bx+bw>window.innerWidth-6) bx=e.clientX-bw-14; if(by+bh>window.innerHeight-6) by=e.clientY-bh-14;
+    this.hov.style.left=bx+'px'; this.hov.style.top=by+'px';
+    this.hline.style.display='block'; this.hline.style.left=(fx*100)+'%';
+  };
+  Scope.prototype.hideHover=function(){ this.hov.style.display='none'; this.hline.style.display='none'; };
+
+  // ---- history scroll-back -------------------------------------------------
+  Scope.prototype.setScrollBack=function(n){
+    var vis=Math.ceil((this.H||1)/(this.STEP||1)), maxBack=Math.max(0,this.hrows.length-Math.min(vis,this.hrows.length));
+    n=Math.max(0,Math.min(maxBack,Math.round(n)||0));
+    if(this.threeD) n=0;
+    if(n===this.scrollBack) { this._histUI(); return; }
+    this.scrollBack=n; this.repaint(); this._histUI();
+  };
+  Scope.prototype._histUI=function(){
+    if(!this.hScroll) return;
+    var vis=Math.ceil((this.H||1)/(this.STEP||1)), maxBack=Math.max(0,this.hrows.length-Math.min(vis,this.hrows.length));
+    this.hScroll.max=maxBack; this.hScroll.value=maxBack-Math.min(this.scrollBack,maxBack);
+    this.hScroll.disabled=(maxBack===0)||this.threeD;
+    this.liveBtn.disabled=(this.scrollBack===0);
+    if(this.scrollBack>0){ var h=this.hrows[this.hrows.length-1-this.scrollBack];
+      this.hStat.textContent=h?('−'+((Date.now()-h.t)/1000).toFixed(1)+' s · holding'):''; }
+    else this.hStat.textContent='';
+  };
+
+  // ---- time axis (left edge of the 2D waterfall) --------------------------
+  Scope.prototype._drawTimeGrid=function(){
+    var cv=this.tgrid; if(!cv) return;
+    var d=this.d||1, W=this.fall.width, H=this.fall.height;
+    if(cv.width!==W) cv.width=W; if(cv.height!==H) cv.height=H;
+    var g=cv.getContext('2d'); g.clearRect(0,0,W,H);
+    if(this.threeD||!this.hrows.length) return;
+    var S=this.STEP||1, end=this.hrows.length-1-this.scrollBack, n=Math.min(end+1,Math.ceil(H/S));
+    if(n<2) return;
+    var a=this.hrows[Math.max(0,end-Math.min(n-1,40))], b=this.hrows[end];
+    var rate=(b.t>a.t)?(Math.min(n-1,40))/((b.t-a.t)/1000):16;          // rows per second
+    var pxPerSec=rate*S/d, iv=[1,2,5,10,15,30,60,120,300,600,1800,3600].find(function(c){return c*pxPerSec>=46;})||3600;
+    g.font=(10*d)+'px "IBM Plex Mono",monospace'; g.textBaseline='middle'; g.shadowColor='#000'; g.shadowBlur=3*d;
+    var prev=Math.floor(this.hrows[end].t/(iv*1000));
+    for(var k=1;k<n;k++){
+      var t=this.hrows[end-k].t, bk=Math.floor(t/(iv*1000));
+      if(bk!==prev){ var y=Math.round(k*S)+0.5, dt=new Date(bk===prev?t:(prev*iv*1000));
+        g.strokeStyle='rgba(205,214,228,.35)'; g.lineWidth=1; g.beginPath(); g.moveTo(0,y); g.lineTo(10*d,y); g.stroke();
+        g.fillStyle='rgba(205,214,228,.72)';
+        g.fillText(String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0')+':'+String(dt.getSeconds()).padStart(2,'0'),13*d,y);
+        prev=bk; }
+    }
+    g.shadowBlur=0;
+  };
+  // ---- per-panel colour bar (the dB range the colours map to) --------------
+  Scope.prototype._cbarUI=function(force){
+    if(!this.cbar) return; var lo=Math.round(this.rangeLo()), hi=Math.round(this.rangeHi());
+    var key=lo+'|'+hi+'|'+activePalette+'|'+this.threeD+'|'+this.unit(); if(!force && key===this._cbKey) return; this._cbKey=key;
+    this.cbar.style.background='linear-gradient(0deg,'+PALETTES[activePalette].stops.map(function(s){
+      return 'rgb('+s[1][0]+','+s[1][1]+','+s[1][2]+') '+Math.round(s[0]*100)+'%';}).join(',')+')';
+    this.cbHi.textContent=hi+this.unit(); this.cbLo.textContent=lo+this.unit();
   };
 
   // ---- noise print (background subtraction) -----------------------------
@@ -1286,7 +2277,7 @@
     var f=this.fctx, W=this.W, H=this.H, d=this.d||1;
     f.fillStyle='#05080d'; f.fillRect(0,0,W,H);
     var hist=this.hist, R=hist.length; if(!R) return;
-    var floor=this.floor, span=(CEIL-floor)||1, cx=W/2;
+    var floor=this.rangeLo(), span=(this.rangeHi()-floor)||1, cx=W/2, _chi=this.rangeHi();
     var yTop=Math.round(16*d), yBot=H-Math.round(8*d), depthSpan=yBot-yTop;
     var back=0.46, MAXH=depthSpan*0.62, topClip=Math.round(4*d);   // shrink + ridge height + top clamp
     var yAt=function(dep){ return yTop+dep*depthSpan; };
@@ -1304,7 +2295,7 @@
       // sloped-top quads between adjacent columns — anti-aliased, so the ridgeline
       // is a smooth surface instead of a row of flat-topped bars.
       for(var c=0;c<C-1;c++){
-        var col=colorRGB(row[c],floor);
+        var col=colorRGB(row[c],floor,_chi);
         f.fillStyle='rgb('+((col[0]*dim)|0)+','+((col[1]*dim)|0)+','+((col[2]*dim)|0)+')';
         f.beginPath(); f.moveTo(xx[c],yy[c]); f.lineTo(xx[c+1],yy[c+1]);
         f.lineTo(xx[c+1],yFill); f.lineTo(xx[c],yFill); f.closePath(); f.fill();
@@ -1318,7 +2309,8 @@
     on=!!on; this.threeD=on;
     if(this.d3Sel) Array.prototype.forEach.call(this.d3Sel.querySelectorAll('button'),function(b){
       b.setAttribute('aria-pressed', (b.getAttribute('data-3d')==='1')===on?'true':'false'); });
-    if(on){ this.draw3D(); } else { this.resetCanvas(); }   // resume the flat 2D waterfall
+    if(on){ this.scrollBack=0; this.draw3D(); this._drawTimeGrid(); } else { this.repaint(); }   // 2D resumes from history
+    this._histUI(); this._cbarUI(true);
   };
   // Robust noise-floor estimate: the ~30th-percentile of the row (ignores the
   // handful of bins that carry real signals). Feeds SNR + the detection threshold.
@@ -1370,7 +2362,7 @@
   };
   Scope.prototype.renderSignals=function(){
     if(this.decoding) return;
-    var sig=this.signals||{}, arr=[]; for(var k in sig) arr.push(sig[k]);
+    var sig=this.signals||{}, arr=[], U=this.unit(); for(var k in sig) arr.push(sig[k]);
     arr.sort(function(a,b){return a.fMHz-b.fMHz;});
     this.logCount.textContent=arr.length?arr.length+' signal'+(arr.length>1?'s':''):'';
     if(!arr.length){ this.logList.innerHTML='<div class="logempty">No signals above the noise floor yet…</div>'; return; }
@@ -1379,7 +2371,7 @@
       var bw=v.bwKhz>=1000?(v.bwKhz/1000).toFixed(2)+' MHz':Math.round(v.bwKhz)+' kHz';
       html+='<div class="logrow sig"><span class="f">'+fmtMHz(v.fMHz)+'</span>'
         +'<span class="meta">BW '+bw+' · SNR '+Math.round(v.snr)+' dB · <span class="duty">duty '+Math.round(v.duty*100)+'%</span></span>'
-        +'<span class="d">'+Math.round(v.pk)+' dB</span></div>';
+        +'<span class="d">'+Math.round(v.pk)+U+'</span></div>';
     });
     this.logList.innerHTML=html;
   };
@@ -1387,28 +2379,43 @@
   // Peak-search + measure the signal nearest a clicked frequency: snapped centre,
   // level, SNR, −3/−20 dB bandwidth, 99% occupied bandwidth and channel power.
   Scope.prototype.measureAt=function(fMHz){
-    var p=this.row; if(!p||!p.length) return null;
+    var live=this.row; if(!live||!live.length) return null;
+    // Bandwidth / occupied BW / channel power are measured on the smoothed Avg
+    // trace (a single live row is too noisy; analysers do the same), when it
+    // matches the live row. The peak level is the live row's.
+    var useAvg=this.avgRow && this.avgRow.length===live.length && !(this._np&&this._npOn&&this._npStr>0);
+    var p=useAvg?this.avgRow:live;
     var n=p.length, binMHz=(this.hi-this.lo)/n, nf=(this.noiseDb!=null?this.noiseDb:this.floor);
     var clickBin=Math.max(0,Math.min(n-1,Math.round((fMHz-this.lo)/binMHz-0.5)));
     var win=Math.max(2,Math.round(n*0.02)), s=Math.max(0,clickBin-win), e=Math.min(n-1,clickBin+win), pk=-1e9,pkI=clickBin,i;
     for(i=s;i<=e;i++){ if(p[i]>pk){pk=p[i];pkI=i;} }
+    var livePk=-1e9; for(i=Math.max(0,pkI-1);i<=Math.min(n-1,pkI+1);i++) if(live[i]>livePk) livePk=live[i];
     // Walk out to the −drop dB point, but never below the noise floor — otherwise
     // a signal with < drop dB SNR would measure the whole span as its bandwidth.
-    function edge(drop,dir){ var lvl=Math.max(pk-drop,nf+3),i=pkI; while(i+dir>=0&&i+dir<n&&p[i+dir]>lvl){i+=dir;} return i; }
+    // ...and stop at the valley to a neighbouring signal: once the level has
+    // dipped and climbs >= 6 dB back up, that's the next emitter, not this one's
+    // skirt (otherwise a cluttered floor inflates the bandwidth many times).
+    // A "−20 dB bandwidth" only exists if the signal is > 20 dB over the noise.
+    // Otherwise measure at the deepest drop the SNR supports (staying >= 6 dB
+    // off the noise floor) and report which drop was used, rather than
+    // quietly measuring the noise floor's width.
+    var dropFor=function(drop){ return Math.max(3,Math.min(drop,(pk-nf)-6)); };
+    function edge(drop,dir){ var lvl=pk-dropFor(drop),i=pkI,mn=pk;
+      while(i+dir>=0&&i+dir<n&&p[i+dir]>lvl){ var v=p[i+dir]; if(v<mn) mn=v; else if(v>mn+6) break; i+=dir; } return i; }
     var l20=edge(20,-1),r20=edge(20,1), l3=edge(3,-1),r3=edge(3,1);
     var lin=function(db){return Math.pow(10,db/10);}, tot=0;
     for(i=l20;i<=r20;i++) tot+=lin(p[i]);
     var acc=0,lo99=l20,hi99=r20;
     for(i=l20;i<=r20;i++){ acc+=lin(p[i]); if(acc>=tot*0.005){lo99=i;break;} }
     acc=0; for(i=r20;i>=l20;i--){ acc+=lin(p[i]); if(acc>=tot*0.005){hi99=i;break;} }
-    return {peakF:this.lo+(pkI+0.5)*binMHz, pk:pk, snr:pk-nf,
+    return {peakF:this.lo+(pkI+0.5)*binMHz, pk:livePk, snr:livePk-nf, smoothed:useAvg, bwDrop:Math.round(dropFor(20)),
             bw3:(r3-l3+1)*binMHz*1000, bw20:(r20-l20+1)*binMHz*1000,
             obw99:(hi99-lo99+1)*binMHz*1000, chPwr:10*Math.log10(tot||1e-12)};
   };
   Scope.prototype.drawTrace=function(power){
-    var t=this.tctx,W=this.trace.width,H=this.trace.height,N=power.length,floor=this.floor;
+    var t=this.tctx,W=this.trace.width,H=this.trace.height,N=power.length,floor=this.rangeLo(),ceil=this.rangeHi();
     t.clearRect(0,0,W,H);
-    var yFor=function(db){var norm=(db-floor)/(CEIL-floor);if(norm<0)norm=0;if(norm>1)norm=1;return H-norm*(H-4)-2;};
+    var yFor=function(db){var norm=(db-floor)/((ceil-floor)||1);if(norm<0)norm=0;if(norm>1)norm=1;return H-norm*(H-4)-2;};
     var line=function(arr,stroke,wdt){ if(!arr)return; t.strokeStyle=stroke; t.lineWidth=wdt; t.beginPath();
       for(var c=0;c<N;c++){var x=c*W/N,y=yFor(arr[c]); if(c===0)t.moveTo(x,y);else t.lineTo(x,y);} t.stroke(); };
     // Persistence (digital-phosphor): accumulate the spectrum path into a fading
@@ -1433,6 +2440,12 @@
     if(h.min) line(this.minRow,"rgba(120,140,170,0.75)",1);
     if(h.avg) line(this.avgRow,"rgba(63,181,107,0.9)",1);
     if(h.max) line(this.maxRow,"rgba(245,185,66,0.85)",1);
+    // limit line / mask (red, dashed) with violations highlighted
+    var LA=(this.lim&&this.lim.mode!=='off')?this.limitArr(N):null;
+    if(LA){ t.setLineDash([5,4]); t.strokeStyle='rgba(251,113,133,0.9)'; t.lineWidth=Math.max(1,this.d); t.beginPath();
+      for(var li=0;li<N;li++){ var lx=li*W/N, ly=yFor(LA.a?LA.a[li]:LA.c); if(li===0)t.moveTo(lx,ly); else t.lineTo(lx,ly); } t.stroke(); t.setLineDash([]);
+      t.fillStyle='rgba(251,113,133,0.35)';
+      for(var lj=0;lj<N;lj++){ var lim=LA.a?LA.a[lj]:LA.c; if(power[lj]>lim){ var y1=yFor(power[lj]), y0=yFor(lim); t.fillRect(lj*W/N,y1,Math.max(1,W/N),y0-y1); } } }
     // live spectrum (filled), drawn on top
     t.fillStyle="rgba(56,189,201,0.12)"; t.strokeStyle="#38bdc9"; t.lineWidth=Math.max(1,this.d); t.beginPath();
     for(var c=0;c<N;c++){var x=c*W/N,y=yFor(power[c]); if(c===0)t.moveTo(x,y);else t.lineTo(x,y);}
@@ -1442,11 +2455,13 @@
   };
   Scope.prototype.updateReadout=function(){
     var N=this.row?this.row.length:1, fMHz=this.lo+(this.peak.idx/N)*(this.hi-this.lo);
-    this.pkF.textContent=fmtMHz(fMHz); this.pkD.textContent=this.peak.db.toFixed(0)+" dB";
+    this.pkF.textContent=fmtMHz(fMHz); this.pkD.textContent=this.peak.db.toFixed(0)+this.unit();
     if(this.snrEl) this.snrEl.textContent=(this.snr!=null)?(Math.round(this.snr)+" dB"):"—";
-    if(this.nfEl) this.nfEl.textContent=(this.noiseDb!=null)?(Math.round(this.noiseDb)+" dB"):"—";
+    if(this.nfEl) this.nfEl.textContent=(this.noiseDb!=null)?(Math.round(this.noiseDb)+this.unit()):"—";
     this.busyEl.textContent=this.busy.toFixed(0)+"%";
-    this.spanEl.textContent=fmtF(this.lo)+"–"+fmtF(this.hi)+(this.zoom?" ⤢":"");
+    this.spanEl.textContent=fmtSpan(this.lo,this.hi)+(this.zoom?" ⤢":"");
+    if(this.rbwEl){ var rb=(this.mode==='live')?this.rbw:(this.hi>this.lo&&this.row?(this.hi-this.lo)*1e6/this.row.length:null);
+      this.rbwEl.textContent=(rb==null)?'—':(rb>=1e6?(rb/1e6).toFixed(2)+' MHz':(rb>=1000?(rb/1000).toFixed(rb>=1e4?0:1)+' kHz':Math.round(rb)+' Hz')); }
     this.nowEl.textContent="t="+((performance.now()-this.t0)/1000).toFixed(1)+"s";
   };
   Scope.prototype.setRate=function(hz){
@@ -1462,7 +2477,23 @@
     this.rateEl.textContent=hz.toFixed(0);
   };
 
+  Scope.prototype.drawBandPlan=function(){
+    var g=this.bplan; if(!g) return; g.hidden=!bpShow; if(!bpShow) return;
+    var lo=this.lo, hi=this.hi, span=hi-lo; if(!(span>0)){ g.innerHTML=''; return; }
+    var inView=BANDPLAN.filter(function(b){ return b[1]>lo&&b[0]<hi&&(!b[5]||b[5]===bpRegion); });
+    inView.sort(function(a,b){ return (b[1]-b[0])-(a[1]-a[0]); });            // big first
+    // overlapping allocations (e.g. 433 ISM inside 70 cm) go to separate lanes
+    var lanes=[], html=[];
+    inView.forEach(function(b){ var x0=Math.max(0,(b[0]-lo)/span*100), x1=Math.min(100,(b[1]-lo)/span*100), L=0;
+      while(L<3 && (lanes[L]||[]).some(function(r){ return x0<r[1]-0.01 && x1>r[0]+0.01; })) L++;
+      if(L>=3) return; (lanes[L]=lanes[L]||[]).push([x0,x1]);
+      html.push('<div class="bp '+b[4]+'" style="left:'+x0+'%;width:'+Math.max(0.3,x1-x0)+'%;top:'+(2+L*15)+'px" title="'+esc(b[2]+' '+b[0]+'–'+b[1]+' MHz: '+b[3])+'">'
+        +((x1-x0)>5?'<span>'+esc(b[2])+(x1-x0>22?' · '+esc(b[3]):'')+'</span>':'')+'</div>'); });
+    g.style.height=(4+Math.max(1,lanes.length)*15)+'px';
+    g.innerHTML=html.join('');
+  };
   Scope.prototype.drawRuler=function(){
+    this.drawBandPlan();
     var lo=this.lo,hi=this.hi,span=hi-lo,r=this.ruler; r.innerHTML=""; if(!(span>0))return;
     // Z-Wave channel overlay: exact channel centres for the selected region,
     // drawn as cyan bands so you can see which channel each burst lands on.
@@ -1472,7 +2503,7 @@
         d.innerHTML='<span class="il">'+esc(c.label)+'</span>';r.appendChild(d);
         var t=document.createElement('div');t.className='tick';t.style.left=x+"%";t.style.background="var(--cyan)";r.appendChild(t);
         var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=c.freq_mhz.toFixed(2);r.appendChild(l);});
-      genTicks(lo,hi).forEach(function(fq){var x=(fq-lo)/span*100;if(x<0||x>100)return;
+      genTicks(lo,hi,Math.max(4,Math.min(9,Math.round((r.clientWidth||700)/110)))).forEach(function(fq){var x=(fq-lo)/span*100;if(x<0||x>100)return;
         var t=document.createElement('div');t.className='tick';t.style.left=x+"%";r.appendChild(t);});
       return;
     }
@@ -1484,14 +2515,73 @@
       (m.chLabels||[]).forEach(function(c){var x=(c[0]-lo)/span*100;if(x<0||x>100)return;
         var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.style.top="18px";l.style.color="var(--cyan)";l.textContent=c[1];r.appendChild(l);});
     }
-    var ticks=(showBands&&m.ticks)?m.ticks:genTicks(lo,hi);
+    var tgt=Math.max(4,Math.min(9,Math.round((r.clientWidth||700)/110)));   // fewer labels on a phone
+    var ticks=(showBands&&m.ticks)?m.ticks:genTicks(lo,hi,tgt), tst=niceStep(span,tgt);
     ticks.forEach(function(fq){var x=(fq-lo)/span*100;if(x<0||x>100)return;
       var t=document.createElement('div');t.className='tick';t.style.left=x+"%";r.appendChild(t);
-      var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=fmtF(fq);r.appendChild(l);});
+      var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=(showBands&&m.ticks)?fmtF(fq):fmtTick(fq,tst);r.appendChild(l);});
   };
   Scope.prototype.showVeil=function(t,s){this.veilT.textContent=t;this.veilS.textContent=s||'';this.veil.classList.add('show');};
   Scope.prototype.hideVeil=function(){this.veil.classList.remove('show');};
 
+  // HF: broadcast bands (MW + the shortwave broadcast allocations) are AM; other
+  // HF voice is single sideband — LSB below 10 MHz, USB above (the ham convention).
+  var SW_BCAST=[[0.53,1.71],[2.3,2.495],[3.2,3.4],[3.9,4.0],[4.75,5.06],[5.9,6.2],[7.2,7.45],[9.4,9.9],[11.6,12.1],[13.57,13.87],[15.1,15.8],[17.48,17.9],[18.9,19.02],[21.45,21.85],[25.67,26.1]];
+  function hfMode(f){ for(var i=0;i<SW_BCAST.length;i++) if(f>=SW_BCAST[i][0]&&f<=SW_BCAST[i][1]) return 'am'; return f<10?'lsb':'usb'; }
+  // ---- band plan (ITU allocations + common use) ----------------------------
+  // [lo, hi, name, use, class, region(0 = all, else 1/2/3)]
+  var BANDPLAN=[
+    [0.1485,0.2835,'LW','long-wave broadcast (AM)','bc',1],[0.5265,1.6065,'MW','medium-wave broadcast (AM)','bc',1],[0.53,1.70,'AM','AM broadcast','bc',2],[0.5265,1.6065,'MW','medium-wave broadcast (AM)','bc',3],
+    [1.81,2.0,'160 m','amateur (CW / SSB)','ham',1],[1.8,2.0,'160 m','amateur (CW / SSB)','ham',2],[1.8,2.0,'160 m','amateur','ham',3],
+    [2.3,2.495,'120 m','shortwave broadcast (AM)','bc',0],[3.2,3.4,'90 m','shortwave broadcast (AM)','bc',0],
+    [3.5,3.8,'80 m','amateur (LSB / CW)','ham',1],[3.5,4.0,'80 m','amateur (LSB / CW)','ham',2],[3.5,3.9,'80 m','amateur','ham',3],
+    [3.9,4.0,'75 m','shortwave broadcast','bc',1],[4.75,5.06,'60 m bc','shortwave broadcast','bc',0],[5.3515,5.3665,'60 m','amateur','ham',0],
+    [5.9,6.2,'49 m','shortwave broadcast (AM)','bc',0],[7.0,7.2,'40 m','amateur (LSB / CW)','ham',1],[7.0,7.3,'40 m','amateur (LSB / CW)','ham',2],[7.0,7.3,'40 m','amateur','ham',3],
+    [7.2,7.45,'41 m','shortwave broadcast (AM)','bc',1],[9.4,9.9,'31 m','shortwave broadcast (AM)','bc',0],[10.1,10.15,'30 m','amateur (CW / data)','ham',0],
+    [11.6,12.1,'25 m','shortwave broadcast (AM)','bc',0],[13.57,13.87,'22 m','shortwave broadcast (AM)','bc',0],[13.553,13.567,'13.56 ISM','RFID / NFC','ism',0],
+    [14.0,14.35,'20 m','amateur (USB / CW / FT8)','ham',0],[15.1,15.8,'19 m','shortwave broadcast (AM)','bc',0],[17.48,17.9,'16 m','shortwave broadcast (AM)','bc',0],
+    [18.068,18.168,'17 m','amateur','ham',0],[18.9,19.02,'15 m bc','shortwave broadcast','bc',0],[21.0,21.45,'15 m','amateur (USB / CW)','ham',0],[21.45,21.85,'13 m','shortwave broadcast','bc',0],
+    [24.89,24.99,'12 m','amateur','ham',0],[25.67,26.1,'11 m bc','shortwave broadcast','bc',0],[26.957,27.283,'27 ISM','ISM / RC models','ism',0],[26.965,27.405,'CB','citizens band (AM / FM / SSB)','',0],
+    [28.0,29.7,'10 m','amateur','ham',0],[50.0,52.0,'6 m','amateur','ham',1],[50.0,54.0,'6 m','amateur','ham',2],[50.0,54.0,'6 m','amateur','ham',3],[70.0,70.5,'4 m','amateur','ham',1],
+    [87.5,108.0,'FM','FM broadcast','bc',0],[108.0,117.975,'Air nav','VOR / ILS navigation','',0],[118.0,137.0,'Airband','aviation voice (AM)','',0],
+    [137.0,138.0,'Wx sat','NOAA / Meteor weather satellites','',0],[144.0,146.0,'2 m','amateur (FM / SSB / APRS 144.800)','ham',1],[144.0,148.0,'2 m','amateur (FM / SSB / APRS 144.390)','ham',2],[144.0,148.0,'2 m','amateur','ham',3],
+    [148.0,174.0,'VHF-hi','land mobile / pagers / public safety','',2],[156.0,162.025,'Marine','marine VHF (FM voice, DSC, AIS)','',0],
+    [174.0,240.0,'DAB','DAB digital radio (Band III)','bc',1],[174.0,216.0,'TV-VHF','VHF television','bc',2],
+    [380.0,400.0,'TETRA','emergency services (TETRA, encrypted)','',1],[420.0,450.0,'70 cm','amateur','ham',2],[430.0,440.0,'70 cm','amateur (FM / DMR / repeaters)','ham',1],[430.0,440.0,'70 cm','amateur','ham',3],
+    [433.05,434.79,'433 ISM','ISM / LPD433: remotes, sensors, TPMS','ism',1],[446.0,446.2,'PMR446','licence-free walkie-talkies (NFM / DMR)','',1],
+    [462.5625,467.7125,'FRS/GMRS','family radios (NFM)','',2],[470.0,694.0,'UHF TV','DVB-T television','bc',1],[470.0,608.0,'UHF TV','ATSC television','bc',2],
+    [791.0,821.0,'LTE 800 ↓','LTE band 20 downlink','cell',1],[832.0,862.0,'LTE 800 ↑','LTE band 20 uplink','cell',1],[824.0,849.0,'Cell 850 ↑','cellular uplink','cell',2],[869.0,894.0,'Cell 850 ↓','cellular downlink','cell',2],
+    [863.0,870.0,'868 SRD','short-range devices: LoRa, sensors, alarms','ism',1],[880.0,915.0,'GSM 900 ↑','GSM / LTE band 8 uplink','cell',1],[902.0,928.0,'915 ISM','ISM: LoRa, meters, Z-Wave','ism',2],
+    [925.0,960.0,'GSM 900 ↓','GSM / LTE band 8 downlink','cell',1],[1029.0,1031.0,'1030','SSR interrogation (radar → aircraft)','',0],[1089.0,1091.0,'1090','ADS-B / Mode S (aircraft)','',0],
+    [1240.0,1300.0,'23 cm','amateur','ham',0],[1525.0,1559.0,'L-band ↓','Inmarsat / satcom downlink','',0],[1559.0,1610.0,'GNSS','GPS L1 / Galileo E1 / GLONASS / BeiDou','',0],
+    [1616.0,1626.5,'Iridium','Iridium satellite phones','',0],[1710.0,1785.0,'1800 ↑','GSM / LTE band 3 uplink','cell',1],[1805.0,1880.0,'1800 ↓','GSM / LTE band 3 downlink','cell',1],
+    [1880.0,1900.0,'DECT','DECT cordless phones','',1],[1850.0,1990.0,'PCS','cellular PCS','cell',2],[1920.0,1980.0,'2100 ↑','UMTS / LTE band 1 uplink','cell',1],[2110.0,2170.0,'2100 ↓','UMTS / LTE band 1 downlink','cell',1],
+    [2400.0,2483.5,'2.4 GHz','ISM: Wi-Fi, Bluetooth, Zigbee, drones','ism',0],[2500.0,2690.0,'2600','LTE band 7 / 41','cell',0],[3400.0,3800.0,'3.5 GHz','5G NR n78','cell',1],
+    [5150.0,5850.0,'5 GHz','Wi-Fi 5 GHz (UNII)','ism',0],[5725.0,5875.0,'5.8 ISM','ISM: FPV video, Wi-Fi','ism',0],[5925.0,7125.0,'6 GHz','Wi-Fi 6E','ism',0]];
+  var bpRegion=1, bpShow=true;
+  try{ var _r=+localStorage.getItem('rfwf.bpreg'); if(_r>=1&&_r<=3) bpRegion=_r; if(localStorage.getItem('rfwf.bpshow')==='0') bpShow=false; }catch(e){}
+  function bandsAt(f){ return BANDPLAN.filter(function(b){ return f>=b[0]&&f<=b[1]&&(!b[5]||b[5]===bpRegion); })
+    .sort(function(a,b){ return (a[1]-a[0])-(b[1]-b[0]); }); }                 // most specific first
+  // Signature hints: [lo, hi, bwMinKhz, bwMaxKhz, label, action]
+  var SIGNATURES=[
+    [1089,1091,0,1e9,'ADS-B / Mode S — aircraft transponders',{page:'/adsb-radar',name:'ADS-B Radar'}],
+    [1029,1031,0,1e9,'SSR interrogation — radar asking aircraft to reply',null],
+    [118,137,2,25,'AM voice — air traffic control / pilots',{radio:'am'}],
+    [161.95,162.05,5,40,'AIS — ship position reports',null],
+    [156,162.05,5,30,'marine VHF FM voice (ch 16 = 156.800 distress)',{radio:'nfm'}],
+    [144.78,144.82,5,25,'APRS packet (EU 144.800)',{page:'/aprs',name:'APRS'}],[144.37,144.41,5,25,'APRS packet (US 144.390)',{page:'/aprs',name:'APRS'}],
+    [144,148,5,20,'2 m amateur NFM voice / repeater',{radio:'nfm'}],[430,440,5,20,'70 cm amateur NFM voice / repeater (DMR if ~9 kHz steady)',{radio:'nfm'}],
+    [446,446.2,5,15,'PMR446 walkie-talkie (NFM; DMR/dPMR if steady & ~6-9 kHz)',{radio:'nfm'}],[462.5,467.8,5,25,'FRS / GMRS family radio',{radio:'nfm'}],
+    [380,400,18,32,'TETRA — emergency services (encrypted, digital)',null],
+    [137,138,25,60,'NOAA APT weather satellite pass',null],[137,138,100,220,'Meteor-M LRPT weather satellite',null],
+    [174,240,1200,1800,'DAB digital radio multiplex (1.536 MHz block)',null],[470,694,5500,8500,'DVB-T television multiplex',null],
+    [925,960,120,280,'GSM downlink carrier (200 kHz)',null],[880,915,120,280,'GSM uplink — a phone transmitting',null],[1805,1880,120,280,'GSM-1800 downlink carrier',null],
+    [791,821,1100,21000,'LTE-800 downlink',null],[925,960,1100,21000,'LTE downlink (band 8)',null],[1805,1880,1100,21000,'LTE downlink (band 3)',null],[2110,2170,1100,21000,'UMTS / LTE downlink (band 1)',null],[2620,2690,1100,21000,'LTE downlink (band 7)',null],
+    [1880,1900,1200,2000,'DECT cordless phone channel',null],
+    [2400,2483.5,15000,90000,'Wi-Fi channel (20 / 40 / 80 MHz)',null],[2400,2483.5,300,2500,'Bluetooth / BLE / Zigbee burst',null],
+    [5150,5895,15000,170000,'Wi-Fi 5 GHz channel',null],[5725,5875,5000,30000,'analogue FPV video / ISM',null],
+    [26.96,27.41,2,12,'CB radio (AM / FM; SSB on the upper channels)',{radio:'am'}],
+    [1.8,30,1.5,4,'HF SSB voice (ham / utility)',null],[1.8,30,0.05,0.6,'HF CW (Morse) / narrow data',{radio:'cw'}]];
   function fmtMHz(mhz){return (mhz>=1000)?(mhz/1000).toFixed(4)+" GHz":mhz.toFixed(2)+" MHz";}
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 
@@ -1523,6 +2613,46 @@
     hwLo:1, hwHi:6000, tuneSpan:20,   // HackRF One: 1 MHz-6 GHz (sweeps every mesh/LoRa overlay band too)
     liveBands:SUBGHZ_BANDS.concat([{id:'2.4',label:'2.4G'},{id:'5',label:'5G'},{id:'6',label:'6G'}]), defaultBand:'2.4' });
   scopes.push(hackrf); stack.appendChild(hackrf.el);
+  window.RFWF={scopes:scopes};   // console/debug handle on the panels
+  // ---- keyboard shortcuts (act on the panel last pointed at) ---------------
+  var activeScope=scopes[0];
+  var KEYS=[['Space','Pause / resume'],['P','Peak search'],['[  ]','Next peak left / right'],['M','Add a marker'],
+    ['C','Marker → centre'],['X','Clear markers'],['Z','Zero-span on/off'],['+  −','Zoom in / out (around the marker)'],
+    ['←  →','Pan left / right'],['0','Full band (reset zoom)'],['L','Back to live (history)'],['3','2D / 3D view'],
+    ['A','Fit display range to signal'],['F','Full screen'],['S','Settings drawer'],['?','This help'],['Esc','Close']];
+  var kb=document.createElement('div'); kb.className='kbhelp'; kb.hidden=true;
+  kb.innerHTML='<div class="kbbox" role="dialog" aria-label="Keyboard shortcuts"><h4>Keyboard shortcuts</h4><div class="kbgrid">'
+    +KEYS.map(function(k){ return k[0].split('  ').map(function(x){return '<kbd>'+esc(x)+'</kbd>';}).join(' ')+'<span>'+esc(k[1])+'</span>'; }).join('')
+    +'</div><p style="margin:12px 0 0">They act on the panel your mouse was last over. Ignored while typing in a box.</p></div>';
+  document.body.appendChild(kb); kb.addEventListener('click',function(e){ if(e.target===kb) showKeys(false); });
+  function showKeys(on){ kb.hidden=!on; }
+  document.addEventListener('keydown',function(e){
+    var t=e.target, tag=(t&&t.tagName)||'';
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    if(/INPUT|SELECT|TEXTAREA/.test(tag)||(t&&t.isContentEditable)) return;
+    var s=activeScope||scopes[0], k=e.key, sp=s.hi-s.lo, ctr=(s.marker!=null)?s.marker:(s.lo+s.hi)/2, done=true;
+    if(k==='Escape'){ showKeys(false); return; }
+    if(k==='?'){ showKeys(kb.hidden); }
+    else if(k===' '){ setRunning(!running); }
+    else if(k==='p'||k==='P'){ s.peakSearch(); }
+    else if(k==='['){ s.nextPeak(-1); } else if(k===']'){ s.nextPeak(1); }
+    else if(k==='m'||k==='M'){ s.addMarker(); }
+    else if(k==='c'||k==='C'){ s.markerToCentre(); }
+    else if(k==='x'||k==='X'){ s.marker=null; s.placeMarker(); }
+    else if(k==='z'||k==='Z'){ s.toggleZeroSpan(); }
+    else if(k==='+'||k==='='){ s.zoomTo(ctr-sp/4,ctr+sp/4); }
+    else if(k==='-'||k==='_'){ s.zoomTo(ctr-sp,ctr+sp); }
+    else if(k==='ArrowLeft'){ s.zoomTo(s.lo-sp*0.1,s.hi-sp*0.1); }
+    else if(k==='ArrowRight'){ s.zoomTo(s.lo+sp*0.1,s.hi+sp*0.1); }
+    else if(k==='0'){ s.resetZoom(); }
+    else if(k==='l'||k==='L'){ s.setScrollBack(0); }
+    else if(k==='3'){ s.setThreeD(!s.threeD); }
+    else if(k==='a'||k==='A'){ s.fitDisplay(); }
+    else if(k==='f'||k==='F'){ s.toggleFullscreen(); }
+    else if(k==='s'||k==='S'){ s.cfgBtn.click(); }
+    else done=false;
+    if(done) e.preventDefault();
+  });
 
   var clockEl=document.getElementById('clock');
   function tickClock(){clockEl.textContent=nowHM();} setInterval(tickClock,1000); tickClock();
@@ -1617,8 +2747,42 @@
         presetEl=document.getElementById('r-preset'), listenBtn=document.getElementById('r-listen'),
         saveBtn=document.getElementById('r-save'),
         volEl=document.getElementById('r-vol'), nowEl=document.getElementById('r-now'),
-        audio=document.getElementById('r-audio');
-    var rmode='wfm', playing=false, builtins={};
+        audio=document.getElementById('r-audio'), sqEl=document.getElementById('r-sq'), sqV=document.getElementById('r-sqv'),
+        recBtn=document.getElementById('r-rec');
+    var rmode='wfm', playing=false, builtins={}, sqT=0;
+    // squelch: re-tune (debounced) so rtl_fm restarts with the new level
+    try{ var _sq=localStorage.getItem('ragnar_radio_sq'); if(_sq!==null){ sqEl.value=_sq; } }catch(e){}
+    function sqLabel(){ var v=+sqEl.value; sqV.textContent=v?String(v):'off'; }
+    sqLabel();
+    sqEl.addEventListener('input',sqLabel);
+    sqEl.addEventListener('change',function(){ try{ localStorage.setItem('ragnar_radio_sq',sqEl.value); }catch(e){}
+      clearTimeout(sqT); sqT=setTimeout(function(){ if(playing) tune(); },250); });
+    // --- record what you're hearing (Web Audio -> MediaRecorder; keeps it audible) ---
+    var actx=null, asrc=null, adest=null, rec=null, chunks=[], recT0=0, recTimer=0;
+    var canRec=!!(window.MediaRecorder && (window.AudioContext||window.webkitAudioContext));
+    if(!canRec){ recBtn.title='Recording needs a browser with MediaRecorder + Web Audio'; }
+    function recStop(){ if(rec && rec.state!=='inactive') rec.stop(); }
+    function recStart(){
+      try{
+        if(!actx){ actx=new (window.AudioContext||window.webkitAudioContext)();
+          asrc=actx.createMediaElementSource(audio); asrc.connect(actx.destination);
+          adest=actx.createMediaStreamDestination(); asrc.connect(adest); }
+        if(actx.state==='suspended') actx.resume();
+        var mt=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'].filter(function(t){return MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t);})[0]||'';
+        rec=new MediaRecorder(adest.stream, mt?{mimeType:mt}:undefined); chunks=[];
+        rec.ondataavailable=function(e){ if(e.data&&e.data.size) chunks.push(e.data); };
+        rec.onstop=function(){ clearInterval(recTimer);
+          var type=(rec&&rec.mimeType)||'audio/webm', ext=/ogg/.test(type)?'ogg':(/mp4/.test(type)?'m4a':'webm');
+          var blob=new Blob(chunks,{type:type}), a=document.createElement('a');
+          a.href=URL.createObjectURL(blob); a.download='ragnar-radio-'+(freqEl.value||'')+'MHz-'+rmode+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.'+ext;
+          document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000);
+          recBtn.setAttribute('aria-pressed','false'); recBtn.innerHTML='&#9679;&nbsp;Rec'; rec=null; };
+        rec.start(1000); recT0=Date.now();
+        recBtn.setAttribute('aria-pressed','true');
+        recTimer=setInterval(function(){ recBtn.innerHTML='&#9632;&nbsp;'+Math.round((Date.now()-recT0)/1000)+'s'; },500);
+      }catch(err){ nowEl.innerHTML='<span style="color:#fb7185">Recording failed: '+esc(String(err&&err.message||err))+'</span>'; }
+    }
+    recBtn.addEventListener('click',function(){ if(!canRec||!playing) return; if(rec) recStop(); else recStart(); });
     audio.volume=0.8;
     volEl.addEventListener('input',function(){ audio.volume=(parseInt(volEl.value,10)||0)/100; });
     // --- saved stations (favourites) persisted per-browser in localStorage ---
@@ -1660,11 +2824,12 @@
       playing=true; listenBtn.setAttribute('aria-pressed','true'); listenBtn.innerHTML='&#10074;&#10074;&nbsp;Stop';
       // stop the RTL scope (one dongle) so the UI reflects it
       scopes.forEach(function(s){ if(s.cfg.tuner && s.mode==='live') s.stopLive(); });
-      audio.src='/api/net/radio/stream?freq_hz='+hz+'&mode='+rmode+'&t='+Date.now();
+      audio.src='/api/net/radio/stream?freq_hz='+hz+'&mode='+rmode+'&squelch='+(+sqEl.value||0)+'&t='+Date.now();
+      recBtn.disabled=!canRec;
       audio.play().catch(function(){});
       nowEl.innerHTML='<span style="color:var(--live)">▶ '+(freqEl.value)+' MHz '+rmode.toUpperCase()+'</span> · sub-GHz sweep paused (one dongle)';
     }
-    function stop(){ playing=false; listenBtn.setAttribute('aria-pressed','false'); listenBtn.innerHTML='&#9654;&nbsp;Listen';
+    function stop(){ recStop(); recBtn.disabled=true; playing=false; listenBtn.setAttribute('aria-pressed','false'); listenBtn.innerHTML='&#9654;&nbsp;Listen';
       audio.pause(); audio.removeAttribute('src'); audio.load();
       fetch('/api/net/radio/stop',{method:'POST'}).catch(function(){});
       nowEl.textContent='off · one dongle, so listening pauses the sub-GHz sweep'; }

@@ -273,8 +273,8 @@ route view**, FlightAware-style:
   low-volume action, so a **live click always fetches the current answer from
   adsbdb** rather than trusting a stored copy — adsbdb keys routes on the
   *callsign*, a per-day fact (callsigns are reused across legs), so a stale cached
-  route was the main cause of a confidently-wrong destination. The cache is now
-  the **offline/failure fallback**: if adsbdb is unreachable the last stored route
+  route would confidently show the wrong destination. The cache serves as the
+  **offline/failure fallback**: if adsbdb is unreachable the last stored route
   still draws, honestly tagged *"from local cache (adsbdb unreachable — may be out
   of date)"*. A cache entry older than ~12 h (`_ROUTE_TTL`) is refreshed on the
   next online look-up. Still on-demand only — no background polling.
@@ -316,15 +316,24 @@ transport bar (play/pause, seek, restart, delete). Frames are small, so a
 recording is cheap; capped at a few thousand frames. Routes:
 `/api/net/rtl/record/{start,stop,status,list,get,delete}`.
 
-## Local Radio (FM / AM, listen)
+## Local Radio (listen: FM / NFM / AM / SSB / CW)
 
 The RF Waterfall page has a **📻 Local Radio** bar: type a frequency, pick a mode
-(**FM** broadcast, **NFM** narrowband, **AM**), and press **Listen**. `radio.py`
+(**FM** broadcast, **NFM** narrowband, **AM**, **USB**/**LSB** single sideband,
+or **CW** Morse — received as USB 700 Hz below the carrier, so it sounds as a
+clean tone), and press **Listen**. A **squelch** slider mutes the audio until a
+signal beats the level (the stream is padded with silence while it's closed, so
+the player doesn't stall), and **● Rec** saves what you're hearing to an audio
+file while you keep listening. `radio.py`
 runs `rtl_fm` to demodulate and streams the audio to the browser
 (`/api/net/radio/stream?freq_hz=…&mode=…`) that an `<audio>` element plays, with a
 volume slider and band presets (FM broadcast, airband AM, marine/PMR NFM, MW).
+Clicking a signal on the waterfall picks the likely mode for that frequency.
 Frequencies below 24 MHz use the dongle's direct-sampling mode (MW/SW AM,
-best-effort). One dongle, so listening pauses the sub-GHz sweep. `rtl_fm` ships
+best-effort); bias-T, direct sampling and the converter offset from the
+waterfall's settings apply here too. Narrow modes are demodulated at 12 kHz and
+resampled to 48 kHz for the browser (`radio.audio_rate(mode)` reports the rate a
+mode really produces, since `rtl_fm`'s `-r` only resamples downwards). One dongle, so listening pauses the sub-GHz sweep. `rtl_fm` ships
 in the already-installed `rtl-sdr` package. Receive-only.
 
 **Format — phone-friendly:** when `ffmpeg` is present the PCM is transcoded to a
@@ -494,7 +503,12 @@ timestamp), **Mic-E**, messages/acks, objects, status and best-effort weather �
 | `GET  /api/net/rtl/power/frames?since=` | New waterfall frames + max-hold since a seq |
 | `GET  /api/net/rtl/zwave` | Z-Wave regional plan (spans + channel centres) |
 | `GET  /api/net/rtl/lora` | LoRa mesh plan — Meshtastic/MeshCore/LoRaWAN (spans + channels) |
-| `GET  /api/net/rtl/tuning` · POST `{ppm,gain}` | Read / set PPM freq-correction + tuner gain (reapplied live) |
+| `GET  /api/net/rtl/tuning` · POST `{ppm,gain,fft,avg,window,bins,bias_t,direct,conv_hz}` | Read / set PPM + tuner gain, FFT size / averaging / window / display columns, bias-T, direct sampling and an up/down-converter LO (all reapplied live) |
+| `POST /api/net/rtl/survey/start` `{bands,dwell_s,rounds,name}` · `/stop` · `GET /status` `/list` `/report?name=` `/report.csv?name=` · `POST /delete` | Unattended survey: visit bands for a dwell each and report noise floor, occupancy and every emitter (with % of time on) |
+| `POST /api/net/rtl/df` `{freq_mhz,bw_khz,secs,n}` | Mesh direction finding: measure this frequency on every unit and estimate the transmitter's position |
+| `GET  /api/net/rtl/df/position` · POST `{lat,lon}` / `{clear:true}` | This unit's DF position (for a unit without GPS) |
+| `GET  /api/mesh/rf/level?freq_hz&bw_hz&secs` | Peer-readable: this unit's level/noise/SNR at a frequency + its position (used by DF) |
+| `POST /api/net/rtl/limit/alarm` `{panel,freq_mhz,level,limit,unit,kind,span}` | Log a limit-line / mask violation to the Watchtower feed (`RF_LIMIT_EXCEEDED`, rate-limited per panel) |
 | `GET  /api/net/adsb/status` · `/aircraft` | ADS-B radar: dump1090 state + live aircraft (icao/iata/tail/country) |
 | `GET  /api/net/adsb/route?callsign=…&lat=&lon=&gs=` | Filed route (origin/dest via adsbdb, cache-first) + live great-circle progress for the map view |
 | `GET  /api/net/adsb/flight?hex=…&callsign=…&lat=&lon=&gs=` | Route (adsbdb) + REAL live position/type (adsb.lol) for the route map |

@@ -246,17 +246,36 @@ _IQ_EDGE_MARGIN = 1.15        # oversample the span this much so band edges stay
 _ppm = 0
 _gain = None               # None = automatic gain control
 
+# Resolution + hardware extras, shared by every capture on the one dongle.
+_FFT_SIZES = (256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
+_WINDOWS = ("hann", "blackman-harris", "flattop", "rect")
+_BIN_CHOICES = (240, 480, 960, 1920)
+_DIRECT_MAX_HZ = 28_800_000   # direct sampling covers ~0.5-28.8 MHz (HF)
+_fft = 0                   # FFT size; 0 = auto (enough bins for the display at any zoom)
+_avg = _IQ_AVG_MAX         # FFT windows averaged per row (more = smoother, slower to react)
+_window = "hann"           # FFT window (flattop = amplitude-accurate, rect = sharpest/leakiest)
+_bins = _POWER_BINS        # display columns per frame
+_bias_t = False            # 4.5 V on the antenna port (RTL-SDR Blog V3/V4) to power an LNA
+_direct = "auto"           # direct sampling: "auto" (on below 28.8 MHz), "on", "off"
+_conv_hz = 0               # up/down-converter LO: hardware freq = RF freq + _conv_hz
+
 
 def get_tuning():
-    """Current tuner corrections for the UI."""
+    """Current tuner corrections + resolution/hardware settings for the UI."""
     return {"ppm": _ppm, "gain": ("auto" if _gain is None else _gain),
-            "gain_is_auto": _gain is None}
+            "gain_is_auto": _gain is None,
+            "fft": _fft, "avg": _avg, "window": _window, "bins": _bins,
+            "bias_t": _bias_t, "direct": _direct, "conv_hz": _conv_hz,
+            "fft_sizes": list(_FFT_SIZES), "windows": list(_WINDOWS),
+            "bin_choices": list(_BIN_CHOICES)}
 
 
-def set_tuning(ppm=None, gain=None):
-    """Set PPM freq-correction and/or tuner gain, then reapply to any running
-    capture. gain may be a number (dB), or 'auto'/'' /None for AGC."""
-    global _ppm, _gain
+def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
+               bias_t=None, direct=None, conv_hz=None):
+    """Set PPM freq-correction, tuner gain and the resolution / hardware extras,
+    then reapply to any running capture. gain may be a number (dB), or
+    'auto'/'' /None for AGC. Invalid values are ignored (the setting is kept)."""
+    global _ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz
     if ppm is not None:
         try:
             _ppm = max(-1000, min(1000, int(float(ppm))))
@@ -270,6 +289,37 @@ def set_tuning(ppm=None, gain=None):
                 _gain = max(0.0, min(50.0, round(float(gain), 1)))
             except (TypeError, ValueError):
                 pass
+    if fft is not None:
+        try:
+            v = int(float(fft))
+            if v == 0 or v in _FFT_SIZES:
+                _fft = v
+        except (TypeError, ValueError):
+            if str(fft).lower() == "auto":
+                _fft = 0
+    if avg is not None:
+        try:
+            _avg = max(1, min(64, int(float(avg))))
+        except (TypeError, ValueError):
+            pass
+    if window is not None and str(window).lower() in _WINDOWS:
+        _window = str(window).lower()
+    if bins is not None:
+        try:
+            v = int(float(bins))
+            if v in _BIN_CHOICES:
+                _bins = v
+        except (TypeError, ValueError):
+            pass
+    if bias_t is not None:
+        _bias_t = str(bias_t).lower() in ("1", "true", "on", "yes")
+    if direct is not None and str(direct).lower() in ("auto", "on", "off"):
+        _direct = str(direct).lower()
+    if conv_hz is not None:
+        try:
+            _conv_hz = max(-12_000_000_000, min(12_000_000_000, int(float(conv_hz))))
+        except (TypeError, ValueError):
+            pass
     # Reapply live so the change takes effect without the user restarting.
     try:
         _power.reapply()
@@ -279,13 +329,111 @@ def set_tuning(ppm=None, gain=None):
     return get_tuning()
 
 
-def _tuner_args():
-    """Common rtl_power / rtl_433 flags for the current PPM + gain."""
+def _settings_sig():
+    """Everything that changes a capture's output — a start() with a new value
+    restarts the sweep even on the same span."""
+    return (_ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz)
+
+
+def _parse_hz(txt):
+    """'433.92M' / '868.3M' / '315000000' -> Hz (pure)."""
+    t = str(txt).strip().upper()
+    mult = 1.0
+    if t.endswith("G"):
+        mult, t = 1e9, t[:-1]
+    elif t.endswith("M"):
+        mult, t = 1e6, t[:-1]
+    elif t.endswith("K"):
+        mult, t = 1e3, t[:-1]
+    return int(round(float(t) * mult))
+
+
+def _direct_on(hw_lo, hw_hi):
+    """Should this hardware window use direct sampling? (pure given settings)"""
+    if _direct == "on":
+        return True
+    if _direct == "off":
+        return False
+    return hw_hi <= _DIRECT_MAX_HZ          # auto: HF (below the tuner's ~24 MHz floor)
+
+
+def _hw_range_ok(hw_lo, hw_hi):
+    """Is [lo,hi] (hardware Hz) receivable: tuner 24-1766 MHz, or HF via direct sampling."""
+    if _direct_on(hw_lo, hw_hi):
+        return 500_000 <= hw_lo and hw_hi <= _DIRECT_MAX_HZ
+    return 24_000_000 <= hw_lo and hw_hi <= 1_766_000_000
+
+
+_biast_state = False        # what we last told the bias tee (it's off at power-up)
+
+
+def _set_biast(on):
+    """rtl_sdr has no -T flag: switch the RTL-SDR Blog bias tee with rtl_biast
+    before a raw-IQ capture opens the dongle. Only runs when the state has to
+    change (it briefly opens the dongle, so not on every start). No-op when the
+    tool is missing. Generic RTL2832U dongles have no bias tee; it does nothing."""
+    global _biast_state
+    on = bool(on)
+    if on == _biast_state:
+        return True
+    tool = _which("rtl_biast")
+    if not tool:
+        return False
+    try:
+        subprocess.run([tool, "-b", "1" if on else "0"], capture_output=True, timeout=5, check=False)
+        _biast_state = on
+        return True
+    except Exception:
+        return False
+
+
+_WIN_RTLPOWER = {"hann": "hamming", "blackman-harris": "blackman-harris",
+                 "flattop": "blackman-harris", "rect": "rectangle"}
+
+
+def _fft_window(n):
+    """FFT window samples for the current setting (numpy)."""
+    import numpy as np
+    if _window == "rect":
+        return np.ones(n, dtype=np.float32)
+    k = np.arange(n) / float(n - 1)
+    if _window == "blackman-harris":
+        a = (0.35875, 0.48829, 0.14128, 0.01168)
+    elif _window == "flattop":
+        a = (0.21557895, 0.41663158, 0.277263158, 0.083578947, 0.006947368)
+    else:
+        return np.hanning(n).astype(np.float32)
+    w = np.zeros(n)
+    for i, ai in enumerate(a):
+        w += ((-1) ** i) * ai * np.cos(2 * np.pi * i * k)
+    return w.astype(np.float32)
+
+
+def _auto_fft(sr_hz, lo_hz, hi_hz, bins):
+    """FFT size giving >= 2 FFT bins per display column across [lo,hi] (pure)."""
+    span = max(1, hi_hz - lo_hz)
+    need = 2.0 * bins * sr_hz / span
+    n = 512
+    while n < need and n < _FFT_SIZES[-1]:
+        n *= 2
+    return n
+
+
+def _tuner_args(tool="rtl_433", hw_lo=None, hw_hi=None):
+    """Common flags for the current PPM + gain, plus (rtl_power only) bias-T,
+    direct sampling and the FFT window. rtl_433 uses -T for its run time, so it
+    never gets the bias-T flag."""
     args = []
     if _ppm:
         args += ["-p", str(_ppm)]
     if _gain is not None:
         args += ["-g", str(_gain)]
+    if tool == "rtl_power":
+        if _bias_t:
+            args += ["-T"]
+        if hw_lo is not None and _direct_on(hw_lo, hw_hi):
+            args += ["-D"]
+        args += ["-w", _WIN_RTLPOWER.get(_window, "hamming")]
     return args
 
 
@@ -867,6 +1015,22 @@ def _iq_to_grid(psd_db, center_hz, sr_hz, lo_hz, hi_hz,
         v = psd_db[i]
         if v > grid[col]:
             grid[col] = v
+    # Fewer FFT bins than columns (a narrow zoom): interpolate the columns no bin
+    # landed in, instead of leaving dead floor-level stripes. Only between
+    # filled columns, so a genuinely uncovered edge still reads as floor.
+    filled = [c for c in range(bins) if grid[c] > floor]
+    if filled and len(filled) < bins:
+        for a, b in zip(filled, filled[1:]):
+            if b - a > 1:
+                va, vb = grid[a], grid[b]
+                for c in range(a + 1, b):
+                    grid[c] = va + (vb - va) * (c - a) / float(b - a)
+        # edge columns inside the captured bandwidth take the nearest bin's value
+        cap_lo, cap_hi = center_hz - sr_hz / 2.0, center_hz + sr_hz / 2.0
+        for c in list(range(0, filled[0])) + list(range(filled[-1] + 1, bins)):
+            fc = lo_hz + (c + 0.5) * span / bins
+            if cap_lo <= fc <= cap_hi:
+                grid[c] = grid[filled[0]] if c < filled[0] else grid[filled[-1]]
     return grid
 
 
@@ -929,7 +1093,9 @@ class IsmScanner:
 
     def _run_loop(self, band):
         freq = ISM_FREQS[band]
-        cmd = [_RTL_433, "-F", "json", "-M", "level", "-f", freq] + _tuner_args()
+        if _conv_hz:
+            freq = str(int(_parse_hz(freq) + _conv_hz))
+        cmd = [_RTL_433, "-F", "json", "-M", "level", "-f", freq] + _tuner_args("rtl_433")
         self._stderr_tail = None
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -1026,7 +1192,7 @@ class PowerSweep:
         try:
             if lo_hz is not None and hi_hz is not None:
                 lo_hz, hi_hz = int(float(lo_hz)), int(float(hi_hz))
-                if hi_hz - lo_hz >= 100_000 and lo_hz >= 24_000_000 and hi_hz <= 1_766_000_000:
+                if hi_hz - lo_hz >= 100_000 and _hw_range_ok(lo_hz + _conv_hz, hi_hz + _conv_hz):
                     custom = (lo_hz, hi_hz)
         except (TypeError, ValueError):
             custom = None
@@ -1035,25 +1201,34 @@ class PowerSweep:
         else:
             band = band if band in RTL_BANDS else "433"
             label, (lo, hi) = band, RTL_BANDS[band]
-        sig = (label, lo, hi)
+        sig = (label, lo, hi, _settings_sig())
+        prev = None
         with self._lock:
             if self._thread and self._thread.is_alive():
                 if sig == self._sig:
                     return {"ok": True, "already": True, "band": label}
                 self._stop_locked()
+                prev = self._thread
+        # Let the previous capture actually finish before a new one opens the
+        # dongle. Two rtl_sdr processes racing for the same device is what turns
+        # a burst of retunes into a wedged USB device.
+        if prev is not None:
+            prev.join(timeout=_TERM_GRACE_S + 1.0)
+        with self._lock:
             # A fresh Event (not .clear()) so any still-exiting previous sweep
             # thread keeps its own now-set event and stops cleanly, instead of
             # racing this new run on a shared, just-cleared one.
             self._stop = threading.Event()
             self._frames = []
             self._seq = 0
-            self._maxhold = [_FLOOR_DBM] * _POWER_BINS
+            self._maxhold = [_FLOOR_DBM] * _bins
             self._band = label
             self._sig = sig
             self._lo, self._hi = lo, hi
             self._engine = None
             self._floor_dyn = None
             self._error = None
+            self._rbw = None
             self._thread = threading.Thread(target=self._run_loop, args=(lo, hi),
                                             daemon=True, name="rtlpower-sweep")
             self._thread.start()
@@ -1074,13 +1249,14 @@ class PowerSweep:
             self._stop = threading.Event()   # fresh event; see start() for why
             self._frames = []
             self._seq = 0
-            self._maxhold = [_FLOOR_DBM] * _POWER_BINS
+            self._maxhold = [_FLOOR_DBM] * _bins
             self._band = label
-            self._sig = sig
+            self._sig = (sig[0], sig[1], sig[2], _settings_sig())
             self._lo, self._hi = lo, hi
             self._engine = None
             self._floor_dyn = None
             self._error = None
+            self._rbw = None
             self._thread = threading.Thread(target=self._run_loop, args=(lo, hi),
                                             daemon=True, name="rtlpower-sweep")
             self._thread.start()
@@ -1095,8 +1271,21 @@ class PowerSweep:
         # Prefer the real-time IQ FFT engine (SDR++-style) whenever the span fits
         # a single tune and the tools are present; fall back to the rtl_power
         # sweep otherwise (wide bands) or if the IQ capture can't get going.
+        # lo/hi are RF; the radio is tuned to RF + the converter offset.
+        lo, hi = lo + _conv_hz, hi + _conv_hz
+        _usb_settle(self._stop)                 # don't reopen the dongle the instant it closed
+        if self._stop.is_set():
+            return
         plan = _iq_plan(lo, hi) if _iq_available() else None
         if plan and self._run_iq(lo, hi, plan[0], plan[1]):
+            return
+        # A quick restart can find the dongle still held by the previous capture;
+        # give the IQ engine one more try before settling for the slow sweep.
+        stop = self._stop
+        _usb_settle(stop)
+        if plan and not stop.wait(0.8) and self._run_iq(lo, hi, plan[0], plan[1]):
+            return
+        if stop.is_set():
             return
         self._engine = "rtl_power"
         self._floor_dyn = None
@@ -1117,8 +1306,10 @@ class PowerSweep:
             return False
         self._engine = "iq"
         self._floor_dyn = None
-        N = _IQ_FFT
-        win = np.hanning(N).astype(np.float32)
+        bins = _bins
+        N = _fft or _auto_fft(sr, lo, hi, bins)
+        self._rbw = sr / float(N)
+        win = _fft_window(N)
         win_norm = float(np.sum(win ** 2)) * N   # PSD normaliser (window + FFT gain)
         # Read a whole display row of samples per iteration, rounded to full FFT
         # windows. We must drain the entire stream (not just what we FFT) or the
@@ -1131,6 +1322,9 @@ class PowerSweep:
             cmd += ["-p", str(_ppm)]
         if _gain is not None:
             cmd += ["-g", str(_gain)]             # else rtl_sdr uses tuner AGC (auto)
+        if _direct_on(lo, hi):
+            cmd += ["-D"]                         # HF: direct sampling
+        _set_biast(_bias_t)                       # rtl_sdr has no -T; set the GPIO first
         cmd += ["-"]                              # stream raw IQ to stdout
         self._stderr_tail = None
         # Capture our own stop event + proc handle locally. A restart (band change
@@ -1162,13 +1356,13 @@ class PowerSweep:
                 nwin = (raw.shape[0] // 2) // N
                 if nwin <= 0:
                     continue
-                use = min(nwin, _IQ_AVG_MAX)
+                use = min(nwin, _avg)
                 iq = raw[:use * N * 2].reshape(use, N, 2)
                 cwin = (iq[:, :, 0] + 1j * iq[:, :, 1]) * win  # window each row
                 spec = np.fft.fftshift(np.fft.fft(cwin, axis=1), axes=1)
                 psd = (spec.real ** 2 + spec.imag ** 2).mean(axis=0) / win_norm
                 db = 10.0 * np.log10(psd + 1e-12)
-                grid = _iq_to_grid(db.tolist(), center, sr, lo, hi)
+                grid = _iq_to_grid(db.tolist(), center, sr, lo, hi, bins=bins)
                 floor_ema = self._update_iq_floor(grid, floor_ema)
                 self._push_frame(grid)
                 produced += 1
@@ -1208,10 +1402,12 @@ class PowerSweep:
         return floor_ema
 
     def _run_rtl_power(self, lo, hi):
-        step = max(1000, (hi - lo) // _POWER_BINS)   # Hz per rtl_power bin
-        builder = _PowerFrameBuilder(lo, hi)
+        bins = _bins
+        step = max(1000, (hi - lo) // bins)   # Hz per rtl_power bin
+        self._rbw = float(step)
+        builder = _PowerFrameBuilder(lo, hi, bins=bins)
         cmd = [_RTL_POWER, "-f", "%d:%d:%d" % (lo, hi, step),
-               "-i", str(_SWEEP_INTERVAL_S), "-c", "20%"] + _tuner_args()
+               "-i", str(_SWEEP_INTERVAL_S), "-c", "20%"] + _tuner_args("rtl_power", lo, hi)
         self._stderr_tail = None
         stop = self._stop          # our own event; a restart swaps self._stop
         try:
@@ -1242,6 +1438,34 @@ class PowerSweep:
                     and not self._error and self._stderr_tail):
                 self._error = self._stderr_tail
 
+    def begin_external(self, lo_hz, hi_hz, engine="iq-capture"):
+        """Hand the waterfall over to another capture (e.g. a raw-IQ recording).
+
+        One dongle serves one job, so while a recording runs the sweep can't.
+        Rather than leaving the waterfall frozen, the recording feeds its own
+        FFT rows through here and the page keeps scrolling — showing exactly
+        what is being written to the file."""
+        with self._lock:
+            self._frames = []
+            self._seq = 0
+            self._maxhold = [_FLOOR_DBM] * _bins
+            self._lo, self._hi = int(lo_hz), int(hi_hz)
+            self._band = engine
+            self._engine = engine
+            self._error = None
+            self._floor_dyn = None
+
+    def end_external(self):
+        with self._lock:
+            self._band = None
+
+    def feed_external(self, grid):
+        """Publish one externally-produced row (same shape as a sweep frame)."""
+        if self._thread and self._thread.is_alive():
+            return                              # a real sweep owns the ring
+        self._floor_dyn = self._update_iq_floor(grid, self._floor_dyn) if grid else self._floor_dyn
+        self._push_frame(grid)
+
     def _push_frame(self, grid):
         ints = [int(round(v)) for v in grid]
         with self._lock:
@@ -1255,7 +1479,7 @@ class PowerSweep:
             else:
                 self._maxhold = [max(a, b) for a, b in zip(self._maxhold, ints)]
             meta = {"band": self._band, "lo_hz": self._lo, "hi_hz": self._hi,
-                    "bins": _POWER_BINS, "floor": self._active_floor()}
+                    "bins": len(ints), "floor": self._active_floor()}
         # Feed the session recorder + the spectrum-baseline watcher outside our
         # lock (each has its own). floor from meta so both engines stay consistent.
         _recorder.write(self._seq, ts, ints, meta)
@@ -1271,7 +1495,7 @@ class PowerSweep:
     def status(self):
         with self._lock:
             return {"running": bool(self._thread and self._thread.is_alive()),
-                    "band": self._band, "bins": _POWER_BINS,
+                    "band": self._band, "bins": _bins,
                     "band_hz": [self._lo, self._hi] if self._lo else None,
                     "frames_buffered": len(self._frames), "seq": self._seq,
                     "floor_dbm": self._active_floor(), "engine": self._engine,
@@ -1286,8 +1510,10 @@ class PowerSweep:
             new = [f for f in self._frames if f["seq"] > since]
             return {"frames": new, "seq": self._seq, "band": self._band,
                     "band_hz": [self._lo, self._hi] if self._lo else None,
-                    "bins": _POWER_BINS, "floor_dbm": self._active_floor(),
+                    "bins": _bins, "floor_dbm": self._active_floor(),
                     "engine": self._engine,
+                    "rbw_hz": round(self._rbw, 1) if getattr(self, "_rbw", None) else None,
+                    "conv_hz": _conv_hz,
                     "max_hold": list(self._maxhold) if self._maxhold else None,
                     "running": bool(self._thread and self._thread.is_alive()),
                     "error": self._error}
@@ -1297,17 +1523,46 @@ class PowerSweep:
 # Shared helpers
 # --------------------------------------------------------------------------
 
-def _terminate(proc):
+# The USB dongle needs a moment between one capture closing it and the next one
+# opening it. librtlsdr cancels its async transfers on SIGTERM and closes the
+# device; SIGKILL skips that and can leave the RTL2832U wedged until it is
+# physically replugged. So: always ask politely first, wait long enough for the
+# handler to run, and never reopen the device immediately after a close.
+_USB_RELEASE_S = 0.45          # settle time after a capture process exits
+_TERM_GRACE_S = 4.0            # how long rtl_sdr/rtl_power gets to close cleanly
+_last_close_t = 0.0
+
+
+def _terminate(proc, grace=_TERM_GRACE_S):
+    """Stop a capture process cleanly and record when the device was released."""
+    global _last_close_t
     if not proc:
         return
     try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        if proc.poll() is None:
+            proc.terminate()                      # SIGTERM -> rtlsdr_cancel_async + close
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                proc.kill()                       # last resort; may wedge the dongle
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
     except Exception:  # pragma: no cover - defensive
         pass
+    _last_close_t = time.time()
+
+
+def _usb_settle(stop=None):
+    """Wait out the release window before reopening the dongle (interruptible)."""
+    left = _USB_RELEASE_S - (time.time() - _last_close_t)
+    if left <= 0:
+        return
+    if stop is not None:
+        stop.wait(left)
+    else:
+        time.sleep(left)
 
 
 def _drain(pipe, owner):
@@ -1643,8 +1898,9 @@ class IqCapture:
             seconds = float(seconds)
         except (TypeError, ValueError):
             return {"ok": False, "error": "center_hz / sr_hz / seconds must be numeric"}
-        if not (24_000_000 <= center_hz <= 1_766_000_000):
-            return {"ok": False, "error": "center frequency out of RTL-SDR reach (24-1766 MHz)"}
+        hw = center_hz + _conv_hz
+        if not _hw_range_ok(hw - sr_hz // 2, hw + sr_hz // 2) and not (24_000_000 <= hw <= 1_766_000_000):
+            return {"ok": False, "error": "center frequency out of RTL-SDR reach (24-1766 MHz, or HF with direct sampling)"}
         if not (_IQ_SR_MIN <= sr_hz <= _IQ_SR_MAX):
             return {"ok": False, "error": "sample rate out of range (1.0-3.2 MS/s)"}
         seconds = max(0.1, min(_IQ_CAP_MAX_SECONDS, seconds))
@@ -1672,25 +1928,86 @@ class IqCapture:
         return {"ok": True, "name": base, "center_hz": center_hz, "sr_hz": sr_hz,
                 "seconds": seconds, "want_bytes": self._want_bytes}
 
+    def _pump(self, nsamp):
+        """Copy the capture to disk, and FFT some of it for the live waterfall.
+
+        Writing the file always wins: rows are only computed when there is time
+        (at most _IQ_DISPLAY_HZ per second), so the recording can never be
+        starved or dropped for the sake of the display.
+        """
+        want = nsamp * 2                                   # cu8: 2 bytes per sample
+        lo_hz, hi_hz = self._center - self._sr // 2, self._center + self._sr // 2
+        np = None
+        try:
+            import numpy as _np
+            np = _np
+        except Exception:
+            np = None
+        N = _fft or 1024
+        win = _fft_window(N) if np is not None else None
+        win_norm = float(np.sum(win ** 2)) * N if np is not None else 1.0
+        chunk = max(N * 2, int(self._sr / _IQ_DISPLAY_HZ)) * 2
+        chunk -= chunk % (N * 2)
+        got, last_row = 0, 0.0
+        if np is not None:
+            _power.begin_external(lo_hz - _conv_hz, hi_hz - _conv_hz)   # report RF, not hardware
+        try:
+            with open(self._path, "wb", buffering=1 << 18) as fh:
+                pipe = self._proc.stdout
+                while got < want and not self._stop.is_set():
+                    buf = pipe.read(min(chunk, want - got))
+                    if not buf:
+                        break
+                    fh.write(buf)                          # the file first, always
+                    got += len(buf)
+                    now = time.time()
+                    if np is None or (now - last_row) < 1.0 / _IQ_DISPLAY_HZ or len(buf) < N * 2:
+                        continue
+                    last_row = now
+                    raw = (np.frombuffer(buf[:(len(buf) // (N * 2)) * N * 2], dtype=np.uint8)
+                           .astype(np.float32) - 127.5) / 127.5
+                    nwin = min((raw.shape[0] // 2) // N, _avg)
+                    if nwin <= 0:
+                        continue
+                    iq = raw[:nwin * N * 2].reshape(nwin, N, 2)
+                    spec = np.fft.fftshift(np.fft.fft((iq[:, :, 0] + 1j * iq[:, :, 1]) * win, axis=1), axes=1)
+                    psd = (spec.real ** 2 + spec.imag ** 2).mean(axis=0) / win_norm
+                    db = 10.0 * np.log10(psd + 1e-12)
+                    _power.feed_external(_iq_to_grid(db.tolist(), self._center, self._sr,
+                                                     lo_hz, hi_hz, bins=_bins))
+        finally:
+            if np is not None:
+                _power.end_external()
+
     def _run_loop(self):
         nsamp = int(self._sr * self._seconds)
-        cmd = [_RTL_SDR, "-f", str(self._center), "-s", str(self._sr), "-n", str(nsamp)]
+        hw = self._center + _conv_hz              # tune the radio; SigMF keeps the RF frequency
+        cmd = [_RTL_SDR, "-f", str(hw), "-s", str(self._sr), "-n", str(nsamp)]
         if _ppm:
             cmd += ["-p", str(_ppm)]
         if _gain is not None:
             cmd += ["-g", str(_gain)]
-        cmd += [self._path]
+        if _direct_on(hw - self._sr // 2, hw + self._sr // 2):
+            cmd += ["-D"]
+        _set_biast(_bias_t)
+        _usb_settle(self._stop)
+        cmd += ["-"]                              # stream to us: file + live waterfall
         try:
-            self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.PIPE)
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, bufsize=0)
         except Exception as exc:
             self._error = "failed to launch rtl_sdr: %s" % exc
             return
-        _, err = b"", b""
+        err = b""
+        serr = _drain(_text_lines(self._proc.stderr), self)
         try:
-            _, err = self._proc.communicate()
+            self._pump(nsamp)
         except Exception as exc:  # pragma: no cover - defensive
-            self._error = str(exc)
+            self._error = self._error or str(exc)
+        finally:
+            serr.join(timeout=1)
+            err = (self._stderr_tail or "").encode()
+            _terminate(self._proc)
         if self._stop.is_set():
             self._error = self._error or "capture cancelled"
             return
@@ -2013,6 +2330,442 @@ class SpectrumBaseline:
 
 
 _baseline = SpectrumBaseline()
+
+
+# --------------------------------------------------------------------------
+# Unattended spectrum survey — visit a list of bands for a dwell time each
+# (one round, or continuously), and write a report: per band the noise floor
+# and overall occupancy, and every emitter found (frequency, bandwidth, peak,
+# how much of the time it was on, first / last seen). The sweep runs through
+# the normal PowerSweep, so the RF Waterfall page shows what's being surveyed.
+# --------------------------------------------------------------------------
+
+def survey_stats(frames, lo_hz, hi_hz, thr_db=10.0, occ_min=0.05, t0=None, t1=None):
+    """Summarise one band's frames (pure; selftested).
+
+    ``frames``: list of power rows (dB, same width) or dicts with ``power`` + ``ts``.
+    A bin is *busy* in a row when it's ``thr_db`` over that row's noise floor
+    (30th percentile). Contiguous bins busy in >= ``occ_min`` of the rows form an
+    emitter. Returns the band summary + emitters sorted by frequency.
+    """
+    rows, ts = [], []
+    for f in frames or []:
+        p = f.get("power") if isinstance(f, dict) else f
+        if p:
+            rows.append(p)
+            ts.append(f.get("ts") if isinstance(f, dict) else None)
+    if not rows:
+        return {"rows": 0, "emitters": [], "occupancy_pct": 0.0, "noise_db": None}
+    n = min(len(r) for r in rows)
+    busy = [0] * n
+    peak = [-1e9] * n
+    first = [None] * n
+    last = [None] * n
+    floors = []
+    for k, r in enumerate(rows):
+        srt = sorted(r[:n])
+        nf = srt[int(n * 0.30)]
+        floors.append(nf)
+        for i in range(n):
+            v = r[i]
+            if v > peak[i]:
+                peak[i] = v
+            if v >= nf + thr_db:
+                busy[i] += 1
+                t = ts[k]
+                if t is not None:
+                    if first[i] is None:
+                        first[i] = t
+                    last[i] = t
+    R = float(len(rows))
+    occ = [b / R for b in busy]
+    binw = (hi_hz - lo_hz) / float(n)
+    emitters = []
+    i = 0
+    while i < n:
+        if occ[i] >= occ_min:
+            j = i
+            while j + 1 < n and occ[j + 1] >= occ_min:
+                j += 1
+            pk = max(range(i, j + 1), key=lambda q: peak[q])
+            fs = [first[q] for q in range(i, j + 1) if first[q] is not None]
+            ls = [last[q] for q in range(i, j + 1) if last[q] is not None]
+            emitters.append({"freq_mhz": round((lo_hz + (pk + 0.5) * binw) / 1e6, 4),
+                             "bw_khz": round((j - i + 1) * binw / 1e3, 1),
+                             "peak_db": round(peak[pk], 1),
+                             "occupancy_pct": round(100.0 * max(occ[q] for q in range(i, j + 1)), 1),
+                             "first_seen": min(fs) if fs else None, "last_seen": max(ls) if ls else None})
+            i = j + 1
+        else:
+            i += 1
+    floors.sort()
+    return {"rows": len(rows), "bins": n, "noise_db": round(floors[len(floors) // 2], 1),
+            "occupancy_pct": round(100.0 * sum(1 for o in occ if o >= occ_min) / n, 1),
+            "emitters": emitters, "t0": t0, "t1": t1,
+            "lo_mhz": round(lo_hz / 1e6, 4), "hi_mhz": round(hi_hz / 1e6, 4)}
+
+
+def _survey_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "rf_surveys")
+
+
+class SpectrumSurvey:
+    MAX_DWELL_S = 3600
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop = threading.Event()
+        self._state = "idle"
+        self._plan = None
+        self._cur = None
+        self._round = 0
+        self._report = None
+        self._name = None
+        self._error = None
+
+    def start(self, bands, dwell_s=30, rounds=1, label=None):
+        bl = []
+        for b in bands or []:
+            if isinstance(b, dict):
+                try:
+                    lo, hi = int(float(b["lo_hz"])), int(float(b["hi_hz"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if hi - lo >= 100_000:
+                    bl.append({"id": str(b.get("label") or "%.3f-%.3f" % (lo / 1e6, hi / 1e6))[:40], "lo_hz": lo, "hi_hz": hi})
+            elif str(b) in RTL_BANDS:
+                lo, hi = RTL_BANDS[str(b)]
+                bl.append({"id": str(b), "lo_hz": lo, "hi_hz": hi})
+        if not bl:
+            return {"ok": False, "error": "no valid bands"}
+        try:
+            dwell_s = max(5, min(self.MAX_DWELL_S, int(float(dwell_s))))
+            rounds = max(0, min(1000, int(float(rounds))))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "dwell / rounds must be numbers"}
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"ok": False, "error": "a survey is already running"}
+            self._stop = threading.Event()
+            self._plan = {"bands": bl, "dwell_s": dwell_s, "rounds": rounds}
+            self._name = _rec_safe(label) or time.strftime("survey-%Y%m%d-%H%M%S")
+            self._report = {"name": self._name, "started": time.time(), "finished": None,
+                            "dwell_s": dwell_s, "rounds_planned": rounds, "bands": [], "status": "running",
+                            "device": (_detect_cache or {}).get("model_name") if isinstance(_detect_cache, dict) else None}
+            self._state, self._round, self._error = "running", 0, None
+            self._thread = threading.Thread(target=self._run, daemon=True, name="rf-survey")
+            self._thread.start()
+        return {"ok": True, "name": self._name, "bands": [b["id"] for b in bl], "dwell_s": dwell_s, "rounds": rounds}
+
+    def stop(self):
+        self._stop.set()
+        return {"ok": True}
+
+    def _run(self):
+        plan, stop = self._plan, self._stop
+        try:
+            while not stop.is_set():
+                self._round += 1
+                for b in plan["bands"]:
+                    if stop.is_set():
+                        break
+                    self._cur = {"band": b["id"], "since": time.time()}
+                    r = power_start(b["id"] if b["id"] in RTL_BANDS else "433",
+                                    lo_hz=None if b["id"] in RTL_BANDS else b["lo_hz"],
+                                    hi_hz=None if b["id"] in RTL_BANDS else b["hi_hz"], label="survey")
+                    if not r.get("ok"):
+                        self._error = r.get("error", "sweep failed")
+                        stop.set()
+                        break
+                    t0, seq, frames = time.time(), 0, []
+                    while not stop.is_set() and time.time() - t0 < plan["dwell_s"]:
+                        stop.wait(0.5)
+                        fr = power_frames(since=seq)
+                        for f in fr.get("frames", []):
+                            seq = max(seq, f["seq"])
+                            frames.append({"power": f["power"], "ts": f.get("ts")})
+                        if len(frames) > 20000:
+                            frames = frames[-20000:]
+                    stats = survey_stats(frames, b["lo_hz"], b["hi_hz"], t0=t0, t1=time.time())
+                    stats.update({"band": b["id"], "round": self._round, "engine": fr.get("engine") if frames else None,
+                                  "rbw_hz": fr.get("rbw_hz") if frames else None})
+                    with self._lock:
+                        self._report["bands"].append(stats)
+                    self._save()
+                if plan["rounds"] and self._round >= plan["rounds"]:
+                    break
+        except Exception as exc:  # pragma: no cover - defensive
+            self._error = str(exc)
+        finally:
+            self._cur = None
+            try:
+                power_stop()
+            except Exception:
+                pass
+            with self._lock:
+                self._report["finished"] = time.time()
+                self._report["status"] = "error" if self._error else ("stopped" if stop.is_set() else "done")
+                if self._error:
+                    self._report["error"] = self._error
+                self._state = "idle"
+            self._save()
+
+    def _save(self):
+        try:
+            os.makedirs(_survey_dir(), exist_ok=True)
+            with self._lock:
+                rep = json.dumps(self._report)
+            with open(os.path.join(_survey_dir(), self._name + ".json"), "w") as fh:
+                fh.write(rep)
+        except OSError:
+            pass
+
+    def status(self):
+        with self._lock:
+            cur = dict(self._cur) if self._cur else None
+            plan = self._plan or {}
+            done = len(self._report["bands"]) if self._report else 0
+        if cur:
+            cur["elapsed_s"] = round(time.time() - cur["since"], 1)
+        return {"state": self._state, "name": self._name, "current": cur, "round": self._round,
+                "bands_done": done, "plan": {"bands": [b["id"] for b in plan.get("bands", [])],
+                                             "dwell_s": plan.get("dwell_s"), "rounds": plan.get("rounds")},
+                "error": self._error}
+
+
+_survey = SpectrumSurvey()
+
+
+def survey_list():
+    import glob
+    out = []
+    for path in sorted(glob.glob(os.path.join(_survey_dir(), "*.json")), reverse=True):
+        try:
+            with open(path) as fh:
+                r = json.load(fh)
+            out.append({"name": r.get("name"), "started": r.get("started"), "finished": r.get("finished"),
+                        "status": r.get("status"), "bands": len(r.get("bands", [])),
+                        "emitters": sum(len(b.get("emitters", [])) for b in r.get("bands", []))})
+        except (OSError, ValueError):
+            continue
+    return {"surveys": out[:100]}
+
+
+def survey_report(name):
+    path = os.path.join(_survey_dir(), _rec_safe(name) + ".json")
+    try:
+        with open(path) as fh:
+            return {"ok": True, "report": json.load(fh)}
+    except (OSError, ValueError):
+        return {"ok": False, "error": "no such survey"}
+
+
+def survey_csv(name):
+    """Emitters of a survey report as CSV text (pure over the saved report)."""
+    r = survey_report(name)
+    if not r.get("ok"):
+        return None
+    lines = ["band,round,freq_mhz,bw_khz,peak_db,occupancy_pct,first_seen_utc,last_seen_utc"]
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t else ""
+    for b in r["report"].get("bands", []):
+        for e in b.get("emitters", []):
+            lines.append("%s,%s,%.4f,%.1f,%.1f,%.1f,%s,%s" % (b.get("band"), b.get("round"), e["freq_mhz"], e["bw_khz"],
+                                                           e["peak_db"], e["occupancy_pct"], iso(e.get("first_seen")), iso(e.get("last_seen"))))
+    return "\n".join(lines) + "\n"
+
+
+def survey_delete(name):
+    path = os.path.join(_survey_dir(), _rec_safe(name) + ".json")
+    try:
+        os.remove(path)
+        return {"ok": True}
+    except OSError:
+        return {"ok": False, "error": "no such survey"}
+
+# --------------------------------------------------------------------------
+# Mesh direction finding (RSSI). Every Ragnar with an RTL-SDR can report the
+# level of a signal at a frequency, with its position; the unit that asked
+# combines them into a location estimate. RSSI ranging is coarse — antenna,
+# cable and gain differences between units and multipath all bias it — so the
+# result carries an uncertainty radius and the geometry that produced it.
+# --------------------------------------------------------------------------
+
+def level_from_frames(frames, lo_hz, hi_hz, f_hz, bw_hz=25_000):
+    """Signal level + noise at ``f_hz`` over a set of rows (pure; selftested).
+
+    Per row: the peak within +/- bw/2 of f, and the row's noise floor (30th
+    percentile). Returns medians so a single burst or dropout doesn't skew it."""
+    peaks, floors = [], []
+    for fr in frames or []:
+        p = fr.get("power") if isinstance(fr, dict) else fr
+        if not p:
+            continue
+        n = len(p)
+        binw = (hi_hz - lo_hz) / float(n)
+        i0 = int((f_hz - bw_hz / 2.0 - lo_hz) / binw)
+        i1 = int((f_hz + bw_hz / 2.0 - lo_hz) / binw)
+        i0, i1 = max(0, i0), min(n - 1, max(i1, i0))
+        if i0 >= n or i1 < 0:
+            continue
+        peaks.append(max(p[i0:i1 + 1]))
+        floors.append(sorted(p)[int(n * 0.30)])
+    if not peaks:
+        return None
+    peaks.sort(); floors.sort()
+    lv, nf = peaks[len(peaks) // 2], floors[len(floors) // 2]
+    return {"level_db": round(lv, 1), "noise_db": round(nf, 1), "snr_db": round(lv - nf, 1), "rows": len(peaks)}
+
+
+def measure_level(freq_hz, bw_hz=25_000, secs=2.0):
+    """Measure the level at freq_hz on this unit's RTL-SDR.
+
+    Uses the running sweep if it already covers the frequency (non-intrusive).
+    Otherwise, if the dongle is idle, runs a short 1 MHz real-time capture around
+    it and stops again. If the dongle is busy with something else (another
+    sweep, a survey, decoding, radio) it reports "busy" rather than hijacking it.
+    """
+    try:
+        f = int(float(freq_hz)); bw = max(1_000, int(float(bw_hz or 25_000)))
+        secs = max(0.5, min(10.0, float(secs or 2.0)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "freq_hz / bw_hz / secs must be numbers"}
+    st = _power.status()
+    band = st.get("band_hz") or [None, None]
+    covers = st.get("running") and band[0] and band[0] <= f - bw / 2 and f + bw / 2 <= band[1]
+    started = False
+    if not covers:
+        if st.get("running") or _ism.status().get("running") or _survey.status().get("state") == "running":
+            return {"ok": False, "error": "busy — this unit's dongle is in use"}
+        r = power_start("433", lo_hz=f - 500_000, hi_hz=f + 500_000, label="df")
+        if not r.get("ok"):
+            return {"ok": False, "error": r.get("error", "could not start the SDR")}
+        started = True
+        time.sleep(1.5 + secs)              # let the capture settle, then measure
+    try:
+        fr = power_frames(since=0)
+        now = time.time()
+        rows = [x for x in fr.get("frames", []) if (x.get("ts") or 0) >= now - secs]
+        lo, hi = (fr.get("band_hz") or [None, None])
+        if not rows or not lo:
+            return {"ok": False, "error": "no data from the SDR"}
+        m = level_from_frames(rows, lo, hi, f, bw)
+        if not m:
+            return {"ok": False, "error": "frequency outside the capture"}
+        m.update({"ok": True, "freq_hz": f, "bw_hz": bw, "engine": fr.get("engine"), "rbw_hz": fr.get("rbw_hz"),
+                  "gain": "auto" if _gain is None else _gain, "ts": now, "borrowed": not started})
+        return m
+    finally:
+        if started:
+            power_stop()
+
+
+def _enu(lat, lon, lat0, lon0):
+    """Local east/north metres from a reference point (equirectangular, fine for a few km)."""
+    import math
+    k = 111_320.0
+    return (lon - lon0) * k * math.cos(math.radians(lat0)), (lat - lat0) * k
+
+
+def df_locate(meas, n=2.5, grid=121):
+    """Estimate a transmitter's position from RSSI at several positioned units (pure).
+
+    ``meas``: [{unit, lat, lon, level_db}]. Log-distance model
+    level_i = P0 - 10 n log10(d_i): a grid search over the area, with P0 solved in
+    closed form at each point. Returns the best-fit position, a 1-sigma radius
+    (bootstrapped with ~3 dB of per-unit error), the P0/n
+    used and per-unit residuals. With 2 units: a power-weighted point on the
+    line between them. With 1: that unit's position (nearest). Never raises."""
+    import math
+    pts = [m for m in (meas or []) if m.get("lat") is not None and m.get("lon") is not None and m.get("level_db") is not None]
+    if not pts:
+        return {"ok": False, "error": "no positioned measurements"}
+    if len(pts) == 1:
+        return {"ok": True, "method": "nearest", "lat": pts[0]["lat"], "lon": pts[0]["lon"], "radius_m": None,
+                "note": "only one unit heard it — the transmitter is somewhere around it"}
+    lat0 = sum(p["lat"] for p in pts) / len(pts); lon0 = sum(p["lon"] for p in pts) / len(pts)
+    xy = [_enu(p["lat"], p["lon"], lat0, lon0) for p in pts]
+    L = [float(p["level_db"]) for p in pts]
+    if len(pts) == 2:
+        w = [10 ** (v / 20.0) for v in L]                      # amplitude-weighted towards the louder unit
+        x = (xy[0][0] * w[0] + xy[1][0] * w[1]) / (w[0] + w[1]); y = (xy[0][1] * w[0] + xy[1][1] * w[1]) / (w[0] + w[1])
+        k = 111_320.0
+        return {"ok": True, "method": "two-unit weighted", "lat": lat0 + y / k, "lon": lon0 + x / (k * math.cos(math.radians(lat0))),
+                "radius_m": round(math.hypot(xy[0][0] - xy[1][0], xy[0][1] - xy[1][1]) / 2.0),
+                "note": "two units only give a rough point on the line between them — add a third for a real fix"}
+    xs = [a for a, _ in xy]; ys = [b for _, b in xy]
+    ext = max(200.0, max(xs) - min(xs), max(ys) - min(ys))
+    box = (min(xs) - ext, max(xs) + ext, min(ys) - ext, max(ys) + ext)
+
+    def _fit(levels, g):
+        x0, x1, y0, y1 = box
+        best = None
+        for gi in range(g):
+            gx = x0 + (x1 - x0) * gi / (g - 1.0)
+            for gj in range(g):
+                gy = y0 + (y1 - y0) * gj / (g - 1.0)
+                r = [lv + 10.0 * n * math.log10(max(10.0, math.hypot(gx - ux, gy - uy))) for (ux, uy), lv in zip(xy, levels)]
+                p0 = sum(r) / len(r)
+                err = sum((q - p0) ** 2 for q in r)
+                if best is None or err < best[0]:
+                    best = (err, gx, gy, p0)
+        return best
+
+    err_b, bx, by, p0 = _fit(L, grid)
+    # Uncertainty: a Monte-Carlo bootstrap of THIS estimator — refit with ~3 dB
+    # of random per-unit error added, and take the RMS scatter of the fixes.
+    # (The misfit surface alone is misleading: with the transmit power unknown
+    # it has long flat valleys, so its extent overstates the error ~10x.)
+    import random as _rnd
+    rng = _rnd.Random(1234)
+    sc = []
+    for _ in range(24):
+        _e, sx, sy, _p = _fit([v + rng.gauss(0.0, 3.0) for v in L], 51)
+        sc.append((sx - bx) ** 2 + (sy - by) ** 2)
+    sc.sort()
+    rad = math.sqrt(sc[int(len(sc) * 0.68)])       # 68th percentile: robust to the odd far fit
+    k = 111_320.0
+    lat = lat0 + by / k; lon = lon0 + bx / (k * math.cos(math.radians(lat0)))
+    res = []
+    for (ux, uy), lv, pt in zip(xy, L, pts):
+        d = max(10.0, math.hypot(bx - ux, by - uy))
+        res.append({"unit": pt.get("unit"), "dist_m": round(d), "residual_db": round(lv - (p0 - 10 * n * math.log10(d)), 1)})
+    return {"ok": True, "method": "multilateration", "lat": round(lat, 6), "lon": round(lon, 6),
+            "radius_m": round(rad), "p0_db": round(p0, 1), "n": n, "rms_db": round(math.sqrt(err_b / len(pts)), 1),
+            "units": res, "note": "RSSI-based: accuracy depends on matched antennas / gains (calibrate units) and multipath"}
+
+
+# Limit-line / mask alarms from the RF Waterfall page (pass/fail spectrum
+# monitoring). The page evaluates each row against the user's limit and posts
+# when a violation starts; we log it to the Watchtower feed, rate-limited per
+# panel so a wobbling signal can't flood it.
+_LIMIT_MIN_GAP_S = 10.0
+_limit_last = {}
+
+
+def limit_alarm(panel, freq_mhz, level, limit, unit="dB", kind="level", span=None, now=None):
+    """Record a limit-line violation as a Watchtower event (rate-limited per panel).
+
+    Returns the event dict, or None when rate-limited / invalid."""
+    now = time.time() if now is None else now
+    try:
+        f = float(freq_mhz); lv = float(level); lim = float(limit)
+    except (TypeError, ValueError):
+        return None
+    panel = str(panel or "rf")[:32]
+    if now - _limit_last.get(panel, 0) < _LIMIT_MIN_GAP_S:
+        return None
+    _limit_last[panel] = now
+    unit = "dBm" if str(unit).strip() == "dBm" else "dB"
+    what = "mask" if kind == "mask" else "limit line"
+    ev = {"ts": now, "severity": "high", "code": "RF_LIMIT_EXCEEDED",
+          "summary": "%s: %.3f MHz at %.1f %s, %.1f dB over the %s" % (panel, f, lv, unit, lv - lim, what),
+          "src": "%.3fMHz" % f, "freq_mhz": round(f, 3), "level": round(lv, 1), "limit": round(lim, 1),
+          "unit": unit, "panel": panel}
+    if span and len(span) == 2:
+        ev["span_mhz"] = [round(float(span[0]), 4), round(float(span[1]), 4)]
+    _baseline._write_wt(ev)
+    return ev
 
 
 def baseline_arm():
@@ -2500,6 +3253,132 @@ def selftest():
           _pf is not None and abs(_pf - (433_050_000 + 300.5 / 480 * 1_740_000)) < 4000, str(_pf))
     check("cal: window excluding the tone -> different (nearest-in-window) bin",
           _peak_freq_hz(_pk, 433_050_000, 434_790_000, near_hz=433_100_000, window_hz=50_000) is not None)
+
+    # --- resolution + hardware settings (pure) ---
+    # narrow zoom: 1 MS/s capture, 250 kHz window -> only ~256 of 1024 FFT bins
+    # land in 480 columns; the gaps are interpolated, not left at the floor
+    _nb = [-60.0] * 1024
+    _gz = _iq_to_grid(_nb, 433_920_000, 1_000_000, 433_795_000, 434_045_000)
+    check("grid: narrow zoom has no dead (floor) columns",
+          _gz.count(_FLOOR_DBM) == 0 and len(_gz) == _POWER_BINS, str(_gz.count(_FLOOR_DBM)))
+    _nb2 = [-90.0] * 1024; _nb2[512] = -30.0
+    _gz2 = _iq_to_grid(_nb2, 433_920_000, 1_000_000, 433_795_000, 434_045_000)
+    check("grid: interpolation keeps the tone as the peak", max(_gz2) == -30.0)
+    check("fft: auto size gives >= 2 bins per column when zoomed",
+          _auto_fft(1_000_000, 433_795_000, 434_045_000, 480) * 250_000 / 1_000_000 >= 960
+          and _auto_fft(1_000_000, 433_795_000, 434_045_000, 480) in _FFT_SIZES)
+    check("fft: wide span keeps a small FFT", _auto_fft(3_200_000, 433_000_000, 435_800_000, 480) <= 2048)
+    _saved = get_tuning()
+    try:
+        set_tuning(bias_t=True, direct="auto", window="flattop")
+        check("flags: rtl_power gets -T (bias-T) + window", "-T" in _tuner_args("rtl_power", 433_000_000, 434_000_000)
+              and "-w" in _tuner_args("rtl_power", 433_000_000, 434_000_000))
+        check("flags: rtl_433 never gets -T (it means run-time there)", "-T" not in _tuner_args("rtl_433"))
+        check("direct: auto on for HF, off for VHF/UHF",
+              _direct_on(7_000_000, 7_300_000) and not _direct_on(433_000_000, 434_000_000))
+        check("direct: HF reachable only via direct sampling",
+              _hw_range_ok(7_000_000, 7_300_000) and not _hw_range_ok(10_000_000, 30_000_000))
+        set_tuning(direct="off")
+        check("direct: off -> HF rejected", not _hw_range_ok(7_000_000, 7_300_000))
+        set_tuning(fft=3000, bins=777, window="nope", avg=999)
+        t = get_tuning()
+        check("settings: invalid FFT / bins / window ignored, avg clamped",
+              t["fft"] == _saved["fft"] and t["bins"] == _saved["bins"] and t["window"] == "flattop" and t["avg"] == 64)
+        check("parse: rtl_433 freq strings", _parse_hz("433.92M") == 433_920_000 and _parse_hz("315000000") == 315_000_000)
+        _w = _fft_window(1024)
+        check("window: flattop is ~1 at centre, tiny at the edges", 0.95 < float(_w[512]) < 1.05 and abs(float(_w[0])) < 0.01)
+    except Exception as _e:
+        check("settings block ran", False, str(_e))
+    finally:
+        set_tuning(ppm=_saved["ppm"], gain=_saved["gain"], fft=_saved["fft"], avg=_saved["avg"], window=_saved["window"],
+                   bins=_saved["bins"], bias_t=_saved["bias_t"], direct=_saved["direct"], conv_hz=_saved["conv_hz"])
+
+    # --- unattended survey: band statistics (pure) ---
+    _fr = []
+    for _k in range(100):
+        _row = [-60.0 + ((_k * 7 + _i * 13) % 5) for _i in range(200)]    # noise ~-60..-56
+        for _i in range(40, 44):
+            _row[_i] = -20.0                                               # constant carrier
+        if _k % 10 == 0:
+            for _i in range(150, 160):
+                _row[_i] = -30.0                                           # 10% duty burst
+        _fr.append({"power": _row, "ts": 1000.0 + _k})
+    _ss = survey_stats(_fr, 433_000_000, 435_000_000)
+    _em = {round(e["freq_mhz"], 2): e for e in _ss["emitters"]}
+    check("survey: constant carrier found, 100% occupancy, right freq",
+          any(abs(f - 433.42) < 0.03 and e["occupancy_pct"] == 100.0 for f, e in _em.items()), str(_em)[:200])
+    check("survey: 10% burst found with its duty + first/last seen",
+          any(abs(f - 434.55) < 0.06 and abs(e["occupancy_pct"] - 10.0) < 0.5 and e["first_seen"] == 1000.0 and e["last_seen"] == 1090.0
+              for f, e in _em.items()), str(_em)[:200])
+    check("survey: exactly the two emitters, noise floor measured",
+          len(_ss["emitters"]) == 2 and -61 < _ss["noise_db"] < -55, str(len(_ss["emitters"])) + " " + str(_ss["noise_db"]))
+    check("survey: bad band list rejected", _survey.start(["nope"], 10)["ok"] is False)
+    # report round-trip: save -> list -> report -> CSV -> delete (temp dir)
+    global _survey_dir
+    _sd_old = _survey_dir
+    _sd_tmp = _tf2 = None
+    try:
+        import tempfile as _tf2
+        _sd_tmp = _tf2.mkdtemp(prefix="rfsv-")
+        _survey_dir = lambda: _sd_tmp
+        _t = SpectrumSurvey(); _t._name = "unit-test"
+        _t._report = {"name": "unit-test", "started": 1000.0, "finished": 1100.0, "status": "done",
+                      "bands": [dict(_ss, band="433", round=1)]}
+        _t._save()
+        _li = survey_list()["surveys"]
+        check("survey: saved report is listed with its emitter count",
+              len(_li) == 1 and _li[0]["name"] == "unit-test" and _li[0]["emitters"] == 2, str(_li))
+        _csv = survey_csv("unit-test").splitlines()
+        check("survey: CSV has a header + one line per emitter",
+              _csv[0].startswith("band,round,freq_mhz") and len(_csv) == 3 and _csv[1].startswith("433,1,"), str(_csv[:2]))
+        check("survey: report + delete", survey_report("unit-test")["ok"] and survey_delete("unit-test")["ok"]
+              and survey_list()["surveys"] == [])
+    finally:
+        _survey_dir = _sd_old
+
+    # --- mesh direction finding (pure parts) ---
+    _lf = level_from_frames([[-60.0] * 100 for _ in range(5)] + [[-60.0] * 50 + [-20.0] + [-60.0] * 49 for _ in range(6)],
+                            433_000_000, 434_000_000, 433_505_000, 20_000)
+    check("df: level at a frequency (median over rows) + SNR", _lf and _lf["level_db"] == -20.0 and _lf["snr_db"] == 40.0, str(_lf))
+    import math as _m
+    _tx = (59.3300, 18.0700)                                   # a transmitter
+    _units = [(59.3350, 18.0600, "A"), (59.3260, 18.0620, "B"), (59.3310, 18.0850, "C"), (59.3240, 18.0780, "D")]
+    _meas = []
+    for _la, _lo, _nm in _units:
+        _ex, _ny = _enu(_la, _lo, _tx[0], _tx[1]); _d = _m.hypot(_ex, _ny)
+        _meas.append({"unit": _nm, "lat": _la, "lon": _lo, "level_db": -30.0 - 25.0 * _m.log10(_d)})
+    _loc = df_locate(_meas)
+    _ex, _ny = _enu(_loc["lat"], _loc["lon"], _tx[0], _tx[1])
+    check("df: 4 units, ideal path loss -> fix within 60 m", _loc["method"] == "multilateration" and _m.hypot(_ex, _ny) < 60,
+          "%.0f m off" % _m.hypot(_ex, _ny))
+    _meas2 = [dict(x, level_db=x["level_db"] + (3.0 if i % 2 else -3.0)) for i, x in enumerate(_meas)]
+    _loc2 = df_locate(_meas2)
+    _ex2, _ny2 = _enu(_loc2["lat"], _loc2["lon"], _tx[0], _tx[1])
+    check("df: adversarial +/-3 dB unit bias -> within the 2-sigma radius",
+          _m.hypot(_ex2, _ny2) <= max(2 * _loc2["radius_m"], 60), "%.0f m off, radius %s" % (_m.hypot(_ex2, _ny2), _loc2["radius_m"]))
+    check("df: 2 units -> rough weighted point, 1 unit -> nearest, 0 -> error",
+          df_locate(_meas[:2])["method"] == "two-unit weighted" and df_locate(_meas[:1])["method"] == "nearest"
+          and df_locate([])["ok"] is False)
+
+    # --- limit-line alarms -> Watchtower feed (rate-limited per panel) ---
+    import tempfile as _tf
+    global _RF_WT_DIR
+    _old_dir = _RF_WT_DIR
+    _RF_WT_DIR = _tf.mkdtemp(prefix="rfwt-")
+    try:
+        _limit_last.clear()
+        e1 = limit_alarm("RTL-SDR", 433.92, -40.0, -55.0, "dBm", "level", [433.0, 435.0], now=1000.0)
+        e2 = limit_alarm("RTL-SDR", 433.95, -38.0, -55.0, "dBm", now=1003.0)
+        e3 = limit_alarm("RTL-SDR", 433.95, -38.0, -55.0, "dBm", now=1011.0)
+        with open(os.path.join(_RF_WT_DIR, _RF_WT_FILE)) as _fh:
+            _lines = [json.loads(x) for x in _fh if x.strip()]
+        check("limit: violation logged to the Watchtower feed",
+              e1 and e1["code"] == "RF_LIMIT_EXCEEDED" and "15.0 dB over" in e1["summary"] and _lines[0]["unit"] == "dBm", str(e1))
+        check("limit: rate-limited per panel (10 s)", e2 is None and e3 is not None and len(_lines) == 2)
+        check("limit: bad input ignored", limit_alarm("x", "nope", 1, 2) is None)
+    finally:
+        _RF_WT_DIR = _old_dir
+        _limit_last.clear()
 
     passed = sum(1 for r in results if r["pass"])
     return {"pass": passed == len(results), "passed": passed,

@@ -57,7 +57,8 @@ RADIO_PRESETS = {
     "MW 900 kHz (AM, direct)": (900_000, "am"),
 }
 
-_MODES = ("wfm", "nfm", "am")
+_MODES = ("wfm", "nfm", "am", "usb", "lsb", "cw")
+_CW_PITCH_HZ = 700              # CW = USB tuned this far below the carrier -> a 700 Hz tone
 
 
 def _run(args, timeout=6):
@@ -111,25 +112,44 @@ def wav_header(rate=_AUDIO_RATE, channels=1, bits=16):
         b"data" + struct.pack("<I", data_size)
 
 
-def rtl_fm_cmd(freq_hz, mode, ppm=0, gain=None):
+def rtl_fm_cmd(freq_hz, mode, ppm=0, gain=None, squelch=0, bias_t=False,
+               direct="auto", conv_hz=0):
     """Build the rtl_fm command for a frequency + mode (pure, selftested).
 
-    WFM uses a wide 200 kHz window + FM de-emphasis; NFM/AM use a narrow 12 kHz
-    window. Below 24 MHz we add direct-sampling for MW/SW AM.
+    WFM uses a wide 200 kHz window + FM de-emphasis; NFM/AM a narrow 12 kHz one;
+    USB/LSB demodulate single-sideband (ham/marine/aviation HF voice); CW is USB
+    tuned ``_CW_PITCH_HZ`` below the carrier so Morse is heard as a steady tone.
+    ``squelch`` (0 = open) mutes audio below that level. ``conv_hz`` is an
+    up/down-converter LO: the dongle tunes RF + conv. Direct sampling is used
+    for HF (below 24 MHz) unless ``direct`` forces it on/off; ``bias_t`` powers
+    an LNA on RTL-SDR Blog V3/V4 dongles.
     """
     mode = (mode or "wfm").lower()
     if mode not in _MODES:
         mode = "wfm"
-    cmd = [_RTL_FM, "-f", str(int(freq_hz))]
+    hw = int(freq_hz) + int(conv_hz or 0)
+    if mode == "cw":
+        hw -= _CW_PITCH_HZ
+    cmd = [_RTL_FM, "-f", str(hw)]
     if mode == "wfm":
         cmd += ["-M", "fm", "-s", "200000", "-A", "fast", "-E", "deemp"]
     elif mode == "nfm":
         cmd += ["-M", "fm", "-s", "12000"]
+    elif mode in ("usb", "lsb", "cw"):
+        cmd += ["-M", "lsb" if mode == "lsb" else "usb", "-s", "12000"]
     else:  # am
         cmd += ["-M", "am", "-s", "12000"]
-    cmd += ["-r", str(_AUDIO_RATE), "-l", "0"]
-    if int(freq_hz) < 24_000_000:
-        cmd += ["-E", "direct"]          # MW/SW: direct sampling
+    try:
+        sq = max(0, min(1000, int(float(squelch or 0))))
+    except (TypeError, ValueError):
+        sq = 0
+    if mode == "wfm":
+        cmd += ["-r", str(_AUDIO_RATE)]   # 200 kHz -> 48 kHz (rtl_fm only resamples DOWN)
+    cmd += ["-l", str(sq)]
+    if direct == "on" or (direct != "off" and hw < 24_000_000):
+        cmd += ["-E", "direct"]          # MW/SW/HF: direct sampling
+    if bias_t:
+        cmd += ["-T"]
     if ppm:
         cmd += ["-p", str(int(ppm))]
     if gain is not None:
@@ -138,15 +158,53 @@ def rtl_fm_cmd(freq_hz, mode, ppm=0, gain=None):
     return cmd
 
 
+def pump_with_silence(src, write, rate, stop, tick=0.1):
+    """Copy PCM from ``src`` (a pipe) to ``write``; while nothing arrives, write
+    zeros (silence) at ``rate`` so the stream keeps flowing (pure-ish; selftested
+    with an os.pipe). rtl_fm outputs NOTHING while its squelch is closed, which
+    otherwise starves the encoder and stalls the browser's <audio>. Returns when
+    ``src`` hits EOF, ``stop`` is set, or ``write`` fails (client gone)."""
+    import select
+    fd = src.fileno()
+    last = time.time()
+    while not stop.is_set():
+        r, _, _ = select.select([fd], [], [], tick)
+        now = time.time()
+        try:
+            if r:
+                chunk = os.read(fd, 8192)
+                if not chunk:
+                    return
+                write(chunk)
+                last = now
+            elif now - last >= tick:
+                n = int(rate * (now - last)) * 2           # s16le mono: 2 bytes/sample
+                if n > 0:
+                    write(b"\x00" * n)
+                last = now
+        except (OSError, ValueError, BrokenPipeError):
+            return
+
+
+def audio_rate(mode):
+    """The PCM rate rtl_fm really outputs for a mode (pure).
+
+    rtl_fm's ``-r`` only resamples *down*: WFM (-s 200k -r 48k) comes out at
+    48 kHz, but the narrow modes (-s 12k) come out at 12 kHz whatever -r says.
+    Labelling that 48 kHz played it 4x too fast (and starved the MP3 stream)."""
+    return _AUDIO_RATE if (mode or "wfm").lower() == "wfm" else 12000
+
+
 def ffmpeg_mp3_cmd(rate=_AUDIO_RATE, bitrate=_MP3_BITRATE):
-    """ffmpeg argv: read mono s16le PCM on stdin, stream live MP3 to stdout (pure).
+    """ffmpeg argv: read mono s16le PCM at ``rate`` on stdin, stream live 48 kHz
+    MP3 to stdout (pure). Narrow modes (12 kHz) are resampled up to 48 kHz.
 
     ``-flush_packets 1`` keeps latency low for live listening; ``pipe:0``/``pipe:1``
     are stdin/stdout so it slots straight onto rtl_fm's output.
     """
     return [_FFMPEG, "-hide_banner", "-loglevel", "error",
             "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
-            "-c:a", "libmp3lame", "-b:a", str(bitrate),
+            "-ar", str(_AUDIO_RATE), "-c:a", "libmp3lame", "-b:a", str(bitrate),
             "-flush_packets", "1", "-f", "mp3", "pipe:1"]
 
 
@@ -197,7 +255,7 @@ class RadioTuner:
         self._freq = None
         self._mode = None
 
-    def stream(self, freq_hz, mode):  # pragma: no cover - hardware path
+    def stream(self, freq_hz, mode, squelch=0):  # pragma: no cover - hardware path
         """Generator: start rtl_fm for freq/mode and yield a live WAV stream.
 
         Killing rtl_fm is tied to the generator's lifetime — when the browser
@@ -211,16 +269,19 @@ class RadioTuner:
             return
         ppm = 0
         gain = None
+        extra = {}
         try:
             import rtl_sdr
             t = rtl_sdr.get_tuning()
             ppm = t.get("ppm", 0) or 0
             gain = None if t.get("gain_is_auto") else t.get("gain")
+            extra = {"bias_t": bool(t.get("bias_t")), "direct": t.get("direct", "auto"),
+                     "conv_hz": int(t.get("conv_hz") or 0)}
         except Exception:
             pass
         with self._lock:
             self._stop_locked()
-            cmd = rtl_fm_cmd(freq_hz, mode, ppm=ppm, gain=gain)
+            cmd = rtl_fm_cmd(freq_hz, mode, ppm=ppm, gain=gain, squelch=squelch, **extra)
             try:
                 self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                               stderr=subprocess.DEVNULL)
@@ -231,11 +292,27 @@ class RadioTuner:
             # stdout feeds ffmpeg's stdin; we read MP3 off ffmpeg's stdout. Without
             # ffmpeg, stream the raw WAV (desktop-only) as before.
             src = self._proc
+            try:
+                squelched = int(float(squelch or 0)) > 0
+            except (TypeError, ValueError):
+                squelched = False
+            self._pump_stop = threading.Event()
             if transcodes():
                 try:
-                    self._enc = subprocess.Popen(ffmpeg_mp3_cmd(), stdin=self._proc.stdout,
-                                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                    self._proc.stdout.close()   # parent drops its copy -> EOF reaches ffmpeg if rtl_fm dies
+                    if squelched:
+                        # squelch: rtl_fm goes silent when closed -> pump silence in
+                        self._enc = subprocess.Popen(ffmpeg_mp3_cmd(audio_rate(mode)), stdin=subprocess.PIPE,
+                                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                        enc_in, rtl_out = self._enc.stdin, self._proc.stdout
+
+                        def _w(b, _f=enc_in):
+                            _f.write(b); _f.flush()
+                        threading.Thread(target=pump_with_silence, daemon=True, name="radio-squelch-pump",
+                                         args=(rtl_out, _w, audio_rate(mode), self._pump_stop)).start()
+                    else:
+                        self._enc = subprocess.Popen(ffmpeg_mp3_cmd(audio_rate(mode)), stdin=self._proc.stdout,
+                                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                        self._proc.stdout.close()   # parent drops its copy -> EOF reaches ffmpeg if rtl_fm dies
                     src = self._enc
                 except Exception:
                     self._enc = None            # fall back to WAV passthrough
@@ -244,7 +321,24 @@ class RadioTuner:
             self._started = time.time()
             proc, enc, pipe = self._proc, self._enc, src.stdout
         if enc is None:
-            yield wav_header()                  # raw WAV path needs the RIFF header
+            yield wav_header(audio_rate(self._mode))   # raw WAV path: RIFF header at the true rate
+            if squelched:                               # WAV + squelch: pad the gaps ourselves
+                import queue
+                q = queue.Queue(maxsize=64)
+                threading.Thread(target=pump_with_silence, daemon=True, name="radio-squelch-pump",
+                                 args=(pipe, q.put, audio_rate(self._mode), self._pump_stop)).start()
+                try:
+                    while proc.poll() is None:
+                        try:
+                            yield q.get(timeout=1.0)
+                        except queue.Empty:
+                            continue
+                finally:
+                    self._pump_stop.set()
+                    with self._lock:
+                        if self._proc is proc:
+                            self._stop_locked()
+                return
         try:
             while True:
                 chunk = pipe.read(4096)
@@ -252,6 +346,7 @@ class RadioTuner:
                     break
                 yield chunk
         finally:
+            self._pump_stop.set()
             with self._lock:
                 if self._proc is proc:
                     self._stop_locked()
@@ -260,8 +355,8 @@ class RadioTuner:
 _tuner = RadioTuner()
 
 
-def stream(freq_hz, mode="wfm"):
-    return _tuner.stream(freq_hz, mode)
+def stream(freq_hz, mode="wfm", squelch=0):
+    return _tuner.stream(freq_hz, mode, squelch)
 
 
 def stop():
@@ -315,6 +410,18 @@ def selftest():
     check("cmd: unknown mode falls back to WFM", "200000" in rtl_fm_cmd(90e6, "zzz"))
     g = rtl_fm_cmd(98_000_000, "wfm", gain=30.0)
     check("cmd: explicit gain passed", "-g" in g and "30.0" in g, str(g))
+    u = rtl_fm_cmd(14_200_000, "usb")
+    check("cmd: USB = single sideband + direct sampling on HF", "usb" in u and "direct" in u, str(u))
+    check("cmd: LSB", "lsb" in rtl_fm_cmd(7_100_000, "lsb"))
+    cw = rtl_fm_cmd(7_030_000, "cw")
+    check("cmd: CW = USB tuned 700 Hz below the carrier",
+          "usb" in cw and str(7_030_000 - _CW_PITCH_HZ) in cw, str(cw))
+    sq = rtl_fm_cmd(446_006_250, "nfm", squelch=120)
+    check("cmd: squelch level passed", sq[sq.index("-l") + 1] == "120", str(sq))
+    check("cmd: bias-T flag", "-T" in rtl_fm_cmd(1_090_000_000, "am", bias_t=True))
+    cv = rtl_fm_cmd(7_100_000, "lsb", conv_hz=125_000_000)
+    check("cmd: upconverter -> tunes RF + LO, no direct sampling", "132100000" in cv and "direct" not in cv, str(cv))
+    check("cmd: direct sampling can be forced off", "direct" not in rtl_fm_cmd(7_100_000, "lsb", direct="off"))
 
     h = wav_header(48000, 1, 16)
     check("wav: RIFF/WAVE/fmt/data header, 44 bytes",
@@ -328,6 +435,22 @@ def selftest():
           and all(v[1] in _MODES for v in RADIO_PRESETS.values()))
 
     # MP3 transcode (the iOS fix): correct ffmpeg pipe command + matching mimetype
+    check("rate: WFM 48 kHz, narrow modes 12 kHz (what rtl_fm really outputs)",
+          audio_rate("wfm") == 48000 and audio_rate("nfm") == 12000 and audio_rate("usb") == 12000)
+    check("cmd: narrow modes don't ask rtl_fm to upsample (-r)", "-r" not in rtl_fm_cmd(446_006_250, "nfm"))
+    # squelch gap filler: an idle pipe produces silence at the audio rate
+    _r, _wfd = os.pipe()
+    _src = os.fdopen(_r, "rb")
+    _buf = bytearray(); _ev = threading.Event()
+    _t = threading.Thread(target=pump_with_silence, args=(_src, _buf.extend, 12000, _ev, 0.05))
+    _t.start(); time.sleep(0.4); os.write(_wfd, b"\x01\x02" * 10); time.sleep(0.15); _ev.set(); _t.join(2)
+    os.close(_wfd); _src.close()
+    _zeros = len(_buf) - 20
+    check("squelch: idle pipe is padded with silence (~rate x 2 B/s), real audio passed through",
+          9000 < _zeros < 14000 and bytes(_buf).count(b"\x01\x02") == 10, str(len(_buf)))
+    f12 = ffmpeg_mp3_cmd(12000)
+    check("mp3: 12 kHz input resampled to 48 kHz output",
+          f12[f12.index("-ar") + 1] == "12000" and f12.count("-ar") == 2 and "48000" in f12, str(f12))
     fc = ffmpeg_mp3_cmd()
     check("mp3: ffmpeg reads s16le pipe:0 -> libmp3lame mp3 pipe:1",
           "s16le" in fc and "libmp3lame" in fc and "pipe:0" in fc and "pipe:1" in fc
