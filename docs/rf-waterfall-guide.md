@@ -193,7 +193,9 @@ outdoors, and worse indoors.
 - **⤓ SigMF** captures raw IQ to a standard SigMF recording — open it in the
   on-box [Signal Analyzer](rf-waterfall.md#signal-analyzer-on-box-sigmf-analysis),
   or in URH / GNU Radio / inspectrum. Watch the size: ~4 MB per second at
-  2 MS/s.
+  2 MS/s. The waterfall keeps scrolling while it records, showing the capture's
+  own window, so you can see what you are getting. Retuning waits until it
+  finishes.
 - **Rec / Replay** records the sweep itself and plays it back through the same
   view.
 - **CSV** exports the spectrum, the Signals list, the markers, or the whole

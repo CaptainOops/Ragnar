@@ -1016,7 +1016,10 @@
     fetch('/api/net/rtl/iq/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(res){
         if(!res||res.error){ self.iqStat.innerHTML='<span style="color:#fb7185">'+esc((res&&res.error)||'failed')+'</span>'; return; }
-        self._iqWasLive=(self.mode==='live'); if(self._iqWasLive) self.stopLive();  // the capture holds the dongle
+        // The capture owns the dongle, but it feeds its own FFT rows to the
+        // waterfall — so keep polling frames and watch what is being recorded.
+        self._iqWasLive=(self.mode==='live'); self._followOnly=true;
+        if(self._iqWasLive){ self.stopLive(); self._rangeKnown=false; self.startLive(); }
         self._iqPoll=setInterval(function(){ self.iqPoll(); },400); self.iqPoll();
       }).catch(function(){ self.iqStat.textContent='start failed'; });
   };
@@ -1024,6 +1027,7 @@
     fetch('/api/net/rtl/iq/status').then(function(r){return r.json();}).then(function(st){
       if(st.capturing){ self.iqStat.innerHTML='<span class="recdot">&#9679;</span> capturing '+(st.progress||0)+'%'; return; }
       if(self._iqPoll){ clearInterval(self._iqPoll); self._iqPoll=null; }
+      self._followOnly=false;                       // the dongle is ours again
       if(st.error){ self.iqStat.innerHTML='<span style="color:#fb7185">'+esc(st.error)+'</span>'; }
       else if(st.done && st.name){ var n=encodeURIComponent(st.name), mb=(st.bytes/1e6).toFixed(1);
         self.iqStat.innerHTML='<span style="color:var(--live)">&#10003; '+mb+' MB</span> '
@@ -1032,7 +1036,7 @@
           +'<a href="/rf-analyzer?name='+n+'" target="_blank" style="color:var(--accent);margin-left:10px;font-weight:600">&#128200; Open in Analyzer</a>';
         self.refreshSessions(st.name); }   // add the fresh capture to the Sessions dropdown
       // resume the sweep the capture interrupted
-      if(self._iqWasLive && self.available){ self._iqWasLive=false; self._rangeKnown=false; self.resetCanvas(); self.startLive(); }
+      if(self._iqWasLive && self.available){ self._iqWasLive=false; self.stopLive(); self._rangeKnown=false; self.resetCanvas(); self.startLive(); }
     }).catch(function(){ if(self._iqPoll){clearInterval(self._iqPoll);self._iqPoll=null;} });
   };
   // ---- spectrum baseline / anomaly watch ----
@@ -1373,7 +1377,7 @@
   };
   Scope.prototype.resetZoom=function(){ this.zoomTo(this.homeLo,this.homeHi,true); };
   Scope.prototype.applyZoom=function(z,view){
-    if(this._surveyOn){ this.markTxt.innerHTML='<span class="mk">Survey running</span> — stop it (⚙ Settings) to retune.'; this._pend=null; return; }
+    if(this._surveyOn||this._followOnly){ this.markTxt.innerHTML='<span class="mk">'+(this._followOnly?'Recording':'Survey running')+'</span> — the waterfall follows it; retune when it finishes.'; this._pend=null; return; }
     this.zoom=z; this.resetBtn.disabled=!z; this._lastRetune=Date.now();
     this.dz=!!(view && z && (view[0]>z[0]+1e-9 || view[1]<z[1]-1e-9));
     if(this.mode==='live'){ this._pend=z?[z[0],z[1]]:[this.homeLo,this.homeHi];
@@ -1387,7 +1391,7 @@
 
   // ---- band / view selection ----
   Scope.prototype.selectBand=function(bandId,synthId){
-    if(this._surveyOn){ this.markTxt.innerHTML='<span class="mk">Survey running</span> — stop it (⚙ Settings) to change band.'; return; }
+    if(this._surveyOn||this._followOnly){ this.markTxt.innerHTML='<span class="mk">'+(this._followOnly?'Recording':'Survey running')+'</span> — wait for it to finish to change band.'; return; }
     Array.prototype.forEach.call(this.bandSel.querySelectorAll('button'),function(x){x.setAttribute('aria-pressed',x.getAttribute('data-band')===bandId?'true':'false');});
     if(this.ovDropdown) this.ovDropdown.value='';
     this.liveBand=bandId; this.synthBand=synthId||bandId; this.zoom=null; this.zwave=null; this.zwaveRegion=null; this.resetBtn.disabled=true;
@@ -1494,7 +1498,7 @@
   // ---- live sweep ----
   Scope.prototype.startLive=function(){
     var self=this;
-    if(this._surveyOn){ this.seq=0; this._liveQ.length=0; this._rangeKnown=false;           // follow the survey's sweep
+    if(this._surveyOn||this._followOnly){ this.seq=0; this._liveQ.length=0; this._rangeKnown=false;   // follow whatever owns the dongle
       if(this._poll) clearInterval(this._poll); this._poll=setInterval(function(){ self.livePoll(); },120); return; } this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
     this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};

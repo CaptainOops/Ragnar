@@ -1438,6 +1438,34 @@ class PowerSweep:
                     and not self._error and self._stderr_tail):
                 self._error = self._stderr_tail
 
+    def begin_external(self, lo_hz, hi_hz, engine="iq-capture"):
+        """Hand the waterfall over to another capture (e.g. a raw-IQ recording).
+
+        One dongle serves one job, so while a recording runs the sweep can't.
+        Rather than leaving the waterfall frozen, the recording feeds its own
+        FFT rows through here and the page keeps scrolling — showing exactly
+        what is being written to the file."""
+        with self._lock:
+            self._frames = []
+            self._seq = 0
+            self._maxhold = [_FLOOR_DBM] * _bins
+            self._lo, self._hi = int(lo_hz), int(hi_hz)
+            self._band = engine
+            self._engine = engine
+            self._error = None
+            self._floor_dyn = None
+
+    def end_external(self):
+        with self._lock:
+            self._band = None
+
+    def feed_external(self, grid):
+        """Publish one externally-produced row (same shape as a sweep frame)."""
+        if self._thread and self._thread.is_alive():
+            return                              # a real sweep owns the ring
+        self._floor_dyn = self._update_iq_floor(grid, self._floor_dyn) if grid else self._floor_dyn
+        self._push_frame(grid)
+
     def _push_frame(self, grid):
         ints = [int(round(v)) for v in grid]
         with self._lock:
@@ -1900,6 +1928,57 @@ class IqCapture:
         return {"ok": True, "name": base, "center_hz": center_hz, "sr_hz": sr_hz,
                 "seconds": seconds, "want_bytes": self._want_bytes}
 
+    def _pump(self, nsamp):
+        """Copy the capture to disk, and FFT some of it for the live waterfall.
+
+        Writing the file always wins: rows are only computed when there is time
+        (at most _IQ_DISPLAY_HZ per second), so the recording can never be
+        starved or dropped for the sake of the display.
+        """
+        want = nsamp * 2                                   # cu8: 2 bytes per sample
+        lo_hz, hi_hz = self._center - self._sr // 2, self._center + self._sr // 2
+        np = None
+        try:
+            import numpy as _np
+            np = _np
+        except Exception:
+            np = None
+        N = _fft or 1024
+        win = _fft_window(N) if np is not None else None
+        win_norm = float(np.sum(win ** 2)) * N if np is not None else 1.0
+        chunk = max(N * 2, int(self._sr / _IQ_DISPLAY_HZ)) * 2
+        chunk -= chunk % (N * 2)
+        got, last_row = 0, 0.0
+        if np is not None:
+            _power.begin_external(lo_hz - _conv_hz, hi_hz - _conv_hz)   # report RF, not hardware
+        try:
+            with open(self._path, "wb", buffering=1 << 18) as fh:
+                pipe = self._proc.stdout
+                while got < want and not self._stop.is_set():
+                    buf = pipe.read(min(chunk, want - got))
+                    if not buf:
+                        break
+                    fh.write(buf)                          # the file first, always
+                    got += len(buf)
+                    now = time.time()
+                    if np is None or (now - last_row) < 1.0 / _IQ_DISPLAY_HZ or len(buf) < N * 2:
+                        continue
+                    last_row = now
+                    raw = (np.frombuffer(buf[:(len(buf) // (N * 2)) * N * 2], dtype=np.uint8)
+                           .astype(np.float32) - 127.5) / 127.5
+                    nwin = min((raw.shape[0] // 2) // N, _avg)
+                    if nwin <= 0:
+                        continue
+                    iq = raw[:nwin * N * 2].reshape(nwin, N, 2)
+                    spec = np.fft.fftshift(np.fft.fft((iq[:, :, 0] + 1j * iq[:, :, 1]) * win, axis=1), axes=1)
+                    psd = (spec.real ** 2 + spec.imag ** 2).mean(axis=0) / win_norm
+                    db = 10.0 * np.log10(psd + 1e-12)
+                    _power.feed_external(_iq_to_grid(db.tolist(), self._center, self._sr,
+                                                     lo_hz, hi_hz, bins=_bins))
+        finally:
+            if np is not None:
+                _power.end_external()
+
     def _run_loop(self):
         nsamp = int(self._sr * self._seconds)
         hw = self._center + _conv_hz              # tune the radio; SigMF keeps the RF frequency
@@ -1911,18 +1990,24 @@ class IqCapture:
         if _direct_on(hw - self._sr // 2, hw + self._sr // 2):
             cmd += ["-D"]
         _set_biast(_bias_t)
-        cmd += [self._path]
+        _usb_settle(self._stop)
+        cmd += ["-"]                              # stream to us: file + live waterfall
         try:
-            self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.PIPE)
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, bufsize=0)
         except Exception as exc:
             self._error = "failed to launch rtl_sdr: %s" % exc
             return
-        _, err = b"", b""
+        err = b""
+        serr = _drain(_text_lines(self._proc.stderr), self)
         try:
-            _, err = self._proc.communicate()
+            self._pump(nsamp)
         except Exception as exc:  # pragma: no cover - defensive
-            self._error = str(exc)
+            self._error = self._error or str(exc)
+        finally:
+            serr.join(timeout=1)
+            err = (self._stderr_tail or "").encode()
+            _terminate(self._proc)
         if self._stop.is_set():
             self._error = self._error or "capture cancelled"
             return

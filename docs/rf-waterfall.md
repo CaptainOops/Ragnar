@@ -582,6 +582,14 @@ turning Ragnar into a real capture instrument rather than a closed viewer.
   `.sigmf-data` + `.sigmf-meta` download links. Backend: `rtl_sdr.iq_capture_*`
   + `sigmf_meta()`; routes `/api/net/rtl/iq/{start,status,stop,list,delete,file}`.
 
+**The waterfall keeps running while you record.** One dongle serves one job, so
+the sweep stops for the duration — but the capture feeds its own FFT rows to the
+panel, so you watch exactly what is being written to the file, across the
+capture's own window (centre ± half the sample rate). Writing the file always
+takes priority: rows are only computed when there is time for them, so a
+recording is never shortened or thinned for the sake of the display. Band and
+zoom changes wait until the capture finishes.
+
 ## Signal Analyzer (on-box SigMF analysis)
 
 
