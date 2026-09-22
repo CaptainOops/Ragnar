@@ -147,6 +147,9 @@
   .drow select{width:auto;max-width:100%;min-width:0}
   .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
   .dnote b{color:var(--ink-dim);font-weight:500}
+  .tag.limtag{margin-left:6px} .tag.limtag.pass{color:var(--live);border-color:rgba(63,181,107,.5)} .tag.limtag.fail{color:#fb7185;border-color:rgba(251,113,133,.6);background:rgba(251,113,133,.12)}
+  .scope.limfail .fall-wrap{box-shadow:inset 0 0 0 2px rgba(251,113,133,.75)}
+  .limlog{font-size:10.5px;line-height:1.55;max-height:92px;overflow:auto;color:var(--ink-dim)} .limlog .lx{color:#fb7185}
   .dsec .tunergrp{flex-wrap:wrap;row-gap:6px;min-width:0} .dsec .drow>.tunergrp{flex:1 1 100%}
   .toolbar .npgrp select{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 4px}
   .toolbar .npgrp input[type=range]{width:74px;accent-color:var(--cyan)}
@@ -452,7 +455,7 @@
     var el=document.createElement('div'); el.className='scope';
     el.innerHTML=
       '<div class="scope-head">'
-      +'<div class="scope-title"><span class="name">'+cfg.name+' <span class="tag idle scope-tag">idle</span></span><span class="dev">'+cfg.dev+'</span></div>'
+      +'<div class="scope-title"><span class="name">'+cfg.name+' <span class="tag idle scope-tag">idle</span><span class="tag limtag" hidden></span></span><span class="dev">'+cfg.dev+'</span></div>'
       +'<div class="seg viewsel" role="group" aria-label="View"></div>'
       +'<div class="seg bandsel" role="group" aria-label="Band"></div>'
       +'<div class="tunesel hidden" role="group" aria-label="Manual tune"></div>'
@@ -528,6 +531,14 @@
             +'<div class="drow"><label>Offset</label><input type="number" class="coff" step="0.1"><span>dB</span><button class="mini capply">Apply</button><button class="mini creset">Reset</button></div>'
             +'<div class="drow"><label>Known level</label><input type="number" class="ctrue" step="0.1" placeholder="dBm"><span>dBm</span><button class="mini ccal" title="Set the active marker on a signal whose true level you know (signal generator, calibrated source), then enter that level">Calibrate to marker</button></div>'
             +'<div class="dnote cstat">Levels are relative (dB / dBFS) until calibrated. Put a marker on a signal of known strength and enter its true level to read <b>dBm</b>. Re-calibrate after changing gain or the antenna.</div>'
+          +'</fieldset>'
+          +'<fieldset class="dsec dlim"><legend>Limit line / mask</legend>'
+            +'<div class="drow"><label>Mode</label><select class="lmode"><option value="off">Off</option><option value="level">Level line</option><option value="mask">Mask (learned)</option></select></div>'
+            +'<div class="drow lrow-level"><label>Limit</label><input type="number" class="llevel" step="1"><span class="lunit">dB</span></div>'
+            +'<div class="drow lrow-mask"><label>Margin</label><input type="number" class="lmargin" step="1" value="6"><span>dB</span><button class="mini llearn" title="Learn the mask from the current Max-hold trace (+ margin). Let Max-hold run a while first so it has seen the normal traffic.">Learn from Max-hold</button></div>'
+            +'<div class="drow"><label class="lalert"><input type="checkbox" class="lwt"> Alert to Watchtower</label><button class="mini lclr">Clear log</button></div>'
+            +'<div class="dnote lstat">Anything above the line is a <b>FAIL</b>: the trace turns red there, the panel gets a red outline and a FAIL tag, and each violation is logged below (and to Watchtower if ticked).</div>'
+            +'<div class="limlog"></div>'
           +'</fieldset>'
           +'<fieldset class="dsec dexp"><legend>Export (CSV)</legend>'
             +'<div class="drow"><button class="mini xspec" title="Frequency + live / avg / max / min trace values">Spectrum</button>'
@@ -705,6 +716,17 @@
     cq('.creset').addEventListener('click',function(){ self.setCal(0,false); });
     cq('.ccal').addEventListener('click',function(){ self.calToMarker(parseFloat(cq('.ctrue').value)); });
     this._calUI();
+    // limit line / mask
+    this.lim={mode:'off',level:-40,margin:6,alert:false}; this.limLog=[]; this._limIn=false; this._limOut=0; this.limCount=0;
+    try{ var _lm=JSON.parse(localStorage.getItem('rfwf.lim.'+cfg.short)||'null'); if(_lm) for(var _k2 in this.lim) if(_k2 in _lm) this.lim[_k2]=_lm[_k2]; }catch(e){}
+    this.limTag=el.querySelector('.limtag');
+    cq('.lmode').addEventListener('change',function(){ self.setLimit({mode:cq('.lmode').value}); });
+    cq('.llevel').addEventListener('change',function(){ var v=parseFloat(cq('.llevel').value); if(isFinite(v)) self.setLimit({level:v}); });
+    cq('.lmargin').addEventListener('change',function(){ var v=parseFloat(cq('.lmargin').value); if(isFinite(v)) self.setLimit({margin:v}); });
+    cq('.llearn').addEventListener('click',function(){ self.learnMask(); });
+    cq('.lwt').addEventListener('change',function(){ self.setLimit({alert:cq('.lwt').checked}); });
+    cq('.lclr').addEventListener('click',function(){ self.limLog=[]; self.limCount=0; self._limUI(); });
+    this._limUI();
     cq('.xspec').addEventListener('click',function(){ self.exportCSV('spectrum'); });
     cq('.xsig').addEventListener('click',function(){ self.exportCSV('signals'); });
     cq('.xmark').addEventListener('click',function(){ self.exportCSV('markers'); });
@@ -1516,6 +1538,7 @@
     this.peak={db:peakDb,idx:peakIdx}; this.snr=peakDb-nf;
     this.busy=this.busy*0.8 + (busyC/N*100)*0.2;
     this._updateTraces(power);
+    if(this.lim.mode!=='off') this._limitCheck(power);
     this.updateSignals(power,nf);        // track emitters (CFAR) + throttled render
     this.drawTrace(power); this.updateReadout();
     if(!this.threeD) this._drawTimeGrid();
@@ -1559,6 +1582,69 @@
     o.value=this.cal||0;
     var st=this.el.querySelector('.cstat');
     if(this.calOn && st && !/Calibrated/.test(st.textContent)) st.innerHTML='Calibrated: offset <b>'+(this.cal>=0?'+':'')+this.cal+' dB</b>; levels read in <b>dBm</b>. Re-calibrate after changing gain or the antenna.'; };
+
+  // ---- limit line / mask (pass / fail) --------------------------------------
+  Scope.prototype.setLimit=function(o){ for(var k in o) this.lim[k]=o[k];
+    try{ localStorage.setItem('rfwf.lim.'+this.cfg.short,JSON.stringify(this.lim)); }catch(e){}
+    this._limIn=false; this._limOut=0; this.el.classList.remove('limfail'); this._limUI(); if(this.shown||this.row) this.drawTrace(this.shown||this.row); };
+  Scope.prototype._maskKey=function(){ return 'rfwf.mask.'+this.cfg.short+'.'+(+this.lo).toFixed(4)+'_'+(+this.hi).toFixed(4); };
+  // Learn a mask from Max-hold + margin, stored per span (like the noise print).
+  Scope.prototype.learnMask=function(){
+    var st=this.el.querySelector('.lstat');
+    if(!this.maxRow){ st.innerHTML='<span style="color:#fb7185">No Max-hold yet: let the waterfall run first.</span>'; return; }
+    var m=Array.prototype.map.call(this.maxRow,function(v){return Math.round(v*10)/10;}), mg=+this.lim.margin||0;
+    this._mask={lo:this.lo,hi:this.hi,vals:m.map(function(v){return v+mg;})};
+    try{ localStorage.setItem(this._maskKey(),JSON.stringify(this._mask)); }catch(e){}
+    this.setLimit({mode:'mask'});
+    st.innerHTML='<span style="color:var(--live)">&#10003; Mask learned for '+fmtSpan(this.lo,this.hi)+' (Max-hold + '+mg+' dB).</span>';
+  };
+  // The limit (per bin) for the current span, or null.
+  Scope.prototype.limitArr=function(n){
+    if(this.lim.mode==='level') return {c:this.lim.level};
+    if(this.lim.mode==='mask'){
+      var mk=this._mask;
+      if(!mk||Math.abs(mk.lo-this.lo)>1e-4||Math.abs(mk.hi-this.hi)>1e-4){
+        try{ mk=JSON.parse(localStorage.getItem(this._maskKey())||'null'); }catch(e){ mk=null; }
+        this._mask=mk; }
+      if(mk&&mk.vals&&mk.vals.length===n) return {a:mk.vals};
+    }
+    return null;
+  };
+  // Evaluate one displayed row; start / end violation events.
+  Scope.prototype._limitCheck=function(p){
+    var L=this.limitArr(p.length); if(!L){ if(this._limIn){ this._limIn=false; this.el.classList.remove('limfail'); } this._limUI(); return; }
+    var worst=-1e9, wi=-1;
+    for(var i=0;i<p.length;i++){ var lv=L.a?L.a[i]:L.c, ex=p[i]-lv; if(ex>worst){ worst=ex; wi=i; } }
+    var now=Date.now();
+    if(worst>0){
+      this._limOut=0;
+      if(!this._limIn){ this._limIn=true; this.limCount++;
+        var f=this.lo+(wi+0.5)*(this.hi-this.lo)/p.length, lim=L.a?L.a[wi]:L.c;
+        var ev={t:now,f:f,level:p[wi],limit:lim,excess:worst};
+        this.limLog.unshift(ev); this.limLog.length=Math.min(this.limLog.length,50);
+        if(this.lim.alert && now-(this._limPost||0)>10000){ this._limPost=now;
+          fetch('/api/net/rtl/limit/alarm',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({panel:this.cfg.short,freq_mhz:f,level:p[wi],limit:lim,unit:this.calOn?'dBm':'dB',kind:this.lim.mode,span:[this.lo,this.hi]})}).catch(function(){}); }
+      }
+    } else if(this._limIn){ if(!this._limOut) this._limOut=now; else if(now-this._limOut>1000){ this._limIn=false; this._limOut=0; } }
+    this.el.classList.toggle('limfail',this._limIn);
+    if(now-(this._limUIt||0)>300||this._limIn!==this._limWas){ this._limUIt=now; this._limWas=this._limIn; this._limUI(); }
+  };
+  Scope.prototype._limUI=function(){
+    var q=function(c,e){return e.el.querySelector(c);}, self=this, on=this.lim.mode!=='off', L=on?this.limitArr((this.shown||this.row||[]).length||1):null;
+    if(!q('.lmode',this)) return;
+    q('.lmode',this).value=this.lim.mode; q('.llevel',this).value=this.lim.level; q('.lmargin',this).value=this.lim.margin; q('.lwt',this).checked=!!this.lim.alert;
+    q('.lunit',this).textContent=this.unit().trim();
+    q('.lrow-level',this).style.display=this.lim.mode==='level'?'':'none'; q('.lrow-mask',this).style.display=this.lim.mode==='mask'?'':'none';
+    this.limTag.hidden=!on;
+    if(on){ var armed=!!L||this.lim.mode==='level';
+      this.limTag.className='tag limtag '+(this._limIn?'fail':'pass');
+      this.limTag.textContent=!armed?'no mask':(this._limIn?'FAIL':'PASS')+(this.limCount?' · '+this.limCount:''); }
+    var U=this.unit();
+    q('.limlog',this).innerHTML=this.limLog.slice(0,20).map(function(e){ var d=new Date(e.t);
+      return '<div><span class="lx">'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')
+        +'</span> '+fmtMHz(e.f)+' · '+(Math.round(e.level*10)/10)+U+' · <b>+'+(Math.round(e.excess*10)/10)+' dB</b></div>'; }).join('');
+  };
 
   // ---- CSV export ------------------------------------------------------------
   function fq(mhz){ return {csvRaw:(+mhz).toFixed(6)}; }      // frequencies keep full (Hz) precision
@@ -2071,6 +2157,12 @@
     if(h.min) line(this.minRow,"rgba(120,140,170,0.75)",1);
     if(h.avg) line(this.avgRow,"rgba(63,181,107,0.9)",1);
     if(h.max) line(this.maxRow,"rgba(245,185,66,0.85)",1);
+    // limit line / mask (red, dashed) with violations highlighted
+    var LA=(this.lim&&this.lim.mode!=='off')?this.limitArr(N):null;
+    if(LA){ t.setLineDash([5,4]); t.strokeStyle='rgba(251,113,133,0.9)'; t.lineWidth=Math.max(1,this.d); t.beginPath();
+      for(var li=0;li<N;li++){ var lx=li*W/N, ly=yFor(LA.a?LA.a[li]:LA.c); if(li===0)t.moveTo(lx,ly); else t.lineTo(lx,ly); } t.stroke(); t.setLineDash([]);
+      t.fillStyle='rgba(251,113,133,0.35)';
+      for(var lj=0;lj<N;lj++){ var lim=LA.a?LA.a[lj]:LA.c; if(power[lj]>lim){ var y1=yFor(power[lj]), y0=yFor(lim); t.fillRect(lj*W/N,y1,Math.max(1,W/N),y0-y1); } } }
     // live spectrum (filled), drawn on top
     t.fillStyle="rgba(56,189,201,0.12)"; t.strokeStyle="#38bdc9"; t.lineWidth=Math.max(1,this.d); t.beginPath();
     for(var c=0;c<N;c++){var x=c*W/N,y=yFor(power[c]); if(c===0)t.moveTo(x,y);else t.lineTo(x,y);}

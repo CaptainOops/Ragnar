@@ -173,7 +173,7 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 
 **Tier 2 — pro-grade**
 - [x] CSV export (spectrum, traces, signal list, waterfall)
-- [ ] Limit lines / masks with pass/fail alarms
+- [x] Limit lines / masks with pass/fail alarms
 - [x] Absolute dBm calibration offset
 - [x] Converter/LNB frequency offset, bias-T, RTL direct sampling
 - [x] Radio: SSB / CW, squelch, audio recording
@@ -207,6 +207,23 @@ The **📻 Local Radio** bar demodulates one frequency to audio with `rtl_fm`
 *Fixed:* NFM / AM / SSB audio is 12 kHz but was labelled 48 kHz, so it
 played 4× too fast, and its slow MP3 trickle often never reached the browser.
 It's now encoded at the true rate (resampled to 48 kHz).
+
+## Limit lines and masks (pass / fail)
+
+**⚙ Settings → Limit line / mask** turns a panel into a pass/fail monitor,
+the way EMC and spectrum-compliance work is done:
+- **Level line**: a flat limit (in the panel's units, so dBm once calibrated).
+- **Mask (learned)**: let *Max-hold* run while the band shows its normal
+  traffic, then **Learn from Max-hold**. The mask is that trace plus your
+  **margin** (dB). Masks are saved per exact span.
+
+The limit is drawn on the trace as a red dashed line. Any bin above it is
+filled red, the panel gets a red outline, and a **PASS / FAIL** tag (with a
+running count) appears next to the LIVE tag. Each violation (start of an
+excursion) is logged with time, frequency, level and dB over. Tick **Alert
+to Watchtower** to also send it to the Watchtower feed as `RF_LIMIT_EXCEEDED`
+(`/var/log/ragnar/rfwatch.jsonl`, same feed as Baseline). This is rate-limited
+to one alert per panel per 10 s, both in the page and the backend.
 
 ## Level calibration (dBm) and CSV export
 

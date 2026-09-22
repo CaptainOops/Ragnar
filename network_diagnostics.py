@@ -26300,6 +26300,14 @@ def register_network_diagnostics(app, logger=None):
         _log("net/rtl/baseline/clear")
         return jsonify(rtl_sdr.baseline_clear())
 
+    # Limit-line / mask alarm from the RF Waterfall page -> Watchtower feed.
+    @app.route('/api/net/rtl/limit/alarm', methods=['POST'])
+    def net_rtl_limit_alarm():
+        d = request.get_json(silent=True) or {}
+        ev = rtl_sdr.limit_alarm(d.get('panel'), d.get('freq_mhz'), d.get('level'), d.get('limit'),
+                                 unit=d.get('unit', 'dB'), kind=d.get('kind', 'level'), span=d.get('span'))
+        return jsonify({"ok": True, "logged": ev is not None, "event": ev})
+
     @app.route('/api/net/rtl/baseline/status', methods=['GET'])
     def net_rtl_baseline_status():
         return jsonify(rtl_sdr.baseline_status())

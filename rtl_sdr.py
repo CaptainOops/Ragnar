@@ -2205,6 +2205,38 @@ class SpectrumBaseline:
 
 _baseline = SpectrumBaseline()
 
+# Limit-line / mask alarms from the RF Waterfall page (pass/fail spectrum
+# monitoring). The page evaluates each row against the user's limit and posts
+# when a violation starts; we log it to the Watchtower feed, rate-limited per
+# panel so a wobbling signal can't flood it.
+_LIMIT_MIN_GAP_S = 10.0
+_limit_last = {}
+
+
+def limit_alarm(panel, freq_mhz, level, limit, unit="dB", kind="level", span=None, now=None):
+    """Record a limit-line violation as a Watchtower event (rate-limited per panel).
+
+    Returns the event dict, or None when rate-limited / invalid."""
+    now = time.time() if now is None else now
+    try:
+        f = float(freq_mhz); lv = float(level); lim = float(limit)
+    except (TypeError, ValueError):
+        return None
+    panel = str(panel or "rf")[:32]
+    if now - _limit_last.get(panel, 0) < _LIMIT_MIN_GAP_S:
+        return None
+    _limit_last[panel] = now
+    unit = "dBm" if str(unit).strip() == "dBm" else "dB"
+    what = "mask" if kind == "mask" else "limit line"
+    ev = {"ts": now, "severity": "high", "code": "RF_LIMIT_EXCEEDED",
+          "summary": "%s: %.3f MHz at %.1f %s, %.1f dB over the %s" % (panel, f, lv, unit, lv - lim, what),
+          "src": "%.3fMHz" % f, "freq_mhz": round(f, 3), "level": round(lv, 1), "limit": round(lim, 1),
+          "unit": unit, "panel": panel}
+    if span and len(span) == 2:
+        ev["span_mhz"] = [round(float(span[0]), 4), round(float(span[1]), 4)]
+    _baseline._write_wt(ev)
+    return ev
+
 
 def baseline_arm():
     return _baseline.arm()
@@ -2730,6 +2762,26 @@ def selftest():
     finally:
         set_tuning(ppm=_saved["ppm"], gain=_saved["gain"], fft=_saved["fft"], avg=_saved["avg"], window=_saved["window"],
                    bins=_saved["bins"], bias_t=_saved["bias_t"], direct=_saved["direct"], conv_hz=_saved["conv_hz"])
+
+    # --- limit-line alarms -> Watchtower feed (rate-limited per panel) ---
+    import tempfile as _tf
+    global _RF_WT_DIR
+    _old_dir = _RF_WT_DIR
+    _RF_WT_DIR = _tf.mkdtemp(prefix="rfwt-")
+    try:
+        _limit_last.clear()
+        e1 = limit_alarm("RTL-SDR", 433.92, -40.0, -55.0, "dBm", "level", [433.0, 435.0], now=1000.0)
+        e2 = limit_alarm("RTL-SDR", 433.95, -38.0, -55.0, "dBm", now=1003.0)
+        e3 = limit_alarm("RTL-SDR", 433.95, -38.0, -55.0, "dBm", now=1011.0)
+        with open(os.path.join(_RF_WT_DIR, _RF_WT_FILE)) as _fh:
+            _lines = [json.loads(x) for x in _fh if x.strip()]
+        check("limit: violation logged to the Watchtower feed",
+              e1 and e1["code"] == "RF_LIMIT_EXCEEDED" and "15.0 dB over" in e1["summary"] and _lines[0]["unit"] == "dBm", str(e1))
+        check("limit: rate-limited per panel (10 s)", e2 is None and e3 is not None and len(_lines) == 2)
+        check("limit: bad input ignored", limit_alarm("x", "nope", 1, 2) is None)
+    finally:
+        _RF_WT_DIR = _old_dir
+        _limit_last.clear()
 
     passed = sum(1 for r in results if r["pass"])
     return {"pass": passed == len(results), "passed": passed,
