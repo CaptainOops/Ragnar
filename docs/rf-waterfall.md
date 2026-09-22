@@ -172,9 +172,9 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [x] Pause and scroll back through history, with a time axis
 
 **Tier 2 — pro-grade**
-- [ ] CSV export (spectrum, traces, signal list, waterfall)
+- [x] CSV export (spectrum, traces, signal list, waterfall)
 - [ ] Limit lines / masks with pass/fail alarms
-- [ ] Absolute dBm calibration offset
+- [x] Absolute dBm calibration offset
 - [x] Converter/LNB frequency offset, bias-T, RTL direct sampling
 - [x] Radio: SSB / CW, squelch, audio recording
 - [ ] Keyboard shortcuts
@@ -207,6 +207,29 @@ The **📻 Local Radio** bar demodulates one frequency to audio with `rtl_fm`
 *Fixed:* NFM / AM / SSB audio is 12 kHz but was labelled 48 kHz, so it
 played 4× too fast, and its slow MP3 trickle often never reached the browser.
 It's now encoded at the true rate (resampled to 48 kHz).
+
+## Level calibration (dBm) and CSV export
+
+**Level calibration.** Out of the box the levels are relative (dB / dBFS: the
+real-time engine measures against the ADC's full scale). To read **dBm**, put
+a marker on a signal whose true level you know (a signal generator, a
+calibrated source), type that level under **⚙ Settings → Level calibration →
+Known level** and press **Calibrate to marker**. You can also type an offset
+directly. Everything switches to dBm at once: the waterfall and colour bar,
+trace, readouts, markers, hover, Signals list and exports. The past rows
+already on screen are shifted too, so nothing mixes units. The offset is
+per panel and remembered. **Reset** returns to relative dB. Re-calibrate
+after changing the gain or the antenna. SNR and Δ values are differences, so
+they stay in dB.
+
+**CSV export** (⚙ Settings → Export):
+- **Spectrum**: frequency plus live / avg / max / min trace per bin.
+- **Signals**: the Signals list (frequency, bandwidth, peak, SNR, duty).
+- **Markers**: each marker's frequency and level, with Δ to M1.
+- **Waterfall**: the whole row history as a time × frequency matrix
+  (ISO time per row, one column per frequency, resampled onto the current span).
+
+Frequencies are written with Hz precision; levels in the on-screen units.
 
 ## Resolution and hardware (⚙ Settings)
 

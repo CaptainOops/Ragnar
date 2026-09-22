@@ -136,7 +136,7 @@
   button.mini[aria-pressed="true"]{border-color:var(--cyan);color:var(--cyan);background:rgba(56,189,201,.12)}
   .toolbar .holdgrp,.toolbar .d3grp,.toolbar .npgrp{display:inline-flex;align-items:center;gap:5px}
   /* per-panel settings drawer (display range, resolution, hardware, limits, export) */
-  .drawer{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;padding:10px 14px 12px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
+  .drawer{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:10px;padding:10px 14px 12px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
   .drawer[hidden]{display:none}
   .dsec{border:1px solid var(--line);border-radius:8px;padding:8px 10px 10px;margin:0;min-width:0;display:flex;flex-direction:column;gap:7px}
   .dsec legend{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);padding:0 4px}
@@ -144,7 +144,7 @@
   .drow label{min-width:64px;color:var(--muted);font-size:10.5px}
   .drow input[type=range]{flex:1 1 90px;min-width:70px;accent-color:var(--cyan)}
   .drow input[type=number],.drow input[type=text],.drow select{width:72px;font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
-  .drow select{width:auto}
+  .drow select{width:auto;max-width:100%;min-width:0}
   .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
   .dnote b{color:var(--ink-dim);font-weight:500}
   .dsec .tunergrp{flex-wrap:wrap;row-gap:6px;min-width:0} .dsec .drow>.tunergrp{flex:1 1 100%}
@@ -524,6 +524,18 @@
             +'<div class="dnote">Top of the colour scale = <b>Ref level</b>, bottom = Ref − <b>Range</b>. Narrow the range to dig weak signals out; the whole waterfall recolours at once.</div>'
           +'</fieldset>'
           +'<fieldset class="dsec dres"><legend>Resolution</legend></fieldset>'
+          +'<fieldset class="dsec dcal"><legend>Level calibration</legend>'
+            +'<div class="drow"><label>Offset</label><input type="number" class="coff" step="0.1"><span>dB</span><button class="mini capply">Apply</button><button class="mini creset">Reset</button></div>'
+            +'<div class="drow"><label>Known level</label><input type="number" class="ctrue" step="0.1" placeholder="dBm"><span>dBm</span><button class="mini ccal" title="Set the active marker on a signal whose true level you know (signal generator, calibrated source), then enter that level">Calibrate to marker</button></div>'
+            +'<div class="dnote cstat">Levels are relative (dB / dBFS) until calibrated. Put a marker on a signal of known strength and enter its true level to read <b>dBm</b>. Re-calibrate after changing gain or the antenna.</div>'
+          +'</fieldset>'
+          +'<fieldset class="dsec dexp"><legend>Export (CSV)</legend>'
+            +'<div class="drow"><button class="mini xspec" title="Frequency + live / avg / max / min trace values">Spectrum</button>'
+              +'<button class="mini xsig" title="The Signals list">Signals</button>'
+              +'<button class="mini xmark" title="Markers with Δ to M1">Markers</button>'
+              +'<button class="mini xfall" title="The whole row history: one row per time, one column per frequency">Waterfall</button></div>'
+            +'<div class="dnote">Opens in a spreadsheet, Python / MATLAB etc. Levels are in the units shown on screen (dBm once calibrated). The waterfall export covers the whole history (see <b>History</b>), resampled onto the current span.</div>'
+          +'</fieldset>'
           +'<fieldset class="dsec dhw"><legend>Hardware</legend><div class="drow"><span class="tunergrp"></span></div></fieldset>'
         +'</div>'
         +'<div class="recbar hidden"></div>'
@@ -685,6 +697,18 @@
     try{ var _h=JSON.parse(localStorage.getItem('rfwf.hw.'+cfg.short)||'null'); if(_h) for(var _k in this.hw) if(_k in _h) this.hw[_k]=_h[_k]; }catch(e){}
     this.rtlSet=null;                                                    // RTL: server-held settings
     this.buildResolution(); this.buildHardware();
+    // level calibration
+    this.cal=0; this.calOn=false;
+    try{ var _cb=JSON.parse(localStorage.getItem('rfwf.cal.'+cfg.short)||'null'); if(_cb){ this.cal=+_cb.off||0; this.calOn=!!_cb.on; } }catch(e){}
+    var cq=function(c){return el.querySelector(c);};
+    cq('.capply').addEventListener('click',function(){ var v=parseFloat(cq('.coff').value); if(isFinite(v)) self.setCal(v,true); });
+    cq('.creset').addEventListener('click',function(){ self.setCal(0,false); });
+    cq('.ccal').addEventListener('click',function(){ self.calToMarker(parseFloat(cq('.ctrue').value)); });
+    this._calUI();
+    cq('.xspec').addEventListener('click',function(){ self.exportCSV('spectrum'); });
+    cq('.xsig').addEventListener('click',function(){ self.exportCSV('signals'); });
+    cq('.xmark').addEventListener('click',function(){ self.exportCSV('markers'); });
+    cq('.xfall').addEventListener('click',function(){ self.exportCSV('waterfall'); });
     if(cfg.tuner) this.buildTuner();
     if(cfg.record){ this.buildRecorder(); this.recBar.classList.remove('hidden'); }
 
@@ -1118,8 +1142,8 @@
       var fb=function(khz){return khz>=1000?(khz/1000).toFixed(2)+' MHz':Math.round(khz)+' kHz';};
       var cls=this.classifySignal(f, meas.bw20);
       this.markTxt.innerHTML='<span class="markmeas"><b>'+fmtMHz(f)+'</b> · '+Math.round(meas.pk)
-        +' dB · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−20 <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
-        +' · ChPwr '+Math.round(meas.chPwr)+' dB · <span class="zi">'+esc(cls.label)+'</span></span>';
+        +this.unit()+' · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−20 <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
+        +' · ChPwr '+Math.round(meas.chPwr)+this.unit()+' · <span class="zi">'+esc(cls.label)+'</span></span>';
       this._markDecode(cls, f);   // offer a jump to the matching decoder
     } else {
       this.markTxt.innerHTML='Marked <span class="mk">'+fmtMHz(f)+'</span>';
@@ -1187,7 +1211,7 @@
     if(!this.mTab) return; var self=this, ref=this.marks[0], refL=ref?this.levelAt(ref.f):null;
     var fk=function(dMHz){ var a=Math.abs(dMHz)*1000; return (dMHz>=0?'+':'−')+(a>=1000?(a/1000).toFixed(4)+' MHz':a.toFixed(a<10?2:1)+' kHz'); };
     this.mTab.innerHTML=this.marks.map(function(m,i){ var L=self.levelAt(m.f);
-      var lv=(L==null)?'—':(Math.round(L*10)/10).toFixed(1)+' dB';
+      var lv=(L==null)?'—':(Math.round(L*10)/10).toFixed(1)+self.unit();
       var dl=(i===0)?'<span class="dl">reference</span>':('<span class="dl">Δ</span> '+fk(m.f-ref.f)+'  '+((L!=null&&refL!=null)?((L-refL>=0?'+':'−')+Math.abs(L-refL).toFixed(1)+' dB'):''));
       return '<tr data-i="'+i+'" class="'+(i===self.mAct?'act':'')+'"><td class="mn m'+(i+1)+'">'+(i===self.mAct?'▸':'&nbsp;')+'M'+(i+1)+'</td>'
         +'<td>'+fmtMHz(m.f)+'</td><td>'+lv+'</td><td>'+dl+'</td>'
@@ -1444,6 +1468,8 @@
 
   // ---- paint one row ----
   Scope.prototype.pushRow=function(power,lo,hi,floor){
+    if(this.cal){ var _c=this.cal, _a=new Float32Array(power.length); for(var _i=0;_i<_a.length;_i++) _a[_i]=power[_i]+_c;
+      power=_a; if(typeof floor==='number') floor+=_c; }
     var raw=power;
     if(this._npRec) this._npCollect(raw,lo,hi);
     var _sk=lo+'_'+hi+'_'+raw.length;           // span changed (zoom/band/retune) -> load its print
@@ -1496,6 +1522,79 @@
     this._cbarUI();
     var _nh=performance.now(); if(_nh-(this._histT||0)>400){ this._histT=_nh; this._histUI(); }
     if(this.marks.length && _nh-(this._mtT||0)>250){ this._mtT=_nh; this._markTable(); }
+  };
+
+  // ---- level calibration (dB offset -> dBm) --------------------------------
+  Scope.prototype.unit=function(){ return this.calOn?' dBm':' dB'; };
+  // Change the offset: everything already on screen / in history shifts by the
+  // difference, so the waterfall, holds, markers and exports stay consistent.
+  Scope.prototype.setCal=function(off,on){
+    var d=off-(this.cal||0), add=function(a){ if(a) for(var i=0;i<a.length;i++) a[i]+=d; };
+    if(d){ this.hrows.forEach(function(h){ add(h.p); h.floor+=d; });
+      add(this.avgRow); add(this.maxRow); add(this.minRow);
+      if(this.row){ this.row=Float32Array.from(this.row,function(v){return v+d;}); }
+      if(this.shown){ this.shown=Float32Array.from(this.shown,function(v){return v+d;}); }
+      (this.hist||[]).forEach(function(r){ for(var i=0;i<r.length;i++) r[i]+=d; });
+      if(this._np){ add(this._np.ref); this._np.nf0+=d; }
+      if(this.noiseDb!=null) this.noiseDb+=d; this.floor+=d;
+      if(!this.disp.auto){ this.disp.ref+=d; }
+      if(this.peak) this.peak.db+=d;
+      var sg=this.signals||{}; for(var k in sg){ if(sg[k].pk!=null) sg[k].pk+=d; } }
+    this.cal=off; this.calOn=!!on;
+    try{ localStorage.setItem('rfwf.cal.'+this.cfg.short,JSON.stringify({off:off,on:this.calOn})); localStorage.setItem('rfwf.disp.'+this.cfg.short,JSON.stringify(this.disp)); }catch(e){}
+    this._calUI(); this._dispUI(); this.repaint(); this._cbarUI(true);
+    if(this.shown||this.row){ this.drawTrace(this.shown||this.row); this.updateReadout(); }
+    this._markTable(); this.renderSignals();
+  };
+  Scope.prototype.calToMarker=function(trueDbm){
+    var st=this.el.querySelector('.cstat');
+    if(this.marker==null){ st.innerHTML='<span style="color:#fb7185">Set a marker on the known signal first (click it, or Peak).</span>'; return; }
+    if(!isFinite(trueDbm)){ st.innerHTML='<span style="color:#fb7185">Enter the signal\'s true level in dBm.</span>'; return; }
+    var L=this.levelAt(this.marker); if(L==null){ st.textContent='No live level at the marker yet.'; return; }
+    var off=Math.round(((this.cal||0)+(trueDbm-L))*10)/10;
+    this.setCal(off,true);
+    st.innerHTML='<span style="color:var(--live)">&#10003; Calibrated: '+fmtMHz(this.marker)+' now reads '+trueDbm+' dBm (offset '+(off>=0?'+':'')+off+' dB).</span>';
+  };
+  Scope.prototype._calUI=function(){ var o=this.el.querySelector('.coff'); if(!o) return;
+    o.value=this.cal||0;
+    var st=this.el.querySelector('.cstat');
+    if(this.calOn && st && !/Calibrated/.test(st.textContent)) st.innerHTML='Calibrated: offset <b>'+(this.cal>=0?'+':'')+this.cal+' dB</b>; levels read in <b>dBm</b>. Re-calibrate after changing gain or the antenna.'; };
+
+  // ---- CSV export ------------------------------------------------------------
+  function fq(mhz){ return {csvRaw:(+mhz).toFixed(6)}; }      // frequencies keep full (Hz) precision
+  function csvCell(v){ if(v==null) return ''; if(v&&v.csvRaw!=null) return v.csvRaw; if(typeof v==='number') return isFinite(v)?String(Math.round(v*100)/100):''; var s=String(v); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+  function csvDownload(name,rows){ var txt=rows.map(function(r){return r.map(csvCell).join(',');}).join('\n')+'\n';
+    var a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv'})); a.download=name;
+    document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000); return txt; }
+  Scope.prototype.exportCSV=function(kind){
+    var U=this.calOn?'dBm':'dB', self=this, stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    var base='ragnar-rf-'+this.cfg.short.toLowerCase().replace(/[^a-z0-9]+/g,'')+'-'+kind+'-'+stamp+'.csv', rows;
+    if(kind==='spectrum'){
+      var p=this.shown||this.row; if(!p) return null; var n=p.length, bw=(this.hi-this.lo)/n;
+      rows=[['freq_mhz','live_'+U,'avg_'+U,'max_'+U,'min_'+U]];
+      for(var i=0;i<n;i++) rows.push([fq(this.lo+(i+0.5)*bw),p[i],this.avgRow?this.avgRow[i]:null,this.maxRow?this.maxRow[i]:null,this.minRow?this.minRow[i]:null]);
+    } else if(kind==='signals'){
+      var sg=this.signals||{}, arr=[]; for(var k in sg) arr.push(sg[k]); arr.sort(function(a,b){return a.fMHz-b.fMHz;});
+      rows=[['freq_mhz','bandwidth_khz','peak_'+U,'snr_db','duty_pct']];
+      arr.forEach(function(v){ rows.push([fq(v.fMHz),v.bwKhz,v.pk,v.snr,v.duty!=null?v.duty*100:null]); });
+    } else if(kind==='markers'){
+      var r0=this.marks[0], l0=r0?this.levelAt(r0.f):null;
+      rows=[['marker','freq_mhz','level_'+U,'delta_khz_vs_m1','delta_db_vs_m1']];
+      this.marks.forEach(function(m,i){ var L=self.levelAt(m.f); rows.push(['M'+(i+1),fq(m.f),L,i?(m.f-r0.f)*1000:null,(i&&L!=null&&l0!=null)?L-l0:null]); });
+    } else {
+      if(!this.hrows.length) return null;
+      var cols=(this.shown||this.row||this.hrows[this.hrows.length-1].p).length, fw=(this.hi-this.lo)/cols, head=['time_utc'];
+      for(var c=0;c<cols;c++) head.push(fq(this.lo+(c+0.5)*fw));
+      rows=[head];
+      for(var k2=0;k2<this.hrows.length;k2++){ var h=this.hrows[k2], hp=this._shownOf(h), N=hp.length, hb=(h.hi-h.lo)/N, line=[new Date(h.t).toISOString()];
+        for(var c2=0;c2<cols;c2++){ var f0=this.lo+c2*fw, f1=f0+fw;
+          if(f1<=h.lo||f0>=h.hi){ line.push(null); continue; }
+          var i0=Math.max(0,Math.floor((f0-h.lo)/hb)), i1=Math.min(N-1,Math.max(i0,Math.floor((f1-h.lo)/hb))), v=hp[i0];
+          for(var j=i0+1;j<=i1;j++) if(hp[j]>v) v=hp[j];
+          line.push(v); }
+        rows.push(line); }
+    }
+    return csvDownload(base,rows);
   };
 
   // ---- RF reach: hardware range shifted by the converter offset; HF via direct sampling
@@ -1599,7 +1698,7 @@
   // ---- display range (colour scale) ----------------------------------------
   // Auto: bottom follows the measured/backend noise floor, top is the fixed
   // ceiling (the long-standing default). Manual: Ref level (top) + Range (dB).
-  Scope.prototype.rangeHi=function(){ return this.disp.auto?CEIL:this.disp.ref; };
+  Scope.prototype.rangeHi=function(){ return this.disp.auto?CEIL+(this.cal||0):this.disp.ref; };
   Scope.prototype.rangeLo=function(){ return this.disp.auto?this.floor:(this.disp.ref-this.disp.range); };
   Scope.prototype.setDisplay=function(o){
     if(o.auto===false && this.disp.auto){ this.disp.ref=this.rangeHi(); this.disp.range=Math.max(10,this.rangeHi()-this.rangeLo()); }
@@ -1624,7 +1723,7 @@
 
   // ---- row history + full repaint ------------------------------------------
   Scope.prototype._histPush=function(raw,lo,hi,floor){
-    var r=(raw instanceof Float32Array)?raw:Float32Array.from(raw);
+    var r=Float32Array.from(raw);        // own copy: never aliases the live row (calibration shifts both)
     this.hrows.push({t:Date.now(),p:r,lo:lo,hi:hi,floor:floor});
     var cap=Math.max(300,Math.min(4000,Math.floor(10e6/(r.length*4))));   // ~10 MB per panel
     if(this.hrows.length>cap) this.hrows.splice(0,this.hrows.length-cap);
@@ -1674,7 +1773,7 @@
     var fx=(e.clientX-r.left)/r.width; if(fx<0||fx>1||!(this.hi>this.lo)){ this.hideHover(); return; }
     var f=this.lo+fx*(this.hi-this.lo), lines=['<b>'+fmtMHz(f)+'</b>'];
     var lvl=function(p,lo,hi){ if(!p||!p.length) return null; var i=Math.floor((f-lo)/((hi-lo)/p.length)); return (i>=0&&i<p.length)?p[i]:null; };
-    var dbs=function(v){ return (v==null)?'—':(Math.round(v*10)/10)+' dB'; };
+    var _u=this.unit(), dbs=function(v){ return (v==null)?'—':(Math.round(v*10)/10)+_u; };
     if(which==='fall' && !this.threeD){
       var back=Math.floor((e.clientY-r.top)*this.d/(this.STEP||1))+this.scrollBack, h=this.hrows[this.hrows.length-1-back];
       if(h){ var shown=lvl(this._shownOf(h),h.lo,h.hi), raw=lvl(h.p,h.lo,h.hi);
@@ -1742,10 +1841,10 @@
   // ---- per-panel colour bar (the dB range the colours map to) --------------
   Scope.prototype._cbarUI=function(force){
     if(!this.cbar) return; var lo=Math.round(this.rangeLo()), hi=Math.round(this.rangeHi());
-    var key=lo+'|'+hi+'|'+activePalette+'|'+this.threeD; if(!force && key===this._cbKey) return; this._cbKey=key;
+    var key=lo+'|'+hi+'|'+activePalette+'|'+this.threeD+'|'+this.unit(); if(!force && key===this._cbKey) return; this._cbKey=key;
     this.cbar.style.background='linear-gradient(0deg,'+PALETTES[activePalette].stops.map(function(s){
       return 'rgb('+s[1][0]+','+s[1][1]+','+s[1][2]+') '+Math.round(s[0]*100)+'%';}).join(',')+')';
-    this.cbHi.textContent=hi+' dB'; this.cbLo.textContent=lo+' dB';
+    this.cbHi.textContent=hi+this.unit(); this.cbLo.textContent=lo+this.unit();
   };
 
   // ---- noise print (background subtraction) -----------------------------
@@ -1909,7 +2008,7 @@
   };
   Scope.prototype.renderSignals=function(){
     if(this.decoding) return;
-    var sig=this.signals||{}, arr=[]; for(var k in sig) arr.push(sig[k]);
+    var sig=this.signals||{}, arr=[], U=this.unit(); for(var k in sig) arr.push(sig[k]);
     arr.sort(function(a,b){return a.fMHz-b.fMHz;});
     this.logCount.textContent=arr.length?arr.length+' signal'+(arr.length>1?'s':''):'';
     if(!arr.length){ this.logList.innerHTML='<div class="logempty">No signals above the noise floor yet…</div>'; return; }
@@ -1918,7 +2017,7 @@
       var bw=v.bwKhz>=1000?(v.bwKhz/1000).toFixed(2)+' MHz':Math.round(v.bwKhz)+' kHz';
       html+='<div class="logrow sig"><span class="f">'+fmtMHz(v.fMHz)+'</span>'
         +'<span class="meta">BW '+bw+' · SNR '+Math.round(v.snr)+' dB · <span class="duty">duty '+Math.round(v.duty*100)+'%</span></span>'
-        +'<span class="d">'+Math.round(v.pk)+' dB</span></div>';
+        +'<span class="d">'+Math.round(v.pk)+U+'</span></div>';
     });
     this.logList.innerHTML=html;
   };
@@ -1981,9 +2080,9 @@
   };
   Scope.prototype.updateReadout=function(){
     var N=this.row?this.row.length:1, fMHz=this.lo+(this.peak.idx/N)*(this.hi-this.lo);
-    this.pkF.textContent=fmtMHz(fMHz); this.pkD.textContent=this.peak.db.toFixed(0)+" dB";
+    this.pkF.textContent=fmtMHz(fMHz); this.pkD.textContent=this.peak.db.toFixed(0)+this.unit();
     if(this.snrEl) this.snrEl.textContent=(this.snr!=null)?(Math.round(this.snr)+" dB"):"—";
-    if(this.nfEl) this.nfEl.textContent=(this.noiseDb!=null)?(Math.round(this.noiseDb)+" dB"):"—";
+    if(this.nfEl) this.nfEl.textContent=(this.noiseDb!=null)?(Math.round(this.noiseDb)+this.unit()):"—";
     this.busyEl.textContent=this.busy.toFixed(0)+"%";
     this.spanEl.textContent=fmtSpan(this.lo,this.hi)+(this.zoom?" ⤢":"");
     if(this.rbwEl){ var rb=(this.mode==='live')?this.rbw:(this.hi>this.lo&&this.row?(this.hi-this.lo)*1e6/this.row.length:null);
