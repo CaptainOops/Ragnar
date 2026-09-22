@@ -505,6 +505,45 @@ to Watchtower** to also send it to the Watchtower feed as `RF_LIMIT_EXCEEDED`
 (`/var/log/ragnar/rfwatch.jsonl`, same feed as Baseline). This is rate-limited
 to one alert per panel per 10 s, both in the page and the backend.
 
+## Trigger and capture (armed recording with a lead-in)
+
+
+Free-running recording is a bet: press record and hope the burst happens while
+the file is open. **⚙ Settings → Trigger & capture** arms a condition instead,
+and the radio keeps a rolling buffer of raw samples — so when the condition
+fires, the recording **starts before the event**: the rise, the preamble and the
+first bits, which is exactly the part a decoder needs and the part free-running
+recording misses.
+
+- **Trigger on** — the limit line / mask you already set up, or a flat level.
+  A mask is the useful case: learn it from Max-hold over normal traffic, and the
+  trigger fires on anything that is not normal.
+- **Watch** — the whole visible span, or just the marked signal's channel.
+- **Capture** — seconds *before* the event (up to 5) and seconds *after* (up to
+  30). At 2 MS/s each second is about 4 MB, so a 1 s lead-in holds ~4 MB of
+  samples in memory; the buffer is bounded in bytes, not in blocks.
+- **Stop after** *n* captures, with a minimum gap between them, so an armed
+  panel left overnight cannot fill the disk.
+
+Each event writes a SigMF pair into the same folder as manual captures, so the
+[Signal Analyzer](#signal-analyzer-on-box-sigmf-analysis) lists it, with two
+annotations: the event itself, and a **`trigger point`** marker at the exact
+sample where the mask was crossed — everything before it is lead-in. Events are
+also logged to Watchtower as `RF_TRIGGER_CAPTURE`.
+
+The trigger runs inside the real-time IQ engine, so it needs a span that fits one
+tune; the `rtl_power` sweep has no samples to keep. Levels are sent as the
+capture produces them, with any dBm calibration offset removed first, so the
+arm means what the trace shows.
+
+API: `POST /api/net/rtl/trigger/arm {mask|level_db, f0_hz, f1_hz, pre_s, post_s,
+max_events, min_gap_s}`, `POST …/trigger/disarm`, `GET …/trigger/status`.
+
+Measured on the hardware: armed at 2.001 MS/s with a 1.5 s lead-in, the rolling
+buffer held a steady 1.5 s for 90 s without firing, and the capture it finally
+wrote was 2.117 s long with the trigger point annotated at sample 3,110,912 —
+1.555 s in.
+
 ## Baseline + anomaly detection (Watchtower)
 
 
@@ -766,6 +805,10 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 5 — capture**
+- [x] Frequency-mask / level trigger with pre-trigger buffer
+- [x] Triggered SigMF capture with the trigger point annotated
 
 **Tier 4 — measurement correctness**
 - [x] Detectors: peak / RMS / average / sample / min, applied on device and in the browser

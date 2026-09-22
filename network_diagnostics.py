@@ -26219,6 +26219,28 @@ def register_network_diagnostics(app, logger=None):
                                            bw_hz=data.get('bw_hz') or 50000,
                                            secs=data.get('secs') or 1.5))
 
+    # Armed trigger: watch the live rows for a mask crossing and capture raw IQ
+    # around the event, including the second before it.
+    @app.route('/api/net/rtl/trigger/arm', methods=['POST'])
+    def net_rtl_trigger_arm():
+        data = request.get_json(silent=True) or {}
+        _log("net/rtl/trigger/arm")
+        return jsonify(rtl_sdr.trigger_arm(
+            mask=data.get('mask'), level_db=data.get('level_db'),
+            f0_hz=data.get('f0_hz'), f1_hz=data.get('f1_hz'),
+            pre_s=data.get('pre_s'), post_s=data.get('post_s'),
+            max_events=data.get('max_events'), min_gap_s=data.get('min_gap_s'),
+            margin_db=data.get('margin_db'), name=data.get('name')))
+
+    @app.route('/api/net/rtl/trigger/disarm', methods=['POST'])
+    def net_rtl_trigger_disarm():
+        _log("net/rtl/trigger/disarm")
+        return jsonify(rtl_sdr.trigger_disarm())
+
+    @app.route('/api/net/rtl/trigger/status', methods=['GET'])
+    def net_rtl_trigger_status():
+        return jsonify(rtl_sdr.trigger_status())
+
     # Session recording — capture the running power sweep to a JSONL file and
     # replay it later. Frames are small, so this is cheap; files live under data/.
     @app.route('/api/net/rtl/record/start', methods=['POST'])

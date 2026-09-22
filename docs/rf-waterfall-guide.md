@@ -217,6 +217,13 @@ outdoors, and worse indoors.
   2 MS/s. The waterfall keeps scrolling while it records, showing the capture's
   own window, so you can see what you are getting. Retuning waits until it
   finishes.
+- **Trigger & capture** (⚙ Settings) records *on a condition* instead of on
+  hope. Set a limit line or learn a mask, choose how many seconds before and
+  after the event you want, and arm it. The radio keeps a rolling buffer, so
+  the file starts before the thing that triggered it — you get the rise and the
+  preamble, not the tail. Each capture opens in the Signal Analyzer with the
+  trigger point marked. Leave it armed: it stops after the number of captures
+  you set.
 - **Rec / Replay** records the sweep itself and plays it back through the same
   view.
 - **CSV** exports the spectrum, the Signals list, the markers, or the whole

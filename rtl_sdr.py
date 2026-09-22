@@ -1488,6 +1488,13 @@ class PowerSweep:
                 grid = _iq_to_grid(db.tolist(), center, sr, lo, hi, bins=bins)
                 floor_ema = self._update_iq_floor(grid, floor_ema)
                 self._push_frame(grid)
+                # Same row the page draws, same samples it was made from: the
+                # trigger sees exactly what you see, and keeps the moment before.
+                try:
+                    _trigger.feed(buf, grid, lo - _conv_hz, hi - _conv_hz,
+                                  center - _conv_hz, sr)
+                except Exception as exc:      # never let it break the waterfall
+                    _trigger._error = str(exc)
                 produced += 1
         except Exception as exc:  # pragma: no cover - defensive
             if not stop.is_set():
@@ -2297,6 +2304,302 @@ def iq_capture_stop():
 
 _RF_WT_DIR = os.environ.get("RAGNAR_WATCH_LOG_DIR", "/var/log/ragnar")
 _RF_WT_FILE = "rfwatch.jsonl"
+
+
+
+# --------------------------------------------------------------------------
+# Frequency-mask trigger with pre-trigger capture
+# --------------------------------------------------------------------------
+#
+# Free-running recording is a bet: press record and hope the burst happens while
+# the file is open. A real-time analyser instead *arms* a condition and keeps a
+# rolling buffer of raw samples, so when the condition fires the recording starts
+# BEFORE the event — the part that is normally missed, and the part a decoder
+# needs (preamble, rise time, the first bit).
+#
+# Here the condition is a frequency mask: a level, or a per-column limit line,
+# inside a frequency window. It is evaluated on the same waterfall row the page
+# draws, so what arms the trigger is exactly what you see.
+
+_TRIG_PRE_MAX_S = 5.0        # cap the rolling buffer (2 MS/s cu8 = 4 MB/s)
+_TRIG_POST_MAX_S = 30.0
+
+
+def mask_cross(grid, mask, lo_hz, hi_hz, f0_hz=None, f1_hz=None, margin_db=0.0):
+    """Find where a waterfall row crosses its mask (pure).
+
+    ``mask`` is either a single level in dB or a per-column limit line (any
+    length — it is stretched onto the row). ``f0_hz``/``f1_hz`` narrow the test
+    to a frequency window, so a trigger can watch one channel and ignore the
+    rest of the span. Returns the strongest crossing as a dict, or None.
+    """
+    n = len(grid or ())
+    if not n or hi_hz <= lo_hz:
+        return None
+    span = hi_hz - lo_hz
+    c0, c1 = 0, n - 1
+    if f0_hz is not None:
+        c0 = max(0, int((f0_hz - lo_hz) / span * n))
+    if f1_hz is not None:
+        c1 = min(n - 1, int((f1_hz - lo_hz) / span * n))
+    if c1 < c0:
+        return None
+    flat = not isinstance(mask, (list, tuple))
+    m = len(mask) if not flat else 0
+    best = None
+    for c in range(c0, c1 + 1):
+        lim = (float(mask) if flat
+               else float(mask[min(m - 1, int(c * m / float(n)))]))
+        lim += margin_db
+        v = grid[c]
+        if v is None or v <= lim:
+            continue
+        exc = v - lim
+        if best is None or exc > best["excess_db"]:
+            best = {"col": c, "freq_hz": lo_hz + (c + 0.5) * span / n,
+                    "level_db": round(v, 1), "limit_db": round(lim, 1),
+                    "excess_db": round(exc, 1)}
+    return best
+
+
+class SignalTrigger:
+    """Watch live rows for a mask crossing and write a SigMF capture around it.
+
+    Fed from the IQ engine's loop: every block of raw samples goes into a rolling
+    pre-trigger buffer, and every waterfall row is tested against the mask. On a
+    crossing the buffer is flushed to a new capture and recording continues for
+    ``post_s``, so the file contains the event *and* the moment before it.
+
+    Never blocks the capture loop: writes are plain file writes on the same
+    thread, and the buffer is bounded in bytes rather than in blocks.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        self._armed = False
+        self._cfg = {}
+        self._pre = []             # [(ts, bytes)] most recent last
+        self._pre_bytes = 0
+        self._rec = None           # {"fh","path","name","bytes","want","ts","hit"}
+        self._events = []
+        self._last_fire = 0.0
+        self._error = None
+
+    # -- control -----------------------------------------------------------
+    def arm(self, mask=None, level_db=None, f0_hz=None, f1_hz=None, pre_s=1.0,
+            post_s=2.0, max_events=10, min_gap_s=3.0, margin_db=0.0, name=None):
+        """Arm the trigger. ``mask`` (a limit line) wins over a flat ``level_db``."""
+        if mask is None and level_db is None:
+            return {"ok": False, "error": "give a mask or a level to trigger on"}
+        try:
+            pre_s = max(0.0, min(_TRIG_PRE_MAX_S, float(pre_s or 0)))
+            post_s = max(0.1, min(_TRIG_POST_MAX_S, float(post_s or 2.0)))
+            max_events = max(1, min(500, int(max_events or 10)))
+            min_gap_s = max(0.0, min(3600.0, float(min_gap_s or 0)))
+            margin_db = float(margin_db or 0.0)
+            if mask is not None:
+                mask = [float(v) for v in mask]
+                if not mask:
+                    return {"ok": False, "error": "empty mask"}
+            else:
+                mask = float(level_db)
+            f0_hz = int(f0_hz) if f0_hz not in (None, "") else None
+            f1_hz = int(f1_hz) if f1_hz not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            return {"ok": False, "error": "bad trigger settings: %s" % exc}
+        with self._lock:
+            self._close_locked(abort=True)
+            self.reset()
+            self._cfg = {"mask": mask, "f0_hz": f0_hz, "f1_hz": f1_hz,
+                         "pre_s": pre_s, "post_s": post_s, "margin_db": margin_db,
+                         "max_events": max_events, "min_gap_s": min_gap_s,
+                         "name": _rec_safe(name or "trig"),
+                         "flat": not isinstance(mask, list)}
+            self._armed = True
+        return self.status()
+
+    def disarm(self):
+        with self._lock:
+            self._close_locked(abort=True)
+            self._armed = False
+            self._pre, self._pre_bytes = [], 0
+        return self.status()
+
+    def status(self):
+        with self._lock:
+            c = dict(self._cfg)
+            c.pop("mask", None)
+            return {"armed": self._armed, "recording": bool(self._rec),
+                    "config": c, "events": list(self._events),
+                    "pre_buffered_s": round(self._pre_span(), 2),
+                    "count": len(self._events), "error": self._error}
+
+    # -- feed from the capture loop ---------------------------------------
+    def _pre_span(self):
+        if len(self._pre) < 2:
+            return 0.0
+        return max(0.0, self._pre[-1][0] - self._pre[0][0])
+
+    def feed(self, buf, grid, lo_hz, hi_hz, center_hz, sr_hz, ts=None):
+        """One block of raw samples + the row computed from it. Cheap when idle."""
+        if not self._armed and not self._rec:
+            return
+        ts = ts or time.time()
+        with self._lock:
+            if not self._armed and not self._rec:
+                return
+            if self._rec:
+                self._write_locked(buf)
+                return
+            # keep the rolling pre-trigger buffer bounded in BYTES, not blocks,
+            # so a sample-rate change can't blow memory up
+            keep = int(self._cfg["pre_s"] * sr_hz * 2)
+            if keep > 0:
+                self._pre.append((ts, buf))
+                self._pre_bytes += len(buf)
+                while self._pre and self._pre_bytes - len(self._pre[0][1]) >= keep:
+                    self._pre_bytes -= len(self._pre.pop(0)[1])
+            else:
+                self._pre, self._pre_bytes = [], 0
+            if ts - self._last_fire < self._cfg["min_gap_s"]:
+                return
+            hit = mask_cross(grid, self._cfg["mask"], lo_hz, hi_hz,
+                             self._cfg["f0_hz"], self._cfg["f1_hz"],
+                             self._cfg["margin_db"])
+            if hit:
+                self._fire_locked(hit, center_hz, sr_hz, ts)
+
+    def _fire_locked(self, hit, center_hz, sr_hz, ts):
+        name = "%s-%s" % (self._cfg["name"], time.strftime("%Y%m%d-%H%M%S",
+                                                           time.localtime(ts)))
+        path = os.path.join(_iq_cap_dir(), name + ".sigmf-data")
+        try:
+            os.makedirs(_iq_cap_dir(), exist_ok=True)
+            fh = open(path, "wb", buffering=1 << 18)
+        except OSError as exc:
+            self._error = "could not open %s: %s" % (path, exc)
+            self._armed = False
+            return
+        pre_bytes = sum(len(b) for _, b in self._pre)
+        want = pre_bytes + int(self._cfg["post_s"] * sr_hz * 2)
+        self._rec = {"fh": fh, "path": path, "name": name, "bytes": 0,
+                     "want": want, "pre_bytes": pre_bytes, "sr": sr_hz,
+                     "center": center_hz, "ts": ts, "hit": hit}
+        self._last_fire = ts
+        for _, b in self._pre:                       # the moment before the event
+            self._write_locked(b)
+        self._pre, self._pre_bytes = [], 0
+
+    def _write_locked(self, buf):
+        r = self._rec
+        if not r:
+            return
+        try:
+            r["fh"].write(buf)
+        except OSError as exc:
+            self._error = str(exc)
+            self._close_locked(abort=True)
+            return
+        r["bytes"] += len(buf)
+        if r["bytes"] >= r["want"]:
+            self._close_locked()
+
+    def _close_locked(self, abort=False):
+        r = self._rec
+        self._rec = None
+        if not r:
+            return
+        try:
+            r["fh"].close()
+        except OSError:
+            pass
+        if abort and r["bytes"] < r["pre_bytes"]:
+            try:
+                os.unlink(r["path"])
+            except OSError:
+                pass
+            return
+        ev = {"name": r["name"], "ts": r["ts"], "freq_hz": round(r["hit"]["freq_hz"]),
+              "level_db": r["hit"]["level_db"], "limit_db": r["hit"]["limit_db"],
+              "excess_db": r["hit"]["excess_db"], "seconds": round(r["bytes"] / (2.0 * r["sr"]), 3),
+              "pre_s": round(r["pre_bytes"] / (2.0 * r["sr"]), 3),
+              "bytes": r["bytes"], "center_hz": r["center"], "sr_hz": r["sr"]}
+        try:
+            import hashlib
+            h = hashlib.sha512()
+            with open(r["path"], "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            meta = sigmf_meta(r["center"], r["sr"], sha512=h.hexdigest(),
+                              hw="RTL-SDR (%s)" % _capture_hw_name(),
+                              dt_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["ts"])),
+                              label="trigger %.4f MHz %+0.1f dB over the mask" % (
+                                  r["hit"]["freq_hz"] / 1e6, r["hit"]["excess_db"]),
+                              ppm=_ppm, gain=_gain)
+            # Mark where the trigger actually fired, so the analyzer can show the
+            # pre-trigger lead-in as lead-in rather than as part of the event.
+            meta["annotations"].append({
+                "core:sample_start": int(r["pre_bytes"] / 2),
+                "core:label": "trigger point",
+                "core:freq_lower_edge": float(r["hit"]["freq_hz"]) - 5000.0,
+                "core:freq_upper_edge": float(r["hit"]["freq_hz"]) + 5000.0})
+            with open(r["path"][:-len(".sigmf-data")] + ".sigmf-meta", "w") as fh:
+                json.dump(meta, fh, indent=2)
+        except OSError as exc:
+            self._error = "capture saved but metadata write failed: %s" % exc
+        self._events.append(ev)
+        self._write_wt(ev)
+        if len(self._events) >= self._cfg.get("max_events", 10):
+            self._armed = False
+
+    def _write_wt(self, ev):
+        """Log the event to the Watchtower feed, like the other RF alerts."""
+        try:
+            line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ev["ts"])),
+                    "module": "rfwatch", "code": "RF_TRIGGER_CAPTURE",
+                    "severity": "info",
+                    "msg": "mask trigger at %.4f MHz (%+0.1f dB over the mask) -> %s"
+                           % (ev["freq_hz"] / 1e6, ev["excess_db"], ev["name"]),
+                    "freq_mhz": round(ev["freq_hz"] / 1e6, 4),
+                    "capture": ev["name"], "seconds": ev["seconds"]}
+            d = "/var/log/ragnar"
+            if os.path.isdir(d):
+                with open(os.path.join(d, "rfwatch.jsonl"), "a") as fh:
+                    fh.write(json.dumps(line) + "\n")
+        except Exception:
+            pass
+
+
+_trigger = SignalTrigger()
+
+
+def trigger_arm(**kw):
+    """Arm the frequency-mask trigger (see :meth:`SignalTrigger.arm`)."""
+    return _trigger.arm(**kw)
+
+
+def trigger_disarm():
+    return _trigger.disarm()
+
+
+def trigger_status():
+    return _trigger.status()
+
+
+def _sigmf_hash_ok(path, meta):
+    """True when a capture's bytes still match the core:sha512 in its sidecar."""
+    want = (meta.get("global") or {}).get("core:sha512")
+    if not want:
+        return False
+    import hashlib
+    h = hashlib.sha512()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest() == want
 
 
 def _regionize(bins_idx):
@@ -3313,6 +3616,80 @@ def selftest():
           and _settings_sig()[-1] == "rms"
           and set_tuning(detector="bogus")["detector"] == "rms"
           and set_tuning(detector="peak")["detector"] == "peak")
+
+    # --- frequency-mask trigger ---------------------------------------------
+    _row = [-100.0] * 100
+    _row[40] = -50.0
+    check("mask: a flat level is crossed where the signal is",
+          mask_cross(_row, -70.0, 433_000_000, 434_000_000)["col"] == 40)
+    check("mask: a quiet row does not fire",
+          mask_cross([-100.0] * 100, -70.0, 433_000_000, 434_000_000) is None)
+    check("mask: the frequency window is respected",
+          mask_cross(_row, -70.0, 433_000_000, 434_000_000,
+                     f0_hz=433_600_000, f1_hz=433_900_000) is None
+          and mask_cross(_row, -70.0, 433_000_000, 434_000_000,
+                         f0_hz=433_300_000, f1_hz=433_600_000) is not None)
+    check("mask: a per-column mask is stretched onto the row",
+          mask_cross(_row, [-40.0] * 10, 433_000_000, 434_000_000) is None
+          and mask_cross(_row, [-40.0] * 4 + [-60.0] * 6,
+                         433_000_000, 434_000_000)["excess_db"] == 10.0)
+    check("mask: margin raises the whole mask",
+          mask_cross(_row, -70.0, 433_000_000, 434_000_000, margin_db=30.0) is None)
+    check("mask: the crossing reports the right frequency",
+          abs(mask_cross(_row, -70.0, 433_000_000, 434_000_000)["freq_hz"]
+              - 433_405_000) < 6000)
+    check("mask: bad input returns nothing rather than raising",
+          mask_cross([], -70.0, 1, 0) is None and mask_cross(None, -70.0, 0, 1) is None)
+
+    # end-to-end: pre-trigger buffer, file, sidecar and trigger-point annotation
+    _sr = 100_000                       # cu8 at 100 kS/s = 200 kB of file per second
+    _blk = b"\x7f" * _sr                # one block = 0.5 s of samples
+    _tg = SignalTrigger()
+    _tga = _tg.arm(level_db=-70.0, pre_s=1.0, post_s=1.0, min_gap_s=0,
+                   max_events=1, name="selftest")
+    check("trigger: arms and reports its settings",
+          _tga["armed"] and _tga["config"]["pre_s"] == 1.0)
+    check("trigger: refuses to arm with nothing to trigger on",
+          SignalTrigger().arm()["ok"] is False)
+    for _i in range(4):                 # 2 s of quiet -> only the last 1 s is kept
+        _tg.feed(_blk, [-100.0] * 100, 433_000_000, 434_000_000, 433_500_000, _sr)
+    check("trigger: the pre-buffer is bounded to the armed lead-in",
+          _tg._pre_bytes <= int(1.0 * _sr * 2) + len(_blk),
+          "%d bytes" % _tg._pre_bytes)
+    _hot = [-100.0] * 100
+    _hot[40] = -50.0
+    for _i in range(4):                 # the event, then enough to fill post_s
+        _tg.feed(_blk, _hot, 433_000_000, 434_000_000, 433_500_000, _sr)
+    _st = _tg.status()
+    check("trigger: fires once and disarms at max_events",
+          _st["count"] == 1 and not _st["armed"] and not _st["recording"],
+          json.dumps(_st["events"])[:120])
+    _ev = _st["events"][0] if _st["events"] else {}
+    check("trigger: the capture holds the lead-in AND the event",
+          abs(_ev.get("pre_s", 0) - 1.0) < 0.51 and _ev.get("seconds", 0) >= 1.9,
+          "pre %.2fs total %.2fs" % (_ev.get("pre_s", 0), _ev.get("seconds", 0)))
+    check("trigger: the event names the frequency that crossed",
+          abs(_ev.get("freq_hz", 0) - 433_405_000) < 6000 and _ev.get("excess_db") == 20.0)
+    _tp = os.path.join(_iq_cap_dir(), _ev.get("name", "x") + ".sigmf-data")
+    _tm = _tp[:-len(".sigmf-data")] + ".sigmf-meta"
+    _ok = os.path.exists(_tp) and os.path.exists(_tm)
+    check("trigger: writes a SigMF pair the analyzer can open", _ok)
+    if _ok:
+        _mj = json.load(open(_tm))
+        _ann = [a for a in _mj.get("annotations", []) if a.get("core:label") == "trigger point"]
+        check("trigger: the sidecar marks where the trigger fired",
+              len(_ann) == 1 and abs(_ann[0]["core:sample_start"] - _sr) < _sr * 0.6,
+              str(_ann))
+        check("trigger: the data hash matches the file", _sigmf_hash_ok(_tp, _mj))
+        check("trigger: file length matches the event's own figures",
+              os.path.getsize(_tp) == _ev["bytes"])
+    for _f in (_tp, _tm):            # never leave test captures behind
+        try:
+            os.unlink(_f)
+        except OSError:
+            pass
+    check("trigger: disarm clears everything",
+          SignalTrigger().disarm()["armed"] is False)
 
     # --- front-end health: clipping is reported, not silently measured -------
     check("adc: a clean capture with headroom is ok",

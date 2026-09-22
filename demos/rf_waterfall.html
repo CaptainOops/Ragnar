@@ -88,6 +88,11 @@
   .stat.ovld.bad{animation:ovldp 1.4s ease-in-out infinite}
   @keyframes ovldp{0%,100%{opacity:1}50%{opacity:.45}}
   .fall-wrap.isovld{outline:2px solid rgba(251,113,133,.65);outline-offset:-2px}
+  /* Armed trigger: the panel says so even with the drawer shut. */
+  .scope.armed .cfgbtn{box-shadow:0 0 0 1px var(--live) inset;color:var(--live)}
+  .scope.armed .cfgbtn::after{content:' ⦿'}
+  .tgstat{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .tglog{max-height:150px;overflow:auto;margin-top:6px}
   .stat.warnpk .v{color:var(--muted)}
   .stat .v.peak{color:var(--accent)} .stat .v.cy{color:var(--cyan)} .stat .v.busy{color:var(--live)}
   .scope-body{display:flex;flex-direction:column}
@@ -577,6 +582,18 @@
             +'<div class="dnote lstat">Anything above the line is a <b>FAIL</b>: the trace turns red there, the panel gets a red outline and a FAIL tag, and each violation is logged below (and to Watchtower if ticked).</div>'
             +'<div class="limlog"></div>'
           +'</fieldset>'
+          +(cfg.tuner?'<fieldset class="dsec dtrig"><legend>Trigger &amp; capture</legend>'
+            +'<div class="drow"><label>Trigger on</label><select class="tgsrc"><option value="limit">the limit line / mask above</option><option value="level">a level…</option></select>'
+              +'<input type="number" class="tglvl" step="1" value="-40" hidden style="width:78px"><span class="tgunit" hidden>dB</span></div>'
+            +'<div class="drow"><label>Watch</label><select class="tgwin"><option value="view">the whole visible span</option><option value="marker">only around the marker</option></select></div>'
+            +'<div class="drow"><label>Capture</label><input type="number" class="tgpre" min="0" max="5" step="0.5" value="1" style="width:64px"><span>s before</span>'
+              +'<input type="number" class="tgpost" min="0.5" max="30" step="0.5" value="2" style="width:64px"><span>s after</span></div>'
+            +'<div class="drow"><label>Stop after</label><input type="number" class="tgmax" min="1" max="500" value="10" style="width:64px"><span>captures, min</span>'
+              +'<input type="number" class="tggap" min="0" max="3600" value="3" style="width:64px"><span>s apart</span></div>'
+            +'<div class="drow"><button class="mini tgarm">&#9210;&nbsp;Arm</button><button class="mini tgoff" disabled>&#9209;&nbsp;Disarm</button><span class="tgstat"></span></div>'
+            +'<div class="dnote">Arms the condition instead of recording on the off-chance. The radio keeps a rolling buffer of raw samples, so when something crosses the line the recording <b>starts before the event</b> — the rise, the preamble and the first bits a decoder needs. Each capture is a SigMF file the Signal Analyzer opens, with the trigger point marked. Needs the real-time IQ engine (a span one tune wide).</div>'
+            +'<div class="tglog"></div>'
+          +'</fieldset>':'')
           +(cfg.tuner?'<fieldset class="dsec dsurv"><legend>Unattended survey</legend>'
             +'<div class="svbands"></div>'
             +'<div class="drow"><label>Dwell</label><input type="number" class="svdw" min="5" max="3600" value="30"><span>s / band</span>'
@@ -766,7 +783,7 @@
     this.hw={lna:24,vga:20,amp:false,antenna:false,bin_hz:0};          // HackRF: page-held, sent on start
     try{ var _h=JSON.parse(localStorage.getItem('rfwf.hw.'+cfg.short)||'null'); if(_h) for(var _k in this.hw) if(_k in _h) this.hw[_k]=_h[_k]; }catch(e){}
     this.rtlSet=null;                                                    // RTL: server-held settings
-    this.buildResolution(); this.buildHardware();
+    this.buildResolution(); this.buildHardware(); this.buildTrigger();
     // level calibration
     this.cal=0; this.calOn=false;
     try{ var _cb=JSON.parse(localStorage.getItem('rfwf.cal.'+cfg.short)||'null'); if(_cb){ this.cal=+_cb.off||0; this.calOn=!!_cb.on; } }catch(e){}
@@ -1783,6 +1800,77 @@
     g.fillText('ZERO-SPAN '+fmtMHz(f)+'  now '+(vals[vals.length-1]!=null?Math.round(vals[vals.length-1]*10)/10+U:'—')
       +'  min '+(mn<1e9?Math.round(mn)+U:'—')+'  max '+(mx>-1e9?Math.round(mx)+U:'—'),6*d,3*d);
     var right='−'+secs.toFixed(1)+' s … now'; g.fillText(right,W-g.measureText(right).width-6*d,3*d);
+  };
+
+  // ---- armed trigger + pre-trigger capture ----------------------------------
+  Scope.prototype.buildTrigger=function(){
+    var self=this, g=this.el.querySelector('.dtrig'); if(!g) return;
+    this._tg=g;
+    var src=g.querySelector('.tgsrc'), lvl=g.querySelector('.tglvl'), un=g.querySelector('.tgunit');
+    var show=function(){ var on=src.value==='level'; lvl.hidden=!on; un.hidden=!on; un.textContent=self.unit().trim()||'dB'; };
+    src.addEventListener('change',show); show();
+    g.querySelector('.tgarm').addEventListener('click',function(){ self.trigArm(); });
+    g.querySelector('.tgoff').addEventListener('click',function(){ self.trigSet('disarm',{}); });
+    this.trigPoll();
+  };
+  // Build the arm request from what the panel is actually showing. Levels are
+  // sent as the capture produces them: the dBm calibration is a display offset,
+  // so it has to come back off before the backend compares anything.
+  Scope.prototype.trigArm=function(){
+    var g=this._tg; if(!g) return;
+    var cal=this.cal||0, n=((this.shown||this.row||[]).length)||480, body={};
+    if(g.querySelector('.tgsrc').value==='level'){
+      body.level_db=(+g.querySelector('.tglvl').value||0)-cal;
+    } else {
+      var L=this.limitArr(n);
+      if(!L){ this._trigStat('Set a limit line or learn a mask first — there is nothing to trigger on.',true); return; }
+      if(L.a) body.mask=L.a.map(function(v){return v-cal;});
+      else body.level_db=L.c-cal;
+    }
+    if(g.querySelector('.tgwin').value==='marker'){
+      if(this.marker==null){ this._trigStat('No marker: click the signal you want to watch, or watch the whole span.',true); return; }
+      var m=this.measureAt(this.marker), bw=Math.max(10,(m&&m.bw20)||50)/1000;   // MHz
+      body.f0_hz=Math.round((this.marker-bw)*1e6); body.f1_hz=Math.round((this.marker+bw)*1e6);
+    }
+    body.pre_s=+g.querySelector('.tgpre').value; body.post_s=+g.querySelector('.tgpost').value;
+    body.max_events=+g.querySelector('.tgmax').value; body.min_gap_s=+g.querySelector('.tggap').value;
+    this.trigSet('arm',body);
+  };
+  Scope.prototype.trigSet=function(what,body){ var self=this;
+    fetch('/api/net/rtl/trigger/'+what,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})
+      .then(function(r){return r.json();}).then(function(d){ self._trigShow(d); }).catch(function(){ self._trigStat('Could not reach the radio.',true); }); };
+  Scope.prototype.trigPoll=function(){ var self=this;
+    if(!this._tg) return;
+    var tick=function(){ if(!self._tg) return;
+      var open=self.drawer && !self.drawer.hidden;
+      if(open || self._trigOn){ fetch('/api/net/rtl/trigger/status').then(function(r){return r.json();})
+        .then(function(d){ self._trigShow(d); }).catch(function(){}); }
+      setTimeout(tick, (self._trigOn?2000:6000)); };
+    setTimeout(tick,800);
+  };
+  Scope.prototype._trigStat=function(msg,bad){ var st=this._tg&&this._tg.querySelector('.tgstat');
+    if(st){ st.textContent=msg; st.style.color=bad?'#fb7185':'var(--muted)'; } };
+  Scope.prototype._trigShow=function(d){
+    var g=this._tg; if(!g||!d) return;
+    if(d.ok===false){ this._trigStat(d.error||'could not arm',true); return; }
+    this._trigOn=!!d.armed;
+    var ab=g.querySelector('.tgarm');
+    ab.innerHTML=d.armed?'&#9210;&nbsp;Re-arm':'&#9210;&nbsp;Arm';
+    ab.title=d.armed?'Apply the settings below and start waiting again (clears the current arm)':'Start watching for the condition';
+    g.querySelector('.tgoff').disabled=!d.armed && !d.recording;
+    this.el.classList.toggle('armed', !!d.armed);
+    var n=d.count||0;
+    this._trigStat(d.recording?('● capturing an event…')
+      :(d.armed?('armed — waiting'+(n?' ('+n+' captured)':'')):(n?(n+' capture'+(n===1?'':'s')+' — disarmed'):'')),
+      false);
+    var log=g.querySelector('.tglog'), ev=d.events||[];
+    log.innerHTML=ev.slice(-8).reverse().map(function(e){
+      var t=new Date((e.ts||0)*1000).toLocaleTimeString();
+      return '<div class="limrow"><span>'+t+'</span> <b>'+(e.freq_hz/1e6).toFixed(4)+' MHz</b> '
+        +'+'+e.excess_db+' dB over · '+e.seconds+' s ('+e.pre_s+' s lead-in) '
+        +'<a class="zi" target="_blank" rel="noopener" href="/rf-analyzer?name='+encodeURIComponent(e.name)+'">&#128200; Analyzer</a></div>';
+    }).join('')||'';
+    if(d.error) this._trigStat(d.error,true);
   };
 
   // ---- limit line / mask (pass / fail) --------------------------------------
