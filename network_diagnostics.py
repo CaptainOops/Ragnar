@@ -11838,11 +11838,11 @@ def _smb_parse_packets(packets):
             if pk.haslayer(DNS):
                 d = pk.getlayer(DNS)
                 is_resp = int(getattr(d, 'qr', 0)) == 1 or int(getattr(d, 'ancount', 0)) > 0
-                addrs = _dns_answer_addrs(d) if is_resp else []
+                addrs = _dns_answer_addrs(d, mdns=True) if is_resp else []
                 nameres.append({'proto': 'mdns', 'kind': 'response' if is_resp else 'query',
                                 'src': src, 'dst': dst,
                                 'name': _dns_qname(d) or (addrs[0][0] if addrs else None),
-                                'answer': _dns_answer_ip(d) if is_resp else None,
+                                'answer': addrs[0][1] if addrs else None,
                                 'answers': addrs, 'mac': mac})
         elif u.dport == 137 or u.sport == 137:            # NBT-NS
             parsed = _nbns_parse(bytes(u.payload))
@@ -11884,7 +11884,7 @@ def _dns_answer_rrs(layer):
     return out
 
 
-def _dns_answer_addrs(layer):
+def _dns_answer_addrs(layer, mdns=False):
     """[(owner_name, ip)] for the A / AAAA answer records only. mDNS answers are
     mostly PTR / SRV / TXT (DNS-SD service discovery), whose rdata is a NAME, not an
     address, so reading 'the first rdata' as the answered IP is wrong."""
@@ -11892,6 +11892,10 @@ def _dns_answer_addrs(layer):
     try:
         for rr in _dns_answer_rrs(layer):
             if int(getattr(rr, 'type', 0)) not in (1, 28):
+                continue
+            # TTL 0 is an mDNS "goodbye" (RFC 6762 §10.1) — a withdrawal, not a
+            # claim; counting it would make a DHCP renumber look like a race.
+            if mdns and int(getattr(rr, 'ttl', 1) or 0) == 0:
                 continue
             n = rr.rrname
             n = (n.decode('latin1', 'replace') if isinstance(n, bytes) else str(n)).rstrip('.')
@@ -12000,7 +12004,9 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
             claims = [(e['name'], e['answer'])] if e['name'] and e['answer'] else []
         for cname, cip in claims:
             fam = 6 if ':' in str(cip) else 4
-            who = e.get('mac') or e['src']
+            # Announcer identity = (MAC, source IP): spoofing one field alone must
+            # not let a poisoner pass as the real owner.
+            who = (e.get('mac'), e['src'])
             name_answers.setdefault(cname.lower(), set()).add(cip)
             name_claims.setdefault((cname.lower(), fam), {}).setdefault(who, set()).add(cip)
         # mDNS is legit when a host announces *itself* (answer == its own IP); a reply
@@ -12056,21 +12062,15 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
                 f"the reply authenticate to it and leak NTLMv2 hashes. Disable "
                 f"LLMNR/NBT-NS via GPO and enable SMB signing to block relay")
 
-    # Spoof conflict: one host name resolved to 2+ addresses (same family) by
-    # announcers that never co-announce them. A multi-homed / multi-address host
-    # announces its addresses together (or from one MAC), so address sets that
-    # overlap through a common announcer are merged first; only 2+ disjoint
-    # groups — two hosts each claiming the name — is a poisoner race.
+    # Spoof conflict: one host name resolved to 2+ addresses (same family). The
+    # only benign shape is ONE multi-address host, which announces the same full
+    # address set every time (from each of its source addresses). So it is a
+    # conflict unless every announcer claimed an identical set — an attacker who
+    # adds its own IP beside the victim's, or answers from a reused MAC, differs.
     for (name, fam) in sorted(name_claims):
-        groups = []
-        for ips in name_claims[(name, fam)].values():
-            merged = set(ips)
-            for g in [g for g in groups if g & merged]:
-                merged |= g
-                groups.remove(g)
-            groups.append(merged)
-        if len(groups) > 1:
-            ips = set().union(*groups)
+        sets = [frozenset(v) for v in name_claims[(name, fam)].values()]
+        ips = set().union(*sets)
+        if len(ips) > 1 and len(set(sets)) > 1:
             conflicts.append({'name': name, 'answers': sorted(ips)})
             bump('spoof-conflict')
             reasons.append(
@@ -12905,7 +12905,7 @@ def _smb_selftest():
 
     def mdns_self(src, name):
         return (Ether() / IP(src=src, dst='224.0.0.251') / UDP(sport=5353, dport=5353)
-                / DNS(qr=1, qd=DNSQR(qname=name), an=DNSRR(rrname=name, rdata=src)))
+                / DNS(qr=1, qd=DNSQR(qname=name), an=DNSRR(rrname=name, rdata=src, ttl=120)))
 
     def mdns_ptr(src, mac, svc, instance):
         # DNS-SD service discovery: a PTR from the shared service type to this host's
@@ -12914,10 +12914,10 @@ def _smb_selftest():
                 / DNS(qr=1, aa=1, qd=DNSQR(qname=svc, qtype='PTR'),
                       an=DNSRR(rrname=svc, type='PTR', rdata=instance)))
 
-    def mdns_a(src, mac, name, *ips):
-        an = [DNSRR(rrname=name, type='A', rdata=ip) for ip in ips]
+    def mdns_a(src, mac, name, *ips, ttl=120, qd=None):
+        an = [DNSRR(rrname=name, type='A', rdata=ip, ttl=ttl) for ip in ips]
         return (Ether(src=mac) / IP(src=src, dst='224.0.0.251') / UDP(sport=5353, dport=5353)
-                / DNS(qr=1, aa=1, an=an))
+                / DNS(qr=1, aa=1, qd=DNSQR(qname=qd) if qd else None, an=an))
 
     def ntlm_type2(src, challenge_hex):
         # NTLMSSP CHALLENGE (server->client): sig[8] type[4]=2 target[8] flags[4]
@@ -13041,6 +13041,30 @@ def _smb_selftest():
         [mdns_a('10.0.0.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24'),
          mdns_a('10.0.0.66', '02:00:00:00:00:66', 'nas.local', '10.0.0.66')],
         base, 'spoof-conflict')
+    # 4e. evasion: the poisoner lists the victim's IP beside its own.
+    run('mdns-spoof-conflict-superset',
+        [mdns_a('10.0.0.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24'),
+         mdns_a('10.0.0.66', '02:00:00:00:00:66', 'nas.local', '10.0.0.66', '10.0.0.24')],
+        base, 'spoof-conflict')
+    # 4f. evasion: the poisoner answers from the victim's (spoofed) MAC.
+    run('mdns-spoof-conflict-reused-mac',
+        [mdns_a('10.0.0.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24'),
+         mdns_a('10.0.0.66', '02:00:00:00:00:24', 'nas.local', '10.0.0.66')],
+        base, 'spoof-conflict')
+    # 4g. a multi-address host announcing its full set from each source address.
+    run('mdns-multiaddr-two-sources-not-conflict',
+        [mdns_a('10.0.0.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24', '10.0.1.24'),
+         mdns_a('10.0.1.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24', '10.0.1.24')],
+        base, 'clean')
+    # 4h. an mDNS goodbye (TTL 0) for an old address after a renumber is not a race.
+    run('mdns-goodbye-not-conflict',
+        [mdns_a('10.0.0.25', '02:00:00:00:00:25', 'tv.local', '10.0.0.24', ttl=0),
+         mdns_a('10.0.0.25', '02:00:00:00:00:25', 'tv.local', '10.0.0.25')],
+        base, 'clean')
+    # 4i. WPAD claimed over mDNS in an answer-only response (no question section).
+    run('mdns-wpad-answer-only',
+        [mdns_a('10.0.0.66', '02:00:00:00:00:66', 'wpad.local', '10.0.0.66')],
+        base, 'poisoning')
     # 5. smbv1-active: a real SMBv1 tree-connect (cmd 0x75).
     run('smbv1-active', [smb1(0x75, False)], base, 'smbv1-active')
     # 6. smbv1-offered: only a client SMBv1 negotiate request (cmd 0x72, no response).

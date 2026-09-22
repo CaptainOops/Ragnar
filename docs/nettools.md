@@ -1719,8 +1719,11 @@ poisoner. What it flags:
 - **spoof-conflict** — one host name answered by two hosts with different IPs (a poisoner
   racing the real owner). Only **A / AAAA** records count, compared within one address
   family: mDNS **DNS-SD** service-type PTRs (e.g. every AirPlay device answering
-  `_companion-link._tcp.local`) are service discovery, not a conflict, and a host that
-  announces several of its own addresses (or sends them from one MAC) is one owner.
+  `_companion-link._tcp.local`) are service discovery, not a conflict, and mDNS goodbye
+  records (TTL 0) are withdrawals. Announcers are identified by MAC **and** source IP; the
+  only multi-address shape treated as benign is one host announcing the **same** full address
+  set every time — so a poisoner listing the victim's IP beside its own, or answering from a
+  reused MAC, still raises the conflict.
 - **smbv1-active** / **smbv1-offered** — SMBv1 in use, or merely offered.
 - **name-exposure** — LLMNR/NBT-NS queries present at all: hosts are one Responder
   away from credential theft; disable via GPO.
