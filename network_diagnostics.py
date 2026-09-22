@@ -26219,6 +26219,13 @@ def register_network_diagnostics(app, logger=None):
                                            bw_hz=data.get('bw_hz') or 50000,
                                            secs=data.get('secs') or 1.5))
 
+    # Recover a wedged dongle without walking to the box: re-enumerate it over
+    # USB, which is what replugging does.
+    @app.route('/api/net/rtl/reset', methods=['POST'])
+    def net_rtl_reset():
+        _log("net/rtl/reset")
+        return jsonify(rtl_sdr.usb_reset())
+
     # Harmonic check: measures 2x..nx the carrier, one tune at a time.
     @app.route('/api/net/rtl/harmonics', methods=['POST'])
     def net_rtl_harmonics():

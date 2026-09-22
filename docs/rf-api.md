@@ -26,6 +26,7 @@ interrupting whatever is running — see [Concurrency](#concurrency).
 | `GET /api/net/rtl/power/frames?since=<seq>` | New rows since `seq`, plus `band_hz`, `floor_dbm`, `engine`, `rbw_hz`, `detector`, `overload`, `max_hold` |
 | `GET\|POST /api/net/rtl/tuning` | Read or set `ppm`, `gain`, `fft`, `avg`, `window`, `bins`, `detector`, `bias_t`, `direct`, `conv_hz` |
 | `POST /api/net/rtl/calibrate` | PPM from a reference: `{true_mhz, near_mhz}` |
+| `POST /api/net/rtl/reset` | Re-enumerate the dongle over USB when it has stopped delivering samples |
 
 A frame is `{seq, ts, power[]}` where `power` has `bins` entries spread evenly
 over `band_hz`. Poll `frames` with the last `seq` you saw; nothing is lost

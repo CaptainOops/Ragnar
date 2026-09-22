@@ -287,6 +287,16 @@ One dongle serves one job, so listening pauses the sub-GHz sweep.
 
 ---
 
+## If the panel goes quiet
+
+An RTL-SDR that has been started and stopped many times can get stuck: it still
+opens, but sends no samples. The panel notices (running, but no rows) and offers
+**⭮ Reset dongle** — also in ⚙ Settings → Hardware. It re-enumerates the device
+over USB, which is the same as unplugging and replugging it, and restarts your
+sweep.
+
+---
+
 ## Limits worth knowing
 
 - The sub-GHz panel reaches ~24 MHz–1.7 GHz. Above that, use the HackRF panel.
@@ -301,5 +311,9 @@ One dongle serves one job, so listening pauses the sub-GHz sweep.
   Zoom into a span that fits one tune to catch it.
 - Direction finding is RSSI-based and needs 3+ positioned units for a real fix;
   accuracy is hundreds of metres at best.
+- **Automatic gain can overload this front end.** On auto, an RTL-SDR near a
+  strong signal will clip — the **Front end** tile turns red, levels are wrong
+  and images appear. Set the gain manually (start around 20–30 dB) and watch the
+  headroom.
 - One dongle does one thing at a time: decoding, listening, ADS-B, a survey and
   the waterfall take turns.

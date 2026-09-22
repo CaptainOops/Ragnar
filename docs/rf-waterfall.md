@@ -288,6 +288,26 @@ live spectrum client-side from the incoming frames:
   bursty remote reads ~5% and a continuous carrier ~100%). This is the "what's
   actually on the band" answer.
 
+## When the dongle stops responding
+
+
+An RTL2832U can end up in a state where it still enumerates, still opens and
+still passes `rtl_test` — but never delivers a single sample. The panel then
+sits there: engine running, no rows. Repeated open/close cycles are what put it
+there, which is why captures are serialised and the USB device is given time to
+settle between them.
+
+The panel now detects it — running, but nothing arriving for several seconds —
+and offers **⭮ Reset dongle**, which is also in **⚙ Settings → Hardware**. It
+re-enumerates the device over USB (`USBDEVFS_RESET`), exactly what the kernel
+does when you unplug and replug it: whatever is using the radio is stopped
+first, the device is reset, and the sweep you were running is restarted. No walk
+to the box, no `sudo`, no power cycle.
+
+It needs root (the web UI normally runs as root); if it cannot, it says so
+rather than pretending to have fixed anything.
+API: `POST /api/net/rtl/reset`.
+
 ## Front-end health and proving a signal is real
 
 
@@ -927,6 +947,9 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 11 — recovery**
+- [x] Software USB reset for a wedged dongle, with automatic detection
 
 **Tier 10 — signalling**
 - [x] CTCSS tone decode (54-tone table)

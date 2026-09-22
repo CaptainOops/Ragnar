@@ -1758,6 +1758,90 @@ _power = PowerSweep()
 _detect_cache = None
 
 
+_USB_IDS = (("0bda", "2838"), ("0bda", "2832"), ("0bda", "2834"), ("0bda", "2837"))
+_USBDEVFS_RESET = (ord("U") << 8) | 20
+
+
+def _usb_device_path():
+    """Path of the RTL-SDR under /dev/bus/usb, from sysfs (pure-ish, no lsusb)."""
+    root = "/sys/bus/usb/devices"
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    for name in sorted(names):
+        d = os.path.join(root, name)
+        try:
+            with open(os.path.join(d, "idVendor")) as fh:
+                vid = fh.read().strip().lower()
+            with open(os.path.join(d, "idProduct")) as fh:
+                pid = fh.read().strip().lower()
+            if (vid, pid) not in _USB_IDS:
+                continue
+            with open(os.path.join(d, "busnum")) as fh:
+                bus = int(fh.read().strip())
+            with open(os.path.join(d, "devnum")) as fh:
+                dev = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        return "/dev/bus/usb/%03d/%03d" % (bus, dev)
+    return None
+
+
+def usb_reset():
+    """Power-cycle the RTL-SDR over USB, the way replugging it does.
+
+    An RTL2832U can end up in a state where it still enumerates and still opens
+    — ``rtl_test`` is happy — but never delivers a single sample. Repeated
+    open/close cycles are what puts it there. Until now the only cure was
+    walking to the box and pulling the dongle out; this does the same thing from
+    software (USBDEVFS_RESET), which is what the kernel does on a replug.
+
+    Stops anything using the device first, because resetting the bus underneath
+    a running capture is how you get a *second* wedged device.
+    """
+    path = _usb_device_path()
+    if not path:
+        return {"ok": False, "error": "no RTL-SDR found on USB"}
+    was = _power.status()
+    resume = ([was.get("band_hz"), was.get("band")] if was.get("running") else None)
+    try:
+        power_stop()
+    except Exception:
+        pass
+    try:
+        _ism.stop()
+    except Exception:
+        pass
+    _usb_settle()
+    try:
+        import fcntl
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            fcntl.ioctl(fd, _USBDEVFS_RESET, 0)
+        finally:
+            os.close(fd)
+    except PermissionError:
+        return {"ok": False, "path": path,
+                "error": "no permission to reset the USB device — run the web UI "
+                         "as root, or replug the dongle by hand"}
+    except OSError as exc:
+        return {"ok": False, "path": path, "error": "USB reset failed: %s" % exc}
+    time.sleep(2.0)                       # the device re-enumerates
+    global _detect_cache
+    _detect_cache = None                  # force a fresh probe next status()
+    out = {"ok": True, "path": path,
+           "note": "the dongle was re-enumerated, as if it had been replugged"}
+    if resume and resume[0]:
+        try:
+            time.sleep(1.0)
+            r = power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+            out["resumed"] = bool(r.get("ok"))
+        except Exception:
+            out["resumed"] = False
+    return out
+
+
 def _running():
     return _ism.status()["running"] or _power.status()["running"]
 
@@ -3843,6 +3927,16 @@ def selftest():
     check("adc: no clipping yet but nearly full scale = near",
           adc_health(0.0, 0.95)[0] == "near")
     check("adc: bad input never raises", adc_health(None, "x")[0] == "ok")
+
+    # --- USB recovery --------------------------------------------------------
+    _up = _usb_device_path()
+    check("usb: the dongle is found by its sysfs ids (or absent, cleanly)",
+          _up is None or (_up.startswith("/dev/bus/usb/") and len(_up.split("/")) == 6),
+          str(_up))
+    check("usb: the reset path names a device node that exists",
+          _up is None or os.path.exists(_up), str(_up))
+    check("usb: the known RTL vendor/product ids are all Realtek",
+          all(v == "0bda" for v, _pid in _USB_IDS) and ("0bda", "2838") in _USB_IDS)
 
     # --- geolocation on captures --------------------------------------------
     check("geo: SigMF geolocation is a GeoJSON point, longitude first",

@@ -1798,6 +1798,7 @@
       if(d.engine && self.devEl){ self.devEl.textContent = (d.engine==='iq')
         ? 'RTL-SDR · IQ FFT · real-time' : 'RTL-SDR · rtl_power sweep'; }
       if(frames.length){
+        self._stall=0;
         if(!self._rangeKnown){ self._rangeKnown=true; self.floor=floor; }
         self.rbw=(typeof d.rbw_hz==='number')?d.rbw_hz:null;
         if(d.detector) self.det=d.detector;
@@ -1815,6 +1816,12 @@
           self._nom=self._nom?self._nom+(est-self._nom)*0.1:est; }
         if(self._liveQ.length>600) self._liveQ.splice(0,self._liveQ.length-600);
       } else if(self.liveErr){ self.showVeil('⚠ '+self.cfg.short,self.liveErr); }
+      else if(d.running && self.cfg.tuner){
+        // The capture says it is running but no rows are arriving. That is the
+        // wedged-dongle signature, and it used to mean a walk to the box.
+        self._stall=(self._stall||0)+1;
+        if(self._stall===12) self.showVeilReset();
+      }
       else if(!self._rangeKnown){ self.showVeil('Starting '+self.cfg.short+' sweep…','Waiting for the first frame.'); }
     }).catch(function(){});
   };
@@ -2561,11 +2568,22 @@
           +'<option value="125000000">Upconverter +125 MHz (Ham It Up)</option><option value="120000000">Upconverter +120 MHz (SpyVerter)</option>'
           +'<option value="-9750000000">LNB 9750 MHz (Ku low)</option><option value="-10600000000">LNB 10600 MHz (Ku high)</option>'
           +'<option value="custom">Custom…</option></select><input type="number" class="hconvc" step="any" placeholder="LO MHz" hidden></div>'
-        +'<div class="dnote">With a converter the waterfall, markers, tune box and radio all read the <b>real RF frequency</b>; the dongle is tuned to RF + LO.</div>');
+        +'<div class="dnote">With a converter the waterfall, markers, tune box and radio all read the <b>real RF frequency</b>; the dongle is tuned to RF + LO.</div>'
+        +'<div class="drow"><label>Recovery</label><button class="mini hrst" title="Re-enumerate the dongle over USB — the same thing as unplugging it and plugging it back in, without walking to the box.">⭮ Reset dongle</button><span class="hrststat dnote"></span></div>'
+        +'<div class="dnote">An RTL-SDR can end up still enumerating and still opening, but never delivering a sample — the panel sits there showing nothing. Resetting it over USB is the cure; it stops whatever is running, re-enumerates the device and restarts the sweep.</div>');
       var b=g.querySelector('.hbias'), d=g.querySelector('.hdir'), c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc');
       b.addEventListener('click',function(){ var on=b.getAttribute('aria-pressed')!=='true';
         if(on && !window.confirm('Turn on bias-T? This puts 4.5 V DC on the antenna port. Only do this with an LNA or active antenna that expects it, on an RTL-SDR Blog V3/V4 or bias-tee dongle.')) return;
         self.rtlApply({bias_t:on?1:0}); });
+      var rst=g.querySelector('.hrst'), rstat=g.querySelector('.hrststat');
+      rst.addEventListener('click',function(){
+        rst.disabled=true; rstat.textContent='resetting…';
+        fetch('/api/net/rtl/reset',{method:'POST'}).then(function(r){return r.json();}).then(function(x){
+          rst.disabled=false;
+          rstat.innerHTML=x.ok?('<span style="color:var(--live)">✓ re-enumerated'+(x.resumed?' and the sweep restarted':'')+'</span>')
+                              :('<span style="color:#fb7185">'+esc(x.error||'failed')+'</span>');
+          if(x.ok){ self._stall=0; self._rangeKnown=false; }
+        }).catch(function(){ rst.disabled=false; rstat.textContent='the radio did not answer'; }); });
       d.addEventListener('change',function(){ self.rtlApply({direct:d.value}); });
       c.addEventListener('change',function(){ if(c.value==='custom'){ cc.hidden=false; cc.focus(); return; } cc.hidden=true; self.rtlApply({conv_hz:+c.value}); });
       cc.addEventListener('change',function(){ if(isFinite(+cc.value)) self.rtlApply({conv_hz:Math.round(+cc.value*1e6)}); });
@@ -3110,6 +3128,22 @@
       var l=document.createElement('div');l.className='tlab';l.style.left=x+"%";l.textContent=(showBands&&m.ticks)?fmtF(fq):fmtTick(fq,tst);r.appendChild(l);});
   };
   Scope.prototype.showVeil=function(t,s){this.veilT.textContent=t;this.veilS.textContent=s||'';this.veil.classList.add('show');};
+  // The dongle is open but silent: offer the cure instead of a dead panel.
+  Scope.prototype.showVeilReset=function(){
+    var self=this;
+    this.showVeil('⚠ '+this.cfg.short+' — the radio is open but sending nothing',
+      'This is the state an RTL-SDR gets into after too many restarts. Resetting it over USB does what replugging it does.');
+    if(this.veil.querySelector('.vrst')) return;
+    var b=document.createElement('button'); b.className='mini vrst'; b.style.marginTop='10px';
+    b.innerHTML='⭮&nbsp;Reset dongle';
+    b.addEventListener('click',function(){ b.disabled=true; b.innerHTML='⭮&nbsp;resetting…';
+      fetch('/api/net/rtl/reset',{method:'POST'}).then(function(r){return r.json();}).then(function(x){
+        b.disabled=false; b.innerHTML='⭮&nbsp;Reset dongle';
+        if(x.ok){ self._stall=0; self._rangeKnown=false; self.hideVeil(); b.remove(); }
+        else self.veilS.textContent=x.error||'the reset failed'; })
+        .catch(function(){ b.disabled=false; b.innerHTML='⭮&nbsp;Reset dongle'; }); });
+    this.veil.appendChild(b);
+  };
   Scope.prototype.hideVeil=function(){this.veil.classList.remove('show');};
 
   // HF: broadcast bands (MW + the shortwave broadcast allocations) are AM; other
