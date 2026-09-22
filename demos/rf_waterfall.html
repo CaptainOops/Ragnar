@@ -579,6 +579,11 @@
             +'<div class="drow"><label>Offset</label><input type="number" class="coff" step="0.1"><span>dB</span><button class="mini capply">Apply</button><button class="mini creset">Reset</button></div>'
             +'<div class="drow"><label>Known level</label><input type="number" class="ctrue" step="0.1" placeholder="dBm"><span>dBm</span><button class="mini ccal" title="Set the active marker on a signal whose true level you know (signal generator, calibrated source), then enter that level">Calibrate to marker</button></div>'
             +'<div class="dnote cstat">Levels are relative (dB / dBFS) until calibrated. Put a marker on a signal of known strength and enter its true level to read <b>dBm</b>. Re-calibrate after changing gain or the antenna.</div>'
+            +'<div class="drow"><label>Field strength</label><select class="afmode"><option value="off">Off</option><option value="gain">From antenna gain</option><option value="af">Antenna factor (dB/m)</option></select></div>'
+            +'<div class="drow afrow-gain"><label>Antenna gain</label><input type="number" class="afgain" step="0.1" value="2.15" style="width:74px"><span>dBi</span>'
+              +'<label>Cable loss</label><input type="number" class="afloss" step="0.1" value="0" style="width:74px"><span>dB</span></div>'
+            +'<div class="drow afrow-af"><label>Antenna factor</label><input type="number" class="afval" step="0.1" value="20" style="width:74px"><span>dB/m</span></div>'
+            +'<div class="dnote afnote">With a dBm calibration and an antenna factor, measurements also read <b>field strength in dBµV/m</b> — the figure EMC and site-survey work is specified in. From gain: AF = 20·log₁₀(f<sub>MHz</sub>) − G<sub>dBi</sub> − 29.79, which is frequency-dependent, so it is recomputed per measurement. Cable loss is added back on. This is only as good as the numbers you enter and the one-point level calibration underneath it.</div>'
           +'</fieldset>'
           +'<fieldset class="dsec dlim"><legend>Limit line / mask</legend>'
             +'<div class="drow"><label>Mode</label><select class="lmode"><option value="off">Off</option><option value="level">Level line</option><option value="mask">Mask (learned)</option></select></div>'
@@ -800,6 +805,14 @@
     this.cal=0; this.calOn=false;
     try{ var _cb=JSON.parse(localStorage.getItem('rfwf.cal.'+cfg.short)||'null'); if(_cb){ this.cal=+_cb.off||0; this.calOn=!!_cb.on; } }catch(e){}
     var cq=function(c){return el.querySelector(c);};
+    this.ant={mode:'off',gain:2.15,loss:0,af:20};
+    try{ var _a=JSON.parse(localStorage.getItem('rfwf.ant.'+cfg.short)||'null'); if(_a) for(var _ak in this.ant) if(_ak in _a) this.ant[_ak]=_a[_ak]; }catch(e){}
+    ['afmode','afgain','afloss','afval'].forEach(function(cls){
+      var elx=el.querySelector('.'+cls); if(!elx) return;
+      elx.addEventListener('change',function(){
+        self.setAnt({mode:el.querySelector('.afmode').value,gain:+el.querySelector('.afgain').value,
+                     loss:+el.querySelector('.afloss').value,af:+el.querySelector('.afval').value}); }); });
+    this._antUI();
     cq('.capply').addEventListener('click',function(){ var v=parseFloat(cq('.coff').value); if(isFinite(v)) self.setCal(v,true); });
     cq('.creset').addEventListener('click',function(){ self.setCal(0,false); });
     cq('.ccal').addEventListener('click',function(){ self.calToMarker(parseFloat(cq('.ctrue').value)); });
@@ -1282,7 +1295,10 @@
       var cls=this.classifySignal(f, meas.bw20);
       this.markTxt.innerHTML='<span class="markmeas"><b>'+fmtMHz(f)+'</b> · '+Math.round(meas.pk)
         +this.unit()+' · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−'+meas.bwDrop+' <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
-        +' · ChPwr '+Math.round(meas.chPwr)+this.unit()+' · <span class="zi">'+esc(cls.label)+'</span></span>';
+        +' · ChPwr '+Math.round(meas.chPwr)+this.unit()
+        +(function(sc){ var E=sc.fieldStrength(meas.pk,f);
+            return (E==null)?'':' · E <b>'+E.toFixed(1)+' dBµV/m</b>'; })(this)
+        +' · <span class="zi">'+esc(cls.label)+'</span></span>';
       this._markDecode(cls, f);   // offer a jump to the matching decoder
       this._markVerify(f, meas.bw20);
       this._markWiki(f);
@@ -1889,6 +1905,35 @@
 
   // ---- level calibration (dB offset -> dBm) --------------------------------
   Scope.prototype.unit=function(){ return this.calOn?' dBm':' dB'; };
+  // ---- antenna factor -> field strength --------------------------------------
+  // dBuV/m = dBm + 107 + AF + cable loss. AF from gain is the standard
+  // free-space relation and depends on frequency, so it is computed per reading.
+  Scope.prototype.afFor=function(fMHz){
+    var a=this.ant||{}; if(a.mode!=='gain'&&a.mode!=='af') return null;
+    if(!this.calOn) return null;                    // dBuV/m needs real dBm first
+    if(a.mode==='af') return (+a.af||0)+(+a.loss||0);
+    if(!(fMHz>0)) return null;
+    return 20*Math.log10(fMHz)-(+a.gain||0)-29.79+(+a.loss||0);
+  };
+  Scope.prototype.fieldStrength=function(dBm,fMHz){
+    var af=this.afFor(fMHz); if(af==null||dBm==null) return null;
+    return dBm+107.0+af;
+  };
+  Scope.prototype._antUI=function(){
+    var g=this.el.querySelector('.dcal'); if(!g) return; var a=this.ant||{};
+    g.querySelector('.afmode').value=a.mode||'off';
+    g.querySelector('.afgain').value=(a.gain==null?2.15:a.gain);
+    g.querySelector('.afloss').value=(a.loss||0);
+    g.querySelector('.afval').value=(a.af==null?20:a.af);
+    g.querySelector('.afrow-gain').style.display=(a.mode==='gain')?'':'none';
+    g.querySelector('.afrow-af').style.display=(a.mode==='af')?'':'none';
+    var n=g.querySelector('.afnote');
+    if(a.mode!=='off'&&!this.calOn) n.innerHTML='<span style="color:#fbbf24">Field strength needs a dBm calibration first — calibrate the level above, then this converts it.</span>';
+  };
+  Scope.prototype.setAnt=function(o){ this.ant=this.ant||{mode:'off',gain:2.15,loss:0,af:20};
+    for(var k in o) this.ant[k]=o[k];
+    try{ localStorage.setItem('rfwf.ant.'+this.cfg.short,JSON.stringify(this.ant)); }catch(e){}
+    this._antUI(); };
   // Change the offset: everything already on screen / in history shifts by the
   // difference, so the waterfall, holds, markers and exports stay consistent.
   Scope.prototype.setCal=function(off,on){

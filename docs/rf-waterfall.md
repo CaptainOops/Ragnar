@@ -724,6 +724,25 @@ takes priority: rows are only computed when there is time for them, so a
 recording is never shortened or thinned for the sake of the display. Band and
 zoom changes wait until the capture finishes.
 
+## What a capture records about itself
+
+
+Every SigMF recording this unit writes — manual, and triggered — carries more
+than samples, because a recording that cannot say where and when it was made is
+an anecdote:
+
+- `core:datetime` — UTC start time.
+- `core:sha512` — a hash of the data file, so tampering or corruption shows.
+- `core:geolocation` — a GeoJSON point (longitude first, per the spec) from the
+  live GPS fix when there is one, plus `ragnar:position_source` saying whether
+  it was a live fix, a manually set position or the last known one, and the
+  satellite count and HDOP when the receiver reports them.
+- `core:frequency`, `core:sample_rate`, `core:gain_db`,
+  `core:freq_correction_ppm` and `ragnar:detector` — enough to reproduce the
+  measurement.
+
+No fix means no `core:geolocation` key at all, rather than a zero-zero position.
+
 ## Signal Analyzer (on-box SigMF analysis)
 
 
@@ -861,6 +880,10 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 8 — provenance**
+- [x] Geotagged captures (GeoJSON, with the source of the fix)
+- [x] Antenna factor + feedline loss → field strength in dBµV/m
 
 **Tier 7 — modulation**
 - [x] FM deviation (peak / RMS / Carson) and AM modulation depth

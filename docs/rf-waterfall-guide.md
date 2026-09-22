@@ -174,6 +174,11 @@ panel. Re-record after changing gain.
 - **Frequency (PPM)** — click a carrier whose exact frequency you know, enter
   that frequency and press **Calibrate**. The crystal offset is measured and
   applied to every capture. Do this before trusting narrow-channel work.
+- **Field strength (dBµV/m)** — once levels read dBm, enter your antenna's gain
+  (or its antenna factor) and the cable loss under **⚙ Settings → Level
+  calibration**, and measurements also report field strength — the unit EMC and
+  site-survey work is specified in. The gain form is frequency-dependent and is
+  recomputed for each measurement.
 - **Level (dBm)** — levels are relative dB until calibrated. Put a marker on a
   signal of known strength, enter that level under **⚙ Settings → Level
   calibration** and press **Calibrate to marker**. Every level on the page then

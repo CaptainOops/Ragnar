@@ -1984,8 +1984,60 @@ def _iq_cap_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "iq_captures")
 
 
+# A recording that does not say where and when it was made is an anecdote. This
+# module owns no GPS, so the app registers a provider and every capture written
+# here carries the fix if there is one.
+_pos_provider = None
+
+
+def set_position_provider(fn):
+    """Register a callable returning {'lat','lon',...} (or None) for captures."""
+    global _pos_provider
+    _pos_provider = fn if callable(fn) else None
+
+
+def current_position():
+    """This unit's position for a capture, or None. Never raises."""
+    try:
+        if _pos_provider is None:
+            return None
+        p = _pos_provider()
+        if not p or p.get("lat") is None or p.get("lon") is None:
+            return None
+        out = {"lat": float(p["lat"]), "lon": float(p["lon"]),
+               "source": p.get("source") or "gps"}
+        for k in ("alt", "satellites", "hdop", "fix"):
+            if p.get(k) is not None:
+                out[k] = p[k]
+        return out
+    except Exception:
+        return None
+
+
+def geojson_point(pos):
+    """SigMF core:geolocation for a position dict (pure), or None.
+
+    SigMF carries geolocation as a GeoJSON Point, coordinates [lon, lat, alt] —
+    longitude FIRST, which is the opposite order to how everyone says it.
+    """
+    if not pos:
+        return None
+    try:
+        lon, lat = float(pos["lon"]), float(pos["lat"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    coords = [lon, lat]
+    if pos.get("alt") is not None:
+        try:
+            coords.append(float(pos["alt"]))
+        except (TypeError, ValueError):
+            pass
+    return {"type": "Point", "coordinates": coords}
+
+
 def sigmf_meta(center_hz, sr_hz, datatype="cu8", hw="RTL-SDR",
-               sha512=None, dt_iso=None, label=None, ppm=0, gain=None):
+               sha512=None, dt_iso=None, label=None, ppm=0, gain=None,
+               position=None, detector=None):
     """Build a SigMF metadata dict (SigMF v1.0.0). Pure — the selftest checks it.
 
     ``core:datatype`` "cu8" is complex unsigned-8-bit, exactly rtl_sdr's native
@@ -2005,6 +2057,17 @@ def sigmf_meta(center_hz, sr_hz, datatype="cu8", hw="RTL-SDR",
         glob["core:freq_correction_ppm"] = int(ppm)      # extension namespace-free hint
     if gain is not None:
         glob["core:gain_db"] = float(gain)
+    geo = geojson_point(position)
+    if geo:
+        glob["core:geolocation"] = geo
+        # Where the fix came from matters: a live GPS fix and a position typed in
+        # last week are not the same evidence.
+        glob["ragnar:position_source"] = position.get("source", "gps")
+        for k in ("satellites", "hdop"):
+            if position.get(k) is not None:
+                glob["ragnar:gps_" + k] = position[k]
+    if detector:
+        glob["ragnar:detector"] = str(detector)
     cap = {"core:sample_start": 0, "core:frequency": float(center_hz)}
     if dt_iso:
         cap["core:datetime"] = dt_iso
@@ -2166,7 +2229,8 @@ class IqCapture:
             meta = sigmf_meta(self._center, self._sr, sha512=h.hexdigest(),
                               hw="RTL-SDR (%s)" % (_capture_hw_name()),
                               dt_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._started)),
-                              label=self._label, ppm=_ppm, gain=_gain)
+                              label=self._label, ppm=_ppm, gain=_gain,
+                              position=current_position(), detector=_detector)
             with open(self._path[:-len(".sigmf-data")] + ".sigmf-meta", "w") as fh:
                 json.dump(meta, fh, indent=2)
             self._done = True
@@ -2538,7 +2602,8 @@ class SignalTrigger:
                               dt_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["ts"])),
                               label="trigger %.4f MHz %+0.1f dB over the mask" % (
                                   r["hit"]["freq_hz"] / 1e6, r["hit"]["excess_db"]),
-                              ppm=_ppm, gain=_gain)
+                              ppm=_ppm, gain=_gain,
+                              position=current_position(), detector=_detector)
             # Mark where the trigger actually fired, so the analyzer can show the
             # pre-trigger lead-in as lead-in rather than as part of the event.
             meta["annotations"].append({
@@ -3778,6 +3843,34 @@ def selftest():
     check("adc: no clipping yet but nearly full scale = near",
           adc_health(0.0, 0.95)[0] == "near")
     check("adc: bad input never raises", adc_health(None, "x")[0] == "ok")
+
+    # --- geolocation on captures --------------------------------------------
+    check("geo: SigMF geolocation is a GeoJSON point, longitude first",
+          geojson_point({"lat": 57.7, "lon": 11.97})
+          == {"type": "Point", "coordinates": [11.97, 57.7]})
+    check("geo: altitude is included when known",
+          geojson_point({"lat": 57.7, "lon": 11.97, "alt": 42.0})["coordinates"][2] == 42.0)
+    check("geo: no fix -> no geolocation, not a zero-zero fix",
+          geojson_point(None) is None and geojson_point({"lat": None, "lon": 1}) is None)
+    _gm = sigmf_meta(433_920_000, 2_000_000,
+                     position={"lat": 57.7, "lon": 11.97, "source": "gps", "satellites": 9},
+                     detector="rms")
+    check("geo: a capture carries the fix, its source and the detector used",
+          _gm["global"]["core:geolocation"]["coordinates"] == [11.97, 57.7]
+          and _gm["global"]["ragnar:position_source"] == "gps"
+          and _gm["global"]["ragnar:gps_satellites"] == 9
+          and _gm["global"]["ragnar:detector"] == "rms")
+    check("geo: a capture without a fix carries no geolocation key",
+          "core:geolocation" not in sigmf_meta(433_920_000, 2_000_000)["global"])
+    check("geo: no provider registered -> no position, no exception",
+          current_position() is None)
+    set_position_provider(lambda: {"lat": 1.5, "lon": 2.5, "alt": 3.0, "source": "manual"})
+    check("geo: a registered provider is used",
+          current_position()["lat"] == 1.5 and current_position()["source"] == "manual")
+    set_position_provider(lambda: (_ for _ in ()).throw(RuntimeError("gps died")))
+    check("geo: a provider that raises is not allowed to break a capture",
+          current_position() is None)
+    set_position_provider(None)
 
     # --- harmonics ----------------------------------------------------------
     _hp = harmonic_plan(433_920_000, 4)
