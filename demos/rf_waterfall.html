@@ -147,6 +147,13 @@
   .drow select{width:auto;max-width:100%;min-width:0}
   .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
   .dnote b{color:var(--ink-dim);font-weight:500}
+  canvas.zspan{display:block;width:100%;height:78px;background:var(--panel-2);border-top:1px solid var(--line-soft)}
+  .kbhelp{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,8,13,.72);padding:16px}
+  .kbhelp[hidden]{display:none}
+  .kbbox{max-width:620px;width:100%;max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .kbbox h4{margin:0 0 10px;font-family:var(--head);font-size:15px;color:var(--ink)}
+  .kbgrid{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;align-items:center}
+  .kbgrid kbd{font-family:var(--mono);font-size:11px;color:var(--cyan);background:var(--panel-2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;white-space:nowrap}
   .tag.limtag{margin-left:6px} .tag.limtag.pass{color:var(--live);border-color:rgba(63,181,107,.5)} .tag.limtag.fail{color:#fb7185;border-color:rgba(251,113,133,.6);background:rgba(251,113,133,.12)}
   .scope.limfail .fall-wrap{box-shadow:inset 0 0 0 2px rgba(251,113,133,.75)}
   .limlog{font-size:10.5px;line-height:1.55;max-height:92px;overflow:auto;color:var(--ink-dim)} .limlog .lx{color:#fb7185}
@@ -481,7 +488,7 @@
           +'<div class="veil"><div class="vt"></div><div class="vs"></div></div>'
         +'</div>'
         +'<div class="ruler"></div>'
-        +'<canvas class="trace"></canvas>'
+        +'<canvas class="trace"></canvas><canvas class="zspan" hidden></canvas>'
         +'<div class="toolbar">'
           +'<span class="marktxt">Click a signal to measure it (freq · level · SNR · bandwidth).</span>'
           +'<span class="spacer"></span>'
@@ -516,7 +523,9 @@
           +'<button class="mini mprev" title="Next peak to the left (key [)">&#9664; Next</button>'
           +'<button class="mini mnext" title="Next peak to the right (key ])">Next &#9654;</button>'
           +'<button class="mini mctr" title="Centre the view on the active marker (key C)">&#8596; Centre</button>'
-          +'<button class="mini mclr" title="Remove all markers">Clear</button></div>'
+          +'<button class="mini mclr" title="Remove all markers">Clear</button>'
+          +'<button class="mini mzs" aria-pressed="false" title="Zero-span: level at the active marker\'s frequency over time (key Z)">Zero-span</button>'
+          +'<button class="mini kbq" title="Keyboard shortcuts (?)">&#9000; Keys</button></div>'
           +'<div class="mtabwrap"><table class="mtab"><tbody></tbody></table></div></div>'
         +'<div class="drawer" hidden>'
           +'<fieldset class="dsec dsp"><legend>Display range</legend>'
@@ -561,6 +570,12 @@
     this.markEls=[this.markEl];
     for(var _mi=1;_mi<4;_mi++){ var _me=this.markEl.cloneNode(true); _me.classList.add('m'+(_mi+1)); this.markEl.parentNode.appendChild(_me); this.markEls.push(_me); }
     this.mTab=el.querySelector('.mtab tbody');
+    this.zs=el.querySelector('.zspan'); this.zsOn=false;
+    el.querySelector('.mzs').addEventListener('click',function(){ self.toggleZeroSpan(); });
+    el.querySelector('.kbq').addEventListener('click',function(){ showKeys(true); });
+    // the panel keyboard shortcuts act on: the last one you pointed at / touched
+    el.addEventListener('pointerenter',function(){ activeScope=self; });
+    el.addEventListener('pointerdown',function(){ activeScope=self; });
     el.querySelector('.madd').addEventListener('click',function(){ self.addMarker(); });
     el.querySelector('.mpeak').addEventListener('click',function(){ self.peakSearch(); });
     el.querySelector('.mprev').addEventListener('click',function(){ self.nextPeak(-1); });
@@ -1164,7 +1179,7 @@
       var fb=function(khz){return khz>=1000?(khz/1000).toFixed(2)+' MHz':Math.round(khz)+' kHz';};
       var cls=this.classifySignal(f, meas.bw20);
       this.markTxt.innerHTML='<span class="markmeas"><b>'+fmtMHz(f)+'</b> · '+Math.round(meas.pk)
-        +this.unit()+' · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−20 <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
+        +this.unit()+' · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−'+meas.bwDrop+' <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
         +' · ChPwr '+Math.round(meas.chPwr)+this.unit()+' · <span class="zi">'+esc(cls.label)+'</span></span>';
       this._markDecode(cls, f);   // offer a jump to the matching decoder
     } else {
@@ -1539,6 +1554,7 @@
     this.busy=this.busy*0.8 + (busyC/N*100)*0.2;
     this._updateTraces(power);
     if(this.lim.mode!=='off') this._limitCheck(power);
+    if(this.zsOn) this.drawZeroSpan();
     this.updateSignals(power,nf);        // track emitters (CFAR) + throttled render
     this.drawTrace(power); this.updateReadout();
     if(!this.threeD) this._drawTimeGrid();
@@ -1582,6 +1598,40 @@
     o.value=this.cal||0;
     var st=this.el.querySelector('.cstat');
     if(this.calOn && st && !/Calibrated/.test(st.textContent)) st.innerHTML='Calibrated: offset <b>'+(this.cal>=0?'+':'')+this.cal+' dB</b>; levels read in <b>dBm</b>. Re-calibrate after changing gain or the antenna.'; };
+
+  // ---- zero-span: level at the active marker's frequency over time --------
+  // Built from the row history, so its time resolution is the row rate (~16 /s
+  // on the real-time engine) — a live level/duty view of one channel. For
+  // sample-rate detail, take a raw IQ capture into the Signal Analyzer.
+  Scope.prototype.toggleZeroSpan=function(on){
+    this.zsOn=(on==null)?!this.zsOn:!!on; this.zs.hidden=!this.zsOn;
+    this.el.querySelector('.mzs').setAttribute('aria-pressed',this.zsOn?'true':'false');
+    if(this.zsOn){ if(this.marker==null) this.peakSearch(); this.drawZeroSpan(); }
+  };
+  Scope.prototype.drawZeroSpan=function(){
+    if(!this.zsOn||!this.zs) return;
+    var cv=this.zs, d=this.d||1, W=Math.max(1,Math.round(cv.clientWidth*d)), H=Math.max(1,Math.round(cv.clientHeight*d));
+    if(cv.width!==W) cv.width=W; if(cv.height!==H) cv.height=H;
+    var g=cv.getContext('2d'); g.clearRect(0,0,W,H);
+    var f=this.marker; g.font=(10*d)+'px "IBM Plex Mono",monospace'; g.textBaseline='top';
+    if(f==null||!this.hrows.length){ g.fillStyle='rgba(139,152,171,.8)'; g.fillText('Zero-span: set a marker',6*d,6*d); return; }
+    var n=Math.min(this.hrows.length,Math.max(20,Math.round(W/(2*d)))), end=this.hrows.length-1, vals=[], mn=1e9, mx=-1e9;
+    for(var k=n-1;k>=0;k--){ var h=this.hrows[end-k], p=this._shownOf(h), N=p.length, i=Math.floor((f-h.lo)/((h.hi-h.lo)/N));
+      var v=(i>=0&&i<N)?p[i]:null; vals.push(v); if(v!=null){ if(v<mn)mn=v; if(v>mx)mx=v; } }
+    var nfz=(this.noiseDb!=null)?this.noiseDb:mn, lo=Math.min(mn,nfz)-3, hi=Math.max(mx,nfz+10)+3, yf=function(v){ var t=(v-lo)/((hi-lo)||1); t=t<0?0:(t>1?1:t); return H-2*d-t*(H-16*d); };
+    var LA=(this.lim&&this.lim.mode!=='off')?this.limitArr((this.shown||this.row||[]).length):null;
+    if(LA&&this.row){ var li=Math.floor((f-this.lo)/((this.hi-this.lo)/this.row.length)), lv=LA.a?LA.a[li]:LA.c;
+      if(lv!=null){ g.setLineDash([5,4]); g.strokeStyle='rgba(251,113,133,.85)'; g.beginPath(); g.moveTo(0,yf(lv)); g.lineTo(W,yf(lv)); g.stroke(); g.setLineDash([]); } }
+    if(this.noiseDb!=null){ g.setLineDash([3,3]); g.strokeStyle='rgba(139,152,171,.5)'; g.beginPath(); g.moveTo(0,yf(this.noiseDb)); g.lineTo(W,yf(this.noiseDb)); g.stroke(); g.setLineDash([]); }
+    g.strokeStyle='#f5b942'; g.lineWidth=Math.max(1,d); g.beginPath(); var st=false;
+    for(var j=0;j<vals.length;j++){ if(vals[j]==null){ st=false; continue; } var x=j*W/(vals.length-1||1), y=yf(vals[j]); if(!st){ g.moveTo(x,y); st=true; } else g.lineTo(x,y); }
+    g.stroke();
+    var secs=(this.hrows[end].t-this.hrows[end-n+1].t)/1000, U=this.unit();
+    g.fillStyle='rgba(205,214,228,.8)';
+    g.fillText('ZERO-SPAN '+fmtMHz(f)+'  now '+(vals[vals.length-1]!=null?Math.round(vals[vals.length-1]*10)/10+U:'—')
+      +'  min '+(mn<1e9?Math.round(mn)+U:'—')+'  max '+(mx>-1e9?Math.round(mx)+U:'—'),6*d,3*d);
+    var right='−'+secs.toFixed(1)+' s … now'; g.fillText(right,W-g.measureText(right).width-6*d,3*d);
+  };
 
   // ---- limit line / mask (pass / fail) --------------------------------------
   Scope.prototype.setLimit=function(o){ for(var k in o) this.lim[k]=o[k];
@@ -2111,21 +2161,36 @@
   // Peak-search + measure the signal nearest a clicked frequency: snapped centre,
   // level, SNR, −3/−20 dB bandwidth, 99% occupied bandwidth and channel power.
   Scope.prototype.measureAt=function(fMHz){
-    var p=this.row; if(!p||!p.length) return null;
+    var live=this.row; if(!live||!live.length) return null;
+    // Bandwidth / occupied BW / channel power are measured on the smoothed Avg
+    // trace (a single live row is too noisy; analysers do the same), when it
+    // matches the live row. The peak level is the live row's.
+    var useAvg=this.avgRow && this.avgRow.length===live.length && !(this._np&&this._npOn&&this._npStr>0);
+    var p=useAvg?this.avgRow:live;
     var n=p.length, binMHz=(this.hi-this.lo)/n, nf=(this.noiseDb!=null?this.noiseDb:this.floor);
     var clickBin=Math.max(0,Math.min(n-1,Math.round((fMHz-this.lo)/binMHz-0.5)));
     var win=Math.max(2,Math.round(n*0.02)), s=Math.max(0,clickBin-win), e=Math.min(n-1,clickBin+win), pk=-1e9,pkI=clickBin,i;
     for(i=s;i<=e;i++){ if(p[i]>pk){pk=p[i];pkI=i;} }
+    var livePk=-1e9; for(i=Math.max(0,pkI-1);i<=Math.min(n-1,pkI+1);i++) if(live[i]>livePk) livePk=live[i];
     // Walk out to the −drop dB point, but never below the noise floor — otherwise
     // a signal with < drop dB SNR would measure the whole span as its bandwidth.
-    function edge(drop,dir){ var lvl=Math.max(pk-drop,nf+3),i=pkI; while(i+dir>=0&&i+dir<n&&p[i+dir]>lvl){i+=dir;} return i; }
+    // ...and stop at the valley to a neighbouring signal: once the level has
+    // dipped and climbs >= 6 dB back up, that's the next emitter, not this one's
+    // skirt (otherwise a cluttered floor inflates the bandwidth many times).
+    // A "−20 dB bandwidth" only exists if the signal is > 20 dB over the noise.
+    // Otherwise measure at the deepest drop the SNR supports (staying >= 6 dB
+    // off the noise floor) and report which drop was used, rather than
+    // quietly measuring the noise floor's width.
+    var dropFor=function(drop){ return Math.max(3,Math.min(drop,(pk-nf)-6)); };
+    function edge(drop,dir){ var lvl=pk-dropFor(drop),i=pkI,mn=pk;
+      while(i+dir>=0&&i+dir<n&&p[i+dir]>lvl){ var v=p[i+dir]; if(v<mn) mn=v; else if(v>mn+6) break; i+=dir; } return i; }
     var l20=edge(20,-1),r20=edge(20,1), l3=edge(3,-1),r3=edge(3,1);
     var lin=function(db){return Math.pow(10,db/10);}, tot=0;
     for(i=l20;i<=r20;i++) tot+=lin(p[i]);
     var acc=0,lo99=l20,hi99=r20;
     for(i=l20;i<=r20;i++){ acc+=lin(p[i]); if(acc>=tot*0.005){lo99=i;break;} }
     acc=0; for(i=r20;i>=l20;i--){ acc+=lin(p[i]); if(acc>=tot*0.005){hi99=i;break;} }
-    return {peakF:this.lo+(pkI+0.5)*binMHz, pk:pk, snr:pk-nf,
+    return {peakF:this.lo+(pkI+0.5)*binMHz, pk:livePk, snr:livePk-nf, smoothed:useAvg, bwDrop:Math.round(dropFor(20)),
             bw3:(r3-l3+1)*binMHz*1000, bw20:(r20-l20+1)*binMHz*1000,
             obw99:(hi99-lo99+1)*binMHz*1000, chPwr:10*Math.log10(tot||1e-12)};
   };
@@ -2261,6 +2326,45 @@
     liveBands:SUBGHZ_BANDS.concat([{id:'2.4',label:'2.4G'},{id:'5',label:'5G'},{id:'6',label:'6G'}]), defaultBand:'2.4' });
   scopes.push(hackrf); stack.appendChild(hackrf.el);
   window.RFWF={scopes:scopes};   // console/debug handle on the panels
+  // ---- keyboard shortcuts (act on the panel last pointed at) ---------------
+  var activeScope=scopes[0];
+  var KEYS=[['Space','Pause / resume'],['P','Peak search'],['[  ]','Next peak left / right'],['M','Add a marker'],
+    ['C','Marker → centre'],['X','Clear markers'],['Z','Zero-span on/off'],['+  −','Zoom in / out (around the marker)'],
+    ['←  →','Pan left / right'],['0','Full band (reset zoom)'],['L','Back to live (history)'],['3','2D / 3D view'],
+    ['A','Fit display range to signal'],['F','Full screen'],['S','Settings drawer'],['?','This help'],['Esc','Close']];
+  var kb=document.createElement('div'); kb.className='kbhelp'; kb.hidden=true;
+  kb.innerHTML='<div class="kbbox" role="dialog" aria-label="Keyboard shortcuts"><h4>Keyboard shortcuts</h4><div class="kbgrid">'
+    +KEYS.map(function(k){ return k[0].split('  ').map(function(x){return '<kbd>'+esc(x)+'</kbd>';}).join(' ')+'<span>'+esc(k[1])+'</span>'; }).join('')
+    +'</div><p style="margin:12px 0 0">They act on the panel your mouse was last over. Ignored while typing in a box.</p></div>';
+  document.body.appendChild(kb); kb.addEventListener('click',function(e){ if(e.target===kb) showKeys(false); });
+  function showKeys(on){ kb.hidden=!on; }
+  document.addEventListener('keydown',function(e){
+    var t=e.target, tag=(t&&t.tagName)||'';
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    if(/INPUT|SELECT|TEXTAREA/.test(tag)||(t&&t.isContentEditable)) return;
+    var s=activeScope||scopes[0], k=e.key, sp=s.hi-s.lo, ctr=(s.marker!=null)?s.marker:(s.lo+s.hi)/2, done=true;
+    if(k==='Escape'){ showKeys(false); return; }
+    if(k==='?'){ showKeys(kb.hidden); }
+    else if(k===' '){ setRunning(!running); }
+    else if(k==='p'||k==='P'){ s.peakSearch(); }
+    else if(k==='['){ s.nextPeak(-1); } else if(k===']'){ s.nextPeak(1); }
+    else if(k==='m'||k==='M'){ s.addMarker(); }
+    else if(k==='c'||k==='C'){ s.markerToCentre(); }
+    else if(k==='x'||k==='X'){ s.marker=null; s.placeMarker(); }
+    else if(k==='z'||k==='Z'){ s.toggleZeroSpan(); }
+    else if(k==='+'||k==='='){ s.zoomTo(ctr-sp/4,ctr+sp/4); }
+    else if(k==='-'||k==='_'){ s.zoomTo(ctr-sp,ctr+sp); }
+    else if(k==='ArrowLeft'){ s.zoomTo(s.lo-sp*0.1,s.hi-sp*0.1); }
+    else if(k==='ArrowRight'){ s.zoomTo(s.lo+sp*0.1,s.hi+sp*0.1); }
+    else if(k==='0'){ s.resetZoom(); }
+    else if(k==='l'||k==='L'){ s.setScrollBack(0); }
+    else if(k==='3'){ s.setThreeD(!s.threeD); }
+    else if(k==='a'||k==='A'){ s.fitDisplay(); }
+    else if(k==='f'||k==='F'){ s.toggleFullscreen(); }
+    else if(k==='s'||k==='S'){ s.cfgBtn.click(); }
+    else done=false;
+    if(done) e.preventDefault();
+  });
 
   var clockEl=document.getElementById('clock');
   function tickClock(){clockEl.textContent=nowHM();} setInterval(tickClock,1000); tickClock();

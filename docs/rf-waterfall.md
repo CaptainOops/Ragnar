@@ -177,8 +177,8 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [x] Absolute dBm calibration offset
 - [x] Converter/LNB frequency offset, bias-T, RTL direct sampling
 - [x] Radio: SSB / CW, squelch, audio recording
-- [ ] Keyboard shortcuts
-- [ ] Zero-span (level over time at one frequency)
+- [x] Keyboard shortcuts
+- [x] Zero-span (level over time at one frequency)
 
 **Tier 3 — differentiators**
 - [ ] Band-plan labels
@@ -318,6 +318,38 @@ The **Markers** strip under the toolbar handles up to four markers, **M1–M4**
   skipped.
 - **↔ Centre** re-centres the view on the active marker (at full band span it
   zooms 4× onto it instead). **Clear** removes all markers.
+
+## Zero-span and keyboard shortcuts
+
+**Zero-span** (Markers strip, or key **Z**) adds a strip chart under the trace
+showing the level at the **active marker's frequency over time**, with now /
+min / max, the noise floor and any limit line. It auto-scales to what it shows.
+Use it to see a transmitter key on and off, its duty cycle, or fading. It's
+built from the row history, so it resolves at the row rate (~16 per second
+on the real-time engine). For sample-rate detail take a raw IQ capture into
+the Signal Analyzer.
+
+**Keyboard shortcuts** act on the panel your mouse was last over (**?** or
+the ⌨ Keys button shows them). They're ignored while you're typing in a box:
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| Space | Pause / resume | P | Peak search |
+| [ / ] | Next peak left / right | M | Add a marker |
+| C | Marker → centre | X | Clear markers |
+| Z | Zero-span | + / − | Zoom in / out around the marker |
+| ← / → | Pan | 0 | Full band |
+| L | Back to live (history) | 3 | 2D / 3D |
+| A | Fit display range | F | Full screen |
+| S | Settings | ? / Esc | Help / close |
+
+**Measurement accuracy.** A click measures bandwidth and 99% occupied
+bandwidth on the smoothed *Avg* trace; the level comes from the live row. A
+"−20 dB bandwidth" only exists when a signal is more than 20 dB over the
+noise. Weaker signals are measured at the deepest drop their SNR allows, and
+the readout says which (e.g. `BW−5 4 kHz`). The width also stops at the valley
+to a neighbouring signal. Previously a 4 kHz 433 MHz remote could read as
+"BW−20 254 kHz → wideband chirp / LoRa" on a cluttered band.
 
 ## Zoom and pan
 
