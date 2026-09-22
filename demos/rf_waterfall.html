@@ -1799,7 +1799,7 @@
   Scope.prototype.startLive=function(){
     var self=this;
     if(this._surveyOn||this._followOnly){ this.seq=0; this._liveQ.length=0; this._rangeKnown=false;   // follow whatever owns the dongle
-      if(this._poll) clearInterval(this._poll); this._poll=setInterval(function(){ self.livePoll(); },120); return; } this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
+      if(this._poll) clearInterval(this._poll); this._poll=setInterval(function(){ self.livePoll(); },120); return; } this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0; this._liveStartT=Date.now(); this._lastFrameT=0;
     this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};
     if(!this.cfg.tuner){ body.lna=this.hw.lna; body.vga=this.hw.vga; body.amp=this.hw.amp?1:0; body.antenna=this.hw.antenna?1:0; if(this.hw.bin_hz) body.bin_hz=this.hw.bin_hz; }
@@ -1813,6 +1813,7 @@
       }).catch(function(){ self.liveErr='Failed to start '+self.cfg.short; self.showVeil('Could not start '+self.cfg.short,self.liveErr); });
   };
   Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} this._liveQ.length=0; this._acc=0; this._tsWin=[]; this._nom=0; if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
+  Scope.prototype.STALL_MS=15000;   // silence this long = a real wedge, not a restart gap
   Scope.prototype.livePoll=function(){
     if(!running || this.mode!=='live' || this.decoding || this.replaying) return;
     var self=this;
@@ -1828,7 +1829,7 @@
       if(d.engine && self.devEl){ self.devEl.textContent = (d.engine==='iq')
         ? 'RTL-SDR · IQ FFT · real-time' : 'RTL-SDR · rtl_power sweep'; }
       if(frames.length){
-        self._stall=0;
+        self._stall=0; self._lastFrameT=Date.now();
         if(!self._rangeKnown){ self._rangeKnown=true; self.floor=floor; }
         self.rbw=(typeof d.rbw_hz==='number')?d.rbw_hz:null;
         if(d.detector) self.det=d.detector;
@@ -1847,10 +1848,13 @@
         if(self._liveQ.length>600) self._liveQ.splice(0,self._liveQ.length-600);
       } else if(self.liveErr){ self.showVeil('⚠ '+self.cfg.short,self.liveErr); }
       else if(d.running && self.cfg.tuner){
-        // The capture says it is running but no rows are arriving. That is the
-        // wedged-dongle signature, and it used to mean a walk to the box.
-        self._stall=(self._stall||0)+1;
-        if(self._stall===12) self.showVeilReset();
+        // Running but no rows. A genuine wedge stays silent indefinitely; a
+        // legitimate restart (band/zoom change, an AGC gain step, startup) goes
+        // quiet only for a few seconds. So judge it in wall-clock seconds, well
+        // clear of any restart gap, not in poll ticks — at 120 ms/poll a count
+        // of 12 was 1.4 s and false-tripped on every restart and slow sweep.
+        var since=Date.now()-(self._lastFrameT||self._liveStartT||Date.now());
+        if(since>self.STALL_MS) self.showVeilReset();
       }
       else if(!self._rangeKnown){ self.showVeil('Starting '+self.cfg.short+' sweep…','Waiting for the first frame.'); }
     }).catch(function(){});
