@@ -125,6 +125,12 @@
   .ruler .tick{position:absolute;top:0;bottom:0;width:1px;background:var(--line)}
   .ruler .tlab{position:absolute;top:7px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap}
   .ruler .ism{position:absolute;top:0;bottom:0;background:rgba(56,189,201,.09);border-left:1px solid rgba(56,189,201,.35);border-right:1px solid rgba(56,189,201,.35)}
+  .bplan{position:relative;height:17px;background:var(--panel-2);border-top:1px solid var(--line-soft);overflow:hidden;font-family:var(--mono)}
+  .bplan[hidden]{display:none}
+  .bplan .bp{position:absolute;height:13px;border-radius:3px;border:1px solid rgba(56,189,201,.28);background:rgba(56,189,201,.07);overflow:hidden;white-space:nowrap}
+  .bplan .bp span{position:absolute;left:4px;top:1px;font-size:9.5px;letter-spacing:.04em;color:var(--ink-dim)}
+  .bplan .bp.ham{border-color:rgba(245,185,66,.35);background:rgba(245,185,66,.08)} .bplan .bp.bc{border-color:rgba(129,140,248,.35);background:rgba(129,140,248,.08)}
+  .bplan .bp.ism{border-color:rgba(63,181,107,.35);background:rgba(63,181,107,.08)} .bplan .bp.cell{border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
   .ruler .ism .il{position:absolute;bottom:3px;left:50%;transform:translateX(-50%);font-size:9px;letter-spacing:.1em;color:var(--cyan);text-transform:uppercase;white-space:nowrap}
   /* toolbar + log */
   .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:9px 14px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
@@ -148,6 +154,7 @@
   .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
   .dnote b{color:var(--ink-dim);font-weight:500}
   canvas.zspan{display:block;width:100%;height:78px;background:var(--panel-2);border-top:1px solid var(--line-soft)}
+  canvas.zspan[hidden]{display:none}
   .kbhelp{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,8,13,.72);padding:16px}
   .kbhelp[hidden]{display:none}
   .kbbox{max-width:620px;width:100%;max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
@@ -487,7 +494,7 @@
           +'<div class="marker"><span class="ml"></span></div>'
           +'<div class="veil"><div class="vt"></div><div class="vs"></div></div>'
         +'</div>'
-        +'<div class="ruler"></div>'
+        +'<div class="ruler"></div><div class="bplan" title="Band plan"></div>'
         +'<canvas class="trace"></canvas><canvas class="zspan" hidden></canvas>'
         +'<div class="toolbar">'
           +'<span class="marktxt">Click a signal to measure it (freq · level · SNR · bandwidth).</span>'
@@ -534,6 +541,8 @@
             +'<div class="drow"><label>Ref level</label><input type="range" class="dref" min="-160" max="40" step="1"><input type="number" class="drefn" step="1"><span>dB</span></div>'
             +'<div class="drow"><label>Range</label><input type="range" class="drng" min="10" max="150" step="1"><input type="number" class="drngn" step="1"><span>dB</span></div>'
             +'<div class="dnote">Top of the colour scale = <b>Ref level</b>, bottom = Ref − <b>Range</b>. Narrow the range to dig weak signals out; the whole waterfall recolours at once.</div>'
+            +'<div class="drow"><label>Band plan</label><button class="mini bpon" aria-pressed="true" title="Show frequency allocations under the ruler">On</button>'
+              +'<select class="bpreg" title="Allocations differ slightly by ITU region"><option value="1">Region 1 (Europe / Africa)</option><option value="2">Region 2 (Americas)</option><option value="3">Region 3 (Asia-Pacific)</option></select></div>'
           +'</fieldset>'
           +'<fieldset class="dsec dres"><legend>Resolution</legend></fieldset>'
           +'<fieldset class="dsec dcal"><legend>Level calibration</legend>'
@@ -569,7 +578,13 @@
     this.markEl=el.querySelector('.marker'); this.markLbl=el.querySelector('.marker .ml');
     this.markEls=[this.markEl];
     for(var _mi=1;_mi<4;_mi++){ var _me=this.markEl.cloneNode(true); _me.classList.add('m'+(_mi+1)); this.markEl.parentNode.appendChild(_me); this.markEls.push(_me); }
-    this.mTab=el.querySelector('.mtab tbody');
+    this.mTab=el.querySelector('.mtab tbody'); this.bplan=el.querySelector('.bplan');
+    var bpb=el.querySelector('.bpon'), bps=el.querySelector('.bpreg');
+    bps.value=String(bpRegion); bpb.setAttribute('aria-pressed',bpShow?'true':'false'); bpb.textContent=bpShow?'On':'Off';
+    bpb.addEventListener('click',function(){ bpShow=!bpShow; try{ localStorage.setItem('rfwf.bpshow',bpShow?'1':'0'); }catch(e){}
+      scopes.forEach(function(s){ var b=s.el.querySelector('.bpon'); b.setAttribute('aria-pressed',bpShow?'true':'false'); b.textContent=bpShow?'On':'Off'; s.drawBandPlan(); }); });
+    bps.addEventListener('change',function(){ bpRegion=+bps.value; try{ localStorage.setItem('rfwf.bpreg',String(bpRegion)); }catch(e){}
+      scopes.forEach(function(s){ s.el.querySelector('.bpreg').value=String(bpRegion); s.drawBandPlan(); }); });
     this.zs=el.querySelector('.zspan'); this.zsOn=false;
     el.querySelector('.mzs').addEventListener('click',function(){ self.toggleZeroSpan(); });
     el.querySelector('.kbq').addEventListener('click',function(){ showKeys(true); });
@@ -1182,6 +1197,7 @@
         +this.unit()+' · SNR <b>'+Math.round(meas.snr)+' dB</b> · BW−'+meas.bwDrop+' <b>'+fb(meas.bw20)+'</b> · 99% '+fb(meas.obw99)
         +' · ChPwr '+Math.round(meas.chPwr)+this.unit()+' · <span class="zi">'+esc(cls.label)+'</span></span>';
       this._markDecode(cls, f);   // offer a jump to the matching decoder
+      this._markWiki(f);
     } else {
       this.markTxt.innerHTML='Marked <span class="mk">'+fmtMHz(f)+'</span>';
     }
@@ -1203,14 +1219,20 @@
     if(fMHz>=88&&fMHz<=108) return {label:'FM broadcast', act:{radio:'wfm'}};
     if(fMHz>=108&&fMHz<=118) return {label:'VHF airband / VOR', act:{page:'/vor-radial',name:'VOR Radial'}};
     if(near(131.55,1.6)||near(136.9,1.6)) return {label:'likely ACARS (aircraft datalink)', act:{page:'/adsb-radar',name:'ADS-B / ACARS'}};
-    if(bw20Khz<40 && (near(929,15)||near(931,15)||near(148,12)||near(153,12)))
+    // POCSAG / FLEX paging allocations (was a blanket 136-165 MHz match that
+    // called marine ch 16, AIS, APRS and 2 m ham voice "pager").
+    var pag=(bpRegion===2)?[[152.0,152.9],[157.7,158.7],[929.0,932.0]]:[[169.4,169.825],[465.9,466.3],[147.5,147.9]];
+    if(bw20Khz<40 && pag.some(function(r){ return fMHz>=r[0]&&fMHz<=r[1]; }))
       return {label:'likely POCSAG/FLEX pager', act:{page:'/pager-decode',name:'Pager Decode'}};
     if(bw20Khz>=90 && (near(869.5,0.7)||(fMHz>=902&&fMHz<=928)||near(433.2,0.4)))
       return {label:'wideband chirp — likely LoRa/mesh (energy only)', act:null};
     if(bw20Khz<45 && (near(433.92,1.0)||near(315,2)||near(345,6)||near(390,6)||near(868.3,1.2)||(fMHz>=902&&fMHz<=928)))
       return {label:'narrowband OOK/FSK ISM — remote / TPMS / sensor', act:{ism:true}};
-    if(bw20Khz<25) return {label:'narrowband carrier', act:null};
-    return {label:'wideband signal', act:null};
+    for(var si=0;si<SIGNATURES.length;si++){ var sg=SIGNATURES[si];
+      if(fMHz>=sg[0]&&fMHz<=sg[1]&&bw20Khz>=sg[2]&&bw20Khz<=sg[3]) return {label:sg[4], act:sg[5]}; }
+    var bands=bandsAt(fMHz), where=bands.length?' — in '+bands[0][2]+' ('+bands[0][3]+')':'';
+    if(bw20Khz<25) return {label:'narrowband carrier'+where, act:null};
+    return {label:'wideband signal'+where, act:null};
   };
   // Render a decoder hand-off next to the marker measurement, per classification.
   Scope.prototype._markDecode=function(cls, fMHz){
@@ -1230,6 +1252,11 @@
     }
     // a.radio is already wired by the Local Radio hand-off below the measurement.
   };
+  Scope.prototype._markWiki=function(fMHz){
+    var w=document.createElement('a'); w.className='zi'; w.style.marginLeft='8px'; w.target='_blank'; w.rel='noopener';
+    w.href='https://www.sigidwiki.com/index.php?search='+encodeURIComponent(fMHz.toFixed(3)+' MHz');
+    w.textContent='🔎 Signal ID wiki'; w.title='Look this frequency up on the Signal Identification Wiki (needs internet)';
+    this.markTxt.appendChild(w); };
   Scope.prototype.placeMarker=function(){
     var self=this;
     (this.markEls||[this.markEl]).forEach(function(el,i){
@@ -1907,7 +1934,8 @@
   Scope.prototype.onHover=function(e,which){
     var cv=(which==='trace')?this.trace:this.fall, r=cv.getBoundingClientRect();
     var fx=(e.clientX-r.left)/r.width; if(fx<0||fx>1||!(this.hi>this.lo)){ this.hideHover(); return; }
-    var f=this.lo+fx*(this.hi-this.lo), lines=['<b>'+fmtMHz(f)+'</b>'];
+    var f=this.lo+fx*(this.hi-this.lo), lines=['<b>'+fmtMHz(f)+'</b>'], _bh=bandsAt(f);
+    if(_bh.length) lines.push('<span class="hk">'+esc(_bh[0][2]+' · '+_bh[0][3])+'</span>');
     var lvl=function(p,lo,hi){ if(!p||!p.length) return null; var i=Math.floor((f-lo)/((hi-lo)/p.length)); return (i>=0&&i<p.length)?p[i]:null; };
     var _u=this.unit(), dbs=function(v){ return (v==null)?'—':(Math.round(v*10)/10)+_u; };
     if(which==='fall' && !this.threeD){
@@ -2259,7 +2287,23 @@
     this.rateEl.textContent=hz.toFixed(0);
   };
 
+  Scope.prototype.drawBandPlan=function(){
+    var g=this.bplan; if(!g) return; g.hidden=!bpShow; if(!bpShow) return;
+    var lo=this.lo, hi=this.hi, span=hi-lo; if(!(span>0)){ g.innerHTML=''; return; }
+    var inView=BANDPLAN.filter(function(b){ return b[1]>lo&&b[0]<hi&&(!b[5]||b[5]===bpRegion); });
+    inView.sort(function(a,b){ return (b[1]-b[0])-(a[1]-a[0]); });            // big first
+    // overlapping allocations (e.g. 433 ISM inside 70 cm) go to separate lanes
+    var lanes=[], html=[];
+    inView.forEach(function(b){ var x0=Math.max(0,(b[0]-lo)/span*100), x1=Math.min(100,(b[1]-lo)/span*100), L=0;
+      while(L<3 && (lanes[L]||[]).some(function(r){ return x0<r[1]-0.01 && x1>r[0]+0.01; })) L++;
+      if(L>=3) return; (lanes[L]=lanes[L]||[]).push([x0,x1]);
+      html.push('<div class="bp '+b[4]+'" style="left:'+x0+'%;width:'+Math.max(0.3,x1-x0)+'%;top:'+(2+L*15)+'px" title="'+esc(b[2]+' '+b[0]+'–'+b[1]+' MHz: '+b[3])+'">'
+        +((x1-x0)>5?'<span>'+esc(b[2])+(x1-x0>22?' · '+esc(b[3]):'')+'</span>':'')+'</div>'); });
+    g.style.height=(4+Math.max(1,lanes.length)*15)+'px';
+    g.innerHTML=html.join('');
+  };
   Scope.prototype.drawRuler=function(){
+    this.drawBandPlan();
     var lo=this.lo,hi=this.hi,span=hi-lo,r=this.ruler; r.innerHTML=""; if(!(span>0))return;
     // Z-Wave channel overlay: exact channel centres for the selected region,
     // drawn as cyan bands so you can see which channel each burst lands on.
@@ -2294,6 +2338,60 @@
   // HF voice is single sideband — LSB below 10 MHz, USB above (the ham convention).
   var SW_BCAST=[[0.53,1.71],[2.3,2.495],[3.2,3.4],[3.9,4.0],[4.75,5.06],[5.9,6.2],[7.2,7.45],[9.4,9.9],[11.6,12.1],[13.57,13.87],[15.1,15.8],[17.48,17.9],[18.9,19.02],[21.45,21.85],[25.67,26.1]];
   function hfMode(f){ for(var i=0;i<SW_BCAST.length;i++) if(f>=SW_BCAST[i][0]&&f<=SW_BCAST[i][1]) return 'am'; return f<10?'lsb':'usb'; }
+  // ---- band plan (ITU allocations + common use) ----------------------------
+  // [lo, hi, name, use, class, region(0 = all, else 1/2/3)]
+  var BANDPLAN=[
+    [0.1485,0.2835,'LW','long-wave broadcast (AM)','bc',1],[0.5265,1.6065,'MW','medium-wave broadcast (AM)','bc',1],[0.53,1.70,'AM','AM broadcast','bc',2],[0.5265,1.6065,'MW','medium-wave broadcast (AM)','bc',3],
+    [1.81,2.0,'160 m','amateur (CW / SSB)','ham',1],[1.8,2.0,'160 m','amateur (CW / SSB)','ham',2],[1.8,2.0,'160 m','amateur','ham',3],
+    [2.3,2.495,'120 m','shortwave broadcast (AM)','bc',0],[3.2,3.4,'90 m','shortwave broadcast (AM)','bc',0],
+    [3.5,3.8,'80 m','amateur (LSB / CW)','ham',1],[3.5,4.0,'80 m','amateur (LSB / CW)','ham',2],[3.5,3.9,'80 m','amateur','ham',3],
+    [3.9,4.0,'75 m','shortwave broadcast','bc',1],[4.75,5.06,'60 m bc','shortwave broadcast','bc',0],[5.3515,5.3665,'60 m','amateur','ham',0],
+    [5.9,6.2,'49 m','shortwave broadcast (AM)','bc',0],[7.0,7.2,'40 m','amateur (LSB / CW)','ham',1],[7.0,7.3,'40 m','amateur (LSB / CW)','ham',2],[7.0,7.3,'40 m','amateur','ham',3],
+    [7.2,7.45,'41 m','shortwave broadcast (AM)','bc',1],[9.4,9.9,'31 m','shortwave broadcast (AM)','bc',0],[10.1,10.15,'30 m','amateur (CW / data)','ham',0],
+    [11.6,12.1,'25 m','shortwave broadcast (AM)','bc',0],[13.57,13.87,'22 m','shortwave broadcast (AM)','bc',0],[13.553,13.567,'13.56 ISM','RFID / NFC','ism',0],
+    [14.0,14.35,'20 m','amateur (USB / CW / FT8)','ham',0],[15.1,15.8,'19 m','shortwave broadcast (AM)','bc',0],[17.48,17.9,'16 m','shortwave broadcast (AM)','bc',0],
+    [18.068,18.168,'17 m','amateur','ham',0],[18.9,19.02,'15 m bc','shortwave broadcast','bc',0],[21.0,21.45,'15 m','amateur (USB / CW)','ham',0],[21.45,21.85,'13 m','shortwave broadcast','bc',0],
+    [24.89,24.99,'12 m','amateur','ham',0],[25.67,26.1,'11 m bc','shortwave broadcast','bc',0],[26.957,27.283,'27 ISM','ISM / RC models','ism',0],[26.965,27.405,'CB','citizens band (AM / FM / SSB)','',0],
+    [28.0,29.7,'10 m','amateur','ham',0],[50.0,52.0,'6 m','amateur','ham',1],[50.0,54.0,'6 m','amateur','ham',2],[50.0,54.0,'6 m','amateur','ham',3],[70.0,70.5,'4 m','amateur','ham',1],
+    [87.5,108.0,'FM','FM broadcast','bc',0],[108.0,117.975,'Air nav','VOR / ILS navigation','',0],[118.0,137.0,'Airband','aviation voice (AM)','',0],
+    [137.0,138.0,'Wx sat','NOAA / Meteor weather satellites','',0],[144.0,146.0,'2 m','amateur (FM / SSB / APRS 144.800)','ham',1],[144.0,148.0,'2 m','amateur (FM / SSB / APRS 144.390)','ham',2],[144.0,148.0,'2 m','amateur','ham',3],
+    [148.0,174.0,'VHF-hi','land mobile / pagers / public safety','',2],[156.0,162.025,'Marine','marine VHF (FM voice, DSC, AIS)','',0],
+    [174.0,240.0,'DAB','DAB digital radio (Band III)','bc',1],[174.0,216.0,'TV-VHF','VHF television','bc',2],
+    [380.0,400.0,'TETRA','emergency services (TETRA, encrypted)','',1],[420.0,450.0,'70 cm','amateur','ham',2],[430.0,440.0,'70 cm','amateur (FM / DMR / repeaters)','ham',1],[430.0,440.0,'70 cm','amateur','ham',3],
+    [433.05,434.79,'433 ISM','ISM / LPD433: remotes, sensors, TPMS','ism',1],[446.0,446.2,'PMR446','licence-free walkie-talkies (NFM / DMR)','',1],
+    [462.5625,467.7125,'FRS/GMRS','family radios (NFM)','',2],[470.0,694.0,'UHF TV','DVB-T television','bc',1],[470.0,608.0,'UHF TV','ATSC television','bc',2],
+    [791.0,821.0,'LTE 800 ↓','LTE band 20 downlink','cell',1],[832.0,862.0,'LTE 800 ↑','LTE band 20 uplink','cell',1],[824.0,849.0,'Cell 850 ↑','cellular uplink','cell',2],[869.0,894.0,'Cell 850 ↓','cellular downlink','cell',2],
+    [863.0,870.0,'868 SRD','short-range devices: LoRa, sensors, alarms','ism',1],[880.0,915.0,'GSM 900 ↑','GSM / LTE band 8 uplink','cell',1],[902.0,928.0,'915 ISM','ISM: LoRa, meters, Z-Wave','ism',2],
+    [925.0,960.0,'GSM 900 ↓','GSM / LTE band 8 downlink','cell',1],[1029.0,1031.0,'1030','SSR interrogation (radar → aircraft)','',0],[1089.0,1091.0,'1090','ADS-B / Mode S (aircraft)','',0],
+    [1240.0,1300.0,'23 cm','amateur','ham',0],[1525.0,1559.0,'L-band ↓','Inmarsat / satcom downlink','',0],[1559.0,1610.0,'GNSS','GPS L1 / Galileo E1 / GLONASS / BeiDou','',0],
+    [1616.0,1626.5,'Iridium','Iridium satellite phones','',0],[1710.0,1785.0,'1800 ↑','GSM / LTE band 3 uplink','cell',1],[1805.0,1880.0,'1800 ↓','GSM / LTE band 3 downlink','cell',1],
+    [1880.0,1900.0,'DECT','DECT cordless phones','',1],[1850.0,1990.0,'PCS','cellular PCS','cell',2],[1920.0,1980.0,'2100 ↑','UMTS / LTE band 1 uplink','cell',1],[2110.0,2170.0,'2100 ↓','UMTS / LTE band 1 downlink','cell',1],
+    [2400.0,2483.5,'2.4 GHz','ISM: Wi-Fi, Bluetooth, Zigbee, drones','ism',0],[2500.0,2690.0,'2600','LTE band 7 / 41','cell',0],[3400.0,3800.0,'3.5 GHz','5G NR n78','cell',1],
+    [5150.0,5850.0,'5 GHz','Wi-Fi 5 GHz (UNII)','ism',0],[5725.0,5875.0,'5.8 ISM','ISM: FPV video, Wi-Fi','ism',0],[5925.0,7125.0,'6 GHz','Wi-Fi 6E','ism',0]];
+  var bpRegion=1, bpShow=true;
+  try{ var _r=+localStorage.getItem('rfwf.bpreg'); if(_r>=1&&_r<=3) bpRegion=_r; if(localStorage.getItem('rfwf.bpshow')==='0') bpShow=false; }catch(e){}
+  function bandsAt(f){ return BANDPLAN.filter(function(b){ return f>=b[0]&&f<=b[1]&&(!b[5]||b[5]===bpRegion); })
+    .sort(function(a,b){ return (a[1]-a[0])-(b[1]-b[0]); }); }                 // most specific first
+  // Signature hints: [lo, hi, bwMinKhz, bwMaxKhz, label, action]
+  var SIGNATURES=[
+    [1089,1091,0,1e9,'ADS-B / Mode S — aircraft transponders',{page:'/adsb-radar',name:'ADS-B Radar'}],
+    [1029,1031,0,1e9,'SSR interrogation — radar asking aircraft to reply',null],
+    [118,137,2,25,'AM voice — air traffic control / pilots',{radio:'am'}],
+    [161.95,162.05,5,40,'AIS — ship position reports',null],
+    [156,162.05,5,30,'marine VHF FM voice (ch 16 = 156.800 distress)',{radio:'nfm'}],
+    [144.78,144.82,5,25,'APRS packet (EU 144.800)',{page:'/aprs',name:'APRS'}],[144.37,144.41,5,25,'APRS packet (US 144.390)',{page:'/aprs',name:'APRS'}],
+    [144,148,5,20,'2 m amateur NFM voice / repeater',{radio:'nfm'}],[430,440,5,20,'70 cm amateur NFM voice / repeater (DMR if ~9 kHz steady)',{radio:'nfm'}],
+    [446,446.2,5,15,'PMR446 walkie-talkie (NFM; DMR/dPMR if steady & ~6-9 kHz)',{radio:'nfm'}],[462.5,467.8,5,25,'FRS / GMRS family radio',{radio:'nfm'}],
+    [380,400,18,32,'TETRA — emergency services (encrypted, digital)',null],
+    [137,138,25,60,'NOAA APT weather satellite pass',null],[137,138,100,220,'Meteor-M LRPT weather satellite',null],
+    [174,240,1200,1800,'DAB digital radio multiplex (1.536 MHz block)',null],[470,694,5500,8500,'DVB-T television multiplex',null],
+    [925,960,120,280,'GSM downlink carrier (200 kHz)',null],[880,915,120,280,'GSM uplink — a phone transmitting',null],[1805,1880,120,280,'GSM-1800 downlink carrier',null],
+    [791,821,1100,21000,'LTE-800 downlink',null],[925,960,1100,21000,'LTE downlink (band 8)',null],[1805,1880,1100,21000,'LTE downlink (band 3)',null],[2110,2170,1100,21000,'UMTS / LTE downlink (band 1)',null],[2620,2690,1100,21000,'LTE downlink (band 7)',null],
+    [1880,1900,1200,2000,'DECT cordless phone channel',null],
+    [2400,2483.5,15000,90000,'Wi-Fi channel (20 / 40 / 80 MHz)',null],[2400,2483.5,300,2500,'Bluetooth / BLE / Zigbee burst',null],
+    [5150,5895,15000,170000,'Wi-Fi 5 GHz channel',null],[5725,5875,5000,30000,'analogue FPV video / ISM',null],
+    [26.96,27.41,2,12,'CB radio (AM / FM; SSB on the upper channels)',{radio:'am'}],
+    [1.8,30,1.5,4,'HF SSB voice (ham / utility)',null],[1.8,30,0.05,0.6,'HF CW (Morse) / narrow data',{radio:'cw'}]];
   function fmtMHz(mhz){return (mhz>=1000)?(mhz/1000).toFixed(4)+" GHz":mhz.toFixed(2)+" MHz";}
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 

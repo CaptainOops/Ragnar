@@ -181,8 +181,8 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [x] Zero-span (level over time at one frequency)
 
 **Tier 3 — differentiators**
-- [ ] Band-plan labels
-- [ ] Signal-ID hints
+- [x] Band-plan labels
+- [x] Signal-ID hints
 - [ ] Unattended survey with a log and a report
 - [ ] Mesh-wide direction finding (RSSI across Ragnar units)
 
@@ -318,6 +318,33 @@ The **Markers** strip under the toolbar handles up to four markers, **M1–M4**
   skipped.
 - **↔ Centre** re-centres the view on the active marker (at full band span it
   zooms 4× onto it instead). **Clear** removes all markers.
+
+## Band plan and signal identification
+
+**Band plan.** A strip under the frequency ruler shows the allocations in view
+(broadcast, amateur, ISM/SRD, cellular, aviation, marine, satellite, …).
+Overlapping allocations get separate lanes, and hovering one shows its full
+range and use. The hover readout also names the most specific allocation
+under the cursor. **⚙ Settings → Display range → Band plan** turns the strip
+on or off and picks the **ITU region** (1 Europe/Africa, 2 Americas,
+3 Asia-Pacific), since some bands differ (80/40/2 m, MW, 915 ISM, TV,
+paging). The table covers ~0.15 MHz to 7 GHz. It shows common use, not a
+legal reference.
+
+**Signal-ID hints.** A click-measurement names the likely emitter from its
+frequency and measured bandwidth: e.g. ADS-B 1090, ATC AM voice, marine VHF
+/ channel 16, AIS, APRS (144.800 EU / 144.390 US), 2 m / 70 cm FM, PMR446,
+FRS/GMRS, TETRA, NOAA / Meteor satellites, DAB multiplex, DVB-T, GSM / LTE
+carriers, DECT, Wi-Fi vs. Bluetooth, analogue FPV, CB, HF SSB and CW, ISM
+remotes / sensors and LoRa. Hints with a decoder or radio link offer it.
+Anything else falls back to "narrowband / wideband signal — in *allocation*".
+Every measurement also links to the **🔎 Signal ID wiki** (sigidwiki.com)
+for that frequency (needs internet).
+
+*Fixed:* the pager hint matched **anything** narrowband from 136–165 MHz, so
+marine channel 16, AIS, APRS and 2 m voice were all labelled "POCSAG/FLEX
+pager". It now only matches the real paging allocations for the selected
+region.
 
 ## Zero-span and keyboard shortcuts
 
