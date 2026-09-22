@@ -1,180 +1,245 @@
-# RF Waterfall — capability guide
+# RF Waterfall — operator's guide
 
-A plain-English tour of what the RF Waterfall's sub-GHz (RTL-SDR) panel can do
-and how to use it. For the implementation reference — routes, backends, exact
-constants — see [rf-waterfall.md](rf-waterfall.md) and
-[sdr-subghz.md](sdr-subghz.md).
+How to use the RF Waterfall as a spectrum instrument: what each control does,
+how to measure something properly, and how to trust the numbers you read off it.
+For routes, backends and exact constants see [rf-waterfall.md](rf-waterfall.md)
+and [sdr-subghz.md](sdr-subghz.md).
 
-It started as a scrolling picture of radio energy. It is now a working sub-GHz
-**spectrum instrument** — the kind of thing you'd otherwise open SDR++ or a bench
-analyzer for. Everything here runs off a single RTL-SDR (~24 MHz–1.7 GHz) and is
-**receive-only**.
+The page stacks two panels. The **sub-GHz panel** runs an RTL-SDR
+(~24 MHz–1.7 GHz); the **RF Bands panel** runs a HackRF (1 MHz–6 GHz). Both are
+**receive-only**. A panel with no radio attached shows a synthetic demo feed so
+the layout still makes sense.
 
 ---
 
-## 1. It's fast now
+## Start here
 
-The RTL waterfall used to crawl (~1 row/s) because `rtl_power` sweeps the band
-and dwells on each step. For any span that fits a single tune (≈ ≤ 2.8 MHz — a
-zoom, a band like 433, most mesh overlays) it now **streams raw IQ and does live
-FFTs the way SDR++/GQRX do** → a smooth ~16 rows/s. Wide scans (full 868 / 915 /
-sub-GHz) fall back to `rtl_power` automatically. The panel names the active
-engine (`IQ FFT · real-time` vs `rtl_power sweep`), and **Rows/s** shows the
-*measured* rate.
+1. Pick a **band** (e.g. `433`) or type a centre frequency into **Tune**.
+2. Let it run a few seconds so **Max-hold** and the **Signals** list fill in.
+3. **Click a signal.** The marker snaps to its peak and prints frequency, level,
+   SNR, bandwidth and channel power.
+4. **Scroll-wheel** over the waterfall to zoom into it; **drag** to pan;
+   **double-click** to return to the whole band.
+5. Press **?** for the keyboard shortcuts.
 
-Rows are released at **one steady rate** (~0.8 s behind live) so a network or
-backend hiccup can't make the fall stall and then race to catch up. Zooming in
-also **sharpens** the resolution: the FFT size follows the span, so a 250 kHz
-zoom resolves ~244 Hz instead of ~977 Hz — and no longer leaves the black
-striping it used to (roughly half the columns were empty below ~1 MHz).
+---
 
-## 2. Measure, don't eyeball
+## 1. The picture
 
-Experts read numbers off a signal; they never guess from colour.
+**Capture engine.** Any span that fits a single tune (≲2.8 MHz — a zoom, a band
+like 433, most mesh overlays) streams raw IQ and FFTs it continuously, giving a
+smooth ~16 rows/s. Wider spans (a full 868 / 915 / sub-GHz scan) are swept with
+`rtl_power` at roughly 1 row/s. The panel names the engine it is using
+(`IQ FFT · real-time` or `rtl_power sweep`) and **Rows/s** shows the measured
+rate. Rows are released at a steady pace about 0.8 s behind live, so the scroll
+stays even when the network or the backend hiccups.
 
-- **Click any signal** — the marker snaps to the peak and reports exact
-  **frequency, level, SNR, bandwidth, 99% occupied bandwidth** and **channel
-  power**. Bandwidth is measured at the deepest drop the signal's SNR actually
-  supports and says which it used (`BW−20`, or `BW−5` for a weak one), instead
-  of quietly measuring the width of the noise floor.
-- **Hover** anywhere for frequency, level and *when* that row was received; the
-  band-plan strip and hover line name the allocation (433 ISM, marine, GSM…).
-- **Markers M1–M4** — Δ frequency and Δ level against M1, peak search and
-  next-peak stepping, marker → centre.
-- **Zero-span** — level at one frequency over time: keying, duty cycle, fading.
-- **dBm** — calibrate against a signal of known strength and every level on the
-  page reads absolute dBm instead of relative dB.
-- **Readout tiles** — peak freq / peak level, live **SNR**, measured **noise
-  floor**, band **busy %**, and span.
-- **Trace math (Hold)** — **Avg** (digs weak carriers out of the noise),
-  **Max-hold** (catches intermittent bursts), **Min-hold** (reveals the true
-  noise floor). A dashed line marks the measured floor.
-- **Signal list (CFAR)** — an automatic table of every emitter above the noise
-  floor with frequency, bandwidth, SNR and a **duty-cycle** estimate (≈5% = a
-  bursty remote, ≈100% = a continuous carrier). This is the "what's actually
-  transmitting here" answer.
+**Resolution.** The **RBW** tile shows the width of one FFT bin. On the RTL
+panel the FFT size follows the zoom automatically, so a narrow span resolves
+finer (1 MHz ≈ 560 Hz, 250 kHz ≈ 244 Hz, 120 kHz ≈ 122 Hz). Override it, along
+with averaging, the FFT window and the number of display columns, in
+**⚙ Settings → Resolution**:
 
-## 3. Persistence display (the RTSA view)
+- **Averaging** — more averaging is smoother and steadier, less averaging reacts
+  faster to bursts.
+- **Window** — *Hann* for general use, *Blackman-Harris* to separate a weak
+  signal sitting next to a strong one, *Flat-top* when the level reading matters
+  most, *Rectangular* for the sharpest possible peaks (and the worst leakage).
 
-Toggle **Persist** and the spectrum trace becomes a fading density cloud instead
-of a single line: constantly-occupied frequencies glow bright, rare bursts leave
-a decaying trail. It surfaces intermittent signals and modulation shape a plain
-scrolling waterfall hides — the signature feature of expensive real-time
-spectrum analyzers.
+**Display range** decides how the colours map to dB (**⚙ Settings → Display
+range**). *Auto* tracks the measured noise floor. To dig out something weak, set
+**Ref level** (the top of the scale) and a narrower **Range**, or press **Fit to
+signal**. The colour bar on the right edge of each waterfall always shows the
+range in use, and the whole waterfall — including rows already on screen —
+recolours as you change it. Five palettes are available in the top bar.
 
-## 4. Click-to-decode
+---
 
-Clicking a signal also **classifies** it from its measured bandwidth and
-frequency — ISM remotes/TPMS/sensors, LoRa/mesh chirp, POCSAG/FLEX pagers,
-ADS-B, ACARS, airband/VOR, marine VHF and AIS, APRS, ham FM, PMR446, TETRA,
-weather satellites, DAB, DVB-T, GSM/LTE carriers, DECT, Wi-Fi vs Bluetooth, CB,
-HF SSB/CW — and offers a one-click hand-off to the decoder that can *name* it:
+## 2. Navigating
 
-- a **Decode** button flips the RTL panel to `rtl_433` on the nearest ISM band;
-- pager / ACARS / VOR classes link straight to their decode pages.
+- **Wheel** zooms around the pointer, **drag** pans, **double-click** resets to
+  the full band. On a phone, **pinch** to zoom and drag sideways to pan.
+- The view responds immediately and the radio retunes once you stop moving, so a
+  burst of wheel clicks is a single retune.
+- **History**: drag the History slider (or **Shift + wheel**) to scroll back
+  through the last few minutes. The view holds still while new rows keep
+  recording; **▲ Live** returns to the live edge. Clock times run down the left
+  edge of the waterfall.
+- **2D / 3D** switches between the flat waterfall and a receding 3D surface.
 
-LoRa is honestly labelled *energy-only* — chirp spread-spectrum can't be
-demodulated with `rtl_power`/`rtl_433`, and the payloads are encrypted anyway.
+---
 
-## 5. Spectrum monitoring / interference hunting → Watchtower
+## 3. Measuring
 
-Hit **Baseline**. Ragnar learns a "known-normal" spectrum (~80 frames), then
-watches for what changed and raises alerts:
+Read numbers; don't judge by colour.
 
-- **RF_NEW_EMITTER** — energy where the baseline was quiet (a new / rogue
-  transmitter);
-- **RF_CARRIER_LOST** — a baseline carrier that vanished;
-- **RF_BROADBAND_JAMMING** — a large fraction of the span rising at once.
+- **Readout tiles** — peak frequency and level, live **SNR**, measured **noise
+  floor**, **Busy %** of the span, the span itself, **Rows/s** and **RBW**.
+- **Click to measure** — the marker snaps to the nearest peak and reports centre
+  frequency, level, SNR, **bandwidth**, **99% occupied bandwidth** and **channel
+  power**. Bandwidth is measured on the smoothed *Avg* trace at the deepest drop
+  the signal's SNR supports, and the readout names it: `BW−20` for a strong
+  signal, `BW−5` for one only a few dB out of the noise. A "−20 dB bandwidth"
+  is only meaningful when the signal is more than 20 dB above the floor.
+- **Hover** anywhere for the frequency, the level of that exact cell and when it
+  was received, plus the band-plan allocation under the pointer.
+- **Markers M1–M4** — click to place the active marker, **Shift + click** or
+  **＋ Marker** to add another. The table lists each marker's frequency and
+  level, and M2–M4 also show **Δ frequency and Δ level against M1**. **Peak**
+  jumps to the strongest signal on screen; **◀ Next / Next ▶** step between
+  peaks (a peak counts when it rises 6 dB above the dip beside it, so one
+  signal's sidelobes are skipped); **↔ Centre** re-centres the view on it.
+- **Zero-span** plots the level at the active marker's frequency over time —
+  the way to see keying, duty cycle and fading. It resolves at the row rate
+  (~16 per second), not the sample rate.
+- **Trace math (Hold)** — **Avg** digs weak carriers out of the noise,
+  **Max-hold** catches intermittent bursts, **Min-hold** shows the true floor. A
+  dashed line marks the measured noise floor.
+- **Signals list** — every emitter above the floor with frequency, bandwidth,
+  SNR and a **duty-cycle** estimate. ~5% means a bursty remote; ~100% means a
+  continuous carrier.
+- **Persist** turns the trace into a fading density cloud, so frequently
+  occupied frequencies glow and rare bursts leave a trail — the real-time
+  analyser view for spotting intermittent signals and modulation shape.
 
-Alerts flow into **[Watchtower](watchtower.md)** as the *RF Spectrum Watch
-(sub-GHz)* source, so they land in the one unified alert pane and the Pushover
-path like every other watcher. This is how regulators and monitoring teams catch
-interference.
+---
 
-## 6. Real signal capture (SigMF)
+## 4. Identifying what you found
 
-**⤓ SigMF** records raw IQ plus a metadata sidecar in the open
-[SigMF](https://sigmf.org) standard (`.sigmf-data` + `.sigmf-meta`, `cu8`
-samples, tune frequency, sample rate, UTC datetime, sha512, band label). A
-capture opens directly in **GNU Radio, inspectrum or Universal Radio Hacker** —
-turning Ragnar into a real capture instrument you can hand to serious DSP tools,
-not a closed viewer. Files land under `data/iq_captures/` with download links.
+- The **band plan** strip under the ruler labels the allocations in view
+  (broadcast, amateur, ISM, cellular, aviation, marine, satellite…). Pick your
+  **ITU region** in ⚙ Settings, since allocations differ.
+- A measurement adds a **likely identity** from the frequency and measured
+  bandwidth: ISM remotes/TPMS/sensors, LoRa chirp, pagers, ADS-B, ACARS,
+  airband, marine VHF and AIS, APRS, ham FM, PMR446, TETRA, weather satellites,
+  DAB, DVB-T, GSM/LTE carriers, DECT, Wi-Fi vs Bluetooth, CB, HF SSB and CW.
+- Where a decoder exists, the measurement offers it: **Decode** switches the RTL
+  panel to `rtl_433` on the nearest ISM band; pager / ACARS / VOR / APRS
+  classes link to their pages. Every measurement also links to the **Signal ID
+  wiki** for that frequency.
+- LoRa, Z-Wave and the mesh overlays are **energy and occupancy only**. Chirp
+  spread-spectrum can't be demodulated with `rtl_power`/`rtl_433`, and the
+  payloads are encrypted regardless.
 
-**📈 Open in Analyzer** — every finished capture also gets a button to the
-on-box **Signal Analyzer** (`/rf-analyzer`): a zoomable spectrogram of the
-recording, spectrum + time-envelope panels, automatic **burst/packet detection**,
-and a **demodulator** that recovers a **bitstream** (OOK/AM or FSK/FM) with an
-estimated symbol rate. It runs entirely on the device (numpy/scipy), so you can
-analyse a capture from your phone without a desktop — then drop to GNU Radio /
-URH when you want to go deeper.
+---
 
-## 7. Trustworthy frequencies (PPM calibration)
+## 5. Cleaning up the view
 
-A cheap RTL-SDR crystal is typically tens of ppm off — tens of kHz at 900 MHz,
-enough to mis-name a narrow channel. **Calibrate**: point at a carrier whose true
-frequency you know, type it in the **Cal @ ___ MHz** box, and Ragnar measures the
-error and trims the ppm so every readout afterward is accurate. (This is the
-standard `kalibrate-rtl` reference-carrier method; a true GPS-disciplined lock
-needs a 1PPS input the RTL-SDR doesn't have, so GPS on Ragnar stays position/time
-truth.)
+Some lines never go away: birdies from the Pi, its USB bus and the dongle's own
+clock, the DC spike at the centre frequency, a neighbour's always-on carrier.
 
-## 8. Polish
+**Noise print** removes them. Choose a length (3–30 s), press **● Record** while
+the band is quiet, and the print is applied. The print is the per-frequency
+*median* of the recorded rows, so a burst during recording is not learned as
+noise, and only its excess over its own floor is subtracted: ordinary noise is
+untouched, constant lines drop to the floor, and a known line that gets louder
+still shows by how much. The **Filter** toggle and strength slider control it.
+A print belongs to the exact span it was recorded on, and is remembered per
+panel. Re-record after changing gain.
 
-- **Display range** — Auto, or set the top (Ref level) and how many dB the
-  colours span, or press *Fit to signal*. The whole waterfall recolours at once,
-  including the rows already on screen.
-- **Navigate like an analyser** — mouse-wheel zoom around the cursor, drag to
-  pan, pinch on a phone, double-click for the full band; scroll back through
-  the last few minutes with a time axis down the edge.
-- **Noise print** — record the background for a few seconds and subtract it, so
-  the permanent birdies stop hiding real bursts.
-- **Keyboard shortcuts** for everything frequent (`?` lists them).
-- **CSV export** of the spectrum, the signal list, markers or the whole
-  waterfall history, for a spreadsheet / Python / MATLAB.
-- **Five colour palettes** — Aurora (default), Inferno, Viridis, Classic, Mono —
-  remembered per browser.
-- **Phone-friendly** — controls wrap instead of clipping, bigger tap targets, a
-  taller waterfall, no horizontal scroll down to 360px; the desktop layout is
-  unchanged.
-- Everything that was already there: band presets, zoom, manual tune, mesh/LoRa
-  & Z-Wave channel overlays, session record/replay, Local Radio listen, and
-  links to ADS-B / Pager / ACARS / VOR / APRS / Mesh.
+---
+
+## 6. Calibration
+
+- **Frequency (PPM)** — click a carrier whose exact frequency you know, enter
+  that frequency and press **Calibrate**. The crystal offset is measured and
+  applied to every capture. Do this before trusting narrow-channel work.
+- **Level (dBm)** — levels are relative dB until calibrated. Put a marker on a
+  signal of known strength, enter that level under **⚙ Settings → Level
+  calibration** and press **Calibrate to marker**. Every level on the page then
+  reads dBm. It is a one-point calibration: redo it when gain or antenna
+  changes.
+
+---
+
+## 7. Monitoring unattended
+
+- **Baseline** learns the normal spectrum, then alerts on new or vanished
+  carriers and broadband jamming, into the Watchtower feed.
+- **Limit line / mask** is a pass/fail test. Set a flat **level line**, or let
+  Max-hold run over normal traffic and press **Learn from Max-hold** for a
+  **mask** with a margin. Anything above it fills red on the trace, the panel
+  shows a red **FAIL** tag and outline, and each excursion is logged — optionally
+  to Watchtower as well.
+- **Unattended survey** visits each ticked band for a dwell time, for a set
+  number of rounds or continuously, and writes a report: per band the noise
+  floor and how much of it was busy, and every emitter with frequency,
+  bandwidth, peak, **how much of the time it was on**, and first/last seen.
+  Reports are viewable in the page and downloadable as CSV. A narrow emitter on
+  ≥95% of the time is flagged as a constant carrier rather than a remote.
+
+---
+
+## 8. Locating a transmitter
+
+With several Ragnar units in the mesh, put a marker on a signal and press
+**📡 Locate (mesh)**. Every unit measures that frequency at once and reports its
+level and position; this unit fits a path-loss model and shows the estimate, an
+uncertainty circle and each unit's contribution on a scale drawing.
+
+Three or more positioned units that can hear the signal give a real fix; two
+give a rough point between them; one just says "near this unit". A unit whose
+dongle is busy says so instead of interrupting its own work, and units without
+GPS can be given a fixed position.
+
+This is **RSSI ranging**: it assumes the units have comparable antennas and
+gains (calibrate them), and multipath biases it. Expect hundreds of metres
+outdoors, and worse indoors.
+
+---
+
+## 9. Capturing and exporting
+
+- **⤓ SigMF** captures raw IQ to a standard SigMF recording — open it in the
+  on-box [Signal Analyzer](rf-waterfall.md#signal-analyzer-on-box-sigmf-analysis),
+  or in URH / GNU Radio / inspectrum. Watch the size: ~4 MB per second at
+  2 MS/s.
+- **Rec / Replay** records the sweep itself and plays it back through the same
+  view.
+- **CSV** exports the spectrum, the Signals list, the markers, or the whole
+  waterfall history as a time × frequency matrix.
+- **⇩ PNG** saves the waterfall with its labels.
+
+---
+
+## 10. Listening
+
+The **📻 Local Radio** bar demodulates one frequency to audio: **FM**, **NFM**,
+**AM**, **USB**, **LSB** or **CW** (heard as a 700 Hz tone). Clicking a signal
+on the waterfall picks the likely mode for that frequency. **Squelch** mutes
+until a signal beats the level, and **● Rec** saves what you hear to a file.
+One dongle serves one job, so listening pauses the sub-GHz sweep.
 
 ---
 
 ## A practical workflow
 
-1. Pick a band (e.g. **433**) → a smooth live waterfall.
-2. Turn on **Max-hold** + **Persist** → see every carrier, including bursty ones.
-3. Watch the **Signal list** populate; click one → read its freq / BW / SNR /
-   duty.
-4. If it's a sensor or remote, hit **Decode** → `rtl_433` names the device.
-5. Want to analyse it deeper? **⤓ SigMF** → open the capture in URH / GNU Radio.
-6. Leaving it as a monitor? **Baseline** → get pinged in Watchtower if a new
-   signal or a jammer shows up, or set a **limit line / mask** for a hard
-   pass/fail with the same alerting.
-7. Need accurate numbers first? **Calibrate** against a known carrier (PPM for
-   frequency, a known signal level for dBm).
-8. Want the whole picture unattended? Run a **survey**: it visits each band for
-   a dwell time and writes a report of every emitter with how much of the time
-   it was on.
-9. Several Ragnars in the mesh? **Locate (mesh)** estimates where a transmitter
-   is from the levels each unit hears.
+1. Pick a band, let **Max-hold** and the **Signals** list fill.
+2. **Noise print** the band so permanent birdies stop hiding real bursts.
+3. Click the interesting signal; read its frequency, SNR, bandwidth and duty.
+4. **Zoom** into it — finer resolution reveals whether it's one carrier or
+   several, and **zero-span** shows how it keys.
+5. Sensor or remote? **Decode** names it with `rtl_433`.
+6. Need the waveform? **⤓ SigMF** and open it in the Signal Analyzer.
+7. Leaving it running? **Baseline** or a **limit line** for alerts, or a
+   **survey** for a written report of the whole band.
+8. Several units? **Locate (mesh)** for an estimate of where it transmits from.
 
-## Honest limits
+---
 
-- Reaches only ~24 MHz–1.7 GHz — no 2.4/5 GHz (that's the HackRF panel's job).
-- LoRa / Z-Wave / mesh overlays are **energy / occupancy only**, not decoded.
-- IQ measurements are **relative dB** until you calibrate against a signal of
-  known strength; after that they read dBm, but it's a one-point calibration
-  that has to be redone when gain or antenna changes — not a lab standard.
-- The live view runs **~0.8 s behind real time**. That buffer is what buys the
-  steady scroll; it is not a real-time control loop.
-- **Direction finding is RSSI-based**, and only as good as the units agree:
-  comparable antennas/gains, and multipath will bias it. On synthetic geometry
-  (4 units 1–2 km apart, 3 dB of per-unit error) fixes land 220–480 m from the
-  truth. It needs **3+ SDR-equipped units with positions** for a real fix; two
-  give a rough point, one just says "near me". Time-difference (TDOA) DF would
-  be far better but needs clock synchronisation the units don't have.
-- The multi-unit DF fit is validated on **synthetic geometry only** so far — a
-  live multi-unit fix needs a second Ragnar with an SDR.
+## Limits worth knowing
+
+- The sub-GHz panel reaches ~24 MHz–1.7 GHz. Above that, use the HackRF panel.
+- HF below ~24 MHz needs a dongle that supports direct sampling, or an
+  upconverter (set its LO under ⚙ Settings → Hardware).
+- LoRa / Z-Wave / mesh overlays show energy and occupancy, not decoded traffic.
+- Levels are relative dB until you calibrate against a known source; even then
+  it is a one-point calibration, not a laboratory standard.
+- The live view sits ~0.8 s behind real time. That buffer is what keeps the
+  scroll steady.
+- Wide bands are swept at ~1 row/s, so a very short burst can be missed there.
+  Zoom into a span that fits one tune to catch it.
+- Direction finding is RSSI-based and needs 3+ positioned units for a real fix;
+  accuracy is hundreds of metres at best.
+- One dongle does one thing at a time: decoding, listening, ADS-B, a survey and
+  the waterfall take turns.

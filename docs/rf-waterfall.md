@@ -97,9 +97,9 @@ the scroll-speed setting.
 buffer (~0.8 s), and the page releases them at **one steady rate**: the SDR's
 measured data rate, worked out from the frames' own timestamps rather than from
 the jittery poll timing. The buffer is kept full by nudging the pace **at most
-±12%**, which you can't see, so a network or backend hiccup no longer makes the
-fall stall and then race to catch up. After a stall the buffer grows (up to 2 s)
-so a repeat hiccup is absorbed. A backlog that is seconds old (the tab was in the
+±12%**, which is imperceptible, so network or backend jitter never shows up as
+a change of speed. After an interruption the buffer grows (up to 2 s) so a
+repeat is absorbed. A backlog that is seconds old (the tab was in the
 background, or the backend stalled for a long time) is skipped, not fast-forwarded.
 
 - **IQ FFT (real-time)** — for any span that fits a **single RTL-SDR tune**
@@ -150,14 +150,12 @@ bandwidth (the width of one FFT bin).
 - *HackRF:* **LNA** (0–40 dB, 8 dB steps) and **VGA** (0–62 dB, 2 dB steps)
   gain, the **RF amp** (+~11 dB for weak signals), and **antenna power**
   (3.3 V for active antennas, asks first). Remembered per browser and applied
-  on the next sweep start. Before this, the page never sent HackRF gain, so it
-  always ran at the defaults.
+  on the next sweep start.
 
-*Fixed along the way:* zooming the RTL-SDR in narrower than ~1 MHz left
-much of the waterfall as dead black columns (a fixed 1024-point FFT gave
-fewer bins than display columns). Measured on the dongle: 47% dead at 250
-kHz, 74% at 120 kHz, now 0%. A quick retune could also drop the real-time
-engine to the 1 row/s sweep; it now retries first.
+Zooming in sharpens the resolution rather than thinning the data: the FFT keeps
+at least two bins per display column at any span, and columns between bins are
+interpolated, so a narrow zoom stays a filled picture. A retune that finds the
+dongle still busy is retried before falling back to the slower sweep.
 
 ## Display range
 
@@ -314,8 +312,7 @@ bandwidth on the smoothed *Avg* trace; the level comes from the live row. A
 "−20 dB bandwidth" only exists when a signal is more than 20 dB over the
 noise. Weaker signals are measured at the deepest drop their SNR allows, and
 the readout says which (e.g. `BW−5 4 kHz`). The width also stops at the valley
-to a neighbouring signal. Previously a 4 kHz 433 MHz remote could read as
-"BW−20 254 kHz → wideband chirp / LoRa" on a cluttered band.
+between a signal and its neighbour, so a cluttered floor doesn't inflate it.
 
 ## Band plan and signal identification
 
@@ -340,10 +337,9 @@ Anything else falls back to "narrowband / wideband signal — in *allocation*".
 Every measurement also links to the **🔎 Signal ID wiki** (sigidwiki.com)
 for that frequency (needs internet).
 
-*Fixed:* the pager hint matched **anything** narrowband from 136–165 MHz, so
-marine channel 16, AIS, APRS and 2 m voice were all labelled "POCSAG/FLEX
-pager". It now only matches the real paging allocations for the selected
-region.
+Paging hints are restricted to the real paging allocations for the selected
+region, so marine channel 16, AIS, APRS and 2 m voice are identified as
+themselves.
 
 ## Level calibration (dBm)
 
@@ -554,9 +550,8 @@ The **📻 Local Radio** bar demodulates one frequency to audio with `rtl_fm`
 - Bias-T, direct sampling and the converter offset from ⚙ Settings apply
   here too (a converter-equipped HF setup listens on the real RF frequency).
 
-*Fixed:* NFM / AM / SSB audio is 12 kHz but was labelled 48 kHz, so it
-played 4× too fast, and its slow MP3 trickle often never reached the browser.
-It's now encoded at the true rate (resampled to 48 kHz).
+The narrow modes demodulate at 12 kHz and are resampled to 48 kHz for the
+browser; FM broadcast is demodulated at 48 kHz directly.
 
 ## Raw-IQ capture (SigMF)
 
@@ -684,9 +679,10 @@ Env `RAGNAR_SDR_DEMO=1` forces the demo on without touching config.
 ## Professional feature checklist
 
 
-The standard this page is measured against: what professional spectrum
-analysers and SDR tools (SDR++, SDR#, GQRX, Signal Hound Spike, benchtop RSA/FSV
-analysers) give you as a matter of course. Each item is ticked when it ships.
+What this page provides, measured against what professional spectrum analysers
+and SDR tools (SDR++, SDR#, GQRX, Signal Hound Spike, benchtop RSA/FSV
+analysers) provide as a matter of course. Keep this list as the standard: a
+capability that isn't here is a gap worth closing.
 
 **Tier 1 — basics**
 - [x] Hover readout: frequency / level / time under the cursor

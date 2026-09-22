@@ -273,8 +273,8 @@ route view**, FlightAware-style:
   low-volume action, so a **live click always fetches the current answer from
   adsbdb** rather than trusting a stored copy — adsbdb keys routes on the
   *callsign*, a per-day fact (callsigns are reused across legs), so a stale cached
-  route was the main cause of a confidently-wrong destination. The cache is now
-  the **offline/failure fallback**: if adsbdb is unreachable the last stored route
+  route would confidently show the wrong destination. The cache serves as the
+  **offline/failure fallback**: if adsbdb is unreachable the last stored route
   still draws, honestly tagged *"from local cache (adsbdb unreachable — may be out
   of date)"*. A cache entry older than ~12 h (`_ROUTE_TTL`) is refreshed on the
   next online look-up. Still on-demand only — no background polling.
@@ -332,8 +332,8 @@ Clicking a signal on the waterfall picks the likely mode for that frequency.
 Frequencies below 24 MHz use the dongle's direct-sampling mode (MW/SW AM,
 best-effort); bias-T, direct sampling and the converter offset from the
 waterfall's settings apply here too. Narrow modes are demodulated at 12 kHz and
-resampled to 48 kHz for the browser (before this they were mislabelled as
-48 kHz, which played them 4× too fast). One dongle, so listening pauses the sub-GHz sweep. `rtl_fm` ships
+resampled to 48 kHz for the browser (`radio.audio_rate(mode)` reports the rate a
+mode really produces, since `rtl_fm`'s `-r` only resamples downwards). One dongle, so listening pauses the sub-GHz sweep. `rtl_fm` ships
 in the already-installed `rtl-sdr` package. Receive-only.
 
 **Format — phone-friendly:** when `ffmpeg` is present the PCM is transcoded to a
