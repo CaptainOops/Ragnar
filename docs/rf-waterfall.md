@@ -229,9 +229,16 @@ captures whichever view is showing.
   cursor. **Drag** left/right pans; **double-click** returns to the full band.
   On a phone, **pinch** zooms and a one-finger sideways drag pans (an up/down
   swipe still scrolls the page). *Zoom here* / *Reset zoom* still work.
-- The view changes **instantly**: past rows are redrawn onto the new span
-  (coarser until fresh data arrives), and the radio is retuned once the gesture
-  settles (~0.45 s), so a series of wheel notches is one retune, not ten.
+- The view changes **instantly**, and most of the time the radio doesn't move
+  at all. Each panel captures a little wider than it shows, so zooming in,
+  zooming back out and small pans are served from data already in hand. The
+  radio is only retuned when the window leaves what it is sweeping, or when you
+  have zoomed in far enough that a narrower capture buys real resolution — and
+  then at most once every 1.2 s, after the gesture settles.
+- Retuning means closing and reopening the USB device, so it is deliberately
+  rationed: a burst of wheel notches costs zero retunes, and the backend runs
+  one capture at a time, closing each cleanly and letting the device settle
+  before the next one opens it.
 - Zoom stays within the selected band (use *Tune* to go elsewhere), down to the
   panel's minimum span.
 - The frequency ruler uses round 1-2-5 steps with as many decimals as the zoom

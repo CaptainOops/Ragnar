@@ -464,6 +464,7 @@
     // Row history: every raw row with its span + timestamp. Drives repaint (range /
     // palette / resize / zoom keep what's on screen), hover values and scroll-back.
     this.hrows=[]; this.scrollBack=0;
+    this.hwLo=null; this.hwHi=null; this.dz=false;   // what the radio sweeps vs. a display-only zoom
     this.disp={auto:true,ref:-20,range:90};
     try{ var _d=JSON.parse(localStorage.getItem('rfwf.disp.'+cfg.short)||'null');
       if(_d&&isFinite(_d.ref)&&isFinite(_d.range)) this.disp={auto:!!_d.auto,ref:+_d.ref,range:+_d.range}; }catch(e){}
@@ -1190,8 +1191,32 @@
     var self=this;
     if(!this._rpReq){ this._rpReq=requestAnimationFrame(function(){ self._rpReq=0; self.repaint(); }); }
     clearTimeout(this._zt);
-    var commit=function(){ var home=(self.hi-self.lo)>=full*0.999; self.applyZoom(home?null:[self.lo,self.hi]); };
-    if(now) commit(); else this._zt=setTimeout(commit,450);
+    // Retuning means stopping and restarting the capture — i.e. closing and
+    // reopening the USB dongle. Do it only when it actually buys something:
+    //   * the window has moved outside what the radio is already sweeping, or
+    //   * we've zoomed in far enough that a narrower capture gives real extra
+    //     resolution (the FFT then covers a smaller span).
+    // Everything else is a display-only zoom/pan on data we already have, so a
+    // wheel spin no longer hammers the hardware.
+    var commit=function(){
+      var home=(self.hi-self.lo)>=full*0.999;
+      var hwLo=(self.hwLo!=null)?self.hwLo:hLo, hwHi=(self.hwHi!=null)?self.hwHi:hHi, hwSpan=(hwHi-hwLo)||full;
+      var inside=(self.lo>=hwLo-1e-9 && self.hi<=hwHi+1e-9);
+      var worthIt=(self.hi-self.lo) < hwSpan*0.55;
+      if(inside && !worthIt && !(home && Math.abs(hwSpan-full)>full*0.001)){
+        self._pend=null; self.dz=!(Math.abs(self.lo-hwLo)<1e-9 && Math.abs(self.hi-hwHi)<1e-9);
+        self.zoom=(Math.abs(self.lo-hLo)<1e-9 && Math.abs(self.hi-hHi)<1e-9)?null:[self.lo,self.hi];
+        self.resetBtn.disabled=!self.zoom; self.updateReadout(); return;         // display-only: no retune
+      }
+      var since=Date.now()-(self._lastRetune||0);
+      if(since<1200){ clearTimeout(self._zt); self._zt=setTimeout(commit,1200-since); return; }   // never thrash the dongle
+      self._lastRetune=Date.now();
+      if(home){ self.dz=false; self.applyZoom(null); return; }
+      var m=(self.hi-self.lo)*0.10, wl=self.lo-m, wh=self.hi+m;    // ~20% wider than shown
+      if(wl<hLo) wl=hLo; if(wh>hHi) wh=hHi;
+      self.applyZoom([wl,wh],[self.lo,self.hi]);
+    };
+    if(now) commit(); else this._zt=setTimeout(commit,800);
   };
   // Drop all trace-math accumulators + tracked signals (on start / band / zoom).
   Scope.prototype._resetMeas=function(){
@@ -1347,10 +1372,12 @@
     this.zoomTo(this.marker-span/2,this.marker+span/2,true);
   };
   Scope.prototype.resetZoom=function(){ this.zoomTo(this.homeLo,this.homeHi,true); };
-  Scope.prototype.applyZoom=function(z){
+  Scope.prototype.applyZoom=function(z,view){
     if(this._surveyOn){ this.markTxt.innerHTML='<span class="mk">Survey running</span> — stop it (⚙ Settings) to retune.'; this._pend=null; return; }
-    this.zoom=z; this.resetBtn.disabled=!z;
-    if(this.mode==='live'){ this._pend=z?[z[0],z[1]]:[this.homeLo,this.homeHi]; this.lo=this._pend[0]; this.hi=this._pend[1];
+    this.zoom=z; this.resetBtn.disabled=!z; this._lastRetune=Date.now();
+    this.dz=!!(view && z && (view[0]>z[0]+1e-9 || view[1]<z[1]-1e-9));
+    if(this.mode==='live'){ this._pend=z?[z[0],z[1]]:[this.homeLo,this.homeHi];
+      this.lo=this.dz?view[0]:this._pend[0]; this.hi=this.dz?view[1]:this._pend[1];
       this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); }
     else if(this.mode==='synth'){
       this.model=this.cfg.synth(this.synthBand||this.cfg.synthDefault, z&&z[0], z&&z[1]);
@@ -1574,9 +1601,15 @@
     // once (history is redrawn onto it) while the radio retunes; rows still on
     // the old span are resampled onto the view until the retuned rows arrive.
     var _tol=1e-4, _same=Math.abs(lo-this.lo)<_tol && Math.abs(hi-this.hi)<_tol;
-    if(this._pend && Math.abs(lo-this._pend[0])<_tol && Math.abs(hi-this._pend[1])<_tol){ this._pend=null; if(!_same){ this.lo=lo; this.hi=hi; } this._spanChanged(); _same=true; }
-    if(!_same && !this._pend){ this.lo=lo; this.hi=hi; this._spanChanged(); _same=true; }
-    if(!this.zoom && !this._pend){ this.homeLo=lo; this.homeHi=hi; }
+    if(this._pend && Math.abs(lo-this._pend[0])<_tol && Math.abs(hi-this._pend[1])<_tol){
+      this._pend=null; this.hwLo=lo; this.hwHi=hi;
+      if(!_same && !this.dz){ this.lo=lo; this.hi=hi; }        // no display zoom: show what's captured
+      this._spanChanged(); _same=(Math.abs(lo-this.lo)<_tol && Math.abs(hi-this.hi)<_tol); }
+    if(!_same && !this._pend && this.dz && lo<=this.lo+1e-9 && hi>=this.hi-1e-9){
+      this.hwLo=lo; this.hwHi=hi;                 // display-only zoom inside what the radio sweeps: keep the view
+    } else if(!_same && !this._pend){ this.lo=lo; this.hi=hi; this.dz=false; this._spanChanged(); _same=true; }
+    if(_same){ this.hwLo=lo; this.hwHi=hi; }      // the radio is sweeping exactly what we're showing
+    if(!this.zoom && !this._pend && !this.dz){ this.homeLo=lo; this.homeHi=hi; }
     if(!_same){                                  // stale-span row during a zoom: show it, skip span-bound maths
       if(!this.threeD && this.scrollBack===0) this._paintRowResampled(power,lo,hi);
       this.updateReadout(); if(!this.threeD) this._drawTimeGrid(); return;

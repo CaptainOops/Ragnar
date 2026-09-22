@@ -1202,11 +1202,19 @@ class PowerSweep:
             band = band if band in RTL_BANDS else "433"
             label, (lo, hi) = band, RTL_BANDS[band]
         sig = (label, lo, hi, _settings_sig())
+        prev = None
         with self._lock:
             if self._thread and self._thread.is_alive():
                 if sig == self._sig:
                     return {"ok": True, "already": True, "band": label}
                 self._stop_locked()
+                prev = self._thread
+        # Let the previous capture actually finish before a new one opens the
+        # dongle. Two rtl_sdr processes racing for the same device is what turns
+        # a burst of retunes into a wedged USB device.
+        if prev is not None:
+            prev.join(timeout=_TERM_GRACE_S + 1.0)
+        with self._lock:
             # A fresh Event (not .clear()) so any still-exiting previous sweep
             # thread keeps its own now-set event and stops cleanly, instead of
             # racing this new run on a shared, just-cleared one.
@@ -1265,12 +1273,16 @@ class PowerSweep:
         # sweep otherwise (wide bands) or if the IQ capture can't get going.
         # lo/hi are RF; the radio is tuned to RF + the converter offset.
         lo, hi = lo + _conv_hz, hi + _conv_hz
+        _usb_settle(self._stop)                 # don't reopen the dongle the instant it closed
+        if self._stop.is_set():
+            return
         plan = _iq_plan(lo, hi) if _iq_available() else None
         if plan and self._run_iq(lo, hi, plan[0], plan[1]):
             return
         # A quick restart can find the dongle still held by the previous capture;
         # give the IQ engine one more try before settling for the slow sweep.
         stop = self._stop
+        _usb_settle(stop)
         if plan and not stop.wait(0.8) and self._run_iq(lo, hi, plan[0], plan[1]):
             return
         if stop.is_set():
@@ -1483,17 +1495,46 @@ class PowerSweep:
 # Shared helpers
 # --------------------------------------------------------------------------
 
-def _terminate(proc):
+# The USB dongle needs a moment between one capture closing it and the next one
+# opening it. librtlsdr cancels its async transfers on SIGTERM and closes the
+# device; SIGKILL skips that and can leave the RTL2832U wedged until it is
+# physically replugged. So: always ask politely first, wait long enough for the
+# handler to run, and never reopen the device immediately after a close.
+_USB_RELEASE_S = 0.45          # settle time after a capture process exits
+_TERM_GRACE_S = 4.0            # how long rtl_sdr/rtl_power gets to close cleanly
+_last_close_t = 0.0
+
+
+def _terminate(proc, grace=_TERM_GRACE_S):
+    """Stop a capture process cleanly and record when the device was released."""
+    global _last_close_t
     if not proc:
         return
     try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        if proc.poll() is None:
+            proc.terminate()                      # SIGTERM -> rtlsdr_cancel_async + close
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                proc.kill()                       # last resort; may wedge the dongle
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
     except Exception:  # pragma: no cover - defensive
         pass
+    _last_close_t = time.time()
+
+
+def _usb_settle(stop=None):
+    """Wait out the release window before reopening the dongle (interruptible)."""
+    left = _USB_RELEASE_S - (time.time() - _last_close_t)
+    if left <= 0:
+        return
+    if stop is not None:
+        stop.wait(left)
+    else:
+        time.sleep(left)
 
 
 def _drain(pipe, owner):
