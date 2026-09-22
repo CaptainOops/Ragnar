@@ -107,7 +107,11 @@
   button.mini:disabled{opacity:.35;cursor:not-allowed}
   button.mini:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   button.mini[aria-pressed="true"]{border-color:var(--cyan);color:var(--cyan);background:rgba(56,189,201,.12)}
-  .toolbar .holdgrp,.toolbar .d3grp{display:inline-flex;align-items:center;gap:5px}
+  .toolbar .holdgrp,.toolbar .d3grp,.toolbar .npgrp{display:inline-flex;align-items:center;gap:5px}
+  .toolbar .npgrp select{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 4px}
+  .toolbar .npgrp input[type=range]{width:74px;accent-color:var(--cyan)}
+  .toolbar .npgrp .npstat{font-size:10.5px;color:var(--muted)} .toolbar .npgrp .npstat b{color:var(--cyan);font-weight:500}
+  button.mini.nprec.rec{border-color:#fb7185;color:#fb7185;background:rgba(251,113,133,.1)}
   .toolbar .hlbl{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
   .toolbar .markmeas{color:var(--ink-dim)} .toolbar .markmeas b{color:var(--ink);font-weight:600}
   .stat .v.nf{color:var(--ink-dim)}
@@ -179,7 +183,7 @@
     button.mini{padding:8px 12px}
     .scope-head .fsbtn{padding:8px 12px}
     /* inline-flex control groups must wrap, not overflow the screen edge */
-    .tunergrp,.tunesel,.holdgrp,.zwavesel,.recbar .transport{flex-wrap:wrap}
+    .tunergrp,.tunesel,.holdgrp,.npgrp,.zwavesel,.recbar .transport{flex-wrap:wrap}
     /* readout: even tiles across the full width, no fixed min that forces overflow */
     .readout{gap:10px 14px;width:100%;order:5}
     .stat{min-width:0;flex:1 0 27%}
@@ -417,6 +421,13 @@
             +'<button class="mini hbtn" data-h="min" aria-pressed="false" title="Min-hold trace — reveals the true noise floor">Min</button>'
           +'</span>'
           +'<button class="mini persistbtn" aria-pressed="false" title="Persistence (digital-phosphor) trace — accumulates a fading density cloud so rare bursts and modulation shape show up">Persist</button>'
+          +'<span class="npgrp"><span class="hlbl">Noise print</span>'
+            +'<select class="npsecs" title="How long to record the background noise"><option value="3">3 s</option><option value="5" selected>5 s</option><option value="10">10 s</option><option value="30">30 s</option></select>'
+            +'<button class="mini nprec" title="Record the background for a few seconds while the band is quiet. Constant lines (birdies, always-on carriers, the DC spike) are learned as noise.">&#9679; Record</button>'
+            +'<button class="mini nptog" aria-pressed="false" disabled title="Subtract the recorded noise print, so constant lines fade into the floor and new signals stand out">Filter</button>'
+            +'<input class="npstr" type="range" min="0" max="100" value="100" title="Filter strength: 0% = raw, 100% = constant lines fully flattened">'
+            +'<span class="npstat"></span>'
+          +'</span>'
           +'<span class="d3grp"><span class="hlbl">View</span>'
             +'<button class="mini d3btn" data-3d="0" aria-pressed="true" title="Flat 2D waterfall">2D</button>'
             +'<button class="mini d3btn" data-3d="1" aria-pressed="false" title="3D terrain waterfall — signal power as height, older sweeps recede into the distance">3D</button>'
@@ -481,12 +492,25 @@
       self.setThreeD(b.getAttribute('data-3d')==='1'); });
     if(this.holdGrp) this.holdGrp.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;
       var h=b.getAttribute('data-h'); self.holds[h]=!self.holds[h]; b.setAttribute('aria-pressed', self.holds[h]?'true':'false');
-      if(self.row) self.drawTrace(self.row); });
+      if(self.row) self.drawTrace(self.shown||self.row); });
     this.persistBtn=el.querySelector('.persistbtn'); this.persist=false;
     if(this.persistBtn) this.persistBtn.addEventListener('click',function(){
       self.persist=!self.persist; self.persistBtn.setAttribute('aria-pressed',self.persist?'true':'false');
       self._pcv=null;                       // reset the accumulation buffer
-      if(self.row) self.drawTrace(self.row); });
+      if(self.row) self.drawTrace(self.shown||self.row); });
+    // Noise print: record the background, then subtract it from the display.
+    this.npSecs=el.querySelector('.npsecs'); this.npRecBtn=el.querySelector('.nprec');
+    this.npTog=el.querySelector('.nptog'); this.npStrEl=el.querySelector('.npstr'); this.npStat=el.querySelector('.npstat');
+    this._np=null; this._npRec=null; this._npSpan=''; this._npStatT=0;
+    this._npOn=true; this._npStr=1;
+    try{ var _o=localStorage.getItem('rfwf.np.on.'+cfg.short); if(_o!==null) this._npOn=(_o==='1');
+      var _s=localStorage.getItem('rfwf.np.str.'+cfg.short); if(_s!==null){ this._npStr=Math.max(0,Math.min(1,(+_s)/100)); this.npStrEl.value=Math.round(this._npStr*100); } }catch(e){}
+    this.npRecBtn.addEventListener('click',function(){ self.npRecord(); });
+    this.npTog.addEventListener('click',function(){ self._npOn=!self._npOn;
+      try{ localStorage.setItem('rfwf.np.on.'+cfg.short,self._npOn?'1':'0'); }catch(e){} self._npUI(); });
+    this.npStrEl.addEventListener('input',function(){ self._npStr=(+self.npStrEl.value)/100;
+      try{ localStorage.setItem('rfwf.np.str.'+cfg.short,self.npStrEl.value); }catch(e){} self._npUI(); });
+    this._npUI();
     if(cfg.tuner) this.buildTuner();
     if(cfg.record){ this.buildRecorder(); this.recBar.classList.remove('hidden'); }
 
@@ -1151,6 +1175,12 @@
 
   // ---- paint one row ----
   Scope.prototype.pushRow=function(power,lo,hi,floor){
+    var raw=power;
+    if(this._npRec) this._npCollect(raw,lo,hi);
+    var _sk=lo+'_'+hi+'_'+raw.length;           // span changed (zoom/band/retune) -> load its print
+    if(_sk!==this._npSpan){ this._npSpan=_sk; this._npLoadFor(lo,hi,raw.length); }
+    if(this._np && this._npOn && this._npStr>0) power=this._npApply(raw);
+    if(this._np && !this._npRec && _t0np()-this._npStatT>15000){ this._npStatT=_t0np(); this._npUI(); }   // keep the age label current
     // Measure the true row cadence (EMA) so the Rows/s readout reflects the
     // data rate actually arriving — not the scroll-speed setting.
     var _t=performance.now();
@@ -1172,11 +1202,73 @@
         f.fillStyle=color(power[c],this.floor); f.fillRect(x0,0,(x1-x0)||1,this.STEP);
         if(power[c]>peakDb){peakDb=power[c];peakIdx=c;} if(power[c]>thr)busyC++;}
     }
-    this.row=power; this.peak={db:peakDb,idx:peakIdx}; this.snr=peakDb-nf;
+    this.row=raw; this.shown=power;          // measurements read true levels; display/detection use the filtered row
+    this.peak={db:peakDb,idx:peakIdx}; this.snr=peakDb-nf;
     this.busy=this.busy*0.8 + (busyC/N*100)*0.2;
     this._updateTraces(power);
     this.updateSignals(power,nf);        // track emitters (CFAR) + throttled render
     this.drawTrace(power); this.updateReadout();
+  };
+
+  // ---- noise print (background subtraction) -----------------------------
+  // Record N seconds of rows, take the per-bin MEDIAN (the typical level, so a
+  // burst during the recording isn't learned), and keep its excess over the
+  // profile's own floor. The display then subtracts that excess, scaled by the
+  // strength slider: constant lines drop to the floor, ordinary noise bins are
+  // untouched, and anything above the usual level still shows. Display-only:
+  // recordings, measurements and the backend never see filtered data. Saved per
+  // exact span (a print is only valid for the band/zoom it was taken on).
+  function _t0np(){ return performance.now(); }
+  Scope.prototype._npKey=function(lo,hi,n){ return 'rfwf.np.'+this.cfg.short+'.'+(+lo).toFixed(4)+'_'+(+hi).toFixed(4)+'_'+n; };
+  Scope.prototype.npRecord=function(){
+    if(this._npRec){ this._npFinish(); return; }              // pressed again: stop early, keep what we have
+    if(this.mode==='idle'||this.decoding){ this.npStat.textContent='no live feed to record'; return; }
+    this._npRec={t0:performance.now(),secs:(+this.npSecs.value)||5,rows:[],lo:null,hi:null,n:0};
+    this.npRecBtn.classList.add('rec'); this.npRecBtn.innerHTML='&#9632; Stop';
+    this.npStat.textContent='recording… keep the band quiet';
+  };
+  Scope.prototype._npCollect=function(raw,lo,hi){
+    var r=this._npRec;
+    if(r.lo===null){ r.lo=lo; r.hi=hi; r.n=raw.length; }
+    else if(r.n!==raw.length||r.lo!==lo||r.hi!==hi){ this._npStop(); this.npStat.textContent='span changed while recording — record again'; return; }
+    if(r.rows.length<1500) r.rows.push(Float32Array.from(raw));
+    var el=(performance.now()-r.t0)/1000;
+    if(el>=r.secs){ this._npFinish(); return; }
+    this.npStat.textContent='recording '+el.toFixed(1)+' / '+r.secs+' s · '+r.rows.length+' rows';
+  };
+  Scope.prototype._npStop=function(){ this._npRec=null; this.npRecBtn.classList.remove('rec'); this.npRecBtn.innerHTML='&#9679; Record'; };
+  Scope.prototype._npFinish=function(){
+    var r=this._npRec; this._npStop();
+    if(!r||r.rows.length<3){ this.npStat.textContent='too few rows — record longer'; return; }
+    var n=r.n, K=r.rows.length, ref=new Float32Array(n), col=new Float32Array(K), i, k;
+    for(i=0;i<n;i++){ for(k=0;k<K;k++) col[k]=r.rows[k][i]; col.sort(); ref[i]=(K%2)?col[(K-1)>>1]:(col[K/2-1]+col[K/2])/2; }
+    var srt=Float32Array.from(ref).sort(), nf0=srt[Math.floor(n*0.2)];   // the print's own noise floor
+    this._np={lo:r.lo,hi:r.hi,n:n,ref:ref,nf0:nf0,ts:Date.now(),secs:Math.round((performance.now()-r.t0)/100)/10,rows:K};
+    this._npSpan=r.lo+'_'+r.hi+'_'+n; this._npOn=true;
+    try{ localStorage.setItem('rfwf.np.on.'+this.cfg.short,'1');
+      localStorage.setItem(this._npKey(r.lo,r.hi,n),JSON.stringify({ref:Array.prototype.map.call(ref,function(v){return Math.round(v*10)/10;}),
+        nf0:nf0,ts:this._np.ts,secs:this._np.secs,rows:K})); }catch(e){}
+    this._npUI();
+  };
+  Scope.prototype._npLoadFor=function(lo,hi,n){
+    this._np=null;
+    try{ var j=JSON.parse(localStorage.getItem(this._npKey(lo,hi,n))||'null');
+      if(j&&j.ref&&j.ref.length===n) this._np={lo:lo,hi:hi,n:n,ref:Float32Array.from(j.ref),nf0:j.nf0,ts:j.ts,secs:j.secs,rows:j.rows}; }catch(e){}
+    this._npUI();
+  };
+  Scope.prototype._npApply=function(raw){
+    var ref=this._np.ref, nf0=this._np.nf0, k=this._npStr, n=raw.length, out=new Float32Array(n);
+    for(var i=0;i<n;i++){ var ex=ref[i]-nf0; out[i]=(ex>0)?raw[i]-k*ex:raw[i]; }
+    return out;
+  };
+  Scope.prototype._npUI=function(){
+    if(!this.npTog) return; var np=this._np;
+    this.npTog.disabled=!np; this.npTog.setAttribute('aria-pressed',(np&&this._npOn)?'true':'false');
+    this.npStrEl.disabled=!(np&&this._npOn);
+    if(this._npRec) return;
+    if(!np){ this.npStat.textContent=''; return; }
+    var age=Math.round((Date.now()-np.ts)/60000), ago=age<1?'just now':(age<60?age+' min ago':(age<1440?Math.round(age/60)+' h ago':Math.round(age/1440)+' d ago'));
+    this.npStat.innerHTML=(this._npOn?'<b>filtering '+Math.round(this._npStr*100)+'%</b> · ':'off · ')+np.secs+' s print · '+ago;
   };
 
   // ---- 3D terrain waterfall ----------------------------------------------
