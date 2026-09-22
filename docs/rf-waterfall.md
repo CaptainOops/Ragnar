@@ -159,6 +159,11 @@ dB above it (the front end sets the floor, so more gain buys nothing and costs
 headroom). 25.4 dB is the first supported tuner notch past that knee. On this
 antenna it settles at 16–18 dB of headroom and the loop makes no changes at all.
 
+**↺ Restore defaults** (⚙ Settings → Hardware, or
+`POST /api/net/rtl/tuning/reset`) puts PPM, gain, detector, resolution and the
+hardware options back to the values above — useful when a box has been
+experimented on and you want to know what it is measuring with again.
+
 The gain control in **⚙ Settings → Hardware** offers all three: **Managed**,
 **Manual** (you set the dB, nothing touches it) and **Hardware AGC** (the
 dongle's own, labelled as able to clip). The panel shows the managed gain and

@@ -26219,6 +26219,12 @@ def register_network_diagnostics(app, logger=None):
                                            bw_hz=data.get('bw_hz') or 50000,
                                            secs=data.get('secs') or 1.5))
 
+    # Put every tuner setting back to what a fresh install ships with.
+    @app.route('/api/net/rtl/tuning/reset', methods=['POST'])
+    def net_rtl_tuning_reset():
+        _log("net/rtl/tuning/reset")
+        return jsonify(rtl_sdr.reset_tuning())
+
     # Recover a wedged dongle without walking to the box: re-enumerate it over
     # USB, which is what replugging does.
     @app.route('/api/net/rtl/reset', methods=['POST'])

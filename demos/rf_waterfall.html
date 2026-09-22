@@ -2599,7 +2599,8 @@
           +'<option value="-9750000000">LNB 9750 MHz (Ku low)</option><option value="-10600000000">LNB 10600 MHz (Ku high)</option>'
           +'<option value="custom">Custom…</option></select><input type="number" class="hconvc" step="any" placeholder="LO MHz" hidden></div>'
         +'<div class="dnote">With a converter the waterfall, markers, tune box and radio all read the <b>real RF frequency</b>; the dongle is tuned to RF + LO.</div>'
-        +'<div class="drow"><label>Recovery</label><button class="mini hrst" title="Re-enumerate the dongle over USB — the same thing as unplugging it and plugging it back in, without walking to the box.">⭮ Reset dongle</button><span class="hrststat dnote"></span></div>'
+        +'<div class="drow"><label>Recovery</label><button class="mini hrst" title="Re-enumerate the dongle over USB — the same thing as unplugging it and plugging it back in, without walking to the box.">⭮ Reset dongle</button>'
+          +'<button class="mini hdef" title="Put PPM, gain, detector, resolution and the hardware options back to what a fresh install ships with.">↺ Restore defaults</button><span class="hrststat dnote"></span></div>'
         +'<div class="dnote">An RTL-SDR can end up still enumerating and still opening, but never delivering a sample — the panel sits there showing nothing. Resetting it over USB is the cure; it stops whatever is running, re-enumerates the device and restarts the sweep.</div>');
       var b=g.querySelector('.hbias'), d=g.querySelector('.hdir'), c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc');
       b.addEventListener('click',function(){ var on=b.getAttribute('aria-pressed')!=='true';
@@ -2614,6 +2615,11 @@
                               :('<span style="color:#fb7185">'+esc(x.error||'failed')+'</span>');
           if(x.ok){ self._stall=0; self._rangeKnown=false; }
         }).catch(function(){ rst.disabled=false; rstat.textContent='the radio did not answer'; }); });
+      g.querySelector('.hdef').addEventListener('click',function(){
+        if(!window.confirm('Put PPM, gain, detector, resolution and the hardware options back to the shipped defaults?')) return;
+        fetch('/api/net/rtl/tuning/reset',{method:'POST'}).then(function(r){return r.json();}).then(function(t){
+          self.rtlSet=t; self._gainUI(t); self._hwUI(); self.det=t.detector;
+          rstat.innerHTML='<span style="color:var(--live)">✓ back to the shipped defaults</span>'; }).catch(function(){}); });
       d.addEventListener('change',function(){ self.rtlApply({direct:d.value}); });
       c.addEventListener('change',function(){ if(c.value==='custom'){ cc.hidden=false; cc.focus(); return; } cc.hidden=true; self.rtlApply({conv_hz:+c.value}); });
       cc.addEventListener('change',function(){ if(isFinite(+cc.value)) self.rtlApply({conv_hz:Math.round(+cc.value*1e6)}); });
