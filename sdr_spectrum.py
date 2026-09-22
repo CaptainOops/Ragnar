@@ -89,6 +89,31 @@ BANDS = {
 _MIN_SWEEP_MHZ = 2.0
 
 
+def sweep_cmd(lo, hi, lna, vga, amp=False, antenna=False, bin_hz=None, bins=None):
+    """hackrf_sweep argv for [lo,hi] MHz (pure, selftested).
+
+    ``bin_hz`` (resolution bandwidth) defaults to finer than a display column so
+    a narrow zoom has no floor streaks; an explicit value is clamped to
+    hackrf_sweep's 2445 Hz - 5 MHz. ``amp`` enables the RX RF amplifier (+~11 dB,
+    for weak signals — overloads on strong ones); ``antenna`` powers the antenna
+    port (bias, 3.3 V) for an active antenna / LNA.
+    """
+    bins = bins or _GRID_BINS
+    if bin_hz:
+        bin_hz = max(2445, min(5_000_000, int(bin_hz)))
+    else:
+        span_hz = (hi - lo) * 1_000_000
+        bin_hz = int(span_hz / (bins * 2)) or _BIN_WIDTH_HZ
+        bin_hz = max(2500, min(_BIN_WIDTH_HZ, bin_hz))
+    cmd = [_HACKRF_SWEEP, "-f", "%d:%d" % (int(lo), int(hi) + 1),
+           "-w", str(bin_hz), "-l", str(lna), "-g", str(vga)]
+    if amp:
+        cmd += ["-a", "1"]
+    if antenna:
+        cmd += ["-p", "1"]
+    return cmd, bin_hz
+
+
 def _widen_span(lo, hi):
     """Widen a too-narrow [lo, hi] MHz window symmetrically to _MIN_SWEEP_MHZ.
 
@@ -326,7 +351,8 @@ class SweepCapture:
         self._hi_mhz = None
 
     # -- lifecycle ---------------------------------------------------------
-    def start(self, band="2.4", lna=None, vga=None, lo_mhz=None, hi_mhz=None):
+    def start(self, band="2.4", lna=None, vga=None, lo_mhz=None, hi_mhz=None,
+              amp=None, antenna=None, bin_hz=None):
         # A custom [lo_mhz, hi_mhz] span (the page's zoom, a manual tune, or a
         # mesh/LoRa overlay) overrides the named band when both edges are sane:
         # >=0.1 MHz wide, inside 1-7250 MHz. Narrow spans (e.g. a 0.45 MHz
@@ -349,7 +375,17 @@ class SweepCapture:
         # sweep and display together -- the frame's band_mhz reports [lo, hi], so
         # the page's ruler matches what's actually drawn.
         lo, hi = _widen_span(lo, hi)
-        sig = (label, round(lo, 3), round(hi, 3))
+        lna_v = _clamp(lna, 0, 40, _DEFAULT_LNA)
+        lna_v -= lna_v % 8                                  # hackrf LNA: 8 dB steps
+        vga_v = _clamp(vga, 0, 62, _DEFAULT_VGA)
+        vga_v -= vga_v % 2                                  # VGA: 2 dB steps
+        amp_v = str(amp).lower() in ("1", "true", "on", "yes")
+        ant_v = str(antenna).lower() in ("1", "true", "on", "yes")
+        try:
+            bin_v = int(float(bin_hz)) if bin_hz not in (None, "", "auto", 0, "0") else None
+        except (TypeError, ValueError):
+            bin_v = None
+        sig = (label, round(lo, 3), round(hi, 3), lna_v, vga_v, amp_v, ant_v, bin_v)
         with self._lock:
             if self._thread and self._thread.is_alive():
                 if sig == self._sig:
@@ -363,8 +399,8 @@ class SweepCapture:
             self._sig = sig
             self._lo_mhz, self._hi_mhz = lo, hi
             self._error = None
-            self._lna = _clamp(lna, 0, 40, _DEFAULT_LNA)
-            self._vga = _clamp(vga, 0, 62, _DEFAULT_VGA)
+            self._lna, self._vga = lna_v, vga_v
+            self._amp, self._antenna, self._bin_req = amp_v, ant_v, bin_v
             self._thread = threading.Thread(target=self._run_loop, args=(lo, hi),
                                             daemon=True, name="hackrf-sweep")
             self._thread.start()
@@ -393,15 +429,12 @@ class SweepCapture:
     def _run_loop(self, lo, hi):
         # Keep the FFT bin finer than a display column so a narrow zoom span
         # doesn't leave floor-streak gaps; clamp to hackrf_sweep's sane range.
-        span_hz = (hi - lo) * 1_000_000
-        bin_hz = int(span_hz / (_GRID_BINS * 2)) or _BIN_WIDTH_HZ
-        bin_hz = max(2500, min(_BIN_WIDTH_HZ, bin_hz))
         builder = _FrameBuilder(lo, hi)           # [lo, hi] already widened in start()
         # +1 on the top edge so hackrf_sweep always sees max > min after MHz
         # truncation (the span is >= _MIN_SWEEP_MHZ, so this never inverts).
-        cmd = [_HACKRF_SWEEP, "-f", "%d:%d" % (int(lo), int(hi) + 1),
-               "-w", str(bin_hz), "-l", str(self._lna),
-               "-g", str(self._vga)]
+        cmd, bin_hz = sweep_cmd(lo, hi, self._lna, self._vga, getattr(self, "_amp", False),
+                                getattr(self, "_antenna", False), getattr(self, "_bin_req", None))
+        self._rbw = bin_hz
         self._stderr_tail = None
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -479,6 +512,8 @@ class SweepCapture:
             return {"running": running, "band": self._band,
                     "frames_buffered": len(self._frames), "seq": self._seq,
                     "bins": _GRID_BINS, "lna": self._lna, "vga": self._vga,
+                    "amp": getattr(self, "_amp", False), "antenna": getattr(self, "_antenna", False),
+                    "bin_hz": getattr(self, "_bin_req", None), "rbw_hz": getattr(self, "_rbw", None),
                     "error": self._error,
                     "band_mhz": [self._lo_mhz, self._hi_mhz] if self._lo_mhz else None,
                     "floor_dbm": _FLOOR_DBM}
@@ -493,6 +528,7 @@ class SweepCapture:
             return {"frames": new, "seq": self._seq, "band": self._band,
                     "band_mhz": [self._lo_mhz, self._hi_mhz] if self._lo_mhz else None,
                     "bins": _GRID_BINS, "floor_dbm": _FLOOR_DBM,
+                    "rbw_hz": getattr(self, "_rbw", None),
                     "max_hold": list(self._maxhold) if self._maxhold else None,
                     "running": bool(self._thread and self._thread.is_alive()),
                     "error": self._error}
@@ -509,12 +545,14 @@ def _clamp(v, lo, hi, default):
 _capture = SweepCapture()
 
 
-def start(band="2.4", lna=None, vga=None, lo_mhz=None, hi_mhz=None):
+def start(band="2.4", lna=None, vga=None, lo_mhz=None, hi_mhz=None,
+          amp=None, antenna=None, bin_hz=None):
     d = detect()
     if not d.get("available"):
         return {"ok": False, "error": d.get("error", "no SDR")}
     _capture._detect_cache = d
-    return _capture.start(band, lna=lna, vga=vga, lo_mhz=lo_mhz, hi_mhz=hi_mhz)
+    return _capture.start(band, lna=lna, vga=vga, lo_mhz=lo_mhz, hi_mhz=hi_mhz,
+                          amp=amp, antenna=antenna, bin_hz=bin_hz)
 
 
 def stop():
@@ -619,6 +657,15 @@ def selftest():
     check("info: serial parsed", info["serial"] == "0000abcd12345678", str(info))
     check("info: board parsed", info["board"] == "HackRF One", str(info["board"]))
     check("info: firmware parsed", "2024.02.1" in (info["firmware"] or ""))
+    # sweep command: gains, amp / antenna power, resolution override
+    c, bw = sweep_cmd(2400, 2500, 24, 20)
+    check("cmd: default has gains, no amp/antenna power",
+          c[c.index("-l") + 1] == "24" and c[c.index("-g") + 1] == "20" and "-a" not in c and "-p" not in c)
+    c, bw = sweep_cmd(2400, 2500, 32, 40, amp=True, antenna=True, bin_hz=100000)
+    check("cmd: amp + antenna power + explicit RBW", "-a" in c and "-p" in c and bw == 100000)
+    check("cmd: RBW clamped to hackrf_sweep range", sweep_cmd(2400, 2500, 0, 0, bin_hz=5)[1] == 2445)
+    check("cmd: auto RBW finer than a display column",
+          sweep_cmd(433, 435, 24, 20)[1] <= (2e6 / _GRID_BINS))
 
     # --- max-hold accumulation ---
     cap = SweepCapture()

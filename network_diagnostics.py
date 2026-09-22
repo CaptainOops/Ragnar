@@ -26135,7 +26135,9 @@ def register_network_diagnostics(app, logger=None):
         _log(f"net/sdr/start band={band} zoom={lo_mhz}:{hi_mhz}")
         return jsonify(sdr_spectrum.start(band=band, lna=data.get('lna'),
                                           vga=data.get('vga'),
-                                          lo_mhz=lo_mhz, hi_mhz=hi_mhz))
+                                          lo_mhz=lo_mhz, hi_mhz=hi_mhz,
+                                          amp=data.get('amp'), antenna=data.get('antenna'),
+                                          bin_hz=data.get('bin_hz')))
 
     @app.route('/api/net/sdr/stop', methods=['POST'])
     def net_sdr_stop():
@@ -26199,7 +26201,11 @@ def register_network_diagnostics(app, logger=None):
     def net_rtl_tuning():
         if request.method == 'POST':
             data = request.get_json(silent=True) or {}
-            return jsonify(rtl_sdr.set_tuning(ppm=data.get('ppm'), gain=data.get('gain')))
+            return jsonify(rtl_sdr.set_tuning(ppm=data.get('ppm'), gain=data.get('gain'),
+                                              fft=data.get('fft'), avg=data.get('avg'),
+                                              window=data.get('window'), bins=data.get('bins'),
+                                              bias_t=data.get('bias_t'), direct=data.get('direct'),
+                                              conv_hz=data.get('conv_hz')))
         return jsonify(rtl_sdr.get_tuning())
 
     # Session recording — capture the running power sweep to a JSONL file and
@@ -26891,7 +26897,8 @@ def register_network_diagnostics(app, logger=None):
             rtl_sdr.power_stop(); rtl_sdr.ism_stop(); adsb.stop(); pager.stop(); acars.stop(); vdl2.stop();vor.stop(); aprs.stop()
         except Exception:
             pass
-        resp = Response(radio.stream(freq, mode), mimetype=radio.media_mimetype())
+        resp = Response(radio.stream(freq, mode, request.args.get('squelch', '0')),
+                        mimetype=radio.media_mimetype())
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

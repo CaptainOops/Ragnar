@@ -246,17 +246,36 @@ _IQ_EDGE_MARGIN = 1.15        # oversample the span this much so band edges stay
 _ppm = 0
 _gain = None               # None = automatic gain control
 
+# Resolution + hardware extras, shared by every capture on the one dongle.
+_FFT_SIZES = (256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
+_WINDOWS = ("hann", "blackman-harris", "flattop", "rect")
+_BIN_CHOICES = (240, 480, 960, 1920)
+_DIRECT_MAX_HZ = 28_800_000   # direct sampling covers ~0.5-28.8 MHz (HF)
+_fft = 0                   # FFT size; 0 = auto (enough bins for the display at any zoom)
+_avg = _IQ_AVG_MAX         # FFT windows averaged per row (more = smoother, slower to react)
+_window = "hann"           # FFT window (flattop = amplitude-accurate, rect = sharpest/leakiest)
+_bins = _POWER_BINS        # display columns per frame
+_bias_t = False            # 4.5 V on the antenna port (RTL-SDR Blog V3/V4) to power an LNA
+_direct = "auto"           # direct sampling: "auto" (on below 28.8 MHz), "on", "off"
+_conv_hz = 0               # up/down-converter LO: hardware freq = RF freq + _conv_hz
+
 
 def get_tuning():
-    """Current tuner corrections for the UI."""
+    """Current tuner corrections + resolution/hardware settings for the UI."""
     return {"ppm": _ppm, "gain": ("auto" if _gain is None else _gain),
-            "gain_is_auto": _gain is None}
+            "gain_is_auto": _gain is None,
+            "fft": _fft, "avg": _avg, "window": _window, "bins": _bins,
+            "bias_t": _bias_t, "direct": _direct, "conv_hz": _conv_hz,
+            "fft_sizes": list(_FFT_SIZES), "windows": list(_WINDOWS),
+            "bin_choices": list(_BIN_CHOICES)}
 
 
-def set_tuning(ppm=None, gain=None):
-    """Set PPM freq-correction and/or tuner gain, then reapply to any running
-    capture. gain may be a number (dB), or 'auto'/'' /None for AGC."""
-    global _ppm, _gain
+def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
+               bias_t=None, direct=None, conv_hz=None):
+    """Set PPM freq-correction, tuner gain and the resolution / hardware extras,
+    then reapply to any running capture. gain may be a number (dB), or
+    'auto'/'' /None for AGC. Invalid values are ignored (the setting is kept)."""
+    global _ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz
     if ppm is not None:
         try:
             _ppm = max(-1000, min(1000, int(float(ppm))))
@@ -270,6 +289,37 @@ def set_tuning(ppm=None, gain=None):
                 _gain = max(0.0, min(50.0, round(float(gain), 1)))
             except (TypeError, ValueError):
                 pass
+    if fft is not None:
+        try:
+            v = int(float(fft))
+            if v == 0 or v in _FFT_SIZES:
+                _fft = v
+        except (TypeError, ValueError):
+            if str(fft).lower() == "auto":
+                _fft = 0
+    if avg is not None:
+        try:
+            _avg = max(1, min(64, int(float(avg))))
+        except (TypeError, ValueError):
+            pass
+    if window is not None and str(window).lower() in _WINDOWS:
+        _window = str(window).lower()
+    if bins is not None:
+        try:
+            v = int(float(bins))
+            if v in _BIN_CHOICES:
+                _bins = v
+        except (TypeError, ValueError):
+            pass
+    if bias_t is not None:
+        _bias_t = str(bias_t).lower() in ("1", "true", "on", "yes")
+    if direct is not None and str(direct).lower() in ("auto", "on", "off"):
+        _direct = str(direct).lower()
+    if conv_hz is not None:
+        try:
+            _conv_hz = max(-12_000_000_000, min(12_000_000_000, int(float(conv_hz))))
+        except (TypeError, ValueError):
+            pass
     # Reapply live so the change takes effect without the user restarting.
     try:
         _power.reapply()
@@ -279,13 +329,111 @@ def set_tuning(ppm=None, gain=None):
     return get_tuning()
 
 
-def _tuner_args():
-    """Common rtl_power / rtl_433 flags for the current PPM + gain."""
+def _settings_sig():
+    """Everything that changes a capture's output — a start() with a new value
+    restarts the sweep even on the same span."""
+    return (_ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz)
+
+
+def _parse_hz(txt):
+    """'433.92M' / '868.3M' / '315000000' -> Hz (pure)."""
+    t = str(txt).strip().upper()
+    mult = 1.0
+    if t.endswith("G"):
+        mult, t = 1e9, t[:-1]
+    elif t.endswith("M"):
+        mult, t = 1e6, t[:-1]
+    elif t.endswith("K"):
+        mult, t = 1e3, t[:-1]
+    return int(round(float(t) * mult))
+
+
+def _direct_on(hw_lo, hw_hi):
+    """Should this hardware window use direct sampling? (pure given settings)"""
+    if _direct == "on":
+        return True
+    if _direct == "off":
+        return False
+    return hw_hi <= _DIRECT_MAX_HZ          # auto: HF (below the tuner's ~24 MHz floor)
+
+
+def _hw_range_ok(hw_lo, hw_hi):
+    """Is [lo,hi] (hardware Hz) receivable: tuner 24-1766 MHz, or HF via direct sampling."""
+    if _direct_on(hw_lo, hw_hi):
+        return 500_000 <= hw_lo and hw_hi <= _DIRECT_MAX_HZ
+    return 24_000_000 <= hw_lo and hw_hi <= 1_766_000_000
+
+
+_biast_state = False        # what we last told the bias tee (it's off at power-up)
+
+
+def _set_biast(on):
+    """rtl_sdr has no -T flag: switch the RTL-SDR Blog bias tee with rtl_biast
+    before a raw-IQ capture opens the dongle. Only runs when the state has to
+    change (it briefly opens the dongle, so not on every start). No-op when the
+    tool is missing. Generic RTL2832U dongles have no bias tee; it does nothing."""
+    global _biast_state
+    on = bool(on)
+    if on == _biast_state:
+        return True
+    tool = _which("rtl_biast")
+    if not tool:
+        return False
+    try:
+        subprocess.run([tool, "-b", "1" if on else "0"], capture_output=True, timeout=5, check=False)
+        _biast_state = on
+        return True
+    except Exception:
+        return False
+
+
+_WIN_RTLPOWER = {"hann": "hamming", "blackman-harris": "blackman-harris",
+                 "flattop": "blackman-harris", "rect": "rectangle"}
+
+
+def _fft_window(n):
+    """FFT window samples for the current setting (numpy)."""
+    import numpy as np
+    if _window == "rect":
+        return np.ones(n, dtype=np.float32)
+    k = np.arange(n) / float(n - 1)
+    if _window == "blackman-harris":
+        a = (0.35875, 0.48829, 0.14128, 0.01168)
+    elif _window == "flattop":
+        a = (0.21557895, 0.41663158, 0.277263158, 0.083578947, 0.006947368)
+    else:
+        return np.hanning(n).astype(np.float32)
+    w = np.zeros(n)
+    for i, ai in enumerate(a):
+        w += ((-1) ** i) * ai * np.cos(2 * np.pi * i * k)
+    return w.astype(np.float32)
+
+
+def _auto_fft(sr_hz, lo_hz, hi_hz, bins):
+    """FFT size giving >= 2 FFT bins per display column across [lo,hi] (pure)."""
+    span = max(1, hi_hz - lo_hz)
+    need = 2.0 * bins * sr_hz / span
+    n = 512
+    while n < need and n < _FFT_SIZES[-1]:
+        n *= 2
+    return n
+
+
+def _tuner_args(tool="rtl_433", hw_lo=None, hw_hi=None):
+    """Common flags for the current PPM + gain, plus (rtl_power only) bias-T,
+    direct sampling and the FFT window. rtl_433 uses -T for its run time, so it
+    never gets the bias-T flag."""
     args = []
     if _ppm:
         args += ["-p", str(_ppm)]
     if _gain is not None:
         args += ["-g", str(_gain)]
+    if tool == "rtl_power":
+        if _bias_t:
+            args += ["-T"]
+        if hw_lo is not None and _direct_on(hw_lo, hw_hi):
+            args += ["-D"]
+        args += ["-w", _WIN_RTLPOWER.get(_window, "hamming")]
     return args
 
 
@@ -867,6 +1015,22 @@ def _iq_to_grid(psd_db, center_hz, sr_hz, lo_hz, hi_hz,
         v = psd_db[i]
         if v > grid[col]:
             grid[col] = v
+    # Fewer FFT bins than columns (a narrow zoom): interpolate the columns no bin
+    # landed in, instead of leaving dead floor-level stripes. Only between
+    # filled columns, so a genuinely uncovered edge still reads as floor.
+    filled = [c for c in range(bins) if grid[c] > floor]
+    if filled and len(filled) < bins:
+        for a, b in zip(filled, filled[1:]):
+            if b - a > 1:
+                va, vb = grid[a], grid[b]
+                for c in range(a + 1, b):
+                    grid[c] = va + (vb - va) * (c - a) / float(b - a)
+        # edge columns inside the captured bandwidth take the nearest bin's value
+        cap_lo, cap_hi = center_hz - sr_hz / 2.0, center_hz + sr_hz / 2.0
+        for c in list(range(0, filled[0])) + list(range(filled[-1] + 1, bins)):
+            fc = lo_hz + (c + 0.5) * span / bins
+            if cap_lo <= fc <= cap_hi:
+                grid[c] = grid[filled[0]] if c < filled[0] else grid[filled[-1]]
     return grid
 
 
@@ -929,7 +1093,9 @@ class IsmScanner:
 
     def _run_loop(self, band):
         freq = ISM_FREQS[band]
-        cmd = [_RTL_433, "-F", "json", "-M", "level", "-f", freq] + _tuner_args()
+        if _conv_hz:
+            freq = str(int(_parse_hz(freq) + _conv_hz))
+        cmd = [_RTL_433, "-F", "json", "-M", "level", "-f", freq] + _tuner_args("rtl_433")
         self._stderr_tail = None
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -1026,7 +1192,7 @@ class PowerSweep:
         try:
             if lo_hz is not None and hi_hz is not None:
                 lo_hz, hi_hz = int(float(lo_hz)), int(float(hi_hz))
-                if hi_hz - lo_hz >= 100_000 and lo_hz >= 24_000_000 and hi_hz <= 1_766_000_000:
+                if hi_hz - lo_hz >= 100_000 and _hw_range_ok(lo_hz + _conv_hz, hi_hz + _conv_hz):
                     custom = (lo_hz, hi_hz)
         except (TypeError, ValueError):
             custom = None
@@ -1035,7 +1201,7 @@ class PowerSweep:
         else:
             band = band if band in RTL_BANDS else "433"
             label, (lo, hi) = band, RTL_BANDS[band]
-        sig = (label, lo, hi)
+        sig = (label, lo, hi, _settings_sig())
         with self._lock:
             if self._thread and self._thread.is_alive():
                 if sig == self._sig:
@@ -1047,13 +1213,14 @@ class PowerSweep:
             self._stop = threading.Event()
             self._frames = []
             self._seq = 0
-            self._maxhold = [_FLOOR_DBM] * _POWER_BINS
+            self._maxhold = [_FLOOR_DBM] * _bins
             self._band = label
             self._sig = sig
             self._lo, self._hi = lo, hi
             self._engine = None
             self._floor_dyn = None
             self._error = None
+            self._rbw = None
             self._thread = threading.Thread(target=self._run_loop, args=(lo, hi),
                                             daemon=True, name="rtlpower-sweep")
             self._thread.start()
@@ -1074,13 +1241,14 @@ class PowerSweep:
             self._stop = threading.Event()   # fresh event; see start() for why
             self._frames = []
             self._seq = 0
-            self._maxhold = [_FLOOR_DBM] * _POWER_BINS
+            self._maxhold = [_FLOOR_DBM] * _bins
             self._band = label
-            self._sig = sig
+            self._sig = (sig[0], sig[1], sig[2], _settings_sig())
             self._lo, self._hi = lo, hi
             self._engine = None
             self._floor_dyn = None
             self._error = None
+            self._rbw = None
             self._thread = threading.Thread(target=self._run_loop, args=(lo, hi),
                                             daemon=True, name="rtlpower-sweep")
             self._thread.start()
@@ -1095,8 +1263,17 @@ class PowerSweep:
         # Prefer the real-time IQ FFT engine (SDR++-style) whenever the span fits
         # a single tune and the tools are present; fall back to the rtl_power
         # sweep otherwise (wide bands) or if the IQ capture can't get going.
+        # lo/hi are RF; the radio is tuned to RF + the converter offset.
+        lo, hi = lo + _conv_hz, hi + _conv_hz
         plan = _iq_plan(lo, hi) if _iq_available() else None
         if plan and self._run_iq(lo, hi, plan[0], plan[1]):
+            return
+        # A quick restart can find the dongle still held by the previous capture;
+        # give the IQ engine one more try before settling for the slow sweep.
+        stop = self._stop
+        if plan and not stop.wait(0.8) and self._run_iq(lo, hi, plan[0], plan[1]):
+            return
+        if stop.is_set():
             return
         self._engine = "rtl_power"
         self._floor_dyn = None
@@ -1117,8 +1294,10 @@ class PowerSweep:
             return False
         self._engine = "iq"
         self._floor_dyn = None
-        N = _IQ_FFT
-        win = np.hanning(N).astype(np.float32)
+        bins = _bins
+        N = _fft or _auto_fft(sr, lo, hi, bins)
+        self._rbw = sr / float(N)
+        win = _fft_window(N)
         win_norm = float(np.sum(win ** 2)) * N   # PSD normaliser (window + FFT gain)
         # Read a whole display row of samples per iteration, rounded to full FFT
         # windows. We must drain the entire stream (not just what we FFT) or the
@@ -1131,6 +1310,9 @@ class PowerSweep:
             cmd += ["-p", str(_ppm)]
         if _gain is not None:
             cmd += ["-g", str(_gain)]             # else rtl_sdr uses tuner AGC (auto)
+        if _direct_on(lo, hi):
+            cmd += ["-D"]                         # HF: direct sampling
+        _set_biast(_bias_t)                       # rtl_sdr has no -T; set the GPIO first
         cmd += ["-"]                              # stream raw IQ to stdout
         self._stderr_tail = None
         # Capture our own stop event + proc handle locally. A restart (band change
@@ -1162,13 +1344,13 @@ class PowerSweep:
                 nwin = (raw.shape[0] // 2) // N
                 if nwin <= 0:
                     continue
-                use = min(nwin, _IQ_AVG_MAX)
+                use = min(nwin, _avg)
                 iq = raw[:use * N * 2].reshape(use, N, 2)
                 cwin = (iq[:, :, 0] + 1j * iq[:, :, 1]) * win  # window each row
                 spec = np.fft.fftshift(np.fft.fft(cwin, axis=1), axes=1)
                 psd = (spec.real ** 2 + spec.imag ** 2).mean(axis=0) / win_norm
                 db = 10.0 * np.log10(psd + 1e-12)
-                grid = _iq_to_grid(db.tolist(), center, sr, lo, hi)
+                grid = _iq_to_grid(db.tolist(), center, sr, lo, hi, bins=bins)
                 floor_ema = self._update_iq_floor(grid, floor_ema)
                 self._push_frame(grid)
                 produced += 1
@@ -1208,10 +1390,12 @@ class PowerSweep:
         return floor_ema
 
     def _run_rtl_power(self, lo, hi):
-        step = max(1000, (hi - lo) // _POWER_BINS)   # Hz per rtl_power bin
-        builder = _PowerFrameBuilder(lo, hi)
+        bins = _bins
+        step = max(1000, (hi - lo) // bins)   # Hz per rtl_power bin
+        self._rbw = float(step)
+        builder = _PowerFrameBuilder(lo, hi, bins=bins)
         cmd = [_RTL_POWER, "-f", "%d:%d:%d" % (lo, hi, step),
-               "-i", str(_SWEEP_INTERVAL_S), "-c", "20%"] + _tuner_args()
+               "-i", str(_SWEEP_INTERVAL_S), "-c", "20%"] + _tuner_args("rtl_power", lo, hi)
         self._stderr_tail = None
         stop = self._stop          # our own event; a restart swaps self._stop
         try:
@@ -1255,7 +1439,7 @@ class PowerSweep:
             else:
                 self._maxhold = [max(a, b) for a, b in zip(self._maxhold, ints)]
             meta = {"band": self._band, "lo_hz": self._lo, "hi_hz": self._hi,
-                    "bins": _POWER_BINS, "floor": self._active_floor()}
+                    "bins": len(ints), "floor": self._active_floor()}
         # Feed the session recorder + the spectrum-baseline watcher outside our
         # lock (each has its own). floor from meta so both engines stay consistent.
         _recorder.write(self._seq, ts, ints, meta)
@@ -1271,7 +1455,7 @@ class PowerSweep:
     def status(self):
         with self._lock:
             return {"running": bool(self._thread and self._thread.is_alive()),
-                    "band": self._band, "bins": _POWER_BINS,
+                    "band": self._band, "bins": _bins,
                     "band_hz": [self._lo, self._hi] if self._lo else None,
                     "frames_buffered": len(self._frames), "seq": self._seq,
                     "floor_dbm": self._active_floor(), "engine": self._engine,
@@ -1286,8 +1470,10 @@ class PowerSweep:
             new = [f for f in self._frames if f["seq"] > since]
             return {"frames": new, "seq": self._seq, "band": self._band,
                     "band_hz": [self._lo, self._hi] if self._lo else None,
-                    "bins": _POWER_BINS, "floor_dbm": self._active_floor(),
+                    "bins": _bins, "floor_dbm": self._active_floor(),
                     "engine": self._engine,
+                    "rbw_hz": round(self._rbw, 1) if getattr(self, "_rbw", None) else None,
+                    "conv_hz": _conv_hz,
                     "max_hold": list(self._maxhold) if self._maxhold else None,
                     "running": bool(self._thread and self._thread.is_alive()),
                     "error": self._error}
@@ -1643,8 +1829,9 @@ class IqCapture:
             seconds = float(seconds)
         except (TypeError, ValueError):
             return {"ok": False, "error": "center_hz / sr_hz / seconds must be numeric"}
-        if not (24_000_000 <= center_hz <= 1_766_000_000):
-            return {"ok": False, "error": "center frequency out of RTL-SDR reach (24-1766 MHz)"}
+        hw = center_hz + _conv_hz
+        if not _hw_range_ok(hw - sr_hz // 2, hw + sr_hz // 2) and not (24_000_000 <= hw <= 1_766_000_000):
+            return {"ok": False, "error": "center frequency out of RTL-SDR reach (24-1766 MHz, or HF with direct sampling)"}
         if not (_IQ_SR_MIN <= sr_hz <= _IQ_SR_MAX):
             return {"ok": False, "error": "sample rate out of range (1.0-3.2 MS/s)"}
         seconds = max(0.1, min(_IQ_CAP_MAX_SECONDS, seconds))
@@ -1674,11 +1861,15 @@ class IqCapture:
 
     def _run_loop(self):
         nsamp = int(self._sr * self._seconds)
-        cmd = [_RTL_SDR, "-f", str(self._center), "-s", str(self._sr), "-n", str(nsamp)]
+        hw = self._center + _conv_hz              # tune the radio; SigMF keeps the RF frequency
+        cmd = [_RTL_SDR, "-f", str(hw), "-s", str(self._sr), "-n", str(nsamp)]
         if _ppm:
             cmd += ["-p", str(_ppm)]
         if _gain is not None:
             cmd += ["-g", str(_gain)]
+        if _direct_on(hw - self._sr // 2, hw + self._sr // 2):
+            cmd += ["-D"]
+        _set_biast(_bias_t)
         cmd += [self._path]
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
@@ -2500,6 +2691,45 @@ def selftest():
           _pf is not None and abs(_pf - (433_050_000 + 300.5 / 480 * 1_740_000)) < 4000, str(_pf))
     check("cal: window excluding the tone -> different (nearest-in-window) bin",
           _peak_freq_hz(_pk, 433_050_000, 434_790_000, near_hz=433_100_000, window_hz=50_000) is not None)
+
+    # --- resolution + hardware settings (pure) ---
+    # narrow zoom: 1 MS/s capture, 250 kHz window -> only ~256 of 1024 FFT bins
+    # land in 480 columns; the gaps are interpolated, not left at the floor
+    _nb = [-60.0] * 1024
+    _gz = _iq_to_grid(_nb, 433_920_000, 1_000_000, 433_795_000, 434_045_000)
+    check("grid: narrow zoom has no dead (floor) columns",
+          _gz.count(_FLOOR_DBM) == 0 and len(_gz) == _POWER_BINS, str(_gz.count(_FLOOR_DBM)))
+    _nb2 = [-90.0] * 1024; _nb2[512] = -30.0
+    _gz2 = _iq_to_grid(_nb2, 433_920_000, 1_000_000, 433_795_000, 434_045_000)
+    check("grid: interpolation keeps the tone as the peak", max(_gz2) == -30.0)
+    check("fft: auto size gives >= 2 bins per column when zoomed",
+          _auto_fft(1_000_000, 433_795_000, 434_045_000, 480) * 250_000 / 1_000_000 >= 960
+          and _auto_fft(1_000_000, 433_795_000, 434_045_000, 480) in _FFT_SIZES)
+    check("fft: wide span keeps a small FFT", _auto_fft(3_200_000, 433_000_000, 435_800_000, 480) <= 2048)
+    _saved = get_tuning()
+    try:
+        set_tuning(bias_t=True, direct="auto", window="flattop")
+        check("flags: rtl_power gets -T (bias-T) + window", "-T" in _tuner_args("rtl_power", 433_000_000, 434_000_000)
+              and "-w" in _tuner_args("rtl_power", 433_000_000, 434_000_000))
+        check("flags: rtl_433 never gets -T (it means run-time there)", "-T" not in _tuner_args("rtl_433"))
+        check("direct: auto on for HF, off for VHF/UHF",
+              _direct_on(7_000_000, 7_300_000) and not _direct_on(433_000_000, 434_000_000))
+        check("direct: HF reachable only via direct sampling",
+              _hw_range_ok(7_000_000, 7_300_000) and not _hw_range_ok(10_000_000, 30_000_000))
+        set_tuning(direct="off")
+        check("direct: off -> HF rejected", not _hw_range_ok(7_000_000, 7_300_000))
+        set_tuning(fft=3000, bins=777, window="nope", avg=999)
+        t = get_tuning()
+        check("settings: invalid FFT / bins / window ignored, avg clamped",
+              t["fft"] == _saved["fft"] and t["bins"] == _saved["bins"] and t["window"] == "flattop" and t["avg"] == 64)
+        check("parse: rtl_433 freq strings", _parse_hz("433.92M") == 433_920_000 and _parse_hz("315000000") == 315_000_000)
+        _w = _fft_window(1024)
+        check("window: flattop is ~1 at centre, tiny at the edges", 0.95 < float(_w[512]) < 1.05 and abs(float(_w[0])) < 0.01)
+    except Exception as _e:
+        check("settings block ran", False, str(_e))
+    finally:
+        set_tuning(ppm=_saved["ppm"], gain=_saved["gain"], fft=_saved["fft"], avg=_saved["avg"], window=_saved["window"],
+                   bins=_saved["bins"], bias_t=_saved["bias_t"], direct=_saved["direct"], conv_hz=_saved["conv_hz"])
 
     passed = sum(1 for r in results if r["pass"])
     return {"pass": passed == len(results), "passed": passed,
