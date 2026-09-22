@@ -553,6 +553,12 @@
           +'<button class="mini mprev" title="Next peak to the left (key [)">&#9664; Next</button>'
           +'<button class="mini mnext" title="Next peak to the right (key ])">Next &#9654;</button>'
           +'<button class="mini mctr" title="Centre the view on the active marker (key C)">&#8596; Centre</button>'
+          +'<button class="mini mband" title="Band power between the two outermost markers: total power in the segment, plus its spectral density per Hz. Needs 2 markers.">&#931;&nbsp;Band power</button>'
+          +'<button class="mini mnoise" title="Noise marker: the level at the active marker normalised to a 1 Hz bandwidth (dB/Hz), corrected for the RBW, the FFT window and the detector.">N&nbsp;Noise</button>'
+          +'<button class="mini mref" title="Store the live trace as a reference, then show live minus reference. The way to prove what changed, or to measure a filter.">&#9110;&nbsp;Store ref</button>'
+          +'<button class="mini macpr" title="Adjacent-channel power ratio: how much of this transmitter\'s power lands in the channels either side of it.">ACPR</button>'
+          +'<button class="mini mspur" title="Spur search: every other peak in view, listed as an offset and a level relative to the marked carrier.">Spurs</button>'
+          +(cfg.tuner?'<button class="mini mharm" title="Harmonic check: measures 2×, 3× and 4× the marked frequency on the hardware, one tune at a time. Takes several seconds and interrupts the sweep.">Harmonics</button>':'')
           +'<button class="mini mclr" title="Remove all markers">Clear</button>'
           +'<button class="mini mzs" aria-pressed="false" title="Zero-span: level at the active marker\'s frequency over time (key Z)">Zero-span</button>'
           +'<button class="mini kbq" title="Keyboard shortcuts (?)">&#9000; Keys</button>'
@@ -641,6 +647,12 @@
     el.querySelector('.mprev').addEventListener('click',function(){ self.nextPeak(-1); });
     el.querySelector('.mnext').addEventListener('click',function(){ self.nextPeak(1); });
     el.querySelector('.mctr').addEventListener('click',function(){ self.markerToCentre(); });
+    el.querySelector('.mband').addEventListener('click',function(){ self.bandPower(); });
+    el.querySelector('.macpr').addEventListener('click',function(){ self.acpr(); });
+    el.querySelector('.mspur').addEventListener('click',function(){ self.spurSearch(); });
+    if(el.querySelector('.mharm')) el.querySelector('.mharm').addEventListener('click',function(){ self.harmonics(); });
+    el.querySelector('.mnoise').addEventListener('click',function(){ self.noiseMarker(); });
+    el.querySelector('.mref').addEventListener('click',function(){ self.refTrace(); });
     el.querySelector('.mclr').addEventListener('click',function(){ self.marker=null; self.placeMarker(); self.markTxt.textContent='Markers cleared.'; });
     this.mTab.addEventListener('click',function(e){ var b=e.target.closest('button'), tr=e.target.closest('tr'); if(!tr) return;
       var i=+tr.getAttribute('data-i');
@@ -1408,6 +1420,149 @@
       return '<tr data-i="'+i+'" class="'+(i===self.mAct?'act':'')+'"><td class="mn m'+(i+1)+'">'+(i===self.mAct?'▸':'&nbsp;')+'M'+(i+1)+'</td>'
         +'<td>'+fmtMHz(m.f)+'</td><td>'+lv+'</td><td>'+dl+'</td>'
         +'<td><button data-a="ctr" title="Centre on this marker">↔</button> <button data-a="del" title="Remove">✕</button></td></tr>'; }).join('');
+  };
+  // Noise-equivalent bandwidth of each FFT window, in RBW units. A window
+  // spreads a bin's response, so the bandwidth that actually collects noise is
+  // wider than the bin spacing — ignore this and a noise-density figure is
+  // several dB optimistic.
+  var ENBW={'hann':1.50,'blackman-harris':2.00,'flattop':3.77,'rect':1.00};
+  // Sum of power across a set of bins, in dB.
+  Scope.prototype._sumDb=function(p,i0,i1){ var s=0;
+    for(var i=Math.max(0,i0);i<=Math.min(p.length-1,i1);i++) s+=Math.pow(10,p[i]/10);
+    return 10*Math.log10(s||1e-30); };
+  // Σ Band power: total power between the two outermost markers, and the same
+  // figure per Hz, which is what makes two different spans comparable.
+  Scope.prototype.bandPower=function(){
+    var p=this.shown||this.row; if(!p||!p.length) return;
+    if(this.marks.length<2){ this.markTxt.textContent='Band power needs two markers: place one on each side of the segment (＋ Marker, then click).'; return; }
+    var fs=this.marks.map(function(m){return m.f;}).sort(function(a,b){return a-b;});
+    var f0=fs[0], f1=fs[fs.length-1], n=p.length, bin=(this.hi-this.lo)/n;
+    var i0=Math.round((f0-this.lo)/bin-0.5), i1=Math.round((f1-this.lo)/bin-0.5);
+    if(i1<i0){ var t=i0; i0=i1; i1=t; }
+    var tot=this._sumDb(p,i0,i1), bwHz=Math.max(1,(f1-f0)*1e6), nb=(i1-i0+1);
+    var dens=tot-10*Math.log10(bwHz);
+    this.markTxt.innerHTML='<span class="markmeas"><b>&#931; Band power</b> '+fmtMHz(f0)+' → '+fmtMHz(f1)
+      +' · <b>'+tot.toFixed(1)+this.unit()+'</b> over '+(bwHz>=1e6?(bwHz/1e6).toFixed(3)+' MHz':(bwHz/1e3).toFixed(1)+' kHz')
+      +' · density <b>'+dens.toFixed(1)+this.unit()+'/Hz</b> · '+nb+' bins'
+      +' <span class="zi">'+(this.det||'peak')+' detector</span></span>';
+    if((this.det||'peak')!=='rms') this.markTxt.innerHTML+=' <span class="zi" title="A peak-detected trace reads noise high, so an integrated power over mostly-noise bins reads high too. Switch the detector to RMS in Settings for a power figure you can quote.">⚠ switch the detector to RMS to quote this</span>';
+  };
+  // Noise marker: level per 1 Hz. Corrects for the resolution bandwidth, the
+  // window's noise-equivalent bandwidth and the detector, because each of those
+  // biases a raw reading by dB that matter.
+  Scope.prototype.noiseMarker=function(){
+    var p=this.shown||this.row; if(!p||!p.length) return;
+    if(this.marker==null){ this.markTxt.textContent='Place a marker on the noise you want to measure first.'; return; }
+    var n=p.length, bin=(this.hi-this.lo)/n, ci=Math.round((this.marker-this.lo)/bin-0.5);
+    var half=Math.max(2,Math.round(n*0.01)), i0=Math.max(0,ci-half), i1=Math.min(n-1,ci+half);
+    // average in the power domain across the window (a single bin of noise is
+    // a random variable, not a measurement)
+    var s=0,k=0; for(var i=i0;i<=i1;i++){ s+=Math.pow(10,p[i]/10); k++; }
+    var avg=10*Math.log10(s/Math.max(1,k));
+    var rbw=(this.mode==='live'&&this.rbw)?this.rbw:((this.hi-this.lo)*1e6/n);
+    var win=(this.rtlSet&&this.rtlSet.window)||'hann', enbw=ENBW[win]||1.5;
+    var det=this.det||'peak', corr=(det==='avg')?2.51:0;          // log-average under-reads noise
+    var dens=avg-10*Math.log10(rbw*enbw)+corr;
+    this.markTxt.innerHTML='<span class="markmeas"><b>Noise marker</b> '+fmtMHz(this.marker)+' · '
+      +avg.toFixed(1)+this.unit()+' in '+(rbw>=1000?(rbw/1000).toFixed(2)+' kHz':Math.round(rbw)+' Hz')+' RBW'
+      +' → <b>'+dens.toFixed(1)+this.unit()+'/Hz</b>'
+      +' <span class="zi" title="Corrected for the '+win+' window (ENBW '+enbw+'× RBW)'+(corr?' and the +2.51 dB log-average bias':'')+', averaged over '+k+' bins">'
+      +'('+win+', '+det+(corr?', +2.51 dB log correction':'')+')</span></span>';
+    if(det==='peak') this.markTxt.innerHTML+=' <span class="zi" title="A peak detector keeps the largest of several noisy bins, so this figure is a few dB high. RMS is the detector for a noise measurement.">⚠ peak detector — reads high, use RMS</span>';
+  };
+  // Reference trace: store the live trace, then show the difference against it.
+  // Stored per span, because a trace only means anything on its own frequencies.
+  Scope.prototype.refTrace=function(){
+    var p=this.shown||this.row;
+    if(this.refRow){ this.refRow=null; this.refInfo=null; this._refUI();
+      this.markTxt.textContent='Reference cleared — showing the live trace again.'; return; }
+    if(!p||!p.length){ this.markTxt.textContent='Nothing to store yet.'; return; }
+    this.refRow=Float32Array.from(p); this.refInfo={lo:this.lo,hi:this.hi,t:Date.now()};
+    this._refUI();
+    this.markTxt.innerHTML='<span class="markmeas"><b>Reference stored</b> over '+fmtSpan(this.lo,this.hi)
+      +' — the trace now shows <b>live − reference</b>. Press again to clear.</span>';
+  };
+  Scope.prototype._refUI=function(){ var b=this.el.querySelector('.mref'); if(!b) return;
+    var on=!!this.refRow; b.setAttribute('aria-pressed',on?'true':'false');
+    b.innerHTML=on?'&#9110;&nbsp;Clear ref':'&#9110;&nbsp;Store ref'; };
+  // The reference for the current span, or null when the view has moved off it.
+  Scope.prototype.refFor=function(n){
+    var r=this.refRow, ri=this.refInfo;
+    if(!r||!ri||r.length!==n) return null;
+    if(Math.abs(ri.lo-this.lo)>1e-6||Math.abs(ri.hi-this.hi)>1e-6) return null;
+    return r; };
+  // ACPR — how much of a transmitter's power lands in the channels either side.
+  // The channel width and the spacing come from the signal's own measured
+  // bandwidth, so it works without the user knowing the standard being used.
+  Scope.prototype.acpr=function(){
+    var p=this.shown||this.row; if(!p||!p.length) return;
+    if(this.marker==null) this.peakSearch();
+    if(this.marker==null){ this.markTxt.textContent='Put a marker on the carrier first.'; return; }
+    var m=this.measureAt(this.marker); if(!m){ this.markTxt.textContent='Nothing measurable at the marker.'; return; }
+    var f0=m.peakF, chMHz=Math.max(0.001,(m.obw99||m.bw20||25)/1000), n=p.length, bin=(this.hi-this.lo)/n;
+    var idx=function(f){ return Math.round((f-this.lo)/bin-0.5); }.bind(this);
+    var seg=function(c){ return this._sumDb(p, idx(c-chMHz/2), idx(c+chMHz/2)); }.bind(this);
+    var need=f0+1.5*chMHz;
+    if(f0-1.5*chMHz<this.lo||need>this.hi){
+      this.markTxt.innerHTML='<span class="markmeas">ACPR needs the neighbouring channels in view: zoom out so the span covers '
+        +fmtMHz(f0-1.5*chMHz)+' → '+fmtMHz(need)+'.</span>'; return; }
+    var main=seg(f0), lo1=seg(f0-chMHz), hi1=seg(f0+chMHz);
+    var fmt=function(v){ return (v-main>=0?'+':'')+(v-main).toFixed(1)+' dB'; };
+    this.markTxt.innerHTML='<span class="markmeas"><b>ACPR</b> '+fmtMHz(f0)+' · channel '
+      +(chMHz>=1?chMHz.toFixed(3)+' MHz':(chMHz*1000).toFixed(1)+' kHz')
+      +' · main <b>'+main.toFixed(1)+this.unit()+'</b>'
+      +' · lower <b>'+fmt(lo1)+'</b> · upper <b>'+fmt(hi1)+'</b>'
+      +' <span class="zi" title="Measured on the '+(this.det||'peak')+' detector over the signal\'s own 99% occupied bandwidth. Adjacent-channel figures below about −60 dB are at the limit of what an RTL-SDR front end can show.">'
+      +(this.det==='rms'?'rms':'⚠ use the RMS detector')+'</span></span>';
+  };
+  // Spur search — everything else in view, as an offset and a level relative to
+  // the carrier. This is how you tell a transmitter's own spurious emissions
+  // (and the receiver's images) from other traffic.
+  Scope.prototype.spurSearch=function(){
+    var p=this.shown||this.row; if(!p||!p.length) return;
+    if(this.marker==null) this.peakSearch();
+    if(this.marker==null) return;
+    var n=p.length, bin=(this.hi-this.lo)/n, nf=(this.noiseDb!=null?this.noiseDb:this.floor);
+    var ci=Math.round((this.marker-this.lo)/bin-0.5), carrier=p[Math.max(0,Math.min(n-1,ci))];
+    var m=this.measureAt(this.marker), skip=Math.max(2,Math.round(((m&&m.bw20)||25)/1000/bin));
+    var out=[], i;
+    for(i=1;i<n-1;i++){
+      if(Math.abs(i-ci)<=skip) continue;
+      if(p[i]<=p[i-1]||p[i]<p[i+1]) continue;
+      if(p[i]<nf+10) continue;             // 10 dB over the floor: below that a
+                                           // noise ripple counts as a spur
+      // a peak needs 6 dB of excursion from the dip beside it, or it is a ripple
+      var l=i,r=i,mn=p[i];
+      while(l>0&&p[l-1]<p[l]){ l--; if(p[l]<mn) mn=p[l]; if(p[i]-mn>=6) break; }
+      if(p[i]-mn<6) continue;
+      out.push({f:this.lo+(i+0.5)*bin, d:p[i]-carrier, lvl:p[i]});
+    }
+    out.sort(function(a,b){return b.d-a.d;});
+    var top=out.slice(0,6);
+    var fk=function(dM){ var a=Math.abs(dM)*1000; return (dM>=0?'+':'−')+(a>=1000?(a/1000).toFixed(3)+' MHz':a.toFixed(1)+' kHz'); };
+    this.markTxt.innerHTML='<span class="markmeas"><b>Spurs</b> relative to '+fmtMHz(this.marker)+' ('+carrier.toFixed(1)+this.unit()+'): '
+      +(top.length?top.map(function(x){ return fk(x.f-this.marker)+' <b>'+x.d.toFixed(1)+' dBc</b>'; },this).join(' · ')
+                  :'nothing else above the noise in view')
+      +' <span class="zi" title="A peak counts when it rises 6 dB above the dip beside it and sits 10 dB over the noise. Use ✓ Verify on any of these: a receiver image is not a spur of the transmitter.">'+out.length+' found</span></span>';
+  };
+  // Harmonics — on the hardware, one tune at a time. A transmitter's harmonics
+  // are the quickest confirmation that it is what you think it is (and a
+  // legality question of its own).
+  Scope.prototype.harmonics=function(){
+    if(this.marker==null) this.peakSearch();
+    if(this.marker==null){ this.markTxt.textContent='Put a marker on the carrier first.'; return; }
+    var self=this, f0=this.marker, m=this.measureAt(f0), bw=Math.max(25,((m&&m.bw20)||50));
+    this.markTxt.innerHTML='<span class="markmeas">Measuring harmonics of <b>'+fmtMHz(f0)+'</b> on the hardware — a few seconds per harmonic…</span>';
+    fetch('/api/net/rtl/harmonics',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({freq_hz:Math.round(f0*1e6),bw_hz:Math.round(bw*1000),n:4})})
+      .then(function(r){return r.json();}).then(function(d){
+        if(!d.ok){ self.markTxt.innerHTML='<span class="markmeas">Harmonics: '+esc(d.error||'failed')+'</span>'; return; }
+        var parts=(d.harmonics||[]).map(function(h){
+          return h.n+'× '+fmtMHz(h.freq_hz/1e6)+' '+(h.heard?('<b>'+h.dbc.toFixed(1)+' dBc</b>'):'<span class="zi">not heard</span>'); });
+        self.markTxt.innerHTML='<span class="markmeas"><b>Harmonics</b> of '+fmtMHz(f0)+' (fundamental '
+          +(d.fundamental_db!=null?d.fundamental_db.toFixed(1)+self.unit():'?')+'): '+parts.join(' · ')
+          +' <span class="zi" title="Each harmonic is measured with its own short capture. dBc is relative to the fundamental measured in the same way. A harmonic beyond the dongle\'s tuning range is skipped.">'+(d.note||'')+'</span></span>';
+      }).catch(function(){ self.markTxt.innerHTML='<span class="markmeas">Harmonics: the radio did not answer.</span>'; });
   };
   Scope.prototype.addMarker=function(f){
     if(this.marks.length>=4){ this.markTxt.textContent='Up to 4 markers (M1 is the reference for Δ).'; return; }
@@ -2598,6 +2753,23 @@
     // measured noise-floor guide (dashed)
     if(this.noiseDb!=null){ t.setLineDash([3,3]); t.strokeStyle="rgba(139,152,171,0.5)"; t.lineWidth=1;
       var yn=yFor(this.noiseDb); t.beginPath(); t.moveTo(0,yn); t.lineTo(W,yn); t.stroke(); t.setLineDash([]); }
+    // Reference trace + trace math. The reference is drawn as it was stored, and
+    // the difference is drawn against its own zero line across the middle of the
+    // plot, because a difference in dB has nothing to do with the absolute scale.
+    var RF=this.refFor(N);
+    if(RF){
+      line(RF,"rgba(200,208,222,0.45)",1);
+      var mx=0,di; for(di=0;di<N;di++){ var dv=Math.abs(power[di]-RF[di]); if(dv>mx) mx=dv; }
+      var half=Math.max(5,Math.min(60,Math.ceil(mx/5)*5)), y0=H*0.5;
+      t.setLineDash([2,4]); t.strokeStyle="rgba(217,70,239,0.35)"; t.lineWidth=1;
+      t.beginPath(); t.moveTo(0,y0); t.lineTo(W,y0); t.stroke(); t.setLineDash([]);
+      t.strokeStyle="#d946ef"; t.lineWidth=Math.max(1,this.d); t.beginPath();
+      for(di=0;di<N;di++){ var y=y0-((power[di]-RF[di])/half)*(H*0.45), x=di*W/N;
+        if(y<1) y=1; if(y>H-1) y=H-1; if(di===0) t.moveTo(x,y); else t.lineTo(x,y); }
+      t.stroke();
+      t.fillStyle="rgba(217,70,239,0.9)"; t.font='10px ui-monospace,monospace';
+      t.fillText('live − ref  ±'+half+' dB', 6, y0-6);
+    }
     var h=this.holds||{};
     if(h.min) line(this.minRow,"rgba(120,140,170,0.75)",1);
     if(h.avg) line(this.avgRow,"rgba(63,181,107,0.9)",1);

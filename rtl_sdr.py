@@ -3165,6 +3165,83 @@ def _peek_window(center_hz, f_hz, bw_hz, secs):
         power_stop()
 
 
+_HW_TUNE_MIN_HZ = 24_000_000      # RTL-SDR R820T practical tuning range
+_HW_TUNE_MAX_HZ = 1_766_000_000
+
+
+def harmonic_plan(f0_hz, n=4, lo_hz=_HW_TUNE_MIN_HZ, hi_hz=_HW_TUNE_MAX_HZ):
+    """Which harmonics of ``f0_hz`` this receiver can actually look at (pure).
+
+    Returns [(n, freq_hz, reachable)] for 2f0..nf0. A harmonic past the tuner's
+    range is reported as out of reach rather than silently dropped — "no
+    harmonic found" and "could not look" are different answers.
+    """
+    out = []
+    try:
+        f0 = float(f0_hz)
+    except (TypeError, ValueError):
+        return out
+    for k in range(2, max(2, int(n or 4)) + 1):
+        f = f0 * k
+        out.append((k, f, bool(lo_hz <= f <= hi_hz)))
+    return out
+
+
+def harmonics(freq_hz, bw_hz=50_000, n=4, secs=1.2):
+    """Measure the harmonics of a carrier, one tune at a time.
+
+    Each harmonic gets its own short capture centred on it, so this is slow and
+    intrusive by design — it is a deliberate measurement, not something the
+    display does continuously. Levels are reported in dBc: relative to the
+    fundamental measured the same way, which cancels most of the tuner's gain.
+    """
+    try:
+        f0 = int(float(freq_hz))
+        bw = max(5_000, int(float(bw_hz or 50_000)))
+        secs = max(0.5, min(5.0, float(secs or 1.2)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "freq_hz must be a number"}
+    if (_ism.status().get("running")
+            or _survey.status().get("state") == "running"):
+        return {"ok": False, "error": "busy — this unit's dongle is in use"}
+    was = _power.status()
+    resume = ([was.get("band_hz"), was.get("band")] if was.get("running") else None)
+    plan = harmonic_plan(f0, n)
+    out, skipped = [], 0
+    pk0, lvl0 = _peek_window(f0, f0, bw, secs)
+    if lvl0 is None:
+        if resume and resume[0]:
+            power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+        return {"ok": False, "error": "could not hear the fundamental — measure it first"}
+    for k, f, ok in plan:
+        if not ok:
+            skipped += 1
+            out.append({"n": k, "freq_hz": f, "heard": False,
+                        "reason": "outside this receiver's tuning range"})
+            continue
+        _usb_settle()
+        _pk, lvl = _peek_window(int(f), int(f), bw * k, secs)
+        if lvl is None:
+            out.append({"n": k, "freq_hz": f, "heard": False,
+                        "reason": "nothing above the noise"})
+        else:
+            out.append({"n": k, "freq_hz": f, "heard": True,
+                        "level_db": round(lvl, 1), "dbc": round(lvl - lvl0, 1)})
+    if resume and resume[0]:
+        try:
+            power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+        except Exception:
+            pass
+    heard = [h for h in out if h.get("heard")]
+    note = "%d of %d measured" % (len(heard), len(out))
+    if skipped:
+        note += ", %d out of tuning range" % skipped
+    return {"ok": True, "freq_hz": f0, "fundamental_db": round(lvl0, 1),
+            "harmonics": out, "note": note,
+            "caveat": "a harmonic can also be made inside the receiver — check "
+                      "it is still there with the gain turned down"}
+
+
 def image_check(freq_hz, bw_hz=50_000, secs=1.5):
     """Prove a peak is a real transmitter and not an image or the DC spike.
 
@@ -3701,6 +3778,16 @@ def selftest():
     check("adc: no clipping yet but nearly full scale = near",
           adc_health(0.0, 0.95)[0] == "near")
     check("adc: bad input never raises", adc_health(None, "x")[0] == "ok")
+
+    # --- harmonics ----------------------------------------------------------
+    _hp = harmonic_plan(433_920_000, 4)
+    check("harmonics: plans 2x..nx the carrier",
+          [h[0] for h in _hp] == [2, 3, 4]
+          and _hp[0][1] == 867_840_000 and _hp[2][1] == 1_735_680_000)
+    check("harmonics: a harmonic past the tuner is marked out of reach, not dropped",
+          [h[2] for h in harmonic_plan(600_000_000, 4)] == [True, False, False]
+          and len(harmonic_plan(600_000_000, 4)) == 3)
+    check("harmonics: bad input returns an empty plan", harmonic_plan(None) == [])
 
     # --- image / DC-spike check ---------------------------------------------
     _ca, _cb = 433_670_000, 434_170_000

@@ -26219,6 +26219,15 @@ def register_network_diagnostics(app, logger=None):
                                            bw_hz=data.get('bw_hz') or 50000,
                                            secs=data.get('secs') or 1.5))
 
+    # Harmonic check: measures 2x..nx the carrier, one tune at a time.
+    @app.route('/api/net/rtl/harmonics', methods=['POST'])
+    def net_rtl_harmonics():
+        data = request.get_json(silent=True) or {}
+        _log("net/rtl/harmonics")
+        return jsonify(rtl_sdr.harmonics(data.get('freq_hz'),
+                                         bw_hz=data.get('bw_hz') or 50000,
+                                         n=data.get('n') or 4))
+
     # Armed trigger: watch the live rows for a mask crossing and capture raw IQ
     # around the event, including the second before it.
     @app.route('/api/net/rtl/trigger/arm', methods=['POST'])

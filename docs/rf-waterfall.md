@@ -319,6 +319,51 @@ It takes a few seconds and needs the dongle, so it refuses while the dongle is
 busy with a decode or a survey, and restores the sweep you were running
 afterwards. API: `POST /api/net/rtl/image-check {freq_hz, bw_hz}`.
 
+## Measurement set (band power, noise, ACPR, spurs, harmonics)
+
+
+Buttons in the **Markers** strip. Each one answers a question the raw trace
+cannot.
+
+- **Σ Band power** — total power between the two outermost markers, plus the
+  same figure per Hz. The per-Hz density is what makes two measurements taken at
+  different spans or RBWs comparable. It names the detector in use, and says so
+  when that detector is peak (which reads high).
+- **N Noise** — the level at the marker normalised to a 1 Hz bandwidth. The raw
+  reading is corrected for the resolution bandwidth, for the FFT window's
+  noise-equivalent bandwidth (Hann 1.5×, Blackman-Harris 2.0×, Flat-top 3.77×,
+  rectangular 1.0×) and for the +2.51 dB bias of a log-averaged trace, and it is
+  averaged over a window of bins rather than read off one. Those corrections are
+  worth several dB, which is the difference between a noise figure and a guess.
+- **ACPR** — power in the channels either side of the marked carrier, relative
+  to the carrier's own channel. The channel width comes from the signal's
+  measured 99% occupied bandwidth, so it works without knowing the standard.
+  It refuses, rather than guesses, when the neighbouring channels are not in
+  view.
+- **Spurs** — every other peak in view as an offset and a level in **dBc**
+  relative to the marked carrier. A peak counts when it rises 6 dB out of the
+  dip beside it and sits 10 dB over the noise, so ripple is not reported as a
+  spurious emission. Use **✓ Verify** on anything surprising: a receiver image
+  is not a transmitter's spur.
+- **Harmonics** (RTL panel) — measures 2×, 3× and 4× the marked frequency on the
+  hardware, one tune at a time, and reports each in dBc against the fundamental
+  measured the same way. Harmonics past the tuner's range are reported as out of
+  reach, not as absent. It takes roughly 7 s per harmonic and interrupts the
+  sweep, then puts it back. A strong "harmonic" can also be made inside an
+  overloaded receiver, so check the **Front end** tile and repeat with less
+  gain. API: `POST /api/net/rtl/harmonics {freq_hz, bw_hz, n}`.
+
+**Reference trace (⎖ Store ref).** Stores the live trace and switches the plot
+to **live − reference**, drawn against its own zero line with an auto-ranged
+±dB scale. This is how you show what changed since yesterday, or measure a
+filter, an attenuator or an antenna against a known-good baseline. The
+reference belongs to the span it was taken on and retires itself when the view
+moves off it.
+
+A **spectral emission mask** is the existing
+[limit line / mask](#limit-lines-and-masks-pass--fail): learn it from Max-hold,
+or set it flat, and the trace fills red where the signal exceeds it.
+
 ## Markers
 
 
@@ -805,6 +850,11 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 6 — measurement set**
+- [x] Band-power markers and a corrected noise marker (dB/Hz)
+- [x] ACPR, spur search (dBc), hardware harmonic check
+- [x] Reference trace with live − reference trace math
 
 **Tier 5 — capture**
 - [x] Frequency-mask / level trigger with pre-trigger buffer

@@ -104,6 +104,15 @@ Read numbers; don't judge by colour.
 - **Signals list** — every emitter above the floor with frequency, bandwidth,
   SNR and a **duty-cycle** estimate. ~5% means a bursty remote; ~100% means a
   continuous carrier.
+- **Σ Band power / N Noise** measure a segment's total power (and its power per
+  Hz) and a noise level normalised to 1 Hz. The noise figure corrects for RBW,
+  the window and the detector — without those corrections a noise reading is
+  several dB out.
+- **ACPR / Spurs / Harmonics** answer "how clean is this transmitter?": power
+  leaking into the neighbouring channels, every other peak in view in dBc, and —
+  on the hardware — whether 2× and 3× the frequency are radiating too.
+- **⎖ Store ref** freezes the current trace and shows **live − reference**. Use
+  it to prove what changed, or to measure an antenna, filter or attenuator.
 - **Persist** turns the trace into a fading density cloud, so frequently
   occupied frequencies glow and rare bursts leave a trail — the real-time
   analyser view for spotting intermittent signals and modulation shape.
