@@ -1204,13 +1204,22 @@
   }
   function runAiAction(a){
     if(a.action==='reset'){ $('reset').click(); return; }
+    // Every action except reset needs a loaded capture with a view.
+    if(!S.name || !S.view){ var an=$('aiacts'); if(an) an.insertAdjacentHTML('beforeend',
+      '<span class="albl" style="color:var(--rose)">open a capture first</span>'); return; }
     if(a.action==='tune'){
+      // Tune = point AT the signal AND investigate it. Repositioning alone looked
+      // like "nothing happened" when the view was already near the frequency.
       if(a.f_mhz!=null){ var f=a.f_mhz*1e6, span=(a.bw_khz?a.bw_khz*1e3*4:Math.max(60e3,(S.view.f1-S.view.f0)));
         S.marker={f:f,t:(S.view.t0+S.view.t1)/2}; S.hist.push(S.view);
         S.view={t0:S.view.t0,t1:S.view.t1,f0:f-span/2,f1:f+span/2}; }
       if(a.bw_khz!=null) $('bw').value=a.bw_khz;
       if(a.mode) setDemodMode(a.mode);
-      refreshWindow(); setAx(); return;
+      refreshWindow(); setAx();
+      // now actually look at it: demodulate + classify the tuned signal, so the
+      // analysis panels fill with the new data rather than just re-centring.
+      $('run').click(); $('runmod').click();
+      return;
     }
     if(a.action==='zoom'){ S.hist.push(S.view);
       S.view={t0:(a.t0!=null?a.t0:S.view.t0),t1:(a.t1!=null?a.t1:S.view.t1),
