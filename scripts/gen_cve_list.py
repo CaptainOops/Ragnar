@@ -132,7 +132,8 @@ NAMES = {
 def tracked_files():
     out = subprocess.run(['git', 'ls-files', '*.py', '*.js', '*.html'], cwd=ROOT,
                          capture_output=True, text=True, check=True).stdout.split()
-    return out
+    # Never scan this script: its NAMES table would count as a detector.
+    return [p for p in out if p != 'scripts/gen_cve_list.py']
 
 
 def nd_owner(name):
