@@ -156,6 +156,50 @@ is spectrum monitoring / interference-hunting the way regulators and SIGINT
 teams do it. Backend: `rtl_sdr.SpectrumBaseline` + pure
 `detect_spectrum_anomalies()`; routes `/api/net/rtl/baseline/{arm,clear,status}`.
 
+## Professional feature checklist
+
+The standard this page is measured against: what professional spectrum
+analysers and SDR tools (SDR++, SDR#, GQRX, Signal Hound Spike, benchtop RSA/FSV
+analysers) give you as a matter of course. Each item is ticked when it ships.
+
+**Tier 1 — basics**
+- [ ] Hover readout: frequency / level / time under the cursor
+- [x] Display range: Auto, or manual Ref level + Range, plus *Fit to signal*
+- [ ] Mouse-wheel zoom, drag to pan, pinch on touch
+- [ ] Resolution: FFT size (RBW), averaging, window, display bins
+- [ ] Markers: several, delta marker, peak search / next peak, marker → centre
+- [ ] HackRF gain (LNA / VGA / amp) in the UI
+- [ ] Pause and scroll back through history, with a time axis
+
+**Tier 2 — pro-grade**
+- [ ] CSV export (spectrum, traces, signal list, waterfall)
+- [ ] Limit lines / masks with pass/fail alarms
+- [ ] Absolute dBm calibration offset
+- [ ] Converter/LNB frequency offset, bias-T, RTL direct sampling
+- [ ] Radio: SSB / CW, squelch, audio recording
+- [ ] Keyboard shortcuts
+- [ ] Zero-span (level over time at one frequency)
+
+**Tier 3 — differentiators**
+- [ ] Band-plan labels
+- [ ] Signal-ID hints
+- [ ] Unattended survey with a log and a report
+- [ ] Mesh-wide direction finding (RSSI across Ragnar units)
+
+## Display range
+
+**⚙ Settings → Display range** sets the colour scale. **Auto** (the default)
+keeps the old behaviour: the bottom follows the measured noise floor and the top
+is fixed at −20 dB. Drag **Ref level** (top of the scale) or **Range** (dB from
+top to bottom), or press **Fit to signal**, which sets the top just above the
+strongest signal on screen and the bottom just under the noise floor. The
+setting is remembered per panel.
+
+The page keeps a history of every row it has shown (about 10 MB per panel), so a
+range or palette change **recolours the whole waterfall at once**, not just new
+rows. The same history is redrawn when the window is resized or goes full screen,
+instead of starting blank.
+
 ## Noise print (background subtraction)
 
 Some lines are always there: Pi/USB/PSU "birdies", the RTL-SDR DC spike at the

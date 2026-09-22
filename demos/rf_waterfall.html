@@ -108,6 +108,18 @@
   button.mini:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   button.mini[aria-pressed="true"]{border-color:var(--cyan);color:var(--cyan);background:rgba(56,189,201,.12)}
   .toolbar .holdgrp,.toolbar .d3grp,.toolbar .npgrp{display:inline-flex;align-items:center;gap:5px}
+  /* per-panel settings drawer (display range, resolution, hardware, limits, export) */
+  .drawer{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;padding:10px 14px 12px;border-top:1px solid var(--line-soft);background:var(--panel-2);font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
+  .drawer[hidden]{display:none}
+  .dsec{border:1px solid var(--line);border-radius:8px;padding:8px 10px 10px;margin:0;min-width:0;display:flex;flex-direction:column;gap:7px}
+  .dsec legend{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);padding:0 4px}
+  .drow{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap}
+  .drow label{min-width:64px;color:var(--muted);font-size:10.5px}
+  .drow input[type=range]{flex:1 1 90px;min-width:70px;accent-color:var(--cyan)}
+  .drow input[type=number],.drow input[type=text],.drow select{width:72px;font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+  .drow select{width:auto}
+  .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
+  .dnote b{color:var(--ink-dim);font-weight:500}
   .toolbar .npgrp select{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 4px}
   .toolbar .npgrp input[type=range]{width:74px;accent-color:var(--cyan)}
   .toolbar .npgrp .npstat{font-size:10.5px;color:var(--muted)} .toolbar .npgrp .npstat b{color:var(--cyan);font-weight:500}
@@ -304,12 +316,14 @@
   try{var _sp=localStorage.getItem('ragnar_rf_palette'); if(_sp&&PALETTES[_sp]) activePalette=_sp;}catch(e){}
   var LUT=buildLUT(PALETTES[activePalette].stops);
   var LUTrgb=buildLUTrgb(PALETTES[activePalette].stops);
-  function color(db,floor){var t=(db-floor)/(CEIL-floor);if(t<0)t=0;if(t>1)t=1;return LUT[(t*255)|0];}
-  function colorRGB(db,floor){var t=(db-floor)/(CEIL-floor);if(t<0)t=0;if(t>1)t=1;return LUTrgb[(t*255)|0];}
+  // colour for a dB value inside the panel's display range [lo (bottom), hi (top)]
+  function color(db,lo,hi){var t=(db-lo)/((hi-lo)||1);if(t<0)t=0;if(t>1)t=1;return LUT[(t*255)|0];}
+  function colorRGB(db,lo,hi){var t=(db-lo)/((hi-lo)||1);if(t<0)t=0;if(t>1)t=1;return LUTrgb[(t*255)|0];}
   function setPalette(id){
     if(!PALETTES[id]) return;
     activePalette=id; LUT=buildLUT(PALETTES[id].stops); LUTrgb=buildLUTrgb(PALETTES[id].stops);
-    try{ if(typeof scopes!=='undefined'&&scopes) scopes.forEach(function(s){ if(s.threeD) s.draw3D(); }); }catch(e){}
+    // recolour what's already on screen from the row history (not just new rows)
+    try{ if(typeof scopes!=='undefined'&&scopes) scopes.forEach(function(s){ s.repaint(); }); }catch(e){}
     var g=document.querySelector('.legend .grad'); if(g) g.style.background=gradCss(PALETTES[id].stops);
     var seg=document.getElementById('palette');
     if(seg) Array.prototype.forEach.call(seg.querySelectorAll('button'),function(x){
@@ -376,6 +390,12 @@
     this.replaying=false; this.replay=null; this._recPoll=null;
     this.busy=0; this.log=[]; this._lastLog=0; this._ismPoll=null;
     this.hist=[]; this.threeD=false; this._last3D=0;   // 3D terrain waterfall state
+    // Row history: every raw row with its span + timestamp. Drives repaint (range /
+    // palette / resize / zoom keep what's on screen), hover values and scroll-back.
+    this.hrows=[]; this.scrollBack=0;
+    this.disp={auto:true,ref:-20,range:90};
+    try{ var _d=JSON.parse(localStorage.getItem('rfwf.disp.'+cfg.short)||'null');
+      if(_d&&isFinite(_d.ref)&&isFinite(_d.range)) this.disp={auto:!!_d.auto,ref:+_d.ref,range:+_d.range}; }catch(e){}
     this._liveQ=[]; this._acc=0; this._arrEma=0; this._lastPoll=0;   // de-jitter buffer for even live scroll
     this._tsWin=[]; this._nom=0;                                      // producer-timestamp rate estimate
     this.model=cfg.synth(cfg.synthDefault);
@@ -433,8 +453,18 @@
             +'<button class="mini d3btn" data-3d="1" aria-pressed="false" title="3D terrain waterfall — signal power as height, older sweeps recede into the distance">3D</button>'
           +'</span>'
           +'<button class="mini snapbtn" title="Save the waterfall as a PNG">⇩ PNG</button>'
+          +'<button class="mini cfgbtn" aria-expanded="false" title="Display range, resolution, hardware, limit lines and export">&#9881; Settings</button>'
           +'<button class="mini zoombtn" disabled>Zoom here</button>'
           +'<button class="mini resetbtn" disabled>Reset zoom</button>'
+        +'</div>'
+        +'<div class="drawer" hidden>'
+          +'<fieldset class="dsec dsp"><legend>Display range</legend>'
+            +'<div class="drow"><button class="mini dauto" aria-pressed="true" title="Follow the measured noise floor automatically">Auto</button>'
+              +'<button class="mini dfit" title="Fit the colour scale to what is on screen now: top just above the strongest signal, bottom just under the noise floor">Fit to signal</button></div>'
+            +'<div class="drow"><label>Ref level</label><input type="range" class="dref" min="-160" max="40" step="1"><input type="number" class="drefn" step="1"><span>dB</span></div>'
+            +'<div class="drow"><label>Range</label><input type="range" class="drng" min="10" max="150" step="1"><input type="number" class="drngn" step="1"><span>dB</span></div>'
+            +'<div class="dnote">Top of the colour scale = <b>Ref level</b>, bottom = Ref − <b>Range</b>. Narrow the range to dig weak signals out; the whole waterfall recolours at once.</div>'
+          +'</fieldset>'
         +'</div>'
         +'<div class="recbar hidden"></div>'
         +'<div class="logwrap"><div class="logcap"><span class="logtitle">Signals</span><span class="logcount"></span></div>'
@@ -511,11 +541,25 @@
     this.npStrEl.addEventListener('input',function(){ self._npStr=(+self.npStrEl.value)/100;
       try{ localStorage.setItem('rfwf.np.str.'+cfg.short,self.npStrEl.value); }catch(e){} self._npUI(); });
     this._npUI();
+    // Settings drawer
+    this.cfgBtn=el.querySelector('.cfgbtn'); this.drawer=el.querySelector('.drawer');
+    this.cfgBtn.addEventListener('click',function(){ var open=self.drawer.hidden; self.drawer.hidden=!open;
+      self.cfgBtn.setAttribute('aria-expanded',open?'true':'false'); self.cfgBtn.setAttribute('aria-pressed',open?'true':'false'); });
+    this.dAuto=el.querySelector('.dauto'); this.dRef=el.querySelector('.dref'); this.dRefN=el.querySelector('.drefn');
+    this.dRng=el.querySelector('.drng'); this.dRngN=el.querySelector('.drngn');
+    this.dAuto.addEventListener('click',function(){ self.setDisplay({auto:!self.disp.auto}); });
+    el.querySelector('.dfit').addEventListener('click',function(){ self.fitDisplay(); });
+    function _manual(ref,rng){ self.setDisplay({auto:false,ref:ref,range:rng}); }
+    this.dRef.addEventListener('input',function(){ _manual(+self.dRef.value,self.rangeHi()-self.rangeLo()); });
+    this.dRefN.addEventListener('change',function(){ if(isFinite(+self.dRefN.value)) _manual(+self.dRefN.value,self.rangeHi()-self.rangeLo()); });
+    this.dRng.addEventListener('input',function(){ _manual(self.rangeHi(),+self.dRng.value); });
+    this.dRngN.addEventListener('change',function(){ if(+self.dRngN.value>0) _manual(self.rangeHi(),+self.dRngN.value); });
+    this._dispUI();
     if(cfg.tuner) this.buildTuner();
     if(cfg.record){ this.buildRecorder(); this.recBar.classList.remove('hidden'); }
 
     this.resize(); this.resetCanvas();
-    this._ro=new ResizeObserver(function(){ if(self.resize()){ self.drawRuler(); self.placeMarker(); } });
+    this._ro=new ResizeObserver(function(){ if(self.resize()){ self.drawRuler(); self.placeMarker(); self.repaint(); } });
     this._ro.observe(this.fall);
   }
 
@@ -534,7 +578,7 @@
     this.fsBtn.innerHTML=full?'&#10005;&nbsp;Exit full screen':'&#9974;&nbsp;Full screen';
     var self=this;
     // let the layout settle, then regrow the canvas to the new size
-    requestAnimationFrame(function(){ if(self.resize()){ self.resetCanvas(); self.drawRuler(); self.placeMarker(); } });
+    requestAnimationFrame(function(){ if(self.resize()){ self.drawRuler(); self.placeMarker(); self.repaint(); } });
   };
   // Save the waterfall (with its ruler labels baked on) as a PNG the browser
   // downloads. Same-origin page, so a normal <a download> works.
@@ -1180,6 +1224,7 @@
     var _sk=lo+'_'+hi+'_'+raw.length;           // span changed (zoom/band/retune) -> load its print
     if(_sk!==this._npSpan){ this._npSpan=_sk; this._npLoadFor(lo,hi,raw.length); }
     if(this._np && this._npOn && this._npStr>0) power=this._npApply(raw);
+    this._histPush(raw,lo,hi,(typeof floor==='number')?floor:-110);
     if(this._np && !this._npRec && _t0np()-this._npStatT>15000){ this._npStatT=_t0np(); this._npUI(); }   // keep the age label current
     // Measure the true row cadence (EMA) so the Rows/s readout reflects the
     // data rate actually arriving — not the scroll-speed setting.
@@ -1196,10 +1241,14 @@
     if(this.threeD){                          // 3D terrain view: measure, then redraw the surface (throttled)
       for(var cm=0;cm<N;cm++){ if(power[cm]>peakDb){peakDb=power[cm];peakIdx=cm;} if(power[cm]>thr)busyC++; }
       var _t3=performance.now(); if(_t3-this._last3D>=60){ this._last3D=_t3; this.draw3D(); }
+    } else if(this.scrollBack>0){             // looking back in history: hold the view steady
+      for(var cb=0;cb<N;cb++){ if(power[cb]>peakDb){peakDb=power[cb];peakIdx=cb;} if(power[cb]>thr)busyC++; }
+      this.scrollBack=Math.min(this.scrollBack+1,this.hrows.length-1);
     } else {                                  // classic 2D waterfall: scroll the canvas + paint the new row
+      var _clo=this.rangeLo(), _chi=this.rangeHi();
       f.drawImage(this.fall,0,0,this.W,this.H-this.STEP,0,this.STEP,this.W,this.H-this.STEP);
       for(var c=0;c<N;c++){var x0=(c*this.W/N)|0,x1=((c+1)*this.W/N)|0;
-        f.fillStyle=color(power[c],this.floor); f.fillRect(x0,0,(x1-x0)||1,this.STEP);
+        f.fillStyle=color(power[c],_clo,_chi); f.fillRect(x0,0,(x1-x0)||1,this.STEP);
         if(power[c]>peakDb){peakDb=power[c];peakIdx=c;} if(power[c]>thr)busyC++;}
     }
     this.row=raw; this.shown=power;          // measurements read true levels; display/detection use the filtered row
@@ -1209,6 +1258,77 @@
     this.updateSignals(power,nf);        // track emitters (CFAR) + throttled render
     this.drawTrace(power); this.updateReadout();
   };
+
+  // ---- display range (colour scale) ----------------------------------------
+  // Auto: bottom follows the measured/backend noise floor, top is the fixed
+  // ceiling (the long-standing default). Manual: Ref level (top) + Range (dB).
+  Scope.prototype.rangeHi=function(){ return this.disp.auto?CEIL:this.disp.ref; };
+  Scope.prototype.rangeLo=function(){ return this.disp.auto?this.floor:(this.disp.ref-this.disp.range); };
+  Scope.prototype.setDisplay=function(o){
+    if(o.auto===false && this.disp.auto){ this.disp.ref=this.rangeHi(); this.disp.range=Math.max(10,this.rangeHi()-this.rangeLo()); }
+    if(o.auto!=null) this.disp.auto=!!o.auto;
+    if(o.ref!=null&&isFinite(o.ref)) this.disp.ref=Math.max(-200,Math.min(60,Math.round(o.ref)));
+    if(o.range!=null&&isFinite(o.range)) this.disp.range=Math.max(5,Math.min(200,Math.round(o.range)));
+    try{ localStorage.setItem('rfwf.disp.'+this.cfg.short,JSON.stringify(this.disp)); }catch(e){}
+    this._dispUI(); this.repaint(); if(this.shown||this.row) this.drawTrace(this.shown||this.row);
+  };
+  Scope.prototype.fitDisplay=function(){
+    var src=this.maxRow||this.shown||this.row; if(!src||!src.length) return;
+    var pk=-1e9; for(var i=0;i<src.length;i++) if(src[i]>pk) pk=src[i];
+    var nf=(this.noiseDb!=null)?this.noiseDb:this.floor;
+    var top=Math.ceil((pk+3)/5)*5, bot=Math.floor((nf-5)/5)*5;
+    this.setDisplay({auto:false,ref:top,range:Math.max(10,top-bot)});
+  };
+  Scope.prototype._dispUI=function(){
+    if(!this.dAuto) return; var hi=Math.round(this.rangeHi()), rg=Math.round(this.rangeHi()-this.rangeLo());
+    this.dAuto.setAttribute('aria-pressed',this.disp.auto?'true':'false');
+    this.dRef.value=hi; this.dRefN.value=hi; this.dRng.value=rg; this.dRngN.value=rg;
+  };
+
+  // ---- row history + full repaint ------------------------------------------
+  Scope.prototype._histPush=function(raw,lo,hi,floor){
+    var r=(raw instanceof Float32Array)?raw:Float32Array.from(raw);
+    this.hrows.push({t:Date.now(),p:r,lo:lo,hi:hi,floor:floor});
+    var cap=Math.max(300,Math.min(4000,Math.floor(10e6/(r.length*4))));   // ~10 MB per panel
+    if(this.hrows.length>cap) this.hrows.splice(0,this.hrows.length-cap);
+  };
+  // The value shown for a stored row (noise print applied when it matches the row's span).
+  Scope.prototype._shownOf=function(h){
+    var np=this._np; if(np && this._npOn && this._npStr>0 && np.n===h.p.length && np.lo===h.lo && np.hi===h.hi) return this._npApply(h.p);
+    return h.p;
+  };
+  // Redraw the visible waterfall from history: each stored row is resampled onto
+  // the CURRENT span (so after a zoom the past stays visible, just coarser) with a
+  // peak detector when several bins share a pixel column. One ImageData pass,
+  // scaled up — fast enough to run on every range / palette / resize change.
+  Scope.prototype.repaint=function(){
+    if(this.threeD){ this.draw3D(); return; }
+    var f=this.fctx, W=this.W, H=this.H, S=this.STEP||1; if(!W||!H) return;
+    f.fillStyle='#05080d'; f.fillRect(0,0,W,H);
+    var end=this.hrows.length-1-this.scrollBack; if(end<0){ this._drawTimeGrid(); return; }
+    var nrows=Math.min(end+1,Math.ceil(H/S)), cols=Math.max(1,Math.min(W,2048));
+    if(!this._rpCv) this._rpCv=document.createElement('canvas');
+    var cv=this._rpCv; if(cv.width!==cols) cv.width=cols; if(cv.height!==nrows) cv.height=nrows;
+    var ctx=cv.getContext('2d'), id=ctx.createImageData(cols,nrows), d=id.data;
+    var clo=this.rangeLo(), chi=this.rangeHi(), cs=(chi-clo)||1, flo=this.lo, fw=(this.hi-this.lo)/cols;
+    for(var k=0;k<nrows;k++){
+      var h=this.hrows[end-k], p=this._shownOf(h), N=p.length, bw=(h.hi-h.lo)/N;
+      for(var c=0;c<cols;c++){
+        var o=(k*cols+c)*4, f0=flo+c*fw, f1=f0+fw;
+        if(f1<=h.lo || f0>=h.hi){ d[o]=5;d[o+1]=8;d[o+2]=13;d[o+3]=255; continue; }
+        var i0=Math.floor((f0-h.lo)/bw), i1=Math.floor((f1-h.lo)/bw);
+        if(i0<0) i0=0; if(i1>=N) i1=N-1; if(i1<i0) i1=i0;
+        var v=p[i0]; for(var i=i0+1;i<=i1;i++) if(p[i]>v) v=p[i];
+        var t=(v-clo)/cs; t=t<0?0:(t>1?1:t); var col=LUTrgb[(t*255)|0];
+        d[o]=col[0]; d[o+1]=col[1]; d[o+2]=col[2]; d[o+3]=255;
+      }
+    }
+    ctx.putImageData(id,0,0);
+    var sm=f.imageSmoothingEnabled; f.imageSmoothingEnabled=false;
+    f.drawImage(cv,0,0,cols,nrows,0,0,W,nrows*S); f.imageSmoothingEnabled=sm;
+    this._drawTimeGrid();
+  };
+  Scope.prototype._drawTimeGrid=function(){};   // (time axis — filled in with scroll-back)
 
   // ---- noise print (background subtraction) -----------------------------
   // Record N seconds of rows, take the per-bin MEDIAN (the typical level, so a
@@ -1286,7 +1406,7 @@
     var f=this.fctx, W=this.W, H=this.H, d=this.d||1;
     f.fillStyle='#05080d'; f.fillRect(0,0,W,H);
     var hist=this.hist, R=hist.length; if(!R) return;
-    var floor=this.floor, span=(CEIL-floor)||1, cx=W/2;
+    var floor=this.rangeLo(), span=(this.rangeHi()-floor)||1, cx=W/2, _chi=this.rangeHi();
     var yTop=Math.round(16*d), yBot=H-Math.round(8*d), depthSpan=yBot-yTop;
     var back=0.46, MAXH=depthSpan*0.62, topClip=Math.round(4*d);   // shrink + ridge height + top clamp
     var yAt=function(dep){ return yTop+dep*depthSpan; };
@@ -1304,7 +1424,7 @@
       // sloped-top quads between adjacent columns — anti-aliased, so the ridgeline
       // is a smooth surface instead of a row of flat-topped bars.
       for(var c=0;c<C-1;c++){
-        var col=colorRGB(row[c],floor);
+        var col=colorRGB(row[c],floor,_chi);
         f.fillStyle='rgb('+((col[0]*dim)|0)+','+((col[1]*dim)|0)+','+((col[2]*dim)|0)+')';
         f.beginPath(); f.moveTo(xx[c],yy[c]); f.lineTo(xx[c+1],yy[c+1]);
         f.lineTo(xx[c+1],yFill); f.lineTo(xx[c],yFill); f.closePath(); f.fill();
@@ -1406,9 +1526,9 @@
             obw99:(hi99-lo99+1)*binMHz*1000, chPwr:10*Math.log10(tot||1e-12)};
   };
   Scope.prototype.drawTrace=function(power){
-    var t=this.tctx,W=this.trace.width,H=this.trace.height,N=power.length,floor=this.floor;
+    var t=this.tctx,W=this.trace.width,H=this.trace.height,N=power.length,floor=this.rangeLo(),ceil=this.rangeHi();
     t.clearRect(0,0,W,H);
-    var yFor=function(db){var norm=(db-floor)/(CEIL-floor);if(norm<0)norm=0;if(norm>1)norm=1;return H-norm*(H-4)-2;};
+    var yFor=function(db){var norm=(db-floor)/((ceil-floor)||1);if(norm<0)norm=0;if(norm>1)norm=1;return H-norm*(H-4)-2;};
     var line=function(arr,stroke,wdt){ if(!arr)return; t.strokeStyle=stroke; t.lineWidth=wdt; t.beginPath();
       for(var c=0;c<N;c++){var x=c*W/N,y=yFor(arr[c]); if(c===0)t.moveTo(x,y);else t.lineTo(x,y);} t.stroke(); };
     // Persistence (digital-phosphor): accumulate the spectrum path into a fading
@@ -1523,6 +1643,7 @@
     hwLo:1, hwHi:6000, tuneSpan:20,   // HackRF One: 1 MHz-6 GHz (sweeps every mesh/LoRa overlay band too)
     liveBands:SUBGHZ_BANDS.concat([{id:'2.4',label:'2.4G'},{id:'5',label:'5G'},{id:'6',label:'6G'}]), defaultBand:'2.4' });
   scopes.push(hackrf); stack.appendChild(hackrf.el);
+  window.RFWF={scopes:scopes};   // console/debug handle on the panels
 
   var clockEl=document.getElementById('clock');
   function tickClock(){clockEl.textContent=nowHM();} setInterval(tickClock,1000); tickClock();
