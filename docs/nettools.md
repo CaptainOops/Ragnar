@@ -1716,8 +1716,11 @@ poisoner. What it flags:
 
 - **poisoning** — a host answering LLMNR/NBT-NS (Responder/Inveigh), or an mDNS host
   claiming foreign / high-value names. **WPAD** and ISATAP targeting is called out.
-- **spoof-conflict** — one name answered by two hosts with different IPs (a poisoner
-  racing the real owner).
+- **spoof-conflict** — one host name answered by two hosts with different IPs (a poisoner
+  racing the real owner). Only **A / AAAA** records count, compared within one address
+  family: mDNS **DNS-SD** service-type PTRs (e.g. every AirPlay device answering
+  `_companion-link._tcp.local`) are service discovery, not a conflict, and a host that
+  announces several of its own addresses (or sends them from one MAC) is one owner.
 - **smbv1-active** / **smbv1-offered** — SMBv1 in use, or merely offered.
 - **name-exposure** — LLMNR/NBT-NS queries present at all: hosts are one Responder
   away from credential theft; disable via GPO.

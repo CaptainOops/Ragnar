@@ -11767,6 +11767,7 @@ def _smb_parse_packets(packets):
         if ipl is None:
             continue
         src, dst = ipl.src, ipl.dst
+        mac = getattr(pk, 'src', None) if pk.name == 'Ethernet' else None
 
         if pk.haslayer(TCP):
             t = pk.getlayer(TCP)
@@ -11824,10 +11825,11 @@ def _smb_parse_packets(packets):
         if u.dport == 5355 or u.sport == 5355:            # LLMNR
             if LLMNRResponse is not None and pk.haslayer(LLMNRResponse):
                 r = pk.getlayer(LLMNRResponse)
-                nm = _dns_qname(r)
-                ans = _dns_answer_ip(r)
+                addrs = _dns_answer_addrs(r)
+                nm = _dns_qname(r) or (addrs[0][0] if addrs else None)
                 nameres.append({'proto': 'llmnr', 'kind': 'response', 'src': src,
-                                'dst': dst, 'name': nm, 'answer': ans})
+                                'dst': dst, 'name': nm, 'answer': _dns_answer_ip(r),
+                                'answers': addrs, 'mac': mac})
             elif LLMNRQuery is not None and pk.haslayer(LLMNRQuery):
                 nameres.append({'proto': 'llmnr', 'kind': 'query', 'src': src,
                                 'dst': dst, 'name': _dns_qname(pk.getlayer(LLMNRQuery)),
@@ -11836,9 +11838,12 @@ def _smb_parse_packets(packets):
             if pk.haslayer(DNS):
                 d = pk.getlayer(DNS)
                 is_resp = int(getattr(d, 'qr', 0)) == 1 or int(getattr(d, 'ancount', 0)) > 0
+                addrs = _dns_answer_addrs(d) if is_resp else []
                 nameres.append({'proto': 'mdns', 'kind': 'response' if is_resp else 'query',
-                                'src': src, 'dst': dst, 'name': _dns_qname(d),
-                                'answer': _dns_answer_ip(d) if is_resp else None})
+                                'src': src, 'dst': dst,
+                                'name': _dns_qname(d) or (addrs[0][0] if addrs else None),
+                                'answer': _dns_answer_ip(d) if is_resp else None,
+                                'answers': addrs, 'mac': mac})
         elif u.dport == 137 or u.sport == 137:            # NBT-NS
             parsed = _nbns_parse(bytes(u.payload))
             if parsed:
@@ -11864,15 +11869,42 @@ def _dns_qname(layer):
     return None
 
 
-def _dns_answer_ip(layer):
+def _dns_answer_rrs(layer):
+    """The answer-section RRs of a scapy DNS/LLMNR layer (a list on scapy >= 2.6,
+    a chained packet on older releases)."""
+    an = getattr(layer, 'an', None)
+    if an is None:
+        return []
+    if isinstance(an, list):
+        return an
+    out = []
+    while an is not None and getattr(an, 'type', None) is not None:
+        out.append(an)
+        an = an.payload if getattr(an.payload, 'type', None) is not None else None
+    return out
+
+
+def _dns_answer_addrs(layer):
+    """[(owner_name, ip)] for the A / AAAA answer records only. mDNS answers are
+    mostly PTR / SRV / TXT (DNS-SD service discovery), whose rdata is a NAME, not an
+    address, so reading 'the first rdata' as the answered IP is wrong."""
+    out = []
     try:
-        an = getattr(layer, 'an', None)
-        if an and getattr(an, 'rdata', None):
-            rd = an.rdata
-            return rd.decode('latin1', 'replace') if isinstance(rd, bytes) else str(rd)
+        for rr in _dns_answer_rrs(layer):
+            if int(getattr(rr, 'type', 0)) not in (1, 28):
+                continue
+            n = rr.rrname
+            n = (n.decode('latin1', 'replace') if isinstance(n, bytes) else str(n)).rstrip('.')
+            out.append((n, str(rr.rdata)))
     except Exception:
         pass
-    return None
+    return out
+
+
+def _dns_answer_ip(layer):
+    """The first A / AAAA address in the answer section (None if there is none)."""
+    addrs = _dns_answer_addrs(layer)
+    return addrs[0][1] if addrs else None
 
 
 def _smb_watch_load():
@@ -11938,6 +11970,8 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
     responders = {}
     q_llmnr = q_nbtns = q_mdns = 0
     name_answers = {}
+    name_claims = {}     # (name, family) -> {announcer: {ip}}
+    conflicts = []
     for e in nameres:
         if e['kind'] == 'query':
             if e['proto'] == 'llmnr':
@@ -11958,11 +11992,24 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
             if base in _SMB_HIGHVALUE:
                 r['highvalue'].add(e['name'])
             name_answers.setdefault(e['name'].lower(), set())
-            if e['answer']:
-                name_answers[e['name'].lower()].add(e['answer'])
+        # Name claims come from the A / AAAA records themselves (owner name -> IP),
+        # keyed per announcer so the conflict check can tell one multi-address host
+        # from two hosts racing. NBT-NS events carry a single (name, answer).
+        claims = e.get('answers')
+        if claims is None:
+            claims = [(e['name'], e['answer'])] if e['name'] and e['answer'] else []
+        for cname, cip in claims:
+            fam = 6 if ':' in str(cip) else 4
+            who = e.get('mac') or e['src']
+            name_answers.setdefault(cname.lower(), set()).add(cip)
+            name_claims.setdefault((cname.lower(), fam), {}).setdefault(who, set()).add(cip)
         # mDNS is legit when a host announces *itself* (answer == its own IP); a reply
-        # pointing elsewhere is a host claiming another identity.
-        if e['answer'] and e['answer'] != e['src']:
+        # pointing elsewhere is a host claiming another identity. Compare within the
+        # source's address family — a host sending from IPv6 while announcing its A
+        # record is still announcing itself.
+        sfam = 6 if ':' in str(e['src']) else 4
+        same = [ip for _, ip in claims if (6 if ':' in str(ip) else 4) == sfam]
+        if same and e['src'] not in same:
             r['foreign'] = True
 
     known_mdns = set(baseline.get('mdns_responders') or [])
@@ -12009,10 +12056,22 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
                 f"the reply authenticate to it and leak NTLMv2 hashes. Disable "
                 f"LLMNR/NBT-NS via GPO and enable SMB signing to block relay")
 
-    # Spoof conflict: one name answered by 2+ different IPs.
-    for name in sorted(name_answers):
-        ips = name_answers[name]
-        if len(ips) > 1:
+    # Spoof conflict: one host name resolved to 2+ addresses (same family) by
+    # announcers that never co-announce them. A multi-homed / multi-address host
+    # announces its addresses together (or from one MAC), so address sets that
+    # overlap through a common announcer are merged first; only 2+ disjoint
+    # groups — two hosts each claiming the name — is a poisoner race.
+    for (name, fam) in sorted(name_claims):
+        groups = []
+        for ips in name_claims[(name, fam)].values():
+            merged = set(ips)
+            for g in [g for g in groups if g & merged]:
+                merged |= g
+                groups.remove(g)
+            groups.append(merged)
+        if len(groups) > 1:
+            ips = set().union(*groups)
+            conflicts.append({'name': name, 'answers': sorted(ips)})
             bump('spoof-conflict')
             reasons.append(
                 f"Name '{name}' is answered with conflicting IPs ({', '.join(sorted(ips))}) "
@@ -12178,8 +12237,7 @@ def _smb_analyze(smb_events, nameres, seconds, baseline, learn=True):
                             'known': r['ip'] in known_mdns} for r in
                            (responders[i] for i in sorted(responders))],
             'queries': {'llmnr': q_llmnr, 'nbtns': q_nbtns, 'mdns': q_mdns},
-            'conflicts': [{'name': n, 'answers': sorted(name_answers[n])}
-                          for n in sorted(name_answers) if len(name_answers[n]) > 1]},
+            'conflicts': conflicts},
         'ntlm': ntlm_findings,
         'advisories': advisories,
     }
@@ -12849,6 +12907,18 @@ def _smb_selftest():
         return (Ether() / IP(src=src, dst='224.0.0.251') / UDP(sport=5353, dport=5353)
                 / DNS(qr=1, qd=DNSQR(qname=name), an=DNSRR(rrname=name, rdata=src)))
 
+    def mdns_ptr(src, mac, svc, instance):
+        # DNS-SD service discovery: a PTR from the shared service type to this host's
+        # instance — every AirPlay/Handoff device answers '_companion-link._tcp'.
+        return (Ether(src=mac) / IP(src=src, dst='224.0.0.251') / UDP(sport=5353, dport=5353)
+                / DNS(qr=1, aa=1, qd=DNSQR(qname=svc, qtype='PTR'),
+                      an=DNSRR(rrname=svc, type='PTR', rdata=instance)))
+
+    def mdns_a(src, mac, name, *ips):
+        an = [DNSRR(rrname=name, type='A', rdata=ip) for ip in ips]
+        return (Ether(src=mac) / IP(src=src, dst='224.0.0.251') / UDP(sport=5353, dport=5353)
+                / DNS(qr=1, aa=1, an=an))
+
     def ntlm_type2(src, challenge_hex):
         # NTLMSSP CHALLENGE (server->client): sig[8] type[4]=2 target[8] flags[4]
         # challenge[8] — the 8-byte server challenge sits at NTLMSSP+24.
@@ -12954,6 +13024,23 @@ def _smb_selftest():
     run('spoof-conflict', [llmnr_resp('10.0.0.5', 'app01', '10.0.0.5'),
                            llmnr_resp('10.0.0.66', 'app01', '10.0.0.66')], base,
         'poisoning')  # both are LLMNR responders -> poisoning outranks conflict
+    # 4b. mDNS DNS-SD: three hosts answering one shared service type with PTRs to
+    #     their own instance names is service discovery, not a conflict (the
+    #     '_companion-link._tcp.local' false positive: PTR rdata was read as an IP).
+    svc = '_companion-link._tcp.local'
+    run('mdns-dnssd-ptr-not-conflict',
+        [mdns_ptr('10.0.0.21', '02:00:00:00:00:21', svc, 'Vardagsrum.' + svc),
+         mdns_ptr('10.0.0.22', '02:00:00:00:00:22', svc, 'Jacks rum.' + svc),
+         mdns_ptr('10.0.0.23', '02:00:00:00:00:23', svc, 'Sovrum.' + svc)], base, 'clean')
+    # 4c. one multi-address host announcing both its addresses is not a conflict.
+    run('mdns-multiaddr-not-conflict',
+        [mdns_a('10.0.0.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24', '10.0.1.24')],
+        base, 'clean')
+    # 4d. two different hosts each claiming the same host name IS a poisoner race.
+    run('mdns-spoof-conflict',
+        [mdns_a('10.0.0.24', '02:00:00:00:00:24', 'nas.local', '10.0.0.24'),
+         mdns_a('10.0.0.66', '02:00:00:00:00:66', 'nas.local', '10.0.0.66')],
+        base, 'spoof-conflict')
     # 5. smbv1-active: a real SMBv1 tree-connect (cmd 0x75).
     run('smbv1-active', [smb1(0x75, False)], base, 'smbv1-active')
     # 6. smbv1-offered: only a client SMBv1 negotiate request (cmd 0x72, no response).
