@@ -166,16 +166,16 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [x] Hover readout: frequency / level / time under the cursor
 - [x] Display range: Auto, or manual Ref level + Range, plus *Fit to signal*
 - [x] Mouse-wheel zoom, drag to pan, pinch on touch
-- [ ] Resolution: FFT size (RBW), averaging, window, display bins
+- [x] Resolution: FFT size (RBW), averaging, window, display bins
 - [x] Markers: several, delta marker, peak search / next peak, marker → centre
-- [ ] HackRF gain (LNA / VGA / amp) in the UI
+- [x] HackRF gain (LNA / VGA / amp) in the UI
 - [x] Pause and scroll back through history, with a time axis
 
 **Tier 2 — pro-grade**
 - [ ] CSV export (spectrum, traces, signal list, waterfall)
 - [ ] Limit lines / masks with pass/fail alarms
 - [ ] Absolute dBm calibration offset
-- [ ] Converter/LNB frequency offset, bias-T, RTL direct sampling
+- [x] Converter/LNB frequency offset, bias-T, RTL direct sampling
 - [ ] Radio: SSB / CW, squelch, audio recording
 - [ ] Keyboard shortcuts
 - [ ] Zero-span (level over time at one frequency)
@@ -185,6 +185,44 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [ ] Signal-ID hints
 - [ ] Unattended survey with a log and a report
 - [ ] Mesh-wide direction finding (RSSI across Ragnar units)
+
+## Resolution and hardware (⚙ Settings)
+
+**Resolution.** The **RBW** tile in the readout shows the current resolution
+bandwidth (the width of one FFT bin).
+- *RTL-SDR:* **FFT size** (Auto, or 256–32768), **Averaging** (1–64 FFT
+  windows per row: smoother vs. quicker to react), **Window** (Hann;
+  Blackman-Harris to separate a weak signal next to a strong one; Flat-top for
+  the most accurate levels; Rectangular) and **Columns** (240–1920). *Auto* FFT
+  keeps at least two FFT bins per display column at any zoom, so zooming in
+  also sharpens the resolution (1 MHz ≈ 560 Hz, 250 kHz ≈ 244 Hz, 120 kHz ≈
+  122 Hz RBW). These settings apply to the whole dongle, the slower
+  `rtl_power` sweep included (which now uses a proper window, not its
+  rectangle default).
+- *HackRF:* **RBW** (hackrf_sweep bin width: Auto, or 2.5 kHz–1 MHz).
+
+**Hardware.**
+- *RTL-SDR:* PPM / Gain / Calibrate (moved here from the toolbar), plus:
+  - **Bias-T**: 4.5 V on the antenna port to power an LNA or active antenna.
+    RTL-SDR Blog V3/V4 or bias-tee dongles only, and it asks before switching
+    on. The raw-IQ engine switches it with `rtl_biast`; the others with `-T`.
+  - **Direct sampling**: *Auto* (on for HF below 28.8 MHz), *On* or *Off*.
+    Receives HF without an upconverter on dongles that support it.
+  - **Converter**: an up/down-converter's LO (Ham It Up +125 MHz, SpyVerter
+    +120 MHz, Ku-band LNB 9750 / 10600 MHz, or custom). The waterfall, ruler,
+    markers, Tune box, radio, rtl_433 and SigMF recordings all use the **real RF
+    frequency**; the dongle is tuned to RF + LO.
+- *HackRF:* **LNA** (0–40 dB, 8 dB steps) and **VGA** (0–62 dB, 2 dB steps)
+  gain, the **RF amp** (+~11 dB for weak signals), and **antenna power**
+  (3.3 V for active antennas, asks first). Remembered per browser and applied
+  on the next sweep start. Before this, the page never sent HackRF gain, so it
+  always ran at the defaults.
+
+*Fixed along the way:* zooming the RTL-SDR in narrower than ~1 MHz left
+much of the waterfall as dead black columns (a fixed 1024-point FFT gave
+fewer bins than display columns). Measured on the dongle: 47% dead at 250
+kHz, 74% at 120 kHz, now 0%. A quick retune could also drop the real-time
+engine to the 1 row/s sweep; it now retries first.
 
 ## Display range
 

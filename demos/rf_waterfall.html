@@ -147,6 +147,7 @@
   .drow select{width:auto}
   .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
   .dnote b{color:var(--ink-dim);font-weight:500}
+  .dsec .tunergrp{flex-wrap:wrap;row-gap:6px;min-width:0} .dsec .drow>.tunergrp{flex:1 1 100%}
   .toolbar .npgrp select{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 4px}
   .toolbar .npgrp input[type=range]{width:74px;accent-color:var(--cyan)}
   .toolbar .npgrp .npstat{font-size:10.5px;color:var(--muted)} .toolbar .npgrp .npstat b{color:var(--cyan);font-weight:500}
@@ -463,6 +464,7 @@
         +'<div class="stat"><span class="k">Busy</span><span class="v busy busyv">&mdash;</span></div>'
         +'<div class="stat"><span class="k">Span</span><span class="v cy span">&mdash;</span></div>'
         +'<div class="stat"><span class="k">Rows/s</span><span class="v rate">&mdash;</span></div>'
+        +'<div class="stat" title="Resolution bandwidth: the frequency width of one FFT bin"><span class="k">RBW</span><span class="v rbwv">&mdash;</span></div>'
       +'</div>'
       +'<button class="fsbtn" title="Expand this waterfall to full screen">&#9974;&nbsp;Full screen</button>'
       +'</div>'
@@ -477,7 +479,6 @@
         +'<canvas class="trace"></canvas>'
         +'<div class="toolbar">'
           +'<span class="marktxt">Click a signal to measure it (freq · level · SNR · bandwidth).</span>'
-          +'<span class="tunergrp"></span>'
           +'<span class="spacer"></span>'
           +'<span class="holdgrp"><span class="hlbl">Hold</span>'
             +'<button class="mini hbtn" data-h="avg" aria-pressed="false" title="Averaged trace — digs weak carriers out of the noise">Avg</button>'
@@ -520,6 +521,8 @@
             +'<div class="drow"><label>Range</label><input type="range" class="drng" min="10" max="150" step="1"><input type="number" class="drngn" step="1"><span>dB</span></div>'
             +'<div class="dnote">Top of the colour scale = <b>Ref level</b>, bottom = Ref − <b>Range</b>. Narrow the range to dig weak signals out; the whole waterfall recolours at once.</div>'
           +'</fieldset>'
+          +'<fieldset class="dsec dres"><legend>Resolution</legend></fieldset>'
+          +'<fieldset class="dsec dhw"><legend>Hardware</legend><div class="drow"><span class="tunergrp"></span></div></fieldset>'
         +'</div>'
         +'<div class="recbar hidden"></div>'
         +'<div class="logwrap"><div class="logcap"><span class="logtitle">Signals</span><span class="logcount"></span></div>'
@@ -675,6 +678,11 @@
     this.dRng.addEventListener('input',function(){ _manual(self.rangeHi(),+self.dRng.value); });
     this.dRngN.addEventListener('change',function(){ if(+self.dRngN.value>0) _manual(self.rangeHi(),+self.dRngN.value); });
     this._dispUI();
+    this.rbwEl=el.querySelector('.rbwv'); this.dRes=el.querySelector('.dres'); this.dHw=el.querySelector('.dhw');
+    this.hw={lna:24,vga:20,amp:false,antenna:false,bin_hz:0};          // HackRF: page-held, sent on start
+    try{ var _h=JSON.parse(localStorage.getItem('rfwf.hw.'+cfg.short)||'null'); if(_h) for(var _k in this.hw) if(_k in _h) this.hw[_k]=_h[_k]; }catch(e){}
+    this.rtlSet=null;                                                    // RTL: server-held settings
+    this.buildResolution(); this.buildHardware();
     if(cfg.tuner) this.buildTuner();
     if(cfg.record){ this.buildRecorder(); this.recBar.classList.remove('hidden'); }
 
@@ -723,7 +731,7 @@
   // ---- manual tune: sweep an arbitrary centre freq the radio can reach ----
   Scope.prototype.buildTune=function(){
     var self=this, g=this.tuneSel; if(!g) return;
-    var lo=this.cfg.hwLo, hi=this.cfg.hwHi;
+    var rr=this.rfRange(), lo=rr[0], hi=rr[1];
     g.innerHTML='<span class="tlbl">Tune</span>'
       +'<input class="tin freq" type="number" step="any" inputmode="decimal" placeholder="'+lo+'–'+hi+'" '
         +'title="Centre frequency in MHz — anywhere the '+this.cfg.short+' can sweep ('+lo+'–'+hi+' MHz)">'
@@ -742,8 +750,8 @@
     var sp=parseFloat(this.spanTune.value);
     if(!isFinite(sp)||sp<=0) sp=this.cfg.tuneSpan;
     sp=Math.max(this.cfg.minSpan, sp);
-    var hwLo=this.cfg.hwLo, hwHi=this.cfg.hwHi;
-    c=Math.max(hwLo,Math.min(hwHi,c));            // centre into hardware reach
+    var _rr=this.rfRange(), hwLo=_rr[0], hwHi=_rr[1];
+    c=Math.max(hwLo,Math.min(hwHi,c));            // centre into the radio's (RF) reach
     var lo=c-sp/2, hi=c+sp/2;                       // window, clamped to the edges
     if(lo<hwLo){ lo=hwLo; hi=Math.min(hwHi,lo+sp); }
     if(hi>hwHi){ hi=hwHi; lo=Math.max(hwLo,hi-sp); }
@@ -774,17 +782,15 @@
     this.calIn=g.querySelector('.calf'); this.calStat=g.querySelector('.calstat');
     g.querySelector('.tapply').addEventListener('click',function(){ self.applyTuner(); });
     g.querySelector('.tcal').addEventListener('click',function(){ self.calibrate(); });
-    // load current
-    fetch('/api/net/rtl/tuning').then(function(r){return r.json();}).then(function(t){
-      if(!t) return; self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain;
-    }).catch(function(){});
+    // load current (PPM / gain + resolution / hardware settings)
+    this.rtlLoad();
   };
   Scope.prototype.applyTuner=function(){
     var self=this, body={ppm:this.ppmIn.value, gain:this.gainIn.value};
     var b=this.tunerGrp.querySelector('.tapply'); if(b){b.textContent='…';}
     fetch('/api/net/rtl/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(t){
-        if(t){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; }
+        if(t){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; self.rtlSet=t; self._hwUI(); }
         if(b){b.textContent='Apply';}
       }).catch(function(){ if(b){b.textContent='Apply';} });
   };
@@ -1352,6 +1358,7 @@
     var self=this; this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
     this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};
+    if(!this.cfg.tuner){ body.lna=this.hw.lna; body.vga=this.hw.vga; body.amp=this.hw.amp?1:0; body.antenna=this.hw.antenna?1:0; if(this.hw.bin_hz) body.bin_hz=this.hw.bin_hz; }
     if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
     else if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
     fetch(this.cfg.api.start,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -1378,6 +1385,7 @@
         ? 'RTL-SDR · IQ FFT · real-time' : 'RTL-SDR · rtl_power sweep'; }
       if(frames.length){
         if(!self._rangeKnown){ self._rangeKnown=true; self.floor=floor; }
+        self.rbw=(typeof d.rbw_hz==='number')?d.rbw_hz:null;
         self.hideVeil();
         // Enqueue instead of painting per-poll — loop() releases rows at one
         // steady rate, so poll/network jitter never shows as speed changes.
@@ -1486,6 +1494,104 @@
     this._cbarUI();
     var _nh=performance.now(); if(_nh-(this._histT||0)>400){ this._histT=_nh; this._histUI(); }
     if(this.marks.length && _nh-(this._mtT||0)>250){ this._mtT=_nh; this._markTable(); }
+  };
+
+  // ---- RF reach: hardware range shifted by the converter offset; HF via direct sampling
+  Scope.prototype.rfRange=function(){
+    var lo=this.cfg.hwLo, hi=this.cfg.hwHi, t=this.rtlSet;
+    if(this.cfg.tuner && t){ if(t.direct!=='off') lo=0.5; var c=(t.conv_hz||0)/1e6; lo-=c; hi-=c; }
+    return [Math.max(0.01,lo),hi];
+  };
+  // ---- Resolution section ----------------------------------------------------
+  Scope.prototype.buildResolution=function(){
+    var self=this, g=this.dRes; if(!g) return;
+    if(this.cfg.tuner){
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>FFT size</label><select class="rfft"><option value="0">Auto</option>'
+          +[256,512,1024,2048,4096,8192,16384,32768].map(function(n){return '<option value="'+n+'">'+n+'</option>';}).join('')+'</select>'
+          +'<span class="rbwnote dnote"></span></div>'
+        +'<div class="drow"><label>Averaging</label><input type="range" class="ravg" min="1" max="64" step="1"><span class="ravgn">24</span></div>'
+        +'<div class="drow"><label>Window</label><select class="rwin"><option value="hann">Hann</option><option value="blackman-harris">Blackman-Harris</option><option value="flattop">Flat-top (accurate level)</option><option value="rect">Rectangular</option></select></div>'
+        +'<div class="drow"><label>Columns</label><select class="rbins"><option>240</option><option>480</option><option>960</option><option>1920</option></select></div>'
+        +'<div class="dnote"><b>Auto FFT</b> keeps ≥2 FFT bins per column at any zoom (finer RBW when zoomed in). More <b>averaging</b> = smoother, slower to react. <b>Flat-top</b> reads signal levels most accurately; <b>Blackman-Harris</b> best separates a weak signal next to a strong one. Applies to the whole dongle.</div>');
+      var fft=g.querySelector('.rfft'), avg=g.querySelector('.ravg'), win=g.querySelector('.rwin'), bins=g.querySelector('.rbins');
+      fft.addEventListener('change',function(){ self.rtlApply({fft:+fft.value}); });
+      avg.addEventListener('input',function(){ g.querySelector('.ravgn').textContent=avg.value; });
+      avg.addEventListener('change',function(){ self.rtlApply({avg:+avg.value}); });
+      win.addEventListener('change',function(){ self.rtlApply({window:win.value}); });
+      bins.addEventListener('change',function(){ self.rtlApply({bins:+bins.value}); });
+    } else {
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>RBW</label><select class="rhb"><option value="0">Auto</option>'
+          +[2500,5000,10000,25000,50000,100000,250000,500000,1000000].map(function(n){return '<option value="'+n+'">'+(n>=1e6?(n/1e6)+' MHz':(n/1000)+' kHz')+'</option>';}).join('')+'</select></div>'
+        +'<div class="dnote">hackrf_sweep FFT bin width. <b>Auto</b> keeps it finer than a display column. Finer = more detail, slower sweeps.</div>');
+      var hb=g.querySelector('.rhb'); hb.value=String(this.hw.bin_hz||0);
+      hb.addEventListener('change',function(){ self.hwSet({bin_hz:+hb.value}); });
+    }
+  };
+  // ---- Hardware section ------------------------------------------------------
+  Scope.prototype.buildHardware=function(){
+    var self=this, g=this.dHw; if(!g) return;
+    if(this.cfg.tuner){
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>Bias-T</label><button class="mini hbias" aria-pressed="false" title="Power an LNA / active antenna through the coax">Off</button>'
+          +'<span class="dnote">4.5 V on the antenna port. <b>RTL-SDR Blog V3/V4 or a bias-tee dongle only</b>, and only with an LNA / active antenna that expects it.</span></div>'
+        +'<div class="drow"><label>Direct samp.</label><select class="hdir"><option value="auto">Auto (HF only)</option><option value="on">On</option><option value="off">Off</option></select>'
+          +'<span class="dnote">Receives HF (0.5–28.8 MHz) without an upconverter on dongles that support it.</span></div>'
+        +'<div class="drow"><label>Converter</label><select class="hconv"><option value="0">None</option>'
+          +'<option value="125000000">Upconverter +125 MHz (Ham It Up)</option><option value="120000000">Upconverter +120 MHz (SpyVerter)</option>'
+          +'<option value="-9750000000">LNB 9750 MHz (Ku low)</option><option value="-10600000000">LNB 10600 MHz (Ku high)</option>'
+          +'<option value="custom">Custom…</option></select><input type="number" class="hconvc" step="any" placeholder="LO MHz" hidden></div>'
+        +'<div class="dnote">With a converter the waterfall, markers, tune box and radio all read the <b>real RF frequency</b>; the dongle is tuned to RF + LO.</div>');
+      var b=g.querySelector('.hbias'), d=g.querySelector('.hdir'), c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc');
+      b.addEventListener('click',function(){ var on=b.getAttribute('aria-pressed')!=='true';
+        if(on && !window.confirm('Turn on bias-T? This puts 4.5 V DC on the antenna port. Only do this with an LNA or active antenna that expects it, on an RTL-SDR Blog V3/V4 or bias-tee dongle.')) return;
+        self.rtlApply({bias_t:on?1:0}); });
+      d.addEventListener('change',function(){ self.rtlApply({direct:d.value}); });
+      c.addEventListener('change',function(){ if(c.value==='custom'){ cc.hidden=false; cc.focus(); return; } cc.hidden=true; self.rtlApply({conv_hz:+c.value}); });
+      cc.addEventListener('change',function(){ if(isFinite(+cc.value)) self.rtlApply({conv_hz:Math.round(+cc.value*1e6)}); });
+    } else {
+      g.insertAdjacentHTML('beforeend',
+        '<div class="drow"><label>LNA gain</label><input type="range" class="hlna" min="0" max="40" step="8"><span class="hlnan"></span><span>dB</span></div>'
+        +'<div class="drow"><label>VGA gain</label><input type="range" class="hvga" min="0" max="62" step="2"><span class="hvgan"></span><span>dB</span></div>'
+        +'<div class="drow"><label>RF amp</label><button class="mini hamp" aria-pressed="false" title="+~11 dB front-end amplifier for weak signals (overloads on strong ones)">Off</button>'
+          +'<label>Ant. power</label><button class="mini hant" aria-pressed="false" title="3.3 V on the antenna port for an active antenna / LNA">Off</button></div>'
+        +'<div class="dnote">Raise <b>LNA</b> first, then VGA. The <b>RF amp</b> helps weak signals but can overload near strong ones. <b>Antenna power</b> only for active antennas / LNAs.</div>');
+      var ln=g.querySelector('.hlna'), vg=g.querySelector('.hvga'), am=g.querySelector('.hamp'), an=g.querySelector('.hant');
+      ln.addEventListener('input',function(){ g.querySelector('.hlnan').textContent=ln.value; });
+      vg.addEventListener('input',function(){ g.querySelector('.hvgan').textContent=vg.value; });
+      ln.addEventListener('change',function(){ self.hwSet({lna:+ln.value}); });
+      vg.addEventListener('change',function(){ self.hwSet({vga:+vg.value}); });
+      am.addEventListener('click',function(){ self.hwSet({amp:!self.hw.amp}); });
+      an.addEventListener('click',function(){ var on=!self.hw.antenna;
+        if(on && !window.confirm('Turn on antenna port power? This puts 3.3 V DC on the HackRF antenna port. Only with an active antenna or LNA that expects it.')) return;
+        self.hwSet({antenna:on}); });
+    }
+    this._hwUI();
+  };
+  // RTL: settings live on the server (one dongle). POST, then reflect the result.
+  Scope.prototype.rtlApply=function(o){ var self=this;
+    fetch('/api/net/rtl/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)})
+      .then(function(r){return r.json();}).then(function(t){ self.rtlSet=t; self._hwUI(); self.buildTune(); }).catch(function(){}); };
+  Scope.prototype.rtlLoad=function(){ var self=this;
+    fetch('/api/net/rtl/tuning').then(function(r){return r.json();}).then(function(t){ self.rtlSet=t; self._hwUI(); self.buildTune();
+      if(self.ppmIn){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; } }).catch(function(){}); };
+  // HackRF: settings live in the page and ride along on the sweep start.
+  Scope.prototype.hwSet=function(o){ for(var k in o) this.hw[k]=o[k];
+    try{ localStorage.setItem('rfwf.hw.'+this.cfg.short,JSON.stringify(this.hw)); }catch(e){}
+    this._hwUI(); if(this.mode==='live'){ this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); } };
+  Scope.prototype._hwUI=function(){
+    var g=this.dHw, r=this.dRes; if(!g) return;
+    var pr=function(b,on){ if(b){ b.setAttribute('aria-pressed',on?'true':'false'); b.textContent=on?'On':'Off'; } };
+    if(this.cfg.tuner){ var t=this.rtlSet; if(!t) return;
+      pr(g.querySelector('.hbias'),!!t.bias_t); g.querySelector('.hdir').value=t.direct||'auto';
+      var c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc'), cv=String(t.conv_hz||0), known=Array.prototype.some.call(c.options,function(o){return o.value===cv;});
+      if(known){ c.value=cv; cc.hidden=true; } else { c.value='custom'; cc.hidden=false; cc.value=(t.conv_hz||0)/1e6; }
+      if(r){ var f=r.querySelector('.rfft'); if(f){ f.value=String(t.fft||0); r.querySelector('.ravg').value=t.avg; r.querySelector('.ravgn').textContent=t.avg;
+        r.querySelector('.rwin').value=t.window; r.querySelector('.rbins').value=String(t.bins); } }
+    } else { var h=this.hw;
+      g.querySelector('.hlna').value=h.lna; g.querySelector('.hlnan').textContent=h.lna; g.querySelector('.hvga').value=h.vga; g.querySelector('.hvgan').textContent=h.vga;
+      pr(g.querySelector('.hamp'),!!h.amp); pr(g.querySelector('.hant'),!!h.antenna); }
   };
 
   // ---- display range (colour scale) ----------------------------------------
@@ -1878,6 +1984,8 @@
     if(this.nfEl) this.nfEl.textContent=(this.noiseDb!=null)?(Math.round(this.noiseDb)+" dB"):"—";
     this.busyEl.textContent=this.busy.toFixed(0)+"%";
     this.spanEl.textContent=fmtSpan(this.lo,this.hi)+(this.zoom?" ⤢":"");
+    if(this.rbwEl){ var rb=(this.mode==='live')?this.rbw:(this.hi>this.lo&&this.row?(this.hi-this.lo)*1e6/this.row.length:null);
+      this.rbwEl.textContent=(rb==null)?'—':(rb>=1e6?(rb/1e6).toFixed(2)+' MHz':(rb>=1000?(rb/1000).toFixed(rb>=1e4?0:1)+' kHz':Math.round(rb)+' Hz')); }
     this.nowEl.textContent="t="+((performance.now()-this.t0)/1000).toFixed(1)+"s";
   };
   Scope.prototype.setRate=function(hz){
