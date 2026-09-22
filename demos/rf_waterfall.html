@@ -85,7 +85,7 @@
   .stat .v.peak{color:var(--accent)} .stat .v.cy{color:var(--cyan)} .stat .v.busy{color:var(--live)}
   .scope-body{display:flex;flex-direction:column}
   .fall-wrap{position:relative;background:#05080d}
-  canvas.fall{display:block;width:100%;height:210px;cursor:crosshair}
+  canvas.fall{display:block;width:100%;height:420px;cursor:crosshair}
   canvas.trace{display:block;width:100%;height:56px;background:var(--panel-2);border-top:1px solid var(--line-soft);cursor:crosshair}
   .now{position:absolute;top:0;left:8px;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:rgba(205,214,228,.55);pointer-events:none;text-shadow:0 1px 3px #000}
   .marker{position:absolute;top:0;bottom:0;width:1px;background:var(--accent);box-shadow:0 0 6px rgba(245,185,66,.7);display:none;pointer-events:none}
@@ -850,7 +850,7 @@
   };
   Scope.prototype.resize=function(){
     var d=this.dpr(), wcss=this.fall.clientWidth||600;
-    var hcss=this.fall.clientHeight||210, newW=Math.max(1,Math.round(wcss*d)), newH=Math.max(1,Math.round(hcss*d));
+    var hcss=this.fall.clientHeight||420, newW=Math.max(1,Math.round(wcss*d)), newH=Math.max(1,Math.round(hcss*d));
     if(newW===this.W && newH===this.H && this.fall.width===newW && this.d===d) return false;
     this.W=newW; this.fall.width=this.W; this.fall.height=newH;
     this.trace.width=this.W; this.trace.height=Math.round(56*d);
