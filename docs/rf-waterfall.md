@@ -184,7 +184,7 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [x] Band-plan labels
 - [x] Signal-ID hints
 - [x] Unattended survey with a log and a report
-- [ ] Mesh-wide direction finding (RSSI across Ragnar units)
+- [x] Mesh-wide direction finding (RSSI across Ragnar units)
 
 ## Local Radio
 
@@ -318,6 +318,42 @@ The **Markers** strip under the toolbar handles up to four markers, **M1–M4**
   skipped.
 - **↔ Centre** re-centres the view on the active marker (at full band span it
   zooms 4× onto it instead). **Clear** removes all markers.
+
+## Mesh direction finding (where is it transmitting from?)
+
+Put a marker on a signal and press **📡 Locate (mesh)** (Markers strip, RTL
+panel). Every Ragnar in the mesh measures that frequency at the same time and
+this unit estimates where the transmitter is.
+
+- Each unit answers with its **level, noise and SNR** plus its position. A unit
+  whose dongle is busy (sweeping for someone else, decoding, a survey, radio)
+  says so instead of interrupting what it's doing; an idle one takes a short
+  measurement and releases the dongle again.
+- With **3+ positioned units** it fits a log-distance model
+  (level = P0 − 10·n·log10 d, n adjustable, default 2.5) by grid search, and
+  reports the position with a **1σ radius** obtained by re-fitting with ~3 dB of
+  random per-unit error (a bootstrap). Two units give a rough weighted point
+  between them; one gives "somewhere around this unit".
+- The result view draws the units, the estimate and its uncertainty circle to
+  scale (offline SVG), lists every unit's level/SNR/position, and links to
+  OpenStreetMap. Units without GPS can be given a fixed position there.
+
+**Accuracy, honestly.** This is RSSI ranging, not TDOA: it assumes the units
+have comparable antennas and gains (calibrate them, ⚙ Level calibration), and
+multipath/obstructions bias it. On synthetic geometry (4 units ~1–2 km apart,
+3 dB of per-unit error) fixes land **220–480 m** from the truth, inside the
+reported 1σ radius about 60% of the time and inside 2σ about 90%. Indoors or
+with mismatched antennas, expect worse. Time-difference (TDOA) DF would be far
+more accurate but needs tightly synchronised clocks the units don't have.
+
+*Validated:* the measurement endpoint and the coordinator run on the real mesh
+(this unit measures; offline peers are reported per unit). The multi-unit fit
+is validated on synthetic geometry only — a live multi-unit fix needs a second
+unit with an SDR.
+
+Endpoints: `GET /api/mesh/rf/level?freq_hz&bw_hz&secs` (peer-readable, mesh-tag
+authenticated), `POST /api/net/rtl/df {freq_mhz, bw_khz, secs, n}`,
+`GET|POST /api/net/rtl/df/position`.
 
 ## Unattended survey
 

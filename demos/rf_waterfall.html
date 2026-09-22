@@ -540,7 +540,8 @@
           +'<button class="mini mctr" title="Centre the view on the active marker (key C)">&#8596; Centre</button>'
           +'<button class="mini mclr" title="Remove all markers">Clear</button>'
           +'<button class="mini mzs" aria-pressed="false" title="Zero-span: level at the active marker\'s frequency over time (key Z)">Zero-span</button>'
-          +'<button class="mini kbq" title="Keyboard shortcuts (?)">&#9000; Keys</button></div>'
+          +'<button class="mini kbq" title="Keyboard shortcuts (?)">&#9000; Keys</button>'
+          +(cfg.tuner?'<button class="mini mdf" title="Ask every Ragnar in the mesh for this signal\'s level at the active marker and estimate where it is (RSSI)">&#128225; Locate (mesh)</button>':'')+'</div>'
           +'<div class="mtabwrap"><table class="mtab"><tbody></tbody></table></div></div>'
         +'<div class="drawer" hidden>'
           +'<fieldset class="dsec dsp"><legend>Display range</legend>'
@@ -604,6 +605,7 @@
     this.zs=el.querySelector('.zspan'); this.zsOn=false;
     el.querySelector('.mzs').addEventListener('click',function(){ self.toggleZeroSpan(); });
     el.querySelector('.kbq').addEventListener('click',function(){ showKeys(true); });
+    if(el.querySelector('.mdf')) el.querySelector('.mdf').addEventListener('click',function(){ self.meshLocate(); });
     // the panel keyboard shortcuts act on: the last one you pointed at / touched
     el.addEventListener('pointerenter',function(){ activeScope=self; });
     el.addEventListener('pointerdown',function(){ activeScope=self; });
@@ -1811,6 +1813,67 @@
       });
       html+='<p class="dnote" style="margin-top:12px">"ON" = share of the dwell the emitter was ≥10 dB over the noise floor. Constant lines at ~100% are often local birdies (see Noise print). Wide bands use the slower rtl_power sweep, so short bursts can be missed there.</p></div>';
       box.innerHTML=html; box.hidden=false; }).catch(function(){});
+  };
+
+  // ---- mesh direction finding -------------------------------------------------
+  Scope.prototype.meshLocate=function(){
+    var self=this; if(this.marker==null) this.peakSearch(); if(this.marker==null) return;
+    var f=this.marker, m=this.measureAt(f), bw=Math.max(5,Math.min(500,(m&&m.bw20)||25));
+    var box=this._dfBox(); box.hidden=false;
+    box.querySelector('.svbox').innerHTML='<h4>Locating '+fmtMHz(f)+'</h4><div>Asking every Ragnar in the mesh to measure ~'+Math.round(bw)+' kHz around it (a few seconds)…</div>';
+    fetch('/api/net/rtl/df',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({freq_mhz:f,bw_khz:bw,secs:2})})
+      .then(function(r){return r.json();}).then(function(d){ self._dfShow(d,f); })
+      .catch(function(){ box.querySelector('.svbox').innerHTML='<h4>Locate failed</h4><button class="mini svx">Close</button>'; });
+  };
+  Scope.prototype._dfBox=function(){ var box=document.querySelector('.dfrep');
+    if(!box){ box=document.createElement('div'); box.className='svrep dfrep'; box.hidden=true; box.innerHTML='<div class="svbox"></div>'; document.body.appendChild(box);
+      box.addEventListener('click',function(e){ if(e.target===box||e.target.classList.contains('svx')) box.hidden=true; }); }
+    return box; };
+  Scope.prototype._dfShow=function(d,f){
+    var self=this, box=this._dfBox(), fx=d.fix||{}, units=d.units||[], U=' dB';
+    var h='<div style="display:flex;align-items:center;gap:10px"><h4>'+fmtMHz(f)+' — mesh direction finding</h4><span style="flex:1"></span><button class="mini svx">&#10005; Close</button></div>';
+    if(fx.ok){
+      h+='<div style="margin:6px 0 10px"><b style="color:var(--ink)">'+esc(fx.method)+'</b>: '+fx.lat.toFixed(5)+', '+fx.lon.toFixed(5)
+        +(fx.radius_m!=null?' · ±'+fx.radius_m+' m (1σ)':'')+' · <a class="zi" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat='+fx.lat+'&mlon='+fx.lon+'#map=15/'+fx.lat+'/'+fx.lon+'">open map</a></div>'
+        +'<div class="dnote">'+esc(fx.note||'')+'</div>';
+    } else h+='<div style="margin:6px 0 10px;color:#fb7185">No fix: '+esc(fx.error||'not enough positioned units heard it')+'</div>';
+    // small offline map: units, estimate, 1-sigma circle (local metres)
+    var pts=units.filter(function(u){return u.position;}).map(function(u){return {n:u.unit,lat:u.position.lat,lon:u.position.lon,ok:u.ok&&u.snr_db>=3,l:u.level_db};});
+    if(fx.ok) pts.push({n:'estimate',lat:fx.lat,lon:fx.lon,est:true});
+    if(pts.length){
+      var lat0=pts.reduce(function(a,p){return a+p.lat;},0)/pts.length, lon0=pts.reduce(function(a,p){return a+p.lon;},0)/pts.length, k=111320;
+      var xy=pts.map(function(p){ return {x:(p.lon-lon0)*k*Math.cos(lat0*Math.PI/180), y:(p.lat-lat0)*k, p:p}; });
+      var ext=150; xy.forEach(function(q){ var pad=q.p.est?(fx.radius_m||0):0;   // the circle must fit too
+        ext=Math.max(ext,(Math.abs(q.x)+pad)*1.15,(Math.abs(q.y)+pad)*1.15); });
+      var S=300, sc=(S/2-24)/ext, X=function(x){return S/2+x*sc;}, Y=function(y){return S/2-y*sc;}, svg='';
+      var est=xy.filter(function(q){return q.p.est;})[0];
+      if(est&&fx.radius_m) svg+='<circle cx="'+X(est.x)+'" cy="'+Y(est.y)+'" r="'+Math.max(3,fx.radius_m*sc)+'" fill="rgba(245,185,66,.12)" stroke="rgba(245,185,66,.6)" stroke-dasharray="4 3"/>';
+      xy.forEach(function(q){ var p=q.p;
+        if(p.est) svg+='<path d="M'+(X(q.x)-7)+' '+Y(q.y)+'h14M'+X(q.x)+' '+(Y(q.y)-7)+'v14" stroke="#f5b942" stroke-width="2"/>';
+        else { var lft=X(q.x)>S*0.58;                                            // label inwards near the edge
+          svg+='<circle cx="'+X(q.x)+'" cy="'+Y(q.y)+'" r="5" fill="'+(p.ok?'#38bdc9':'#56647a')+'"/>'
+            +'<text x="'+(X(q.x)+(lft?-8:8))+'" y="'+(Y(q.y)+4)+'" font-size="10" fill="#cdd6e4" font-family="monospace"'+(lft?' text-anchor="end"':'')+'>'
+            +esc(String(p.n).split(' (')[0])+(p.l!=null?' '+Math.round(p.l)+U:'')+'</text>'; } });
+      var sb=Math.pow(10,Math.floor(Math.log10(ext))), sbp=sb*sc;
+      svg+='<path d="M12 '+(S-12)+'h'+sbp+'" stroke="#8b98ab"/><text x="12" y="'+(S-16)+'" font-size="9" fill="#8b98ab" font-family="monospace">'+(sb>=1000?(sb/1000)+' km':sb+' m')+'</text>';
+      h+='<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start"><svg viewBox="0 0 '+S+' '+S+'" width="'+S+'" height="'+S+'" style="max-width:100%;background:#0b1220;border:1px solid var(--line);border-radius:8px">'+svg+'</svg>';
+    } else h+='<div>';
+    h+='<div class="svtw" style="flex:1;min-width:260px"><table><thead><tr><th>UNIT</th><th>LEVEL</th><th>SNR</th><th>POSITION</th><th></th></tr></thead><tbody>'
+      +units.map(function(u){ return '<tr><td>'+esc(u.unit||'?')+(u.is_self?' <span class="hk">(this)</span>':'')+'</td>'
+        +'<td>'+(u.ok?Math.round(u.level_db)+U:'—')+'</td><td>'+(u.ok?Math.round(u.snr_db)+' dB':'—')+'</td>'
+        +'<td>'+(u.position?esc(u.position.source):'<span style="color:#fb7185">none</span>')+'</td>'
+        +'<td class="hk">'+esc(u.ok?'':(u.error||''))+'</td></tr>'; }).join('')+'</tbody></table>'
+      +'<p class="dnote">Used '+d.used+' unit'+(d.used===1?'':'s')+' (SNR ≥ 3 dB, with a position). Three or more units around the transmitter give a real fix. RSSI ranging assumes similar antennas/gains: calibrate units (⚙ Level calibration) and expect hundreds of metres, worse indoors.</p>'
+      +'<div class="drow"><label>This unit</label><input type="number" step="any" class="dflat" placeholder="lat" style="width:96px"><input type="number" step="any" class="dflon" placeholder="lon" style="width:96px"><button class="mini dfset">Set position</button><button class="mini dfclr">Use GPS</button></div>'
+      +'<div class="dnote">Units without GPS need a manual position (fixed sites).</div></div></div>';
+    box.querySelector('.svbox').innerHTML=h; box.hidden=false;
+    var q=function(c){return box.querySelector(c);};
+    var self_u=units.filter(function(u){return u.is_self;})[0];
+    if(self_u&&self_u.position){ q('.dflat').value=self_u.position.lat; q('.dflon').value=self_u.position.lon; }
+    q('.dfset').addEventListener('click',function(){ fetch('/api/net/rtl/df/position',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:+q('.dflat').value,lon:+q('.dflon').value})}).then(function(r){return r.json();}).then(function(r){ q('.dfset').textContent=r.ok?'✓ Saved':'Invalid'; }); });
+    q('.dfclr').addEventListener('click',function(){ fetch('/api/net/rtl/df/position',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"clear":true}'})
+      .then(function(){ q('.dfclr').textContent='✓ GPS / last-known'; }); });
   };
 
   // ---- CSV export ------------------------------------------------------------

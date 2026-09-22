@@ -2457,6 +2457,158 @@ def survey_delete(name):
     except OSError:
         return {"ok": False, "error": "no such survey"}
 
+# --------------------------------------------------------------------------
+# Mesh direction finding (RSSI). Every Ragnar with an RTL-SDR can report the
+# level of a signal at a frequency, with its position; the unit that asked
+# combines them into a location estimate. RSSI ranging is coarse — antenna,
+# cable and gain differences between units and multipath all bias it — so the
+# result carries an uncertainty radius and the geometry that produced it.
+# --------------------------------------------------------------------------
+
+def level_from_frames(frames, lo_hz, hi_hz, f_hz, bw_hz=25_000):
+    """Signal level + noise at ``f_hz`` over a set of rows (pure; selftested).
+
+    Per row: the peak within +/- bw/2 of f, and the row's noise floor (30th
+    percentile). Returns medians so a single burst or dropout doesn't skew it."""
+    peaks, floors = [], []
+    for fr in frames or []:
+        p = fr.get("power") if isinstance(fr, dict) else fr
+        if not p:
+            continue
+        n = len(p)
+        binw = (hi_hz - lo_hz) / float(n)
+        i0 = int((f_hz - bw_hz / 2.0 - lo_hz) / binw)
+        i1 = int((f_hz + bw_hz / 2.0 - lo_hz) / binw)
+        i0, i1 = max(0, i0), min(n - 1, max(i1, i0))
+        if i0 >= n or i1 < 0:
+            continue
+        peaks.append(max(p[i0:i1 + 1]))
+        floors.append(sorted(p)[int(n * 0.30)])
+    if not peaks:
+        return None
+    peaks.sort(); floors.sort()
+    lv, nf = peaks[len(peaks) // 2], floors[len(floors) // 2]
+    return {"level_db": round(lv, 1), "noise_db": round(nf, 1), "snr_db": round(lv - nf, 1), "rows": len(peaks)}
+
+
+def measure_level(freq_hz, bw_hz=25_000, secs=2.0):
+    """Measure the level at freq_hz on this unit's RTL-SDR.
+
+    Uses the running sweep if it already covers the frequency (non-intrusive).
+    Otherwise, if the dongle is idle, runs a short 1 MHz real-time capture around
+    it and stops again. If the dongle is busy with something else (another
+    sweep, a survey, decoding, radio) it reports "busy" rather than hijacking it.
+    """
+    try:
+        f = int(float(freq_hz)); bw = max(1_000, int(float(bw_hz or 25_000)))
+        secs = max(0.5, min(10.0, float(secs or 2.0)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "freq_hz / bw_hz / secs must be numbers"}
+    st = _power.status()
+    band = st.get("band_hz") or [None, None]
+    covers = st.get("running") and band[0] and band[0] <= f - bw / 2 and f + bw / 2 <= band[1]
+    started = False
+    if not covers:
+        if st.get("running") or _ism.status().get("running") or _survey.status().get("state") == "running":
+            return {"ok": False, "error": "busy — this unit's dongle is in use"}
+        r = power_start("433", lo_hz=f - 500_000, hi_hz=f + 500_000, label="df")
+        if not r.get("ok"):
+            return {"ok": False, "error": r.get("error", "could not start the SDR")}
+        started = True
+        time.sleep(1.5 + secs)              # let the capture settle, then measure
+    try:
+        fr = power_frames(since=0)
+        now = time.time()
+        rows = [x for x in fr.get("frames", []) if (x.get("ts") or 0) >= now - secs]
+        lo, hi = (fr.get("band_hz") or [None, None])
+        if not rows or not lo:
+            return {"ok": False, "error": "no data from the SDR"}
+        m = level_from_frames(rows, lo, hi, f, bw)
+        if not m:
+            return {"ok": False, "error": "frequency outside the capture"}
+        m.update({"ok": True, "freq_hz": f, "bw_hz": bw, "engine": fr.get("engine"), "rbw_hz": fr.get("rbw_hz"),
+                  "gain": "auto" if _gain is None else _gain, "ts": now, "borrowed": not started})
+        return m
+    finally:
+        if started:
+            power_stop()
+
+
+def _enu(lat, lon, lat0, lon0):
+    """Local east/north metres from a reference point (equirectangular, fine for a few km)."""
+    import math
+    k = 111_320.0
+    return (lon - lon0) * k * math.cos(math.radians(lat0)), (lat - lat0) * k
+
+
+def df_locate(meas, n=2.5, grid=121):
+    """Estimate a transmitter's position from RSSI at several positioned units (pure).
+
+    ``meas``: [{unit, lat, lon, level_db}]. Log-distance model
+    level_i = P0 - 10 n log10(d_i): a grid search over the area, with P0 solved in
+    closed form at each point. Returns the best-fit position, a 1-sigma radius
+    (bootstrapped with ~3 dB of per-unit error), the P0/n
+    used and per-unit residuals. With 2 units: a power-weighted point on the
+    line between them. With 1: that unit's position (nearest). Never raises."""
+    import math
+    pts = [m for m in (meas or []) if m.get("lat") is not None and m.get("lon") is not None and m.get("level_db") is not None]
+    if not pts:
+        return {"ok": False, "error": "no positioned measurements"}
+    if len(pts) == 1:
+        return {"ok": True, "method": "nearest", "lat": pts[0]["lat"], "lon": pts[0]["lon"], "radius_m": None,
+                "note": "only one unit heard it — the transmitter is somewhere around it"}
+    lat0 = sum(p["lat"] for p in pts) / len(pts); lon0 = sum(p["lon"] for p in pts) / len(pts)
+    xy = [_enu(p["lat"], p["lon"], lat0, lon0) for p in pts]
+    L = [float(p["level_db"]) for p in pts]
+    if len(pts) == 2:
+        w = [10 ** (v / 20.0) for v in L]                      # amplitude-weighted towards the louder unit
+        x = (xy[0][0] * w[0] + xy[1][0] * w[1]) / (w[0] + w[1]); y = (xy[0][1] * w[0] + xy[1][1] * w[1]) / (w[0] + w[1])
+        k = 111_320.0
+        return {"ok": True, "method": "two-unit weighted", "lat": lat0 + y / k, "lon": lon0 + x / (k * math.cos(math.radians(lat0))),
+                "radius_m": round(math.hypot(xy[0][0] - xy[1][0], xy[0][1] - xy[1][1]) / 2.0),
+                "note": "two units only give a rough point on the line between them — add a third for a real fix"}
+    xs = [a for a, _ in xy]; ys = [b for _, b in xy]
+    ext = max(200.0, max(xs) - min(xs), max(ys) - min(ys))
+    box = (min(xs) - ext, max(xs) + ext, min(ys) - ext, max(ys) + ext)
+
+    def _fit(levels, g):
+        x0, x1, y0, y1 = box
+        best = None
+        for gi in range(g):
+            gx = x0 + (x1 - x0) * gi / (g - 1.0)
+            for gj in range(g):
+                gy = y0 + (y1 - y0) * gj / (g - 1.0)
+                r = [lv + 10.0 * n * math.log10(max(10.0, math.hypot(gx - ux, gy - uy))) for (ux, uy), lv in zip(xy, levels)]
+                p0 = sum(r) / len(r)
+                err = sum((q - p0) ** 2 for q in r)
+                if best is None or err < best[0]:
+                    best = (err, gx, gy, p0)
+        return best
+
+    err_b, bx, by, p0 = _fit(L, grid)
+    # Uncertainty: a Monte-Carlo bootstrap of THIS estimator — refit with ~3 dB
+    # of random per-unit error added, and take the RMS scatter of the fixes.
+    # (The misfit surface alone is misleading: with the transmit power unknown
+    # it has long flat valleys, so its extent overstates the error ~10x.)
+    import random as _rnd
+    rng = _rnd.Random(1234)
+    sc = []
+    for _ in range(24):
+        _e, sx, sy, _p = _fit([v + rng.gauss(0.0, 3.0) for v in L], 51)
+        sc.append((sx - bx) ** 2 + (sy - by) ** 2)
+    sc.sort()
+    rad = math.sqrt(sc[int(len(sc) * 0.68)])       # 68th percentile: robust to the odd far fit
+    k = 111_320.0
+    lat = lat0 + by / k; lon = lon0 + bx / (k * math.cos(math.radians(lat0)))
+    res = []
+    for (ux, uy), lv, pt in zip(xy, L, pts):
+        d = max(10.0, math.hypot(bx - ux, by - uy))
+        res.append({"unit": pt.get("unit"), "dist_m": round(d), "residual_db": round(lv - (p0 - 10 * n * math.log10(d)), 1)})
+    return {"ok": True, "method": "multilateration", "lat": round(lat, 6), "lon": round(lon, 6),
+            "radius_m": round(rad), "p0_db": round(p0, 1), "n": n, "rms_db": round(math.sqrt(err_b / len(pts)), 1),
+            "units": res, "note": "RSSI-based: accuracy depends on matched antennas / gains (calibrate units) and multipath"}
+
+
 # Limit-line / mask alarms from the RF Waterfall page (pass/fail spectrum
 # monitoring). The page evaluates each row against the user's limit and posts
 # when a violation starts; we log it to the Watchtower feed, rate-limited per
@@ -3057,6 +3209,30 @@ def selftest():
               and survey_list()["surveys"] == [])
     finally:
         _survey_dir = _sd_old
+
+    # --- mesh direction finding (pure parts) ---
+    _lf = level_from_frames([[-60.0] * 100 for _ in range(5)] + [[-60.0] * 50 + [-20.0] + [-60.0] * 49 for _ in range(6)],
+                            433_000_000, 434_000_000, 433_505_000, 20_000)
+    check("df: level at a frequency (median over rows) + SNR", _lf and _lf["level_db"] == -20.0 and _lf["snr_db"] == 40.0, str(_lf))
+    import math as _m
+    _tx = (59.3300, 18.0700)                                   # a transmitter
+    _units = [(59.3350, 18.0600, "A"), (59.3260, 18.0620, "B"), (59.3310, 18.0850, "C"), (59.3240, 18.0780, "D")]
+    _meas = []
+    for _la, _lo, _nm in _units:
+        _ex, _ny = _enu(_la, _lo, _tx[0], _tx[1]); _d = _m.hypot(_ex, _ny)
+        _meas.append({"unit": _nm, "lat": _la, "lon": _lo, "level_db": -30.0 - 25.0 * _m.log10(_d)})
+    _loc = df_locate(_meas)
+    _ex, _ny = _enu(_loc["lat"], _loc["lon"], _tx[0], _tx[1])
+    check("df: 4 units, ideal path loss -> fix within 60 m", _loc["method"] == "multilateration" and _m.hypot(_ex, _ny) < 60,
+          "%.0f m off" % _m.hypot(_ex, _ny))
+    _meas2 = [dict(x, level_db=x["level_db"] + (3.0 if i % 2 else -3.0)) for i, x in enumerate(_meas)]
+    _loc2 = df_locate(_meas2)
+    _ex2, _ny2 = _enu(_loc2["lat"], _loc2["lon"], _tx[0], _tx[1])
+    check("df: adversarial +/-3 dB unit bias -> within the 2-sigma radius",
+          _m.hypot(_ex2, _ny2) <= max(2 * _loc2["radius_m"], 60), "%.0f m off, radius %s" % (_m.hypot(_ex2, _ny2), _loc2["radius_m"]))
+    check("df: 2 units -> rough weighted point, 1 unit -> nearest, 0 -> error",
+          df_locate(_meas[:2])["method"] == "two-unit weighted" and df_locate(_meas[:1])["method"] == "nearest"
+          and df_locate([])["ok"] is False)
 
     # --- limit-line alarms -> Watchtower feed (rate-limited per panel) ---
     import tempfile as _tf
