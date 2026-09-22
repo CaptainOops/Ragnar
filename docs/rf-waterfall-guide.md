@@ -17,18 +17,33 @@ analyzer for. Everything here runs off a single RTL-SDR (~24 MHz–1.7 GHz) and 
 The RTL waterfall used to crawl (~1 row/s) because `rtl_power` sweeps the band
 and dwells on each step. For any span that fits a single tune (≈ ≤ 2.8 MHz — a
 zoom, a band like 433, most mesh overlays) it now **streams raw IQ and does live
-FFTs the way SDR++/GQRX do** → a smooth ~16 rows/s with sub-100 ms latency. Wide
-scans (full 868 / 915 / sub-GHz) fall back to `rtl_power` automatically. The
-panel names the active engine (`IQ FFT · real-time` vs `rtl_power sweep`), and
-**Rows/s** shows the *measured* rate.
+FFTs the way SDR++/GQRX do** → a smooth ~16 rows/s. Wide scans (full 868 / 915 /
+sub-GHz) fall back to `rtl_power` automatically. The panel names the active
+engine (`IQ FFT · real-time` vs `rtl_power sweep`), and **Rows/s** shows the
+*measured* rate.
+
+Rows are released at **one steady rate** (~0.8 s behind live) so a network or
+backend hiccup can't make the fall stall and then race to catch up. Zooming in
+also **sharpens** the resolution: the FFT size follows the span, so a 250 kHz
+zoom resolves ~244 Hz instead of ~977 Hz — and no longer leaves the black
+striping it used to (roughly half the columns were empty below ~1 MHz).
 
 ## 2. Measure, don't eyeball
 
 Experts read numbers off a signal; they never guess from colour.
 
 - **Click any signal** — the marker snaps to the peak and reports exact
-  **frequency, level, SNR, −20 dB bandwidth, 99% occupied bandwidth** and
-  **channel power**.
+  **frequency, level, SNR, bandwidth, 99% occupied bandwidth** and **channel
+  power**. Bandwidth is measured at the deepest drop the signal's SNR actually
+  supports and says which it used (`BW−20`, or `BW−5` for a weak one), instead
+  of quietly measuring the width of the noise floor.
+- **Hover** anywhere for frequency, level and *when* that row was received; the
+  band-plan strip and hover line name the allocation (433 ISM, marine, GSM…).
+- **Markers M1–M4** — Δ frequency and Δ level against M1, peak search and
+  next-peak stepping, marker → centre.
+- **Zero-span** — level at one frequency over time: keying, duty cycle, fading.
+- **dBm** — calibrate against a signal of known strength and every level on the
+  page reads absolute dBm instead of relative dB.
 - **Readout tiles** — peak freq / peak level, live **SNR**, measured **noise
   floor**, band **busy %**, and span.
 - **Trace math (Hold)** — **Avg** (digs weak carriers out of the noise),
@@ -50,9 +65,10 @@ spectrum analyzers.
 ## 4. Click-to-decode
 
 Clicking a signal also **classifies** it from its measured bandwidth and
-frequency — narrowband OOK/FSK ISM (remote / TPMS / sensor), wideband LoRa/mesh
-chirp, POCSAG/FLEX pager, ACARS, VHF airband/VOR, or FM broadcast — and offers a
-one-click hand-off to the decoder that can *name* it:
+frequency — ISM remotes/TPMS/sensors, LoRa/mesh chirp, POCSAG/FLEX pagers,
+ADS-B, ACARS, airband/VOR, marine VHF and AIS, APRS, ham FM, PMR446, TETRA,
+weather satellites, DAB, DVB-T, GSM/LTE carriers, DECT, Wi-Fi vs Bluetooth, CB,
+HF SSB/CW — and offers a one-click hand-off to the decoder that can *name* it:
 
 - a **Decode** button flips the RTL panel to `rtl_433` on the nearest ISM band;
 - pager / ACARS / VOR classes link straight to their decode pages.
@@ -104,6 +120,17 @@ truth.)
 
 ## 8. Polish
 
+- **Display range** — Auto, or set the top (Ref level) and how many dB the
+  colours span, or press *Fit to signal*. The whole waterfall recolours at once,
+  including the rows already on screen.
+- **Navigate like an analyser** — mouse-wheel zoom around the cursor, drag to
+  pan, pinch on a phone, double-click for the full band; scroll back through
+  the last few minutes with a time axis down the edge.
+- **Noise print** — record the background for a few seconds and subtract it, so
+  the permanent birdies stop hiding real bursts.
+- **Keyboard shortcuts** for everything frequent (`?` lists them).
+- **CSV export** of the spectrum, the signal list, markers or the whole
+  waterfall history, for a spreadsheet / Python / MATLAB.
 - **Five colour palettes** — Aurora (default), Inferno, Viridis, Classic, Mono —
   remembered per browser.
 - **Phone-friendly** — controls wrap instead of clipping, bigger tap targets, a
@@ -124,15 +151,30 @@ truth.)
 4. If it's a sensor or remote, hit **Decode** → `rtl_433` names the device.
 5. Want to analyse it deeper? **⤓ SigMF** → open the capture in URH / GNU Radio.
 6. Leaving it as a monitor? **Baseline** → get pinged in Watchtower if a new
-   signal or a jammer shows up.
-7. Need accurate numbers first? **Calibrate** against a known carrier.
+   signal or a jammer shows up, or set a **limit line / mask** for a hard
+   pass/fail with the same alerting.
+7. Need accurate numbers first? **Calibrate** against a known carrier (PPM for
+   frequency, a known signal level for dBm).
+8. Want the whole picture unattended? Run a **survey**: it visits each band for
+   a dwell time and writes a report of every emitter with how much of the time
+   it was on.
+9. Several Ragnars in the mesh? **Locate (mesh)** estimates where a transmitter
+   is from the levels each unit hears.
 
 ## Honest limits
 
 - Reaches only ~24 MHz–1.7 GHz — no 2.4/5 GHz (that's the HackRF panel's job).
 - LoRa / Z-Wave / mesh overlays are **energy / occupancy only**, not decoded.
-- IQ measurements are **relative dB** — consistent, but not lab-calibrated dBm.
-- **Direction-finding / geolocation is intentionally not built.** Locating a
-  transmitter by comparing it across nodes needs 2+ SDR-equipped Ragnar units;
-  with a single dongle it would be untestable, so it was left out rather than
-  shipped unvalidated.
+- IQ measurements are **relative dB** until you calibrate against a signal of
+  known strength; after that they read dBm, but it's a one-point calibration
+  that has to be redone when gain or antenna changes — not a lab standard.
+- The live view runs **~0.8 s behind real time**. That buffer is what buys the
+  steady scroll; it is not a real-time control loop.
+- **Direction finding is RSSI-based**, and only as good as the units agree:
+  comparable antennas/gains, and multipath will bias it. On synthetic geometry
+  (4 units 1–2 km apart, 3 dB of per-unit error) fixes land 220–480 m from the
+  truth. It needs **3+ SDR-equipped units with positions** for a real fix; two
+  give a rough point, one just says "near me". Time-difference (TDOA) DF would
+  be far better but needs clock synchronisation the units don't have.
+- The multi-unit DF fit is validated on **synthetic geometry only** so far — a
+  live multi-unit fix needs a second Ragnar with an SDR.
