@@ -120,6 +120,50 @@ background, or the backend stalled for a long time) is skipped, not fast-forward
 Both engines emit the same frame shape, feed the same ring buffer, recorder and
 `/api/net/rtl/power/frames`, so nothing else on the page changes.
 
+## What ships by default, and why
+
+
+These are the settings a fresh install starts with. They were chosen by
+measurement on real hardware, not by taste, and each one is a click away from
+being something else. **Your changes are saved** (`data/rf_settings.json`) and
+survive a restart; a fresh install has no such file and gets the defaults below.
+
+| Setting | Default | Why |
+| --- | --- | --- |
+| **Gain** | **Managed**, starting at 25.4 dB | The dongle's own AGC is *not* the default: on an R820T it routinely drives the 8-bit ADC into clipping near any strong signal, and a clipped capture invents harmonics and intermodulation that look like transmitters. Measured on a real dongle: 9–22% of samples pinned to the rail on AGC, none at all at 12–28 dB. |
+| **Detector** | **RMS** | Measured cost against peak on live signals: **0.54 dB** of visible SNR, because auto FFT sizing already keeps ~2 bins per display column, and the wide sweep asks `rtl_power` for exactly one bin per column (where the detector does nothing at all). In exchange every level, channel power and noise figure is a true power measurement instead of one biased high. |
+| **FFT size** | Auto | Keeps ≥2 bins per display column at any zoom, so a narrow zoom sharpens the resolution instead of leaving dead columns. |
+| **Averaging** | 24 windows | Uses most of each row's samples for the estimate. It averages *within* a row, so it does not blur bursts across time. |
+| **Window** | Hann | The general-purpose compromise between resolution and leakage. |
+| **Columns** | 480 | Matches a typical display width without wasting CPU. |
+| **Display range** | Auto | Follows the measured noise floor, so the picture is usable before anything is configured. |
+
+### Managed gain
+
+An RTL-SDR has one knob that decides whether you can hear anything and whether
+what you hear is real. Too little and the ADC's own noise sets the floor; too
+much and it clips. Both extremes are silent about it.
+
+The managed loop uses the same measurement the **Front end** tile shows — the
+fraction of samples on a rail, and the headroom of the loudest sample — and
+holds the gain so the headroom stays between **10 and 25 dB**, within
+**7.7–38.6 dB** of tuner gain. It moves one tuner notch at a time, at most once
+every 12 seconds, and only when the headroom is outside that band, so it settles
+instead of hunting — each change restarts the capture, and restarting captures
+in a tight loop is what wedges an RTL-SDR.
+
+Why it starts at 25.4 dB: measuring the noise floor against gain on a real
+dongle, the floor rises *slower* than the gain up to about 24 dB (the ADC is
+still setting the floor, so more gain genuinely buys sensitivity) and 1 dB per
+dB above it (the front end sets the floor, so more gain buys nothing and costs
+headroom). 25.4 dB is the first supported tuner notch past that knee. On this
+antenna it settles at 16–18 dB of headroom and the loop makes no changes at all.
+
+The gain control in **⚙ Settings → Hardware** offers all three: **Managed**,
+**Manual** (you set the dB, nothing touches it) and **Hardware AGC** (the
+dongle's own, labelled as able to clip). The panel shows the managed gain and
+the reason for its last change.
+
 ## Resolution and hardware settings
 
 
@@ -949,6 +993,8 @@ capability that isn't here is a gap worth closing.
 - [x] Zero-span (level over time at one frequency)
 
 **Tier 11 — recovery**
+- [x] Managed gain: held where the front end has headroom, seeded at the measured knee
+- [x] Settings persist across restarts; shipped defaults chosen by measurement
 - [x] Software USB reset for a wedged dongle, with automatic detection
 
 **Tier 10 — signalling**

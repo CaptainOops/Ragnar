@@ -24,7 +24,7 @@ interrupting whatever is running — see [Concurrency](#concurrency).
 | `POST /api/net/rtl/power/start` | Start a sweep. `{band}` (`315`/`433`/`868`/`915`/`subghz`) or `{lo_hz, hi_hz}` |
 | `POST /api/net/rtl/power/stop` | Stop it |
 | `GET /api/net/rtl/power/frames?since=<seq>` | New rows since `seq`, plus `band_hz`, `floor_dbm`, `engine`, `rbw_hz`, `detector`, `overload`, `max_hold` |
-| `GET\|POST /api/net/rtl/tuning` | Read or set `ppm`, `gain`, `fft`, `avg`, `window`, `bins`, `detector`, `bias_t`, `direct`, `conv_hz` |
+| `GET\|POST /api/net/rtl/tuning` | Read or set `ppm`, `gain`, `agc`, `fft`, `avg`, `window`, `bins`, `detector`, `bias_t`, `direct`, `conv_hz` |
 | `POST /api/net/rtl/calibrate` | PPM from a reference: `{true_mhz, near_mhz}` |
 | `POST /api/net/rtl/reset` | Re-enumerate the dongle over USB when it has stopped delivering samples |
 
@@ -32,7 +32,13 @@ A frame is `{seq, ts, power[]}` where `power` has `bins` entries spread evenly
 over `band_hz`. Poll `frames` with the last `seq` you saw; nothing is lost
 between polls as long as you keep up (the ring holds a few hundred rows).
 
-`overload` is `{level: ok|near|overload, clip_frac, headroom_db, gain}` — see
+`gain` takes a number in dB, `"managed"` (the default: the gain is held where
+the front end has headroom, see
+[managed gain](rf-waterfall.md#managed-gain)) or `"auto"` (the dongle's own AGC,
+which clips). Settings are saved to `data/rf_settings.json` and survive a
+restart.
+
+`overload` is `{level: ok|near|overload, clip_frac, headroom_db, gain, managed}` — see
 [Front-end health](rf-waterfall.md#front-end-health-and-proving-a-signal-is-real).
 Treat `overload` as "these numbers are wrong", not as a warning to log.
 

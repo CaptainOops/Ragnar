@@ -245,7 +245,14 @@ _IQ_EDGE_MARGIN = 1.15        # oversample the span this much so band edges stay
 # in dB, or None for the driver's automatic gain. Applied to every rtl_power /
 # rtl_433 command; changing them reapplies to a running capture.
 _ppm = 0
-_gain = None               # None = automatic gain control
+# Shipped gain default. The dongle's own AGC is NOT the default: on an R820T it
+# routinely drives the 8-bit ADC into clipping near any strong signal, and a
+# clipped capture invents harmonics and intermodulation that look like real
+# transmitters. Instead we start at a sensible gain and manage it from the
+# measured headroom (see agc_step) — which adapts to the antenna and the site
+# rather than hoping one number suits everyone.
+_gain = 25.4               # dB, an R820T notch just past the sensitivity knee
+_agc = True                # manage the gain from the measured headroom
 
 # Resolution + hardware extras, shared by every capture on the one dongle.
 _FFT_SIZES = (256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
@@ -261,16 +268,164 @@ _fft = 0                   # FFT size; 0 = auto (enough bins for the display at 
 _avg = _IQ_AVG_MAX         # FFT windows averaged per row (more = smoother, slower to react)
 _window = "hann"           # FFT window (flattop = amplitude-accurate, rect = sharpest/leakiest)
 _bins = _POWER_BINS        # display columns per frame
-_detector = "peak"         # how the bins inside one display column are combined
+# Measured on a real dongle: with auto FFT sizing (>=2 bins per display column)
+# an RMS detector costs about 0.5 dB of visible SNR against peak, and in return
+# every level, channel power and noise figure is a true power measurement
+# instead of one biased high. So RMS ships as the default and peak is one click
+# away for hunting very narrow signals at wide spans.
+_detector = "rms"          # how the bins inside one display column are combined
 _bias_t = False            # 4.5 V on the antenna port (RTL-SDR Blog V3/V4) to power an LNA
 _direct = "auto"           # direct sampling: "auto" (on below 28.8 MHz), "on", "off"
 _conv_hz = 0               # up/down-converter LO: hardware freq = RF freq + _conv_hz
 
 
+# The R820T's discrete tuner gains (dB). Asking for anything else gets the
+# nearest of these, so the managed loop steps through them directly.
+_R820T_GAINS = (0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6,
+                19.7, 20.7, 22.9, 25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 37.2,
+                38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6)
+_AGC_HEADROOM_MIN = 10.0    # below this, the next burst clips -> come down
+_AGC_HEADROOM_MAX = 25.0    # above this we are wasting sensitivity -> go up
+_AGC_GAIN_MIN = 7.7         # below this the ADC's own noise starts to dominate
+_AGC_GAIN_MAX = 38.6        # above this an R820T mostly amplifies its own noise
+_AGC_INTERVAL_S = 12.0      # a gain change restarts the capture: do it rarely
+_agc_last_t = 0.0
+_agc_log = []               # recent adjustments, for the UI to explain itself
+
+
+def _nearest_gain(v):
+    """The supported tuner gain closest to ``v`` (pure)."""
+    return min(_R820T_GAINS, key=lambda g: abs(g - v))
+
+
+def agc_step(level, headroom_db, gain, lo=_AGC_GAIN_MIN, hi=_AGC_GAIN_MAX):
+    """Decide the next tuner gain from the measured front-end health (pure).
+
+    Returns ``(new_gain, reason)`` or ``(None, reason)`` when nothing should
+    change. One step at a time, and only outside the target headroom band, so
+    the loop settles instead of hunting — each change restarts the capture, and
+    restarting a capture repeatedly is what wedges an RTL-SDR.
+
+    Coming down on clipping is urgent (the samples are already wrong); going up
+    for sensitivity is not, so it only happens when there is a lot of headroom
+    going spare.
+    """
+    try:
+        gain = float(gain)
+    except (TypeError, ValueError):
+        return None, "no manual gain to adjust"
+    steps = [g for g in _R820T_GAINS if lo - 1e-9 <= g <= hi + 1e-9] or list(_R820T_GAINS)
+    cur = _nearest_gain(gain)
+    idx = steps.index(cur) if cur in steps else None
+    if idx is None:
+        return _nearest_gain(max(lo, min(hi, gain))), "gain outside the managed range"
+    if level == "overload":
+        if idx == 0:
+            return None, "clipping at the lowest usable gain — the signal is too strong for this front end"
+        return steps[idx - 1], "clipping"
+    if headroom_db is None:
+        return None, "no measurement yet"
+    if headroom_db < _AGC_HEADROOM_MIN:
+        if idx == 0:
+            return None, "little headroom left, already at the lowest usable gain"
+        return steps[idx - 1], "only %.1f dB of headroom" % headroom_db
+    if headroom_db > _AGC_HEADROOM_MAX:
+        if idx >= len(steps) - 1:
+            return None, "plenty of headroom, already at the highest useful gain"
+        return steps[idx + 1], "%.1f dB of headroom going spare" % headroom_db
+    return None, "headroom %.1f dB is in band" % headroom_db
+
+
+def agc_status():
+    """What the managed gain has been doing, for the UI."""
+    return {"managed": bool(_agc and _gain is not None),
+            "gain": _gain, "log": list(_agc_log[-6:]),
+            "band_db": [_AGC_HEADROOM_MIN, _AGC_HEADROOM_MAX],
+            "range_db": [_AGC_GAIN_MIN, _AGC_GAIN_MAX]}
+
+
+def _settings_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data", "rf_settings.json")
+
+
+_SETTINGS_KEYS = ("ppm", "gain", "agc", "fft", "avg", "window", "bins",
+                  "bias_t", "direct", "conv_hz", "detector")
+_SETTINGS_KEYS_G = tuple("_" + k for k in _SETTINGS_KEYS)
+
+
+_no_persist = False        # the selftest drives set_tuning(); it must not save
+
+
+def _save_settings():
+    """Remember the tuner settings across restarts (best effort, never raises).
+
+    Without this a restart silently threw away the gain, the detector and the
+    converter offset and went back to the shipped defaults — which is how you
+    end up measuring with settings you did not choose.
+    """
+    if _no_persist:
+        return False
+    try:
+        d = {"ppm": _ppm, "gain": _gain, "agc": _agc, "fft": _fft, "avg": _avg,
+             "window": _window, "bins": _bins, "bias_t": _bias_t,
+             "direct": _direct, "conv_hz": _conv_hz, "detector": _detector}
+        path = _settings_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(d, fh, indent=2)
+        os.replace(tmp, path)               # never leave a half-written file
+        return True
+    except OSError:
+        return False
+
+
+def _load_settings():
+    """Apply the saved settings at import. A fresh install has none, and gets
+    the shipped defaults."""
+    global _ppm, _gain, _agc, _fft, _avg, _window, _bins, _bias_t, _direct
+    global _conv_hz, _detector
+    try:
+        with open(_settings_path()) as fh:
+            d = json.load(fh)
+        if not isinstance(d, dict):
+            return False
+    except (OSError, ValueError):
+        return False
+    try:
+        if "ppm" in d:
+            _ppm = int(d["ppm"])
+        if "gain" in d:
+            _gain = None if d["gain"] is None else float(d["gain"])
+        if "agc" in d:
+            _agc = bool(d["agc"])
+        if d.get("fft") in _FFT_SIZES or d.get("fft") == 0:
+            _fft = int(d["fft"])
+        if "avg" in d:
+            _avg = max(1, min(64, int(d["avg"])))
+        if d.get("window") in _WINDOWS:
+            _window = d["window"]
+        if d.get("bins") in _BIN_CHOICES:
+            _bins = int(d["bins"])
+        if "bias_t" in d:
+            _bias_t = bool(d["bias_t"])
+        if d.get("direct") in ("auto", "on", "off"):
+            _direct = d["direct"]
+        if "conv_hz" in d:
+            _conv_hz = int(d["conv_hz"])
+        if d.get("detector") in _DETECTORS:
+            _detector = d["detector"]
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def get_tuning():
     """Current tuner corrections + resolution/hardware settings for the UI."""
     return {"ppm": _ppm, "gain": ("auto" if _gain is None else _gain),
-            "gain_is_auto": _gain is None,
+            "gain_is_auto": _gain is None, "agc": bool(_agc),
+            "agc_status": agc_status(),
             "fft": _fft, "avg": _avg, "window": _window, "bins": _bins,
             "bias_t": _bias_t, "direct": _direct, "conv_hz": _conv_hz,
             "detector": _detector,
@@ -279,20 +434,27 @@ def get_tuning():
 
 
 def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
-               bias_t=None, direct=None, conv_hz=None, detector=None):
+               bias_t=None, direct=None, conv_hz=None, detector=None, agc=None):
     """Set PPM freq-correction, tuner gain and the resolution / hardware extras,
     then reapply to any running capture. gain may be a number (dB), or
     'auto'/'' /None for AGC. Invalid values are ignored (the setting is kept)."""
     global _ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz
-    global _detector
+    global _detector, _agc
     if ppm is not None:
         try:
             _ppm = max(-1000, min(1000, int(float(ppm))))
         except (TypeError, ValueError):
             pass
+    if agc is not None:
+        _agc = str(agc).lower() in ("1", "true", "on", "yes", "managed")
     if gain is not None:
-        if gain in ("auto", "", "AUTO"):
-            _gain = None
+        if str(gain).lower() in ("managed", "auto-managed"):
+            _agc = True
+            if _gain is None:
+                _gain = 25.4
+        elif gain in ("auto", "", "AUTO"):
+            _gain = None            # the dongle's own AGC: explicit opt-in
+            _agc = False
         else:
             try:
                 _gain = max(0.0, min(50.0, round(float(gain), 1)))
@@ -331,7 +493,20 @@ def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
             _conv_hz = max(-12_000_000_000, min(12_000_000_000, int(float(conv_hz))))
         except (TypeError, ValueError):
             pass
+    _save_settings()          # the choice survives a restart
     # Reapply live so the change takes effect without the user restarting.
+    try:
+        _power.reapply()
+        _ism.reapply()
+    except Exception:
+        pass
+    return get_tuning()
+
+
+def reset_tuning():
+    """Put every tuner setting back to what a fresh install ships with."""
+    globals().update(_DEFAULTS)
+    _save_settings()
     try:
         _power.reapply()
         _ism.reapply()
@@ -1288,6 +1463,7 @@ class PowerSweep:
         self._thread = None
         self._stop = threading.Event()
         self._overload = None      # {"clip_frac":..,"headroom_db":..,"level":..}
+        self._agc_pending = None   # a gain the managed loop wants applied
         self._frames = []
         self._seq = 0
         self._maxhold = None
@@ -1393,8 +1569,21 @@ class PowerSweep:
         if self._stop.is_set():
             return
         plan = _iq_plan(lo, hi) if _iq_available() else None
-        if plan and self._run_iq(lo, hi, plan[0], plan[1]):
-            return
+        # The managed gain restarts the capture here rather than through
+        # set_tuning(), so it never reaches into this thread's own lifecycle.
+        while plan and not self._stop.is_set():
+            ok = self._run_iq(lo, hi, plan[0], plan[1])
+            want = self._agc_pending
+            if want is not None and not self._stop.is_set():
+                self._agc_pending = None
+                global _gain
+                _gain = want
+                _save_settings()
+                _usb_settle(self._stop)
+                continue
+            if ok:
+                return
+            break
         # A quick restart can find the dongle still held by the previous capture;
         # give the IQ engine one more try before settling for the slow sweep.
         stop = self._stop
@@ -1445,6 +1634,11 @@ class PowerSweep:
         _set_biast(_bias_t)                       # rtl_sdr has no -T; set the GPIO first
         cmd += ["-"]                              # stream raw IQ to stdout
         self._stderr_tail = None
+        old = self._proc
+        if old is not None and old.poll() is None:
+            _terminate(old)              # never launch on top of our own capture
+            self._proc = None
+            _usb_settle(self._stop)
         # Capture our own stop event + proc handle locally. A restart (band change
         # / PPM calibrate) installs a *new* self._stop and nulls self._proc, so
         # touching those through self here would race the new run; the locals keep
@@ -1488,6 +1682,8 @@ class PowerSweep:
                 grid = _iq_to_grid(db.tolist(), center, sr, lo, hi, bins=bins)
                 floor_ema = self._update_iq_floor(grid, floor_ema)
                 self._push_frame(grid)
+                if self._agc_pending is not None:
+                    break                 # restart this capture at the new gain
                 # Same row the page draws, same samples it was made from: the
                 # trigger sees exactly what you see, and keeps the moment before.
                 try:
@@ -1506,6 +1702,14 @@ class PowerSweep:
             if (not stop.is_set() and proc.poll() not in (None, 0)
                     and not self._error and self._stderr_tail):
                 self._error = self._stderr_tail
+        # A managed-gain change restarts this capture, so the old rtl_sdr has to
+        # be closed here: leaving it running would hold the device and the
+        # relaunch would fail (and a device left half-open is how one gets
+        # wedged). The stop path does its own termination.
+        if self._agc_pending is not None:
+            _terminate(proc)
+            self._proc = None
+            return True
         # Nothing produced and we didn't ask it to stop -> let rtl_power try.
         if produced == 0 and not stop.is_set():
             _terminate(proc)
@@ -1515,12 +1719,31 @@ class PowerSweep:
         return True
 
     def _note_overload(self, clip_frac, peak_fs):
-        """Record front-end health for the UI (called once per waterfall row)."""
+        """Record front-end health for the UI (called once per waterfall row).
+
+        This is also where the managed gain gets its measurement. It asks for a
+        change at most every _AGC_INTERVAL_S, and only when the headroom is
+        outside the target band, because applying one restarts the capture.
+        """
+        global _agc_last_t
         level, headroom = adc_health(clip_frac, peak_fs)
         self._overload = {"level": level, "clip_frac": round(clip_frac, 6),
                           "headroom_db": (round(headroom, 1)
                                           if headroom is not None else None),
-                          "gain": ("auto" if _gain is None else _gain)}
+                          "gain": ("auto" if _gain is None else _gain),
+                          "managed": bool(_agc and _gain is not None)}
+        if not (_agc and _gain is not None) or self._agc_pending is not None:
+            return
+        now = time.time()
+        if now - _agc_last_t < _AGC_INTERVAL_S:
+            return
+        new, why = agc_step(level, headroom, _gain)
+        if new is None or abs(new - _gain) < 1e-6:
+            return
+        _agc_last_t = now
+        _agc_log.append({"ts": now, "from": _gain, "to": new, "why": why})
+        del _agc_log[:-20]
+        self._agc_pending = new
 
     def _update_iq_floor(self, grid, floor_ema):
         """Track a smoothed noise floor from the row's low percentile.
@@ -1755,6 +1978,12 @@ def _read_exact(pipe, n):
 # modes are mutually exclusive.
 _ism = IsmScanner()
 _power = PowerSweep()
+# Snapshot what a fresh install runs with, BEFORE any saved file is applied, so
+# "reset to defaults" and the selftest both have something honest to refer to.
+_DEFAULTS = {k: globals()[k] for k in
+             ("_ppm", "_gain", "_agc", "_fft", "_avg", "_window", "_bins",
+              "_bias_t", "_direct", "_conv_hz", "_detector")}
+_load_settings()          # a saved configuration wins over the shipped defaults
 _detect_cache = None
 
 
@@ -3661,6 +3890,21 @@ def status():
 # --------------------------------------------------------------------------
 
 def selftest():
+    global _no_persist
+    _no_persist = True                      # never write the user's settings
+    _saved_globals = {k: globals()[k] for k in
+                      ("_ppm", "_gain", "_agc", "_fft", "_avg", "_window",
+                       "_bins", "_bias_t", "_direct", "_conv_hz", "_detector")}
+    try:
+        return _selftest_body(_saved_globals)
+    finally:
+        globals().update(_saved_globals)    # the tests change settings; undo that
+        _no_persist = False
+
+
+def _selftest_body(_saved_globals=None):
+    _saved_globals = _saved_globals or {k: globals()[k] for k in
+                                        ("_gain", "_agc", "_detector")}
     results = []
 
     def check(name, ok, detail=""):
@@ -3796,8 +4040,12 @@ def selftest():
     check("iq: grid width = display bins", len(_g) == _POWER_BINS)
     _pk = max(range(len(_g)), key=lambda i: _g[i])
     check("iq: centre tone lands mid-grid", abs(_pk - _POWER_BINS // 2) <= 2, str(_pk))
-    check("iq: tone column strong, rest near floor",
-          _g[_pk] >= -31 and sum(1 for v in _g if v <= -95) > _POWER_BINS * 0.5)
+    check("iq: tone column strong, rest near floor (peak detector)",
+          _iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector="peak")[_pk] >= -31
+          and sum(1 for v in _g if v <= -95) > _POWER_BINS * 0.5)
+    check("iq: the shipped RMS detector keeps the tone well clear of the floor",
+          _iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector="rms")[_pk] >= -40,
+          "%.1f" % _iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector="rms")[_pk])
     check("iq: oversampled edge bins fall outside [lo,hi] (dropped)",
           _iq_to_grid([-40.0] * _N, _ctr, _sr, _lo, _hi).count(_FLOOR_DBM) == 0
           and all(v >= -95 for v in _iq_to_grid([-40.0] * _N, _ctr, _sr, _lo, _hi)))
@@ -3927,6 +4175,79 @@ def selftest():
     check("adc: no clipping yet but nearly full scale = near",
           adc_health(0.0, 0.95)[0] == "near")
     check("adc: bad input never raises", adc_health(None, "x")[0] == "ok")
+
+    # --- shipped defaults + managed gain -------------------------------------
+    check("defaults: the dongle's own AGC is not what ships",
+          _DEFAULTS["_gain"] == 25.4 and _DEFAULTS["_agc"] is True,
+          str(_DEFAULTS["_gain"]))
+    check("defaults: RMS is the shipped detector", _DEFAULTS["_detector"] == "rms")
+    check("defaults: a saved setting overrides the shipped default, not the reverse",
+          set(_DEFAULTS) == set(_SETTINGS_KEYS_G))
+    check("agc: clipping steps the gain down one notch",
+          agc_step("overload", 0.0, 25.4)[0] == 22.9)
+    check("agc: too little headroom steps down",
+          agc_step("ok", 4.0, 25.4)[0] == 22.9)
+    check("agc: plenty of headroom steps up",
+          agc_step("ok", 30.0, 25.4)[0] == 28.0)
+    check("agc: in-band headroom changes nothing (no hunting)",
+          agc_step("ok", 15.0, 25.4)[0] is None
+          and agc_step("ok", _AGC_HEADROOM_MIN + 0.1, 25.4)[0] is None
+          and agc_step("ok", _AGC_HEADROOM_MAX - 0.1, 25.4)[0] is None)
+    check("agc: one step at a time, never a jump",
+          all(abs(_R820T_GAINS.index(_nearest_gain(agc_step("overload", 0.0, g)[0]))
+                  - _R820T_GAINS.index(_nearest_gain(g))) == 1
+              for g in (12.5, 20.7, 28.0, 36.4)))
+    check("agc: it stays inside the useful gain range",
+          agc_step("ok", 40.0, _AGC_GAIN_MAX)[0] is None
+          and agc_step("overload", 0.0, _AGC_GAIN_MIN)[0] is None)
+    check("agc: clipping at the lowest gain is reported, not silently ignored",
+          "too strong" in agc_step("overload", 0.0, _AGC_GAIN_MIN)[1])
+    check("agc: with no measurement yet it does nothing",
+          agc_step("ok", None, 24.0)[0] is None)
+    check("agc: hardware AGC (gain None) is left alone",
+          agc_step("overload", 0.0, None)[0] is None)
+    check("agc: a gain between notches is pulled onto a supported one",
+          _nearest_gain(23.5) == 22.9 and _nearest_gain(0.2) == 0.0)
+    _conv = 25.4
+    for _i in range(12):            # a loud site: it must settle, not oscillate
+        _n, _ = agc_step("overload" if _conv > 15.7 else "ok",
+                         2.0 if _conv > 15.7 else 14.0, _conv)
+        if _n is None:
+            break
+        _conv = _n
+    check("agc: converges and then stops", _conv == 15.7 and _i < 11,
+          "settled at %s after %d steps" % (_conv, _i))
+
+    # --- settings survive a restart ------------------------------------------
+    import tempfile as _tf
+    _sdir = _tf.mkdtemp()
+    _sp = globals()["_settings_path"]
+    globals()["_settings_path"] = lambda: os.path.join(_sdir, "rf_settings.json")
+    _np_was = _no_persist
+    try:
+        globals()["_no_persist"] = False
+        globals()["_detector"], globals()["_gain"], globals()["_conv_hz"] = "min", 33.8, 125_000_000
+        check("settings: saving writes a file", _save_settings() is True
+              and os.path.exists(_settings_path()))
+        globals()["_detector"], globals()["_gain"], globals()["_conv_hz"] = "peak", None, 0
+        check("settings: loading restores what was saved",
+              _load_settings() is True and _detector == "min" and _gain == 33.8
+              and _conv_hz == 125_000_000)
+        with open(_settings_path(), "w") as _fh:
+            _fh.write("{not json")
+        check("settings: a corrupt file is ignored, not fatal",
+              _load_settings() is False)
+        os.unlink(_settings_path())
+        check("settings: a fresh install has no file and keeps the defaults",
+              _load_settings() is False)
+        globals()["_no_persist"] = True
+        check("settings: the selftest never writes the real file",
+              _save_settings() is False)
+    finally:
+        globals()["_settings_path"] = _sp
+        globals()["_no_persist"] = _np_was
+        import shutil as _sh
+        _sh.rmtree(_sdir, ignore_errors=True)
 
     # --- USB recovery --------------------------------------------------------
     _up = _usb_device_path()

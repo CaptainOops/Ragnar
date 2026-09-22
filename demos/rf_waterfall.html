@@ -941,13 +941,18 @@
     g.innerHTML='<span class="tlbl">PPM</span>'
       +'<input class="tin ppm" type="number" step="1" min="-1000" max="1000" value="0" title="Frequency correction (ppm) — trims the dongle crystal offset">'
       +'<span class="tlbl">Gain</span>'
-      +'<input class="tin gain" type="text" value="auto" title="Tuner gain in dB, or auto" size="4">'
+      +'<select class="tin gmode" title="Managed keeps the gain where the front end has headroom but is not deaf. Manual fixes it. Hardware AGC is the dongle\'s own, and it clips on strong signals.">'
+        +'<option value="managed">Managed</option><option value="manual">Manual</option><option value="auto">Hardware AGC</option></select>'
+      +'<input class="tin gain" type="text" value="25.4" title="Tuner gain in dB" size="4">'
+      +'<span class="tlbl gagc"></span>'
       +'<button class="mini tapply">Apply</button>'
       +'<span class="tlbl">Cal&nbsp;@</span>'
       +'<input class="tin calf" type="number" step="any" placeholder="MHz" title="True frequency of a known reference carrier (MHz) — click it on the waterfall first, then Calibrate">'
       +'<button class="mini tcal" title="Auto-trim PPM: measure the marked reference vs its true frequency and correct the crystal offset">Calibrate</button>'
       +'<span class="calstat rsp"></span>';
     this.ppmIn=g.querySelector('.ppm'); this.gainIn=g.querySelector('.gain');
+    this.gMode=g.querySelector('.gmode'); this.gAgc=g.querySelector('.gagc');
+    this.gMode.addEventListener('change',function(){ self.applyTuner(); });
     this.calIn=g.querySelector('.calf'); this.calStat=g.querySelector('.calstat');
     g.querySelector('.tapply').addEventListener('click',function(){ self.applyTuner(); });
     g.querySelector('.tcal').addEventListener('click',function(){ self.calibrate(); });
@@ -955,13 +960,38 @@
     this.rtlLoad();
   };
   Scope.prototype.applyTuner=function(){
-    var self=this, body={ppm:this.ppmIn.value, gain:this.gainIn.value};
+    var m=this.gMode?this.gMode.value:'manual';
+    var self=this, body={ppm:this.ppmIn.value,
+      // In manual mode the box must hold a number: coming from Hardware AGC it
+      // still says "auto", and posting that would silently turn the AGC back on.
+      gain:(m==='auto'?'auto':(m==='managed'?'managed':(function(v,fb){
+        v=parseFloat(v); return isFinite(v)?v:fb; })(this.gainIn.value,
+          (this.rtlSet&&this.rtlSet.agc_status&&this.rtlSet.agc_status.gain)||25.4))),
+      agc:(m==='managed')};
     var b=this.tunerGrp.querySelector('.tapply'); if(b){b.textContent='…';}
     fetch('/api/net/rtl/tuning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(t){
-        if(t){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; self.rtlSet=t; self._hwUI(); }
+        if(t){ self.ppmIn.value=t.ppm; self.rtlSet=t; self._gainUI(t); self._hwUI(); }
         if(b){b.textContent='Apply';}
       }).catch(function(){ if(b){b.textContent='Apply';} });
+  };
+  // Gain is three different things and the panel has to be clear which is
+  // running: managed (we hold it where the headroom is right), manual (yours),
+  // or the dongle's own AGC (which clips near strong signals).
+  Scope.prototype._gainUI=function(t){
+    if(!this.gMode||!t) return;
+    var mode=t.gain_is_auto?'auto':(t.agc?'managed':'manual');
+    this.gMode.value=mode;
+    this.gainIn.value=t.gain_is_auto?'':t.gain;
+    this.gainIn.disabled=(mode!=='manual');
+    var st=(t.agc_status||{}), last=(st.log||[])[ (st.log||[]).length-1 ];
+    if(mode==='managed'){
+      this.gAgc.textContent=(t.gain!=null?t.gain+' dB':'')+(last?' ('+last.why+')':'');
+      this.gAgc.title=last?('last change '+last.from+' → '+last.to+' dB: '+last.why):'holding the front end between '+(st.band_db||[10,25]).join('–')+' dB of headroom';
+    } else if(mode==='auto'){
+      this.gAgc.textContent='⚠ can clip';
+      this.gAgc.title='The dongle\'s own AGC drives the 8-bit ADC into clipping near strong signals. Watch the Front end tile.';
+    } else this.gAgc.textContent='';
   };
   // Reference-carrier PPM calibration: prefill the true freq from the marker, then
   // measure where that carrier actually lands and apply the crystal correction.
@@ -2612,7 +2642,7 @@
       .then(function(r){return r.json();}).then(function(t){ self.rtlSet=t; self._hwUI(); self.buildTune(); }).catch(function(){}); };
   Scope.prototype.rtlLoad=function(){ var self=this;
     fetch('/api/net/rtl/tuning').then(function(r){return r.json();}).then(function(t){ self.rtlSet=t; self._hwUI(); self.buildTune();
-      if(self.ppmIn){ self.ppmIn.value=t.ppm; self.gainIn.value=t.gain_is_auto?'auto':t.gain; } }).catch(function(){}); };
+      if(self.ppmIn){ self.ppmIn.value=t.ppm; self._gainUI(t); } }).catch(function(){}); };
   // HackRF: settings live in the page and ride along on the sweep start.
   Scope.prototype.hwSet=function(o){ for(var k in o) this.hw[k]=o[k];
     try{ localStorage.setItem('rfwf.hw.'+this.cfg.short,JSON.stringify(this.hw)); }catch(e){}
@@ -2624,6 +2654,7 @@
       pr(g.querySelector('.hbias'),!!t.bias_t); g.querySelector('.hdir').value=t.direct||'auto';
       var c=g.querySelector('.hconv'), cc=g.querySelector('.hconvc'), cv=String(t.conv_hz||0), known=Array.prototype.some.call(c.options,function(o){return o.value===cv;});
       if(known){ c.value=cv; cc.hidden=true; } else { c.value='custom'; cc.hidden=false; cc.value=(t.conv_hz||0)/1e6; }
+      this._gainUI(t);
       if(r){ var f=r.querySelector('.rfft'); if(f){ f.value=String(t.fft||0); r.querySelector('.ravg').value=t.avg; r.querySelector('.ravgn').textContent=t.avg;
         r.querySelector('.rwin').value=t.window; r.querySelector('.rbins').value=String(t.bins);
         var dsel=r.querySelector('.rdet'); if(dsel && t.detector){ dsel.value=t.detector; this.det=t.detector; } } }

@@ -14,6 +14,8 @@ the layout still makes sense.
 
 ## Start here
 
+0. Nothing needs configuring first: the gain is managed, the detector is RMS and
+   the display range follows the noise floor. Anything you change is remembered.
 1. Pick a **band** (e.g. `433`) or type a centre frequency into **Tune**.
 2. Let it run a few seconds so **Max-hold** and the **Signals** list fill in.
 3. **Click a signal.** The marker snaps to its peak and prints frequency, level,
@@ -43,9 +45,10 @@ with averaging, the FFT window and the number of display columns, in
 - **Averaging** — more averaging is smoother and steadier, less averaging reacts
   faster to bursts.
 - **Detector** — how the FFT bins inside one display column are combined, and
-  therefore what every level on the page means. **Peak** (the default) finds
-  signals but reads a noise floor several dB high; switch to **RMS** before
-  quoting a level, a channel power or a noise figure. *Average* is steadier and
+  therefore what every level on the page means. **RMS** is the default and is
+  the one to measure with. Switch to **Peak** when hunting for something very
+  narrow at a wide span: it catches a signal thinner than a column, at the cost
+  of reading the noise floor several dB high. *Average* is steadier and
   reads lower still, *Sample* is unsmoothed, *Min* digs out the floor under
   bursty traffic.
 - **Window** — *Hann* for general use, *Blackman-Harris* to separate a weak
@@ -311,9 +314,11 @@ sweep.
   Zoom into a span that fits one tune to catch it.
 - Direction finding is RSSI-based and needs 3+ positioned units for a real fix;
   accuracy is hundreds of metres at best.
-- **Automatic gain can overload this front end.** On auto, an RTL-SDR near a
-  strong signal will clip — the **Front end** tile turns red, levels are wrong
-  and images appear. Set the gain manually (start around 20–30 dB) and watch the
-  headroom.
+- **Gain is managed for you by default**, held where the front end has headroom
+  but is not deaf (see
+  [what ships by default](rf-waterfall.md#what-ships-by-default-and-why)). If you
+  switch to the dongle's own **Hardware AGC**, expect it to clip near strong
+  signals — the **Front end** tile will say so, and everything measured while it
+  is lit is wrong.
 - One dongle does one thing at a time: decoding, listening, ADS-B, a survey and
   the waterfall take turns.
