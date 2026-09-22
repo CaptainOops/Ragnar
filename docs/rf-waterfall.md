@@ -176,7 +176,7 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [ ] Limit lines / masks with pass/fail alarms
 - [ ] Absolute dBm calibration offset
 - [x] Converter/LNB frequency offset, bias-T, RTL direct sampling
-- [ ] Radio: SSB / CW, squelch, audio recording
+- [x] Radio: SSB / CW, squelch, audio recording
 - [ ] Keyboard shortcuts
 - [ ] Zero-span (level over time at one frequency)
 
@@ -185,6 +185,28 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [ ] Signal-ID hints
 - [ ] Unattended survey with a log and a report
 - [ ] Mesh-wide direction finding (RSSI across Ragnar units)
+
+## Local Radio
+
+The **📻 Local Radio** bar demodulates one frequency to audio with `rtl_fm`
+(one dongle, so listening pauses the sub-GHz sweep).
+
+- **Modes:** FM (broadcast), NFM, AM, **USB**, **LSB** and **CW**. CW is
+  received as USB tuned 700 Hz below the carrier, so Morse comes out as a clean
+  700 Hz tone. Clicking a signal on the waterfall picks the likely mode: AM for
+  MW and the shortwave broadcast bands, LSB below 10 MHz, USB above, AM on the
+  airband, NFM elsewhere.
+- **Squelch** (0 = open) mutes the audio until a signal is stronger than the
+  level. While it's closed the stream is kept alive with silence, so the
+  browser's player doesn't stall.
+- **● Rec** records what you're hearing to an audio file (WebM/Opus or the
+  browser's equivalent) while you keep listening; press again to save.
+- Bias-T, direct sampling and the converter offset from ⚙ Settings apply
+  here too (a converter-equipped HF setup listens on the real RF frequency).
+
+*Fixed:* NFM / AM / SSB audio is 12 kHz but was labelled 48 kHz, so it
+played 4× too fast, and its slow MP3 trickle often never reached the browser.
+It's now encoded at the true rate (resampled to 48 kHz).
 
 ## Resolution and hardware (⚙ Settings)
 

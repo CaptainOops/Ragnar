@@ -281,12 +281,14 @@
     <span class="rtag">📻 Local Radio</span>
     <div class="grp"><span class="lbl">Freq</span><input class="rf" id="r-freq" type="number" step="0.001" value="98.0"><span class="lbl">MHz</span></div>
     <div class="seg" id="r-mode" role="group" aria-label="Mode">
-      <button data-m="wfm" aria-pressed="true">FM</button><button data-m="nfm">NFM</button><button data-m="am">AM</button>
+      <button data-m="wfm" aria-pressed="true">FM</button><button data-m="nfm">NFM</button><button data-m="am">AM</button><button data-m="usb" title="Upper sideband — HF ham / marine / aviation voice above 10 MHz">USB</button><button data-m="lsb" title="Lower sideband — HF ham voice below 10 MHz">LSB</button><button data-m="cw" title="Morse (CW): heard as a 700 Hz tone">CW</button>
     </div>
     <select id="r-preset"><option value="">Stations…</option></select>
     <button class="rlisten" id="r-save" title="Save this station to your presets">&#9734;&nbsp;Save</button>
     <button class="rlisten" id="r-listen" aria-pressed="false" title="Listen — uses the RTL-SDR (pauses the sub-GHz sweep)">&#9654;&nbsp;Listen</button>
     <div class="grp"><span class="lbl">Vol</span><input type="range" id="r-vol" min="0" max="100" value="80"></div>
+    <div class="grp" title="Squelch: mute the audio until a signal is stronger than this (0 = open). Useful on NFM / AM channels."><span class="lbl">Squelch</span><input type="range" id="r-sq" min="0" max="500" step="10" value="0"><span class="lbl" id="r-sqv">off</span></div>
+    <button class="rlisten" id="r-rec" disabled title="Record what you're hearing to an audio file (starts with Listen)">&#9679;&nbsp;Rec</button>
     <span class="rnow" id="r-now">off · one dongle, so listening pauses the sub-GHz sweep</span>
     <audio id="r-audio" style="display:none"></audio>
   </div>
@@ -1125,7 +1127,7 @@
     // On the RTL panel, a marker also loads the Local Radio bar (sweep → click →
     // Listen). One dongle, so listening pauses this sweep.
     if(this.cfg.tuner && window.RADIO && f>=0.5 && f<=1766){
-      var mode=(f>=88&&f<=108)?'wfm':((f>108&&f<=137)||f<30?'am':'nfm');
+      var mode=(f>=88&&f<=108)?'wfm':((f>108&&f<=137)?'am':(f<30?hfMode(f):'nfm'));
       window.RADIO.set(f, mode);
       this.markTxt.innerHTML+=' <span class="zi">→ radio '+mode.toUpperCase()+'</span>';
     }
@@ -2032,6 +2034,10 @@
   Scope.prototype.showVeil=function(t,s){this.veilT.textContent=t;this.veilS.textContent=s||'';this.veil.classList.add('show');};
   Scope.prototype.hideVeil=function(){this.veil.classList.remove('show');};
 
+  // HF: broadcast bands (MW + the shortwave broadcast allocations) are AM; other
+  // HF voice is single sideband — LSB below 10 MHz, USB above (the ham convention).
+  var SW_BCAST=[[0.53,1.71],[2.3,2.495],[3.2,3.4],[3.9,4.0],[4.75,5.06],[5.9,6.2],[7.2,7.45],[9.4,9.9],[11.6,12.1],[13.57,13.87],[15.1,15.8],[17.48,17.9],[18.9,19.02],[21.45,21.85],[25.67,26.1]];
+  function hfMode(f){ for(var i=0;i<SW_BCAST.length;i++) if(f>=SW_BCAST[i][0]&&f<=SW_BCAST[i][1]) return 'am'; return f<10?'lsb':'usb'; }
   function fmtMHz(mhz){return (mhz>=1000)?(mhz/1000).toFixed(4)+" GHz":mhz.toFixed(2)+" MHz";}
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 
@@ -2158,8 +2164,42 @@
         presetEl=document.getElementById('r-preset'), listenBtn=document.getElementById('r-listen'),
         saveBtn=document.getElementById('r-save'),
         volEl=document.getElementById('r-vol'), nowEl=document.getElementById('r-now'),
-        audio=document.getElementById('r-audio');
-    var rmode='wfm', playing=false, builtins={};
+        audio=document.getElementById('r-audio'), sqEl=document.getElementById('r-sq'), sqV=document.getElementById('r-sqv'),
+        recBtn=document.getElementById('r-rec');
+    var rmode='wfm', playing=false, builtins={}, sqT=0;
+    // squelch: re-tune (debounced) so rtl_fm restarts with the new level
+    try{ var _sq=localStorage.getItem('ragnar_radio_sq'); if(_sq!==null){ sqEl.value=_sq; } }catch(e){}
+    function sqLabel(){ var v=+sqEl.value; sqV.textContent=v?String(v):'off'; }
+    sqLabel();
+    sqEl.addEventListener('input',sqLabel);
+    sqEl.addEventListener('change',function(){ try{ localStorage.setItem('ragnar_radio_sq',sqEl.value); }catch(e){}
+      clearTimeout(sqT); sqT=setTimeout(function(){ if(playing) tune(); },250); });
+    // --- record what you're hearing (Web Audio -> MediaRecorder; keeps it audible) ---
+    var actx=null, asrc=null, adest=null, rec=null, chunks=[], recT0=0, recTimer=0;
+    var canRec=!!(window.MediaRecorder && (window.AudioContext||window.webkitAudioContext));
+    if(!canRec){ recBtn.title='Recording needs a browser with MediaRecorder + Web Audio'; }
+    function recStop(){ if(rec && rec.state!=='inactive') rec.stop(); }
+    function recStart(){
+      try{
+        if(!actx){ actx=new (window.AudioContext||window.webkitAudioContext)();
+          asrc=actx.createMediaElementSource(audio); asrc.connect(actx.destination);
+          adest=actx.createMediaStreamDestination(); asrc.connect(adest); }
+        if(actx.state==='suspended') actx.resume();
+        var mt=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'].filter(function(t){return MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t);})[0]||'';
+        rec=new MediaRecorder(adest.stream, mt?{mimeType:mt}:undefined); chunks=[];
+        rec.ondataavailable=function(e){ if(e.data&&e.data.size) chunks.push(e.data); };
+        rec.onstop=function(){ clearInterval(recTimer);
+          var type=(rec&&rec.mimeType)||'audio/webm', ext=/ogg/.test(type)?'ogg':(/mp4/.test(type)?'m4a':'webm');
+          var blob=new Blob(chunks,{type:type}), a=document.createElement('a');
+          a.href=URL.createObjectURL(blob); a.download='ragnar-radio-'+(freqEl.value||'')+'MHz-'+rmode+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.'+ext;
+          document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000);
+          recBtn.setAttribute('aria-pressed','false'); recBtn.innerHTML='&#9679;&nbsp;Rec'; rec=null; };
+        rec.start(1000); recT0=Date.now();
+        recBtn.setAttribute('aria-pressed','true');
+        recTimer=setInterval(function(){ recBtn.innerHTML='&#9632;&nbsp;'+Math.round((Date.now()-recT0)/1000)+'s'; },500);
+      }catch(err){ nowEl.innerHTML='<span style="color:#fb7185">Recording failed: '+esc(String(err&&err.message||err))+'</span>'; }
+    }
+    recBtn.addEventListener('click',function(){ if(!canRec||!playing) return; if(rec) recStop(); else recStart(); });
     audio.volume=0.8;
     volEl.addEventListener('input',function(){ audio.volume=(parseInt(volEl.value,10)||0)/100; });
     // --- saved stations (favourites) persisted per-browser in localStorage ---
@@ -2201,11 +2241,12 @@
       playing=true; listenBtn.setAttribute('aria-pressed','true'); listenBtn.innerHTML='&#10074;&#10074;&nbsp;Stop';
       // stop the RTL scope (one dongle) so the UI reflects it
       scopes.forEach(function(s){ if(s.cfg.tuner && s.mode==='live') s.stopLive(); });
-      audio.src='/api/net/radio/stream?freq_hz='+hz+'&mode='+rmode+'&t='+Date.now();
+      audio.src='/api/net/radio/stream?freq_hz='+hz+'&mode='+rmode+'&squelch='+(+sqEl.value||0)+'&t='+Date.now();
+      recBtn.disabled=!canRec;
       audio.play().catch(function(){});
       nowEl.innerHTML='<span style="color:var(--live)">▶ '+(freqEl.value)+' MHz '+rmode.toUpperCase()+'</span> · sub-GHz sweep paused (one dongle)';
     }
-    function stop(){ playing=false; listenBtn.setAttribute('aria-pressed','false'); listenBtn.innerHTML='&#9654;&nbsp;Listen';
+    function stop(){ recStop(); recBtn.disabled=true; playing=false; listenBtn.setAttribute('aria-pressed','false'); listenBtn.innerHTML='&#9654;&nbsp;Listen';
       audio.pause(); audio.removeAttribute('src'); audio.load();
       fetch('/api/net/radio/stop',{method:'POST'}).catch(function(){});
       nowEl.textContent='off · one dongle, so listening pauses the sub-GHz sweep'; }
