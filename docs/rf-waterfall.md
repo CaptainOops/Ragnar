@@ -167,7 +167,7 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 - [x] Display range: Auto, or manual Ref level + Range, plus *Fit to signal*
 - [x] Mouse-wheel zoom, drag to pan, pinch on touch
 - [ ] Resolution: FFT size (RBW), averaging, window, display bins
-- [ ] Markers: several, delta marker, peak search / next peak, marker → centre
+- [x] Markers: several, delta marker, peak search / next peak, marker → centre
 - [ ] HackRF gain (LNA / VGA / amp) in the UI
 - [x] Pause and scroll back through history, with a time axis
 
@@ -199,6 +199,25 @@ The page keeps a history of every row it has shown (about 10 MB per panel), so a
 range or palette change **recolours the whole waterfall at once**, not just new
 rows. The same history is redrawn when the window is resized or goes full screen,
 instead of starting blank.
+
+## Markers
+
+The **Markers** strip under the toolbar handles up to four markers, **M1–M4**
+(amber, cyan, green, rose):
+
+- **Click** the waterfall or trace to move the *active* marker (it snaps to
+  the nearby peak and shows the full measurement: level, SNR, −3/−20 dB and 99%
+  bandwidth, channel power). **Shift + click**, or **＋ Marker**, adds another.
+- The **table** shows each marker's frequency and live level. M2–M4 also show
+  their **Δ frequency and Δ level against M1** (the reference). Click a row to
+  make it active; ↔ centres on it, ✕ removes it.
+- **Peak** moves the active marker to the strongest signal on screen.
+  **◀ Next / Next ▶** step to the next peak left/right using an analyser-style
+  *6 dB peak excursion*: a peak only counts if it rises 6 dB above the dip
+  before it and 6 dB over the noise floor, so a signal's own sidelobes are
+  skipped.
+- **↔ Centre** re-centres the view on the active marker (at full band span it
+  zooms 4× onto it instead). **Clear** removes all markers.
 
 ## Zoom and pan
 
