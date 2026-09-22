@@ -26205,8 +26205,19 @@ def register_network_diagnostics(app, logger=None):
                                               fft=data.get('fft'), avg=data.get('avg'),
                                               window=data.get('window'), bins=data.get('bins'),
                                               bias_t=data.get('bias_t'), direct=data.get('direct'),
-                                              conv_hz=data.get('conv_hz')))
+                                              conv_hz=data.get('conv_hz'),
+                                              detector=data.get('detector')))
         return jsonify(rtl_sdr.get_tuning())
+
+    # Prove a peak is a transmitter and not a mixer image or the DC spike: the
+    # frequency is measured through two different tuner centres and compared.
+    @app.route('/api/net/rtl/image-check', methods=['POST'])
+    def net_rtl_image_check():
+        data = request.get_json(silent=True) or {}
+        _log("net/rtl/image-check")
+        return jsonify(rtl_sdr.image_check(data.get('freq_hz'),
+                                           bw_hz=data.get('bw_hz') or 50000,
+                                           secs=data.get('secs') or 1.5))
 
     # Session recording — capture the running power sweep to a JSONL file and
     # replay it later. Frames are small, so this is cheap; files live under data/.

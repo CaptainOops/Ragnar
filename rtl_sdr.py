@@ -43,6 +43,7 @@ CLI
 """
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -250,11 +251,17 @@ _gain = None               # None = automatic gain control
 _FFT_SIZES = (256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
 _WINDOWS = ("hann", "blackman-harris", "flattop", "rect")
 _BIN_CHOICES = (240, 480, 960, 1920)
+# Detectors. An FFT produces far more bins than the display has columns, so each
+# column has to combine several bins, and WHICH rule is used changes every level
+# the page prints. Professional analysers make this an explicit choice because
+# there is no universally right answer: peak finds signals, rms measures them.
+_DETECTORS = ("peak", "rms", "avg", "sample", "min")
 _DIRECT_MAX_HZ = 28_800_000   # direct sampling covers ~0.5-28.8 MHz (HF)
 _fft = 0                   # FFT size; 0 = auto (enough bins for the display at any zoom)
 _avg = _IQ_AVG_MAX         # FFT windows averaged per row (more = smoother, slower to react)
 _window = "hann"           # FFT window (flattop = amplitude-accurate, rect = sharpest/leakiest)
 _bins = _POWER_BINS        # display columns per frame
+_detector = "peak"         # how the bins inside one display column are combined
 _bias_t = False            # 4.5 V on the antenna port (RTL-SDR Blog V3/V4) to power an LNA
 _direct = "auto"           # direct sampling: "auto" (on below 28.8 MHz), "on", "off"
 _conv_hz = 0               # up/down-converter LO: hardware freq = RF freq + _conv_hz
@@ -266,16 +273,18 @@ def get_tuning():
             "gain_is_auto": _gain is None,
             "fft": _fft, "avg": _avg, "window": _window, "bins": _bins,
             "bias_t": _bias_t, "direct": _direct, "conv_hz": _conv_hz,
+            "detector": _detector,
             "fft_sizes": list(_FFT_SIZES), "windows": list(_WINDOWS),
-            "bin_choices": list(_BIN_CHOICES)}
+            "bin_choices": list(_BIN_CHOICES), "detectors": list(_DETECTORS)}
 
 
 def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
-               bias_t=None, direct=None, conv_hz=None):
+               bias_t=None, direct=None, conv_hz=None, detector=None):
     """Set PPM freq-correction, tuner gain and the resolution / hardware extras,
     then reapply to any running capture. gain may be a number (dB), or
     'auto'/'' /None for AGC. Invalid values are ignored (the setting is kept)."""
     global _ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz
+    global _detector
     if ppm is not None:
         try:
             _ppm = max(-1000, min(1000, int(float(ppm))))
@@ -311,6 +320,8 @@ def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
                 _bins = v
         except (TypeError, ValueError):
             pass
+    if detector is not None and str(detector).lower() in _DETECTORS:
+        _detector = str(detector).lower()
     if bias_t is not None:
         _bias_t = str(bias_t).lower() in ("1", "true", "on", "yes")
     if direct is not None and str(direct).lower() in ("auto", "on", "off"):
@@ -332,7 +343,8 @@ def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
 def _settings_sig():
     """Everything that changes a capture's output — a start() with a new value
     restarts the sweep even on the same span."""
-    return (_ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz)
+    return (_ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz,
+            _detector)
 
 
 def _parse_hz(txt):
@@ -920,6 +932,7 @@ class _PowerFrameBuilder:
 
     def _reset(self):
         self.grid = [_FLOOR_DBM] * self.bins
+        self._acc = [None] * self.bins      # per-column bin values, detector applied on finish
         self._filled = False
 
     def _bucket(self, hz):
@@ -941,9 +954,16 @@ class _PowerFrameBuilder:
             center = hz_low + (i + 0.5) * hz_step
             b = self._bucket(center)
             if b is not None:
-                if db > self.grid[b]:
-                    self.grid[b] = db
+                if self._acc[b] is None:
+                    self._acc[b] = [db]
+                else:
+                    self._acc[b].append(db)
                 self._filled = True
+        # Apply the detector as we go, so a frame read out mid-sweep is still
+        # consistent with a finished one.
+        for b, vals in enumerate(self._acc):
+            if vals:
+                self.grid[b] = _combine_db(vals, _detector)
         return frame
 
 
@@ -988,18 +1008,88 @@ def _iq_plan(lo_hz, hi_hz):
     return center, sr
 
 
+_CLIP_WARN_FRAC = 1e-4     # >0.01% of samples pinned at the rail = overloading
+_HEADROOM_WARN_DB = 3.0    # closer than this to full scale = about to clip
+
+
+def adc_health(clip_frac, peak_fs):
+    """Grade the front end from a block of raw samples (pure).
+
+    ``clip_frac`` is the fraction of 8-bit samples sitting on a rail (0 or 255),
+    ``peak_fs`` the largest sample magnitude as a fraction of full scale. An
+    RTL-SDR that is driven too hard does not simply read high: the ADC clips, and
+    clipping generates harmonics and intermodulation products that look exactly
+    like real transmitters. Every level in an overloaded capture is suspect, so
+    this is reported rather than silently corrected.
+
+    Returns ``(level, headroom_db)`` where level is ok / near / overload.
+    """
+    try:
+        clip_frac = max(0.0, float(clip_frac))
+        peak_fs = max(1e-6, min(1.0, float(peak_fs)))
+    except (TypeError, ValueError):
+        return "ok", None
+    headroom = -20.0 * math.log10(peak_fs)          # dB below full scale
+    if clip_frac > _CLIP_WARN_FRAC:
+        return "overload", headroom
+    if headroom < _HEADROOM_WARN_DB:
+        return "near", headroom
+    return "ok", headroom
+
+
+def _detector_name(detector=None):
+    """Normalise a detector name, falling back to the global setting (pure)."""
+    d = str(detector or _detector or "peak").strip().lower()
+    return d if d in _DETECTORS else "peak"
+
+
+def _combine_db(vals, detector="peak"):
+    """Combine the dB values of the FFT bins that share one display column (pure).
+
+    * ``peak``   — positive-peak: the largest bin. Finds every signal, including
+      one narrower than a column, but reads a noise floor several dB high because
+      it keeps the largest of several noisy samples. The right detector for
+      *looking*, the wrong one for *measuring*.
+    * ``rms``    — averages in the power domain. The correct detector for a level,
+      channel-power or noise measurement: it reports the true average power in the
+      column regardless of how many bins fall in it.
+    * ``avg``    — averages in dB (log / "video" average). Steadier than rms and
+      reads noise about 2.5 dB lower, which is why a log-averaged floor must not
+      be quoted as a power figure.
+    * ``sample`` — the single bin nearest the column centre. No smoothing at all;
+      shows the trace as the FFT actually produced it, and can miss a narrow
+      signal that falls between samples.
+    * ``min``    — negative-peak: the smallest bin. Digs the true noise floor out
+      from under bursty traffic.
+    """
+    if not vals:
+        return None
+    det = _detector_name(detector)
+    if det == "rms":
+        return 10.0 * math.log10(
+            sum(10.0 ** (v / 10.0) for v in vals) / len(vals) + 1e-30)
+    if det == "avg":
+        return sum(vals) / float(len(vals))
+    if det == "sample":
+        return vals[len(vals) // 2]
+    if det == "min":
+        return min(vals)
+    return max(vals)
+
+
 def _iq_to_grid(psd_db, center_hz, sr_hz, lo_hz, hi_hz,
-                bins=_POWER_BINS, floor=_FLOOR_DBM):
-    """Fold an fftshifted PSD (dB, low→high freq) onto ``bins`` display columns.
+                bins=_POWER_BINS, floor=_FLOOR_DBM, detector=None):
+    """Fold an fftshifted PSD (dB, low->high freq) onto ``bins`` display columns.
 
     ``psd_db[i]`` is the power of FFT bin ``i`` of a capture centred at
     ``center_hz`` sampled at ``sr_hz`` (so bin 0 sits at ``center - sr/2``). Each
     bin is dropped into the display column its centre frequency lands in over
-    [lo,hi], keeping the per-column max — the same peak-hold the rtl_power frame
-    builder uses. Bins outside [lo,hi] (the oversampled edges) are ignored;
-    columns no bin reached stay at ``floor``. Pure list math — no numpy — so the
-    selftest verifies it and it also serves as the loop's binning step.
+    [lo,hi], and the bins sharing a column are combined by the selected detector
+    (see :func:`_combine_db`). Bins outside [lo,hi] (the oversampled edges) are
+    ignored; columns no bin reached stay at ``floor``. Pure list math — no numpy —
+    so the selftest verifies it and it also serves as the loop's binning step.
     """
+    det = _detector_name(detector)
     grid = [floor] * bins
     n = len(psd_db)
     span = hi_hz - lo_hz
@@ -1007,18 +1097,43 @@ def _iq_to_grid(psd_db, center_hz, sr_hz, lo_hz, hi_hz,
         return grid
     bin_w = sr_hz / float(n)
     f0 = center_hz - sr_hz / 2.0        # centre frequency of the first (lowest) bin
+    col_w = span / float(bins)
+    cnt = [0] * bins
+    acc = [0.0] * bins
+    near = [None] * bins                # sample detector: distance to column centre
     for i in range(n):
         fc = f0 + i * bin_w
         col = int((fc - lo_hz) / span * bins)
         if col < 0 or col >= bins:
             continue
         v = psd_db[i]
-        if v > grid[col]:
-            grid[col] = v
+        c = cnt[col]
+        if det == "rms":
+            acc[col] += 10.0 ** (v / 10.0)
+        elif det == "avg":
+            acc[col] += v
+        elif det == "sample":
+            d = abs(fc - (lo_hz + (col + 0.5) * col_w))
+            if near[col] is None or d < near[col]:
+                near[col], acc[col] = d, v
+        elif det == "min":
+            acc[col] = v if not c else min(acc[col], v)
+        else:
+            acc[col] = v if not c else max(acc[col], v)
+        cnt[col] = c + 1
+    for c in range(bins):
+        if not cnt[c]:
+            continue
+        if det == "rms":
+            grid[c] = 10.0 * math.log10(acc[c] / cnt[c] + 1e-30)
+        elif det == "avg":
+            grid[c] = acc[c] / cnt[c]
+        else:
+            grid[c] = acc[c]
     # Fewer FFT bins than columns (a narrow zoom): interpolate the columns no bin
     # landed in, instead of leaving dead floor-level stripes. Only between
     # filled columns, so a genuinely uncovered edge still reads as floor.
-    filled = [c for c in range(bins) if grid[c] > floor]
+    filled = [c for c in range(bins) if cnt[c]]
     if filled and len(filled) < bins:
         for a, b in zip(filled, filled[1:]):
             if b - a > 1:
@@ -1172,6 +1287,7 @@ class PowerSweep:
         self._proc = None
         self._thread = None
         self._stop = threading.Event()
+        self._overload = None      # {"clip_frac":..,"headroom_db":..,"level":..}
         self._frames = []
         self._seq = 0
         self._maxhold = None
@@ -1289,6 +1405,7 @@ class PowerSweep:
             return
         self._engine = "rtl_power"
         self._floor_dyn = None
+        self._overload = None        # the sweep engine never sees raw samples
         self._run_rtl_power(lo, hi)
 
     def _run_iq(self, lo, hi, center, sr):
@@ -1309,6 +1426,7 @@ class PowerSweep:
         bins = _bins
         N = _fft or _auto_fft(sr, lo, hi, bins)
         self._rbw = sr / float(N)
+        self._detector = _detector
         win = _fft_window(N)
         win_norm = float(np.sum(win ** 2)) * N   # PSD normaliser (window + FFT gain)
         # Read a whole display row of samples per iteration, rounded to full FFT
@@ -1352,7 +1470,12 @@ class PowerSweep:
                 # scale to +-1.0 full scale so the PSD reads in dBFS (roughly
                 # -80 noise .. 0 full-scale), which sits under the page's -20
                 # colour ceiling.
-                raw = (np.frombuffer(buf, dtype=np.uint8).astype(np.float32) - 127.5) / 127.5
+                u8 = np.frombuffer(buf, dtype=np.uint8)
+                # Front-end health, measured on the samples as the ADC delivered
+                # them: how many sit on a rail, and how close the loudest gets.
+                clip = float(np.count_nonzero((u8 == 0) | (u8 == 255))) / max(1, u8.size)
+                raw = (u8.astype(np.float32) - 127.5) / 127.5
+                self._note_overload(clip, float(np.abs(raw).max()))
                 nwin = (raw.shape[0] // 2) // N
                 if nwin <= 0:
                     continue
@@ -1383,6 +1506,14 @@ class PowerSweep:
             self._error = None
             return False
         return True
+
+    def _note_overload(self, clip_frac, peak_fs):
+        """Record front-end health for the UI (called once per waterfall row)."""
+        level, headroom = adc_health(clip_frac, peak_fs)
+        self._overload = {"level": level, "clip_frac": round(clip_frac, 6),
+                          "headroom_db": (round(headroom, 1)
+                                          if headroom is not None else None),
+                          "gain": ("auto" if _gain is None else _gain)}
 
     def _update_iq_floor(self, grid, floor_ema):
         """Track a smoothed noise floor from the row's low percentile.
@@ -1499,6 +1630,7 @@ class PowerSweep:
                     "band_hz": [self._lo, self._hi] if self._lo else None,
                     "frames_buffered": len(self._frames), "seq": self._seq,
                     "floor_dbm": self._active_floor(), "engine": self._engine,
+                    "detector": _detector, "overload": self._overload,
                     "error": self._error}
 
     def get_frames(self, since=0):
@@ -1513,7 +1645,8 @@ class PowerSweep:
                     "bins": _bins, "floor_dbm": self._active_floor(),
                     "engine": self._engine,
                     "rbw_hz": round(self._rbw, 1) if getattr(self, "_rbw", None) else None,
-                    "conv_hz": _conv_hz,
+                    "conv_hz": _conv_hz, "detector": _detector,
+                    "overload": self._overload,
                     "max_hold": list(self._maxhold) if self._maxhold else None,
                     "running": bool(self._thread and self._thread.is_alive()),
                     "error": self._error}
@@ -2660,6 +2793,113 @@ def measure_level(freq_hz, bw_hz=25_000, secs=2.0):
             power_stop()
 
 
+def image_verdict(peak_a_hz, peak_b_hz, center_a_hz, center_b_hz,
+                  tol_hz=8_000, dc_tol_hz=6_000):
+    """Decide whether a peak seen at two different tuner centres is real (pure).
+
+    A receiver does not only show what is on the air. A mixer also produces
+    *images* — a signal from the other side of the local oscillator folded into
+    the passband — and the RTL-SDR has a permanent DC spike at whatever it is
+    tuned to. Both look like transmitters, and both will happily be measured,
+    named by the band plan and recorded.
+
+    The test: look at the same radio frequency through two different tuner
+    centres. A real transmitter does not move — its RF is its RF. An image moves,
+    because it is defined by its distance from the LO, not by the air. The DC
+    spike does not move relative to the tuner at all, so it sits at the centre of
+    both windows.
+
+    ``tol_hz`` is how far the two measurements may disagree and still count as
+    the same signal (RBW plus tuner error).
+    """
+    if peak_a_hz is None or peak_b_hz is None:
+        return {"verdict": "absent", "moved_hz": None,
+                "detail": "nothing above the noise in one of the two captures"}
+    da = abs(peak_a_hz - center_a_hz)
+    db = abs(peak_b_hz - center_b_hz)
+    moved = abs(peak_a_hz - peak_b_hz)
+    if da <= dc_tol_hz and db <= dc_tol_hz:
+        return {"verdict": "dc-spike", "moved_hz": round(moved, 1),
+                "detail": "the peak stays at the tuner centre in both captures — "
+                          "this is the receiver's own DC offset, not a signal"}
+    if moved <= tol_hz:
+        return {"verdict": "real", "moved_hz": round(moved, 1),
+                "detail": "the peak holds the same radio frequency through two "
+                          "different tuner centres"}
+    return {"verdict": "image", "moved_hz": round(moved, 1),
+            "detail": "the peak moved with the tuner — a mixer image or an "
+                      "alias, not a transmitter on this frequency"}
+
+
+def _peek_window(center_hz, f_hz, bw_hz, secs):
+    """Tune a short capture around ``center_hz`` and find the peak near ``f_hz``.
+
+    Returns (peak_hz, level_db) or (None, None). Intrusive by design: the caller
+    has already established the dongle is free.
+    """
+    r = power_start("433", lo_hz=center_hz - 500_000, hi_hz=center_hz + 500_000,
+                    label="image-check")
+    if not r.get("ok"):
+        return None, None
+    try:
+        time.sleep(1.5 + secs)
+        fr = power_frames(since=0)
+        now = time.time()
+        rows = [x for x in fr.get("frames", []) if (x.get("ts") or 0) >= now - secs]
+        lo, hi = (fr.get("band_hz") or [None, None])
+        if not rows or not lo:
+            return None, None
+        # average the rows so a single noisy frame can't set the verdict
+        n = len(rows[-1]["power"])
+        avg = [sum(row["power"][i] for row in rows) / float(len(rows))
+               for i in range(n)]
+        m = level_from_frames(rows, lo, hi, f_hz, bw_hz)
+        pk = _peak_freq_hz(avg, lo, hi, near_hz=f_hz, window_hz=max(bw_hz * 4, 200_000))
+        if m and (m.get("snr_db") or 0) < 6:
+            return None, None            # nothing convincing in this capture
+        return pk, (m or {}).get("level_db")
+    finally:
+        power_stop()
+
+
+def image_check(freq_hz, bw_hz=50_000, secs=1.5):
+    """Prove a peak is a real transmitter and not an image or the DC spike.
+
+    Measures the frequency twice with the tuner deliberately placed on either
+    side of it, and compares (see :func:`image_verdict`). Takes a few seconds and
+    needs the dongle, so it refuses rather than interrupting other work.
+    """
+    try:
+        f = int(float(freq_hz))
+        bw = max(1_000, int(float(bw_hz or 50_000)))
+        secs = max(0.5, min(5.0, float(secs or 1.5)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "freq_hz / bw_hz must be numbers"}
+    if (_ism.status().get("running")
+            or _survey.status().get("state") == "running"):
+        return {"ok": False, "error": "busy — this unit's dongle is in use"}
+    was = _power.status()
+    resume = ([was.get("band_hz"), was.get("band")] if was.get("running") else None)
+    # Offset the tuner by a quarter of the capture either way, so the signal sits
+    # well clear of DC in both passes and the two LOs are 500 kHz apart.
+    off = 250_000
+    a_c, b_c = f - off, f + off
+    pa, la = _peek_window(a_c, f, bw, secs)
+    _usb_settle()
+    pb, lb = _peek_window(b_c, f, bw, secs)
+    out = image_verdict(pa, pb, a_c, b_c)
+    out.update({"ok": True, "freq_hz": f, "bw_hz": bw,
+                "peaks_hz": [pa, pb], "levels_db": [la, lb],
+                "centers_hz": [a_c, b_c]})
+    if resume and resume[0]:
+        try:
+            power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+            out["resumed"] = True
+        except Exception:
+            pass
+    return out
+
+
 def _enu(lat, lon, lat0, lon0):
     """Local east/north metres from a reference point (equirectangular, fine for a few km)."""
     import math
@@ -3032,6 +3272,69 @@ def selftest():
     check("iq: oversampled edge bins fall outside [lo,hi] (dropped)",
           _iq_to_grid([-40.0] * _N, _ctr, _sr, _lo, _hi).count(_FLOOR_DBM) == 0
           and all(v >= -95 for v in _iq_to_grid([-40.0] * _N, _ctr, _sr, _lo, _hi)))
+
+    # --- detectors: same bins, different (and predictable) answers -----------
+    _dv = [-100.0, -100.0, -70.0, -100.0]
+    check("detector: peak takes the largest bin", _combine_db(_dv, "peak") == -70.0)
+    check("detector: min takes the smallest", _combine_db(_dv, "min") == -100.0)
+    check("detector: avg is the mean in dB",
+          abs(_combine_db(_dv, "avg") - (-92.5)) < 1e-6)
+    # rms averages power: one bin 30 dB up over four -> 10*log10((3*1e-10+1e-7)/4)
+    _rms = _combine_db(_dv, "rms")
+    check("detector: rms averages in the power domain, above avg and below peak",
+          -76.5 < _rms < -75.5 and _rms > _combine_db(_dv, "avg") and _rms < -70.0,
+          "%.2f" % _rms)
+    check("detector: rms >= avg for any spread (Jensen)",
+          all(_combine_db(v, "rms") >= _combine_db(v, "avg") - 1e-9
+              for v in ([-90, -80, -70], [-100] * 5, [-50, -95])))
+    check("detector: unknown name falls back to peak",
+          _combine_db(_dv, "nonsense") == -70.0 and _combine_db([], "rms") is None)
+    # ... and through the real binning path: a noisy floor reads high on peak
+    _noise = [(-100.0 + (i * 37 % 11)) for i in range(_N)]
+    _gp = _iq_to_grid(_noise, _ctr, _sr, _lo, _hi, detector="peak")
+    _gr = _iq_to_grid(_noise, _ctr, _sr, _lo, _hi, detector="rms")
+    _gm = _iq_to_grid(_noise, _ctr, _sr, _lo, _hi, detector="min")
+    _mid = _POWER_BINS // 2
+    check("detector: on noise, peak reads above rms reads above min",
+          _gp[_mid] > _gr[_mid] > _gm[_mid],
+          "peak %.1f rms %.1f min %.1f" % (_gp[_mid], _gr[_mid], _gm[_mid]))
+    _tone = dict((_d, max(_iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector=_d)))
+                 for _d in _DETECTORS)
+    check("detector: peak and rms both hold a tone that shares its column",
+          _tone["peak"] >= -30.1 and _tone["rms"] > -40.0,
+          "peak %.1f rms %.1f" % (_tone["peak"], _tone["rms"]))
+    check("detector: the ordering peak >= rms >= avg >= min always holds",
+          _tone["peak"] >= _tone["rms"] >= _tone["avg"] >= _tone["min"],
+          str({_k: round(_v, 1) for _k, _v in _tone.items()}))
+    check("detector: min is a floor detector — it drops a narrow tone on purpose",
+          _tone["min"] <= -95.0, "%.1f" % _tone["min"])
+    check("detector: setting round-trips and is part of the restart signature",
+          set_tuning(detector="rms")["detector"] == "rms"
+          and _settings_sig()[-1] == "rms"
+          and set_tuning(detector="bogus")["detector"] == "rms"
+          and set_tuning(detector="peak")["detector"] == "peak")
+
+    # --- front-end health: clipping is reported, not silently measured -------
+    check("adc: a clean capture with headroom is ok",
+          adc_health(0.0, 0.25)[0] == "ok")
+    check("adc: headroom is dB below full scale",
+          abs(adc_health(0.0, 0.5)[1] - 6.0) < 0.1)
+    check("adc: samples on the rail = overload",
+          adc_health(0.01, 1.0)[0] == "overload")
+    check("adc: no clipping yet but nearly full scale = near",
+          adc_health(0.0, 0.95)[0] == "near")
+    check("adc: bad input never raises", adc_health(None, "x")[0] == "ok")
+
+    # --- image / DC-spike check ---------------------------------------------
+    _ca, _cb = 433_670_000, 434_170_000
+    check("image: a peak that holds its frequency is real",
+          image_verdict(433_920_100, 433_919_500, _ca, _cb)["verdict"] == "real")
+    check("image: a peak that moves with the tuner is an image",
+          image_verdict(433_920_000, 434_420_000, _ca, _cb)["verdict"] == "image")
+    check("image: a peak pinned to the tuner centre is the DC spike",
+          image_verdict(_ca + 900, _cb - 700, _ca, _cb)["verdict"] == "dc-spike")
+    check("image: nothing heard is reported as absent, not as real",
+          image_verdict(None, 433_920_000, _ca, _cb)["verdict"] == "absent")
 
     # numpy IQ math matches the pure grid (only when numpy is importable) ---
     try:

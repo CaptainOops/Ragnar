@@ -136,6 +136,25 @@ bandwidth (the width of one FFT bin).
   rectangle default).
 - *HackRF:* **RBW** (hackrf_sweep bin width: Auto, or 2.5 kHz–1 MHz).
 
+**Detector.** An FFT produces far more bins than the display has columns, so
+several bins have to be combined into each column — and the rule used decides
+every level on the page. The **Det** tile shows the active rule and
+**⚙ Settings → Resolution → Detector** changes it:
+
+| Detector | Combines a column's bins by | Use it for |
+| --- | --- | --- |
+| **Peak** (default) | the largest bin | *finding* signals — catches anything narrower than a column, but reads a noise floor several dB high |
+| **RMS** | averaging in the power domain | *measuring* — the right detector for a level, channel power or noise figure |
+| **Average** | averaging in dB (video average) | a steady trace; reads noise ~2.5 dB below RMS, so never quote it as power |
+| **Sample** | the bin at the column centre | seeing the trace exactly as the FFT produced it |
+| **Min** | the smallest bin | digging the true floor out from under bursty traffic |
+
+Peak finds, RMS measures. Quote a noise floor or a channel power from a
+peak-detected trace and it will be optimistic; the ordering
+`peak ≥ rms ≥ avg ≥ min` always holds on noise. The setting applies to the
+dongle (both engines) and to the browser's own bin→pixel reduction, so zooming
+out cannot silently change what a level means.
+
 **Hardware.**
 - *RTL-SDR:* PPM / Gain / Calibrate (moved here from the toolbar), plus:
   - **Bias-T**: 4.5 V on the antenna port to power an LNA or active antenna.
@@ -268,6 +287,37 @@ live spectrum client-side from the incoming frames:
   with centre frequency, bandwidth, SNR and a **duty-cycle** estimate (so a
   bursty remote reads ~5% and a continuous carrier ~100%). This is the "what's
   actually on the band" answer.
+
+## Front-end health and proving a signal is real
+
+
+Two things routinely put transmitters on a screen that are not on the air. Both
+are reported rather than quietly drawn.
+
+**Overload.** The **Front end** tile appears when the receiver is being driven
+too hard: the RTL-SDR's 8-bit ADC starts clipping, and clipping manufactures
+harmonics and intermodulation products that look exactly like signals. The panel
+measures this from the samples themselves — the fraction sitting on a rail, and
+how much headroom the loudest sample leaves — and shows `near clip` (under 3 dB
+of headroom) or a flashing `OVERLOAD` with a red outline on the waterfall. When
+it appears, **lower the gain**: every level in an overloaded capture is wrong,
+and some of the signals are not there at all. The `rtl_power` sweep engine never
+sees raw samples, so it reports no figure.
+
+**Images and the DC spike.** A mixer also delivers signals from the wrong side
+of the local oscillator, and the dongle has a permanent spike at whatever it is
+tuned to. Both measure like transmitters. The **✓ Verify** button next to a
+measurement settles it on the hardware: the frequency is measured through two
+tuner centres 500 kHz apart, and
+
+- a **real signal** keeps its radio frequency in both,
+- an **image / alias** moves with the tuner,
+- the **DC spike** sits at the centre of both windows,
+- **nothing heard** is reported as such, not as a pass.
+
+It takes a few seconds and needs the dongle, so it refuses while the dongle is
+busy with a decode or a survey, and restores the sweep you were running
+afterwards. API: `POST /api/net/rtl/image-check {freq_hz, bw_hz}`.
 
 ## Markers
 
@@ -716,6 +766,11 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 4 — measurement correctness**
+- [x] Detectors: peak / RMS / average / sample / min, applied on device and in the browser
+- [x] Front-end overload + clipping indicator
+- [x] Image / alias / DC-spike verification against the hardware
 
 **Tier 3 — differentiators**
 - [x] Band-plan labels

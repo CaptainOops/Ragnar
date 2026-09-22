@@ -42,6 +42,12 @@ with averaging, the FFT window and the number of display columns, in
 
 - **Averaging** — more averaging is smoother and steadier, less averaging reacts
   faster to bursts.
+- **Detector** — how the FFT bins inside one display column are combined, and
+  therefore what every level on the page means. **Peak** (the default) finds
+  signals but reads a noise floor several dB high; switch to **RMS** before
+  quoting a level, a channel power or a noise figure. *Average* is steadier and
+  reads lower still, *Sample* is unsmoothed, *Min* digs out the floor under
+  bursty traffic.
 - **Window** — *Hann* for general use, *Blackman-Harris* to separate a weak
   signal sitting next to a strong one, *Flat-top* when the level reading matters
   most, *Rectangular* for the sharpest possible peaks (and the worst leakage).
@@ -101,6 +107,21 @@ Read numbers; don't judge by colour.
 - **Persist** turns the trace into a fading density cloud, so frequently
   occupied frequencies glow and rare bursts leave a trail — the real-time
   analyser view for spotting intermittent signals and modulation shape.
+
+---
+
+**Two checks before you believe a signal.**
+
+- The **Front end** tile appears when the receiver is overloading. An
+  overdriven ADC clips, and clipping invents harmonics and intermodulation that
+  look like transmitters. `OVERLOAD` (red, and the waterfall gets an outline)
+  means lower the gain and measure again — nothing in that capture is
+  trustworthy. `near clip` means you have under 3 dB left.
+- **✓ Verify** next to a measurement proves the peak is on the air. It measures
+  the frequency through two different tuner centres: a real transmitter keeps
+  its frequency, a mixer image moves with the tuner, and the receiver's own DC
+  spike stays at the centre of both. Use it before recording or reporting
+  anything you have not seen before.
 
 ---
 
