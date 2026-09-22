@@ -550,6 +550,41 @@ to Watchtower** to also send it to the Watchtower feed as `RF_LIMIT_EXCEEDED`
 (`/var/log/ragnar/rfwatch.jsonl`, same feed as Baseline). This is rate-limited
 to one alert per panel per 10 s, both in the page and the backend.
 
+## Memory channels (a watch list)
+
+
+**⚙ Settings → Channels** keeps up to 32 frequencies per panel with a name each,
+and measures them from the rows already arriving — adding a channel never
+retunes the radio, because repeated retuning is what fights the waterfall for
+the one dongle. Each channel shows its live level, the share of the time it has
+been active (above the noise floor by the margin you set), and when it was last
+heard. A channel outside the current span says *not in view* rather than reading
+zero. Add one by typing a frequency, or straight from the marker, with the
+band-plan identification as its name. Channels are kept in the browser per
+panel, and travel with a saved [setup](#setups-and-reports).
+
+## Setups and reports
+
+
+**⚙ Settings → Setups & report**.
+
+A **setup** is everything that decides what a number means: span and zoom,
+display range and palette, resolution, detector, gain / PPM / bias-T /
+converter, markers, the limit line and its learned mask, channels, the level
+calibration and the antenna factor. Save it under a name, recall it before
+repeating a measurement, or download it as a file and load it on another unit so
+it measures the same way. Recalling a setup pushes the tuner settings back to
+the radio, and retunes only if the span actually changed. A setup saved on one
+panel is refused on the other rather than half-applied.
+
+A **measurement report** opens a printable page — print it to keep a PDF — with
+the marked measurement, the marker table, the waterfall image, and the
+conditions behind the numbers: engine, RBW, detector, gain, PPM, window,
+calibration state, antenna factor, noise floor, front-end health and the
+pass/fail verdict of any limit line. It says plainly when the detector was not
+RMS, and when the front end was overloading, because a report that hides that is
+worse than no report.
+
 ## Trigger and capture (armed recording with a lead-in)
 
 
@@ -881,6 +916,12 @@ capability that isn't here is a gap worth closing.
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
 
+**Tier 9 — operating**
+- [x] Memory channels with live activity monitoring
+- [x] Instrument setups: save, recall, export and import
+- [x] Printable measurement report with the conditions behind the numbers
+- [x] Documented remote API for scripting (docs/rf-api.md)
+
 **Tier 8 — provenance**
 - [x] Geotagged captures (GeoJSON, with the source of the fix)
 - [x] Antenna factor + feedline loss → field strength in dBµV/m
@@ -908,6 +949,14 @@ capability that isn't here is a gap worth closing.
 - [x] Signal-ID hints
 - [x] Unattended survey with a log and a report
 - [x] Mesh-wide direction finding (RSSI across Ragnar units)
+
+## Driving it from a script
+
+
+Every control on the page is an HTTP call, documented in
+[rf-api.md](rf-api.md): sweep a band, set the detector and gain, arm a trigger,
+pull frames, run any analyzer operation. A cron job can arm a mask overnight and
+a notebook can pull the captures out in the morning without the page being open.
 
 ## Notes
 

@@ -256,6 +256,22 @@ One dongle serves one job, so listening pauses the sub-GHz sweep.
 
 ---
 
+## 11. Repeating a measurement, and writing it up
+
+- **Channels** (⚙ Settings) is a watch list: add the frequencies you care about
+  and the panel tracks each one's level, how much of the time it is active and
+  when it was last heard, without retuning anything.
+- **Setups** save everything that decides what a number means — span, display
+  range, resolution, detector, gain, markers, limits, channels, calibration.
+  Recall one before repeating a measurement so you are measuring the same way;
+  export it to a file to give another unit the same configuration.
+- **⎙ Measurement report** produces a printable page with the measurement, the
+  markers, the waterfall and the conditions: detector, RBW, gain, calibration,
+  front-end health and the limit verdict. Print it to PDF. If the detector was
+  not RMS, or the front end was overloading, the report says so.
+
+---
+
 ## A practical workflow
 
 1. Pick a band, let **Max-hold** and the **Signals** list fill.
