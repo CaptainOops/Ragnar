@@ -2288,6 +2288,40 @@ def fingerprint(mod=None, baud=None, frame_bits=None, preamble_bits=None,
     return {"ok": True, "candidates": cands[:5], "band_mhz": band, "generic": generic}
 
 
+def crc_check(name=None, bits=None, line=None, invert=False, reflect=False,
+              offset=0, take=0, max_skip=3):
+    """Test CRC / checksum algorithms over exactly the bits shown (web entry).
+
+    Unlike :func:`frames`, this does no frame-repetition detection: it takes the
+    current workbench bitstream — after ``offset`` / ``invert`` / ``reflect`` /
+    line-decode, the same reshaping the demod panel shows — and runs both the
+    trailing-check scan and the leading-header brute force straight over those
+    bytes. It is the tool for a frame you have already aligned yourself, where
+    you just want to know whether the last byte(s) validate the rest.
+    """
+    if not bits:
+        return {"ok": False, "error": "no bits — demodulate a signal first"}
+    raw = bit_transform(bits, invert=invert, reflect=reflect, offset=offset, take=take)
+    b = line_decode(raw, line) if line and line != "raw" else raw
+    clean = "".join(c for c in b if c in "01")
+    nbytes = len(clean) // 8
+    scan = crc_scan(clean)
+    brute = crc_brute(clean, max_skip=max_skip)
+    # De-duplicate: a plain-trailer match found by the scan will also appear in
+    # the brute results (skip 0, tail 0), so the UI can show "extra" separately.
+    known = set((m["algo"], m.get("over_bytes")) for m in scan.get("matches", []))
+    extra = [m for m in brute.get("matches", [])
+             if (m["algo"], m.get("over_bytes")) not in known]
+    return {"ok": True, "n_bits": len(clean), "n_bytes": nbytes,
+            "line": (line or "raw"),
+            "transform": {"invert": bool(invert), "reflect": bool(reflect),
+                          "offset": int(offset or 0), "take": int(take or 0)},
+            "matches": scan.get("matches", []), "brute_extra": extra,
+            "decoded_bits": b,
+            "note": ("need at least 2 bytes to test a check value"
+                     if nbytes < 2 else None)}
+
+
 def frames(name=None, bits=None, line=None, period=None,
            invert=False, reflect=False, offset=0, take=0):
     """Web entry: analyse a bitstream (raw or line-decoded) into frame structure.
@@ -3198,6 +3232,27 @@ def selftest():
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
         _CACHE.clear()
+
+    # --- standalone CRC check over the shown bits ----------------------------
+    _pl = [0x12, 0x34, 0x56]
+    _c8 = _crc8(_pl, *[a[1:4] for a in _CRC8_ALGOS if a[0].startswith("CRC-8")][0])
+    _framebits = "".join("{:08b}".format(x) for x in _pl + [_c8])
+    _cc = crc_check(bits=_framebits)
+    check("crc_check: finds a valid CRC-8 trailer over the shown bytes",
+          _cc["ok"] and any(m["width"] == 8 for m in _cc["matches"]),
+          str(_cc["matches"]))
+    check("crc_check: reports byte count and needs >=2 bytes",
+          crc_check(bits="0" * 8)["note"] is not None
+          and crc_check(bits=_framebits)["n_bytes"] == 4)
+    check("crc_check: applies the workbench transforms before testing",
+          crc_check(bits="1111" + _framebits, offset=4)["matches"]
+          == _cc["matches"])
+    check("crc_check: an inverted frame validates only after Invert",
+          not crc_check(bits="".join("1" if c == "0" else "0" for c in _framebits))["matches"]
+          and crc_check(bits="".join("1" if c == "0" else "0" for c in _framebits),
+                        invert=True)["matches"])
+    check("crc_check: no bits is a clean error, not a crash",
+          crc_check(bits="")["ok"] is False)
 
     # --- subaudible squelch: CTCSS tones and DCS codes ------------------------
     import numpy as _np

@@ -297,11 +297,13 @@
           <span class="lbl">offset</span><input id="boff" class="mini" type="number" value="0" min="0" step="1" title="Drop this many leading bits — slide the byte grid to align a frame">
           <button id="copybits" title="Copy the bits to the clipboard">Copy</button>
           <button id="frames" title="Find preamble, repeated frames (fixed vs rolling bits) and scan for a CRC/checksum">⌗ Frames</button>
+          <button id="crcbtn" title="Test CRC / checksum algorithms over exactly the bits shown — for a frame you have already aligned with offset / Invert / Reflect">✓ CRC</button>
           <button id="addcmp" title="Add these bits to the Field-diff compare set — capture the same emitter again to see which bits change">＋ Compare <span id="cmpn" class="cnt">0</span></button>
         </div>
         <canvas class="rowcanvas" id="wave" style="height:90px"></canvas>
         <div class="bits" id="bits">Place a marker on a signal (or click a burst), then Demodulate.</div>
         <div id="framesout" class="msg" hidden></div>
+        <div id="crcout" class="msg" hidden></div>
         <div id="fpout" class="fp" hidden></div>
       </div>
       <div class="card" style="margin-top:16px">
@@ -818,6 +820,30 @@
   }
   renderCmp();
   $('frames').addEventListener('click',function(){ runFrames(); });
+  // Standalone CRC over the exact bits shown (offset / Invert / Reflect / Manchester
+  // applied), no frame-repetition detection — for a single frame you have aligned.
+  function runCRC(){
+    var d=S.demod; if(!d||!d.bits){ var c0=$('crcout'); c0.hidden=false;
+      c0.innerHTML='<span style="color:var(--rose)">Demodulate a signal first.</span>'; return; }
+    var co=$('crcout'); co.hidden=false; co.textContent='testing CRC / checksums…';
+    var off=parseInt($('boff').value,10)||0;
+    api('/api/net/rtl/analyze/crc',{bits:d.bits, line:(manch?'manchester':'raw'),
+        invert:(binv?1:0), reflect:(brefl?1:0), offset:off}).then(function(r){
+      if(!r||!r.ok){ co.innerHTML='<span style="color:var(--rose)">⚠ '+esc((r&&r.error)||'failed')+'</span>'; return; }
+      var fmt=function(m){ return esc(m.algo)+' <span style="color:var(--muted)">('+m.width+'-bit over '+m.over_bytes+' B'
+        +(m.skip_bytes?', skip '+m.skip_bytes:'')+(m.endian?', '+m.endian+'-endian':'')+')</span>'; };
+      var lines=['<span style="color:var(--muted)">'+r.n_bytes+' bytes'+xfLabel()+'</span>'];
+      if(r.note) lines.push('<span style="color:var(--muted)">'+esc(r.note)+'</span>');
+      if(r.matches&&r.matches.length)
+        lines.push('<span style="color:var(--live)">✓ trailing check:</span> '+r.matches.map(fmt).join(', '));
+      if(r.brute_extra&&r.brute_extra.length)
+        lines.push('<span style="color:var(--live)">✓ with a header/tail:</span> '+r.brute_extra.slice(0,6).map(fmt).join(', '));
+      if(!(r.matches&&r.matches.length)&&!(r.brute_extra&&r.brute_extra.length)&&!r.note)
+        lines.push('<span style="color:var(--muted)">no CRC or checksum validates these bytes. Try <b>offset</b> to align the frame, or <b>Invert</b> / <b>Reflect</b>.</span>');
+      co.innerHTML=lines.join('<br>');
+    }).catch(function(){ co.innerHTML='<span style="color:var(--rose)">CRC request failed</span>'; });
+  }
+  $('crcbtn').addEventListener('click',runCRC);
   function toHex(b){var h=[];for(var i=0;i+8<=b.length;i+=8)h.push(('0'+parseInt(b.substr(i,8),2).toString(16)).slice(-2));
     var r=b.length%8; var s=h.join(' '); if(r)s+=' +'+b.substr(b.length-r); return s;}
   function manchester(b){var o='';for(var i=0;i+2<=b.length;i+=2){var p=b.substr(i,2);o+=(p==='01'?'1':(p==='10'?'0':'?'));}return o;}

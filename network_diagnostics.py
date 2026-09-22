@@ -26610,6 +26610,17 @@ def register_network_diagnostics(app, logger=None):
     def _b(v):       # query-string boolean
         return str(v).lower() in ('1', 'true', 'yes', 'on')
 
+    # Test CRC / checksum algorithms over exactly the bits shown (no frame
+    # detection) — a standalone version of what /frames reports inline.
+    @app.route('/api/net/rtl/analyze/crc', methods=['GET'])
+    def net_rtl_analyze_crc():
+        a = request.args
+        bits = (a.get('bits', '') or '')[:8192]
+        return _analyze(sigmf_analyzer.crc_check, bits=bits, line=a.get('line', 'raw'),
+                        invert=(a.get('invert') in ('1', 'true')),
+                        reflect=(a.get('reflect') in ('1', 'true')),
+                        offset=int(a.get('offset', 0) or 0))
+
     @app.route('/api/net/rtl/analyze/frames', methods=['GET'])
     def net_rtl_analyze_frames():
         a = request.args
