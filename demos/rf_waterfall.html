@@ -85,9 +85,21 @@
   .stat .v.peak{color:var(--accent)} .stat .v.cy{color:var(--cyan)} .stat .v.busy{color:var(--live)}
   .scope-body{display:flex;flex-direction:column}
   .fall-wrap{position:relative;background:#05080d}
-  canvas.fall{display:block;width:100%;height:420px;cursor:crosshair}
+  canvas.fall{display:block;width:100%;height:420px;cursor:crosshair;touch-action:pan-y}
   canvas.trace{display:block;width:100%;height:56px;background:var(--panel-2);border-top:1px solid var(--line-soft);cursor:crosshair}
   .now{position:absolute;top:0;left:8px;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:rgba(205,214,228,.55);pointer-events:none;text-shadow:0 1px 3px #000}
+  /* hover crosshair + readout, time axis, colour bar */
+  .hline{position:absolute;top:0;bottom:0;width:1px;background:rgba(205,214,228,.45);pointer-events:none;display:none}
+  .hov{position:fixed;z-index:50;pointer-events:none;display:none;font-family:var(--mono);font-size:11px;line-height:1.45;color:var(--ink);
+    background:rgba(10,14,20,.92);border:1px solid var(--line);border-radius:6px;padding:5px 8px;white-space:nowrap;box-shadow:0 6px 18px -8px #000}
+  .hov b{color:var(--cyan);font-weight:600} .hov .hk{color:var(--muted)} .hov .ha{color:var(--accent)}
+  canvas.tgrid{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .cbar{position:absolute;top:6px;bottom:6px;right:6px;width:9px;border-radius:3px;border:1px solid rgba(255,255,255,.12);pointer-events:none}
+  .cbar .cb-hi,.cbar .cb-lo{position:absolute;right:13px;font-family:var(--mono);font-size:9.5px;color:rgba(205,214,228,.75);text-shadow:0 1px 3px #000;white-space:nowrap}
+  .cbar .cb-hi{top:-2px} .cbar .cb-lo{bottom:-2px}
+  .histgrp{display:inline-flex;align-items:center;gap:5px}
+  .histgrp input[type=range]{width:110px;accent-color:var(--accent)}
+  .histgrp .hstat{font-size:10.5px;color:var(--accent)}
   .marker{position:absolute;top:0;bottom:0;width:1px;background:var(--accent);box-shadow:0 0 6px rgba(245,185,66,.7);display:none;pointer-events:none}
   .marker .ml{position:absolute;top:2px;left:3px;font-family:var(--mono);font-size:10px;color:var(--accent);white-space:nowrap;text-shadow:0 1px 3px #000}
   .veil{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:rgba(5,8,13,.72);text-align:center;padding:16px}
@@ -195,7 +207,7 @@
     button.mini{padding:8px 12px}
     .scope-head .fsbtn{padding:8px 12px}
     /* inline-flex control groups must wrap, not overflow the screen edge */
-    .tunergrp,.tunesel,.holdgrp,.npgrp,.zwavesel,.recbar .transport{flex-wrap:wrap}
+    .tunergrp,.tunesel,.holdgrp,.npgrp,.histgrp,.zwavesel,.recbar .transport{flex-wrap:wrap}
     /* readout: even tiles across the full width, no fixed min that forces overflow */
     .readout{gap:10px 14px;width:100%;order:5}
     .stat{min-width:0;flex:1 0 27%}
@@ -245,7 +257,7 @@
       <div class="seg" id="palette" role="group" aria-label="Waterfall colour palette"></div>
     </div>
     <div class="spacer"></div>
-    <div class="legend"><span>&minus;110&nbsp;dBm</span><span class="grad" aria-hidden="true"></span><span>&minus;20&nbsp;dBm</span></div>
+    <div class="legend" title="Colour key. Each panel's own dB range is on its waterfall's right edge (set it in ⚙ Settings → Display range)."><span>weak</span><span class="grad" aria-hidden="true"></span><span>strong</span></div>
     <span class="clock" id="clock">--:--:--</span>
   </div>
 
@@ -323,7 +335,7 @@
     if(!PALETTES[id]) return;
     activePalette=id; LUT=buildLUT(PALETTES[id].stops); LUTrgb=buildLUTrgb(PALETTES[id].stops);
     // recolour what's already on screen from the row history (not just new rows)
-    try{ if(typeof scopes!=='undefined'&&scopes) scopes.forEach(function(s){ s.repaint(); }); }catch(e){}
+    try{ if(typeof scopes!=='undefined'&&scopes) scopes.forEach(function(s){ s.repaint(); s._cbarUI(true); }); }catch(e){}
     var g=document.querySelector('.legend .grad'); if(g) g.style.background=gradCss(PALETTES[id].stops);
     var seg=document.getElementById('palette');
     if(seg) Array.prototype.forEach.call(seg.querySelectorAll('button'),function(x){
@@ -425,7 +437,8 @@
       +'</div>'
       +'<div class="scope-body">'
         +'<div class="fall-wrap">'
-          +'<canvas class="fall"></canvas><span class="now">t=0.0s</span>'
+          +'<canvas class="fall"></canvas><canvas class="tgrid"></canvas><span class="now">t=0.0s</span>'
+          +'<div class="hline"></div><div class="cbar"><span class="cb-hi"></span><span class="cb-lo"></span></div>'
           +'<div class="marker"><span class="ml"></span></div>'
           +'<div class="veil"><div class="vt"></div><div class="vs"></div></div>'
         +'</div>'
@@ -454,6 +467,9 @@
           +'</span>'
           +'<button class="mini snapbtn" title="Save the waterfall as a PNG">⇩ PNG</button>'
           +'<button class="mini cfgbtn" aria-expanded="false" title="Display range, resolution, hardware, limit lines and export">&#9881; Settings</button>'
+          +'<span class="histgrp"><span class="hlbl">History</span>'
+            +'<input type="range" class="hscroll" min="0" max="0" value="0" title="Scroll back through the waterfall history (Shift+wheel or drag up/down on the waterfall)">'
+            +'<button class="mini livebtn" disabled title="Back to the live edge">&#9650; Live</button><span class="hstat"></span></span>'
           +'<button class="mini zoombtn" disabled>Zoom here</button>'
           +'<button class="mini resetbtn" disabled>Reset zoom</button>'
         +'</div>'
@@ -541,6 +557,19 @@
     this.npStrEl.addEventListener('input',function(){ self._npStr=(+self.npStrEl.value)/100;
       try{ localStorage.setItem('rfwf.np.str.'+cfg.short,self.npStrEl.value); }catch(e){} self._npUI(); });
     this._npUI();
+    // Hover readout + time axis + history scroll-back + colour bar
+    this.hline=el.querySelector('.hline'); this.tgrid=el.querySelector('.tgrid'); this.cbar=el.querySelector('.cbar');
+    this.cbHi=el.querySelector('.cb-hi'); this.cbLo=el.querySelector('.cb-lo');
+    this.hov=document.createElement('div'); this.hov.className='hov'; document.body.appendChild(this.hov);
+    this.hScroll=el.querySelector('.hscroll'); this.liveBtn=el.querySelector('.livebtn'); this.hStat=el.querySelector('.hstat');
+    this.hScroll.addEventListener('input',function(){ self.setScrollBack((+self.hScroll.max)-(+self.hScroll.value)); });
+    this.liveBtn.addEventListener('click',function(){ self.setScrollBack(0); });
+    ['fall','trace'].forEach(function(k){ var cv=self[k];
+      cv.addEventListener('pointermove',function(e){ if(e.pointerType==='touch') return; self.onHover(e,k); });
+      cv.addEventListener('pointerleave',function(){ self.hideHover(); });
+      cv.addEventListener('wheel',function(e){ if(e.shiftKey && k==='fall' && !self.threeD){ e.preventDefault();
+        self.setScrollBack(self.scrollBack+Math.round((e.deltaY||e.deltaX)/(self.STEP/self.d)*0.5)); } },{passive:false});
+    });
     // Settings drawer
     this.cfgBtn=el.querySelector('.cfgbtn'); this.drawer=el.querySelector('.drawer');
     this.cfgBtn.addEventListener('click',function(){ var open=self.drawer.hidden; self.drawer.hidden=!open;
@@ -1257,6 +1286,9 @@
     this._updateTraces(power);
     this.updateSignals(power,nf);        // track emitters (CFAR) + throttled render
     this.drawTrace(power); this.updateReadout();
+    if(!this.threeD) this._drawTimeGrid();
+    this._cbarUI();
+    var _nh=performance.now(); if(_nh-(this._histT||0)>400){ this._histT=_nh; this._histUI(); }
   };
 
   // ---- display range (colour scale) ----------------------------------------
@@ -1270,7 +1302,7 @@
     if(o.ref!=null&&isFinite(o.ref)) this.disp.ref=Math.max(-200,Math.min(60,Math.round(o.ref)));
     if(o.range!=null&&isFinite(o.range)) this.disp.range=Math.max(5,Math.min(200,Math.round(o.range)));
     try{ localStorage.setItem('rfwf.disp.'+this.cfg.short,JSON.stringify(this.disp)); }catch(e){}
-    this._dispUI(); this.repaint(); if(this.shown||this.row) this.drawTrace(this.shown||this.row);
+    this._dispUI(); this.repaint(); this._cbarUI(); if(this.shown||this.row) this.drawTrace(this.shown||this.row);
   };
   Scope.prototype.fitDisplay=function(){
     var src=this.maxRow||this.shown||this.row; if(!src||!src.length) return;
@@ -1328,7 +1360,88 @@
     f.drawImage(cv,0,0,cols,nrows,0,0,W,nrows*S); f.imageSmoothingEnabled=sm;
     this._drawTimeGrid();
   };
-  Scope.prototype._drawTimeGrid=function(){};   // (time axis — filled in with scroll-back)
+  // ---- hover readout -------------------------------------------------------
+  // Frequency under the cursor; on the 2D waterfall also the exact stored level
+  // and time of that cell (from the row history); on the trace the live level
+  // plus any hold traces. Mouse / pen only — a touch tap still measures.
+  Scope.prototype.onHover=function(e,which){
+    var cv=(which==='trace')?this.trace:this.fall, r=cv.getBoundingClientRect();
+    var fx=(e.clientX-r.left)/r.width; if(fx<0||fx>1||!(this.hi>this.lo)){ this.hideHover(); return; }
+    var f=this.lo+fx*(this.hi-this.lo), lines=['<b>'+fmtMHz(f)+'</b>'];
+    var lvl=function(p,lo,hi){ if(!p||!p.length) return null; var i=Math.floor((f-lo)/((hi-lo)/p.length)); return (i>=0&&i<p.length)?p[i]:null; };
+    var dbs=function(v){ return (v==null)?'—':(Math.round(v*10)/10)+' dB'; };
+    if(which==='fall' && !this.threeD){
+      var back=Math.floor((e.clientY-r.top)*this.d/(this.STEP||1))+this.scrollBack, h=this.hrows[this.hrows.length-1-back];
+      if(h){ var shown=lvl(this._shownOf(h),h.lo,h.hi), raw=lvl(h.p,h.lo,h.hi);
+        lines.push(dbs(shown)+(raw!=null&&shown!=null&&Math.abs(raw-shown)>0.5?' <span class="hk">(raw '+dbs(raw)+')</span>':''));
+        var ago=(Date.now()-h.t)/1000, d=new Date(h.t);
+        lines.push('<span class="hk">'+(ago<0.5?'now':'−'+ago.toFixed(1)+' s')+' · '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')+'</span>');
+      }
+    } else {
+      lines.push('live '+dbs(lvl(this.shown||this.row,this.lo,this.hi)));
+      var hd=this.holds||{};
+      if(hd.max&&this.maxRow) lines.push('<span class="ha">max '+dbs(lvl(this.maxRow,this.lo,this.hi))+'</span>');
+      if(hd.avg&&this.avgRow) lines.push('<span class="hk">avg '+dbs(lvl(this.avgRow,this.lo,this.hi))+'</span>');
+    }
+    this.hov.innerHTML=lines.join('<br>'); this.hov.style.display='block';
+    var bx=e.clientX+14, by=e.clientY+14, bw=this.hov.offsetWidth, bh=this.hov.offsetHeight;
+    if(bx+bw>window.innerWidth-6) bx=e.clientX-bw-14; if(by+bh>window.innerHeight-6) by=e.clientY-bh-14;
+    this.hov.style.left=bx+'px'; this.hov.style.top=by+'px';
+    this.hline.style.display='block'; this.hline.style.left=(fx*100)+'%';
+  };
+  Scope.prototype.hideHover=function(){ this.hov.style.display='none'; this.hline.style.display='none'; };
+
+  // ---- history scroll-back -------------------------------------------------
+  Scope.prototype.setScrollBack=function(n){
+    var vis=Math.ceil((this.H||1)/(this.STEP||1)), maxBack=Math.max(0,this.hrows.length-Math.min(vis,this.hrows.length));
+    n=Math.max(0,Math.min(maxBack,Math.round(n)||0));
+    if(this.threeD) n=0;
+    if(n===this.scrollBack) { this._histUI(); return; }
+    this.scrollBack=n; this.repaint(); this._histUI();
+  };
+  Scope.prototype._histUI=function(){
+    if(!this.hScroll) return;
+    var vis=Math.ceil((this.H||1)/(this.STEP||1)), maxBack=Math.max(0,this.hrows.length-Math.min(vis,this.hrows.length));
+    this.hScroll.max=maxBack; this.hScroll.value=maxBack-Math.min(this.scrollBack,maxBack);
+    this.hScroll.disabled=(maxBack===0)||this.threeD;
+    this.liveBtn.disabled=(this.scrollBack===0);
+    if(this.scrollBack>0){ var h=this.hrows[this.hrows.length-1-this.scrollBack];
+      this.hStat.textContent=h?('−'+((Date.now()-h.t)/1000).toFixed(1)+' s · holding'):''; }
+    else this.hStat.textContent='';
+  };
+
+  // ---- time axis (left edge of the 2D waterfall) --------------------------
+  Scope.prototype._drawTimeGrid=function(){
+    var cv=this.tgrid; if(!cv) return;
+    var d=this.d||1, W=this.fall.width, H=this.fall.height;
+    if(cv.width!==W) cv.width=W; if(cv.height!==H) cv.height=H;
+    var g=cv.getContext('2d'); g.clearRect(0,0,W,H);
+    if(this.threeD||!this.hrows.length) return;
+    var S=this.STEP||1, end=this.hrows.length-1-this.scrollBack, n=Math.min(end+1,Math.ceil(H/S));
+    if(n<2) return;
+    var a=this.hrows[Math.max(0,end-Math.min(n-1,40))], b=this.hrows[end];
+    var rate=(b.t>a.t)?(Math.min(n-1,40))/((b.t-a.t)/1000):16;          // rows per second
+    var pxPerSec=rate*S/d, iv=[1,2,5,10,15,30,60,120,300,600,1800,3600].find(function(c){return c*pxPerSec>=46;})||3600;
+    g.font=(10*d)+'px "IBM Plex Mono",monospace'; g.textBaseline='middle'; g.shadowColor='#000'; g.shadowBlur=3*d;
+    var prev=Math.floor(this.hrows[end].t/(iv*1000));
+    for(var k=1;k<n;k++){
+      var t=this.hrows[end-k].t, bk=Math.floor(t/(iv*1000));
+      if(bk!==prev){ var y=Math.round(k*S)+0.5, dt=new Date(bk===prev?t:(prev*iv*1000));
+        g.strokeStyle='rgba(205,214,228,.35)'; g.lineWidth=1; g.beginPath(); g.moveTo(0,y); g.lineTo(10*d,y); g.stroke();
+        g.fillStyle='rgba(205,214,228,.72)';
+        g.fillText(String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0')+':'+String(dt.getSeconds()).padStart(2,'0'),13*d,y);
+        prev=bk; }
+    }
+    g.shadowBlur=0;
+  };
+  // ---- per-panel colour bar (the dB range the colours map to) --------------
+  Scope.prototype._cbarUI=function(force){
+    if(!this.cbar) return; var lo=Math.round(this.rangeLo()), hi=Math.round(this.rangeHi());
+    var key=lo+'|'+hi+'|'+activePalette+'|'+this.threeD; if(!force && key===this._cbKey) return; this._cbKey=key;
+    this.cbar.style.background='linear-gradient(0deg,'+PALETTES[activePalette].stops.map(function(s){
+      return 'rgb('+s[1][0]+','+s[1][1]+','+s[1][2]+') '+Math.round(s[0]*100)+'%';}).join(',')+')';
+    this.cbHi.textContent=hi+' dB'; this.cbLo.textContent=lo+' dB';
+  };
 
   // ---- noise print (background subtraction) -----------------------------
   // Record N seconds of rows, take the per-bin MEDIAN (the typical level, so a
@@ -1438,7 +1551,8 @@
     on=!!on; this.threeD=on;
     if(this.d3Sel) Array.prototype.forEach.call(this.d3Sel.querySelectorAll('button'),function(b){
       b.setAttribute('aria-pressed', (b.getAttribute('data-3d')==='1')===on?'true':'false'); });
-    if(on){ this.draw3D(); } else { this.resetCanvas(); }   // resume the flat 2D waterfall
+    if(on){ this.scrollBack=0; this.draw3D(); this._drawTimeGrid(); } else { this.repaint(); }   // 2D resumes from history
+    this._histUI(); this._cbarUI(true);
   };
   // Robust noise-floor estimate: the ~30th-percentile of the row (ignores the
   // handful of bins that carry real signals). Feeds SNR + the detection threshold.

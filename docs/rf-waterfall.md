@@ -163,13 +163,13 @@ analysers and SDR tools (SDR++, SDR#, GQRX, Signal Hound Spike, benchtop RSA/FSV
 analysers) give you as a matter of course. Each item is ticked when it ships.
 
 **Tier 1 — basics**
-- [ ] Hover readout: frequency / level / time under the cursor
+- [x] Hover readout: frequency / level / time under the cursor
 - [x] Display range: Auto, or manual Ref level + Range, plus *Fit to signal*
 - [ ] Mouse-wheel zoom, drag to pan, pinch on touch
 - [ ] Resolution: FFT size (RBW), averaging, window, display bins
 - [ ] Markers: several, delta marker, peak search / next peak, marker → centre
 - [ ] HackRF gain (LNA / VGA / amp) in the UI
-- [ ] Pause and scroll back through history, with a time axis
+- [x] Pause and scroll back through history, with a time axis
 
 **Tier 2 — pro-grade**
 - [ ] CSV export (spectrum, traces, signal list, waterfall)
@@ -199,6 +199,25 @@ The page keeps a history of every row it has shown (about 10 MB per panel), so a
 range or palette change **recolours the whole waterfall at once**, not just new
 rows. The same history is redrawn when the window is resized or goes full screen,
 instead of starting blank.
+
+## Hover readout, time axis and history
+
+- **Hover** over the waterfall to read the frequency, the exact stored level of
+  that cell, and when it was received (`433.92 MHz · −29 dB · −1.9 s ·
+  07:57:57`). With a noise print active the raw level is shown too. Over the
+  spectrum trace it shows the live level plus any Max/Avg hold at that
+  frequency. A thin crosshair marks the cursor frequency. (Mouse and pen; on a
+  phone, tap to measure as before.)
+- **Time axis:** clock times down the left edge of the 2D waterfall, spaced to
+  suit the scroll speed (every 1 s … 1 h).
+- **Colour bar:** the right edge of each waterfall shows the dB range its
+  colours map to. The top-bar legend is just a weak → strong colour key, since
+  each panel has its own range.
+- **History:** drag the **History** slider, or **Shift + mouse wheel** on the
+  waterfall, to scroll back through past rows. While you're looking back the
+  view holds still and new rows keep being recorded. **▲ Live** jumps back to
+  the live edge. Roughly the last 10 MB of rows is kept per panel (about 3–5
+  minutes of the real-time engine).
 
 ## Noise print (background subtraction)
 
