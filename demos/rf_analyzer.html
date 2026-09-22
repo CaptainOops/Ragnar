@@ -976,6 +976,18 @@
     }).catch(function(){ $('modout').textContent='classify request failed'; });
     api('/api/net/rtl/analyze/constellation',q).then(function(cn){ if(cn&&cn.ok) drawScatter('constell',cn.i,cn.q); });
     api('/api/net/rtl/analyze/instantaneous',q).then(function(ins){ S._inst=ins; drawInst(ins); });
+    // Service-monitor figures. Both are always shown: an "FM" signal carrying
+    // 40% AM depth is telling you something about the transmitter.
+    api('/api/net/rtl/analyze/modulation_quality',q).then(function(mq){
+      if(!mq||!mq.ok) return; S.modQuality=mq;
+      var fm=mq.fm||{}, am=mq.am||{}, hz=function(v){ return v==null?'—':(Math.abs(v)>=1000?(v/1000).toFixed(2)+' kHz':Math.round(v)+' Hz'); };
+      var el=document.getElementById('modout');
+      el.innerHTML+='<div style="margin-top:8px;font-size:12px">'
+        +'<b>FM</b> peak deviation <b>'+hz(fm.peak_dev_hz)+'</b> · RMS '+hz(fm.rms_dev_hz)
+        +' · carrier offset '+hz(fm.carrier_offset_hz)+' · Carson BW '+hz(fm.carson_bw_hz)
+        +' &nbsp;·&nbsp; <b>AM</b> depth <b>'+(am.depth_pct==null?'—':am.depth_pct+'%')+'</b>'
+        +'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+esc(mq.note||'')+'</div></div>';
+    });
   });
 
   // ---- filter: band-pass / notch, spectrum before vs after ----

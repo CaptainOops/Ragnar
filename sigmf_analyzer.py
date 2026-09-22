@@ -856,6 +856,84 @@ def instantaneous(name, f_offset_hz=0.0, bw_hz=None, t0=None, t1=None, n=1500):
             "q": [round(float(v), 3) for v in quad.tolist()]}
 
 
+def fm_deviation(inst_freq_hz, pct=99.5):
+    """Peak and RMS frequency deviation from an instantaneous-frequency trace (pure).
+
+    Peak deviation is taken at a high percentile rather than the true maximum: a
+    single sample at a zero crossing of the envelope produces a wild frequency
+    estimate, and one such sample must not become the answer. The carrier offset
+    (the trace's median) is removed first, because deviation is deviation *from
+    the carrier*, not from zero.
+    """
+    v = [float(x) for x in (inst_freq_hz or ()) if x == x]      # drop NaN
+    if len(v) < 4:
+        return None
+    sv = sorted(v)
+    centre = sv[len(sv) // 2]
+    d = sorted(abs(x - centre) for x in v)
+    k = min(len(d) - 1, int(len(d) * min(99.99, max(50.0, pct)) / 100.0))
+    peak = d[k]
+    rms = (sum((x - centre) ** 2 for x in v) / len(v)) ** 0.5
+    return {"carrier_offset_hz": round(centre, 1), "peak_dev_hz": round(peak, 1),
+            "rms_dev_hz": round(rms, 1),
+            # Carson: the bandwidth an FM signal of this deviation needs
+            "carson_bw_hz": round(2 * (peak + rms), 1)}
+
+
+def am_depth(envelope, pct=99.0):
+    """AM modulation depth from an amplitude envelope (pure).
+
+    m = (max - min) / (max + min), the standard definition, but taken at
+    percentiles so one noise sample cannot claim 100% modulation. Returned as a
+    fraction and as a percentage; 0 means an unmodulated carrier and 1.0 means
+    the envelope reaches zero (100% modulation).
+    """
+    v = sorted(float(x) for x in (envelope or ()) if x == x and x >= 0)
+    if len(v) < 4:
+        return None
+    hi = v[min(len(v) - 1, int(len(v) * min(99.99, max(50.0, pct)) / 100.0))]
+    lo = v[max(0, len(v) - 1 - int(len(v) * min(99.99, max(50.0, pct)) / 100.0))]
+    if hi + lo <= 0:
+        return None
+    m = (hi - lo) / (hi + lo)
+    return {"depth": round(m, 4), "depth_pct": round(m * 100.0, 1),
+            "env_max": round(hi, 5), "env_min": round(lo, 5)}
+
+
+def modulation_quality(name, f_offset_hz=0.0, bw_hz=None, t0=None, t1=None):
+    """Service-monitor measurements on a selection: FM deviation and AM depth.
+
+    Both are computed for every selection, because the interesting answer is
+    often the one you did not ask for (an "FM" signal with 40% AM depth is
+    telling you something about the transmitter). The classifier's verdict is
+    included so the caller knows which figure to read; EVM for digital
+    modulations comes from :func:`constellation_demod`.
+    """
+    import numpy as np
+    x, nfs = _prep_selection(name, f_offset_hz, bw_hz, t0, t1)
+    if len(x) < 64:
+        return {"ok": False, "error": "selection too short"}
+    amp = np.abs(x)
+    peak = float(np.max(amp)) + 1e-12
+    # Frequency discriminator. Samples where the envelope collapses carry no
+    # phase information, so they are left out rather than allowed to dominate.
+    d = x[1:] * np.conj(x[:-1])
+    good = amp[1:] > peak * 0.10
+    inst = np.angle(d) * nfs / (2 * np.pi)
+    used = inst[good] if int(np.count_nonzero(good)) > 16 else inst
+    fm = fm_deviation(used.tolist())
+    am = am_depth((amp / peak).tolist())
+    cls = _classify_signal(x, nfs)
+    return {"ok": True, "sample_rate_hz": round(nfs, 1),
+            "samples": int(len(x)), "gated_frac": round(float(np.mean(good)), 3),
+            "fm": fm, "am": am,
+            "modulation": cls.get("label") or cls.get("modulation"),
+            "confidence": cls.get("confidence"),
+            "note": "FM figures assume the selection is one signal: filter to it "
+                    "with bw_hz first. AM depth of a digital burst is keying, not "
+                    "modulation depth."}
+
+
 def classify(name, f_offset_hz=0.0, bw_hz=None, t0=None, t1=None):
     """Automatic modulation classification for the selected signal."""
     x, nfs = _prep_selection(name, f_offset_hz, bw_hz, t0, t1)
@@ -2908,6 +2986,40 @@ def selftest():
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
         _CACHE.clear()
+
+    # --- modulation quality: FM deviation + AM depth --------------------------
+    import math as _m
+    _fs = 48000.0
+    _tt = [i / _fs for i in range(4800)]
+    # a 1 kHz tone deviating +-3 kHz: the discriminator output IS that tone
+    _inst = [3000.0 * _m.sin(2 * _m.pi * 1000.0 * t) for t in _tt]
+    _fmd = fm_deviation(_inst)
+    check("fm: peak deviation of a +-3 kHz tone reads ~3 kHz",
+          abs(_fmd["peak_dev_hz"] - 3000.0) < 60, str(_fmd["peak_dev_hz"]))
+    check("fm: rms deviation of a sine is peak/sqrt(2)",
+          abs(_fmd["rms_dev_hz"] - 3000.0 / _m.sqrt(2)) < 60, str(_fmd["rms_dev_hz"]))
+    _off = fm_deviation([o + 12000.0 for o in _inst])
+    check("fm: a carrier offset is reported, not counted as deviation",
+          abs(_off["peak_dev_hz"] - _fmd["peak_dev_hz"]) < 60
+          and abs(_off["carrier_offset_hz"] - 12000.0) < 120,
+          str(_off))
+    check("fm: one wild sample does not become the peak deviation",
+          abs(fm_deviation(_inst + [900000.0])["peak_dev_hz"] - 3000.0) < 120)
+    check("fm: too little data returns nothing rather than a number",
+          fm_deviation([1.0, 2.0]) is None and fm_deviation(None) is None)
+    check("fm: Carson bandwidth is wider than twice the deviation",
+          _fmd["carson_bw_hz"] > 2 * _fmd["peak_dev_hz"] * 0.9)
+
+    _am = am_depth([1.0 + 0.5 * _m.sin(2 * _m.pi * 1000.0 * t) for t in _tt])
+    check("am: 50% modulation reads ~50%", abs(_am["depth_pct"] - 50.0) < 3.0,
+          str(_am["depth_pct"]))
+    check("am: an unmodulated carrier reads ~0%",
+          am_depth([1.0] * 500)["depth_pct"] < 1.0)
+    check("am: full modulation approaches 100%",
+          am_depth([1.0 + 0.99 * _m.sin(2 * _m.pi * 1000.0 * t) for t in _tt])["depth_pct"] > 90.0)
+    check("am: a single spike does not claim 100% modulation",
+          am_depth([1.0] * 500 + [9.0])["depth_pct"] < 5.0)
+    check("am: bad input returns nothing", am_depth([]) is None and am_depth(None) is None)
 
     passed = sum(1 for r in results if r["pass"])
     return {"pass": passed == len(results), "passed": passed,

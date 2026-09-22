@@ -758,6 +758,17 @@ that requests windows:
 - **Decoded devices** — runs **rtl_433** over the whole capture (`-r`) to *name*
   known ISM devices (TPMS / weather / remotes / doorbells…) straight from the
   recording, with their decoded fields.
+- **Modulation quality** — service-monitor figures for the selection, shown
+  alongside the classification: **FM peak and RMS deviation**, the carrier
+  offset and the Carson bandwidth, and **AM modulation depth**. Both families
+  are always computed, because the interesting answer is often the one you did
+  not ask for — an "FM" transmitter carrying 40% AM depth is telling you
+  something about itself. The frequency discriminator ignores samples where the
+  envelope collapses (they carry no phase), and deviation is taken at a
+  percentile so one wild sample cannot become the answer. Verified against
+  synthesised signals: a ±25 kHz tone reads 25.6 kHz peak / 17680 Hz RMS
+  (theory 17678), and a 60%-modulated carrier reads 61.1%.
+  Route `/analyze/modulation_quality`.
 - **Constellation demod (PSK)** — on one clean burst, recover symbol timing +
   carrier and classify the constellation (BPSK / QPSK / 8PSK) with an EVM/SNR
   read and a scatter plot, plus rotation-invariant differential bits. PSK only,
@@ -850,6 +861,10 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 7 — modulation**
+- [x] FM deviation (peak / RMS / Carson) and AM modulation depth
+- [x] EVM for PSK (constellation demod, Segment 9)
 
 **Tier 6 — measurement set**
 - [x] Band-power markers and a corrected noise marker (dB/Hz)

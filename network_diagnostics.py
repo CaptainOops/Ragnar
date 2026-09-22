@@ -26496,6 +26496,11 @@ def register_network_diagnostics(app, logger=None):
     def net_rtl_analyze_constellation():
         return _analyze(sigmf_analyzer.constellation, **_sel(request.args))
 
+    # Service-monitor figures for the selection: FM deviation and AM depth.
+    @app.route('/api/net/rtl/analyze/modulation_quality', methods=['GET'])
+    def net_rtl_analyze_modquality():
+        return _analyze(sigmf_analyzer.modulation_quality, **_sel(request.args))
+
     @app.route('/api/net/rtl/analyze/instantaneous', methods=['GET'])
     def net_rtl_analyze_instantaneous():
         return _analyze(sigmf_analyzer.instantaneous, **_sel(request.args))
