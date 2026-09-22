@@ -823,6 +823,18 @@ that requests windows:
   synthesised signals: a ±25 kHz tone reads 25.6 kHz peak / 17680 Hz RMS
   (theory 17678), and a 60%-modulated carrier reads 61.1%.
   Route `/analyze/modulation_quality`.
+- **Squelch tag (CTCSS / DCS)** — an FM repeater channel usually carries a tag
+  under the audio saying which group a transmission belongs to. Both are read
+  straight from the frequency discriminator: a **CTCSS** tone (the full 54-tone
+  standard table, found by Goertzel and reported with how many dB it stands
+  clear of the next candidate — a real tone is many dB clear, noise scores every
+  tone alike), or a **DCS** code (the repeating 23-bit Golay word at
+  134.4 bit/s, matched against all 83 standard codes at any rotation, with
+  inverted-polarity transmissions decoded and flagged). Nothing found normally
+  means the channel is carrier-squelch. Verified against synthesised signals: a
+  100 Hz tone under 12 dB louder "speech" reads 100.0 Hz with a 28.8 dB margin,
+  and DCS 251 decodes exactly in both polarities while noise is rejected.
+  Route `/analyze/subaudible`.
 - **Constellation demod (PSK)** — on one clean burst, recover symbol timing +
   carrier and classify the constellation (BPSK / QPSK / 8PSK) with an EVM/SNR
   read and a scatter plot, plus rotation-invariant differential bits. PSK only,
@@ -915,6 +927,13 @@ capability that isn't here is a gap worth closing.
 - [x] Radio: SSB / CW, squelch, audio recording
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
+
+**Tier 10 — signalling**
+- [x] CTCSS tone decode (54-tone table)
+- [x] DCS code decode (83 codes, Golay(23,12), both polarities)
+- [ ] RDS on broadcast FM — not implemented (57 kHz subcarrier, differential
+      BPSK and group parsing; a project of its own, not a gap in the analyser's
+      measurement path)
 
 **Tier 9 — operating**
 - [x] Memory channels with live activity monitoring

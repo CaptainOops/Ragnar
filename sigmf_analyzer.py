@@ -27,6 +27,7 @@ selftested against a synthesised capture (a tone + an OOK burst), no hardware.
 
 import base64
 import json
+import math
 import os
 import struct
 import time
@@ -854,6 +855,217 @@ def instantaneous(name, f_offset_hz=0.0, bw_hz=None, t0=None, t1=None, n=1500):
             "phase_deg": [round(float(v), 1) for v in phase.tolist()],
             "i": [round(float(v), 3) for v in inphase.tolist()],
             "q": [round(float(v), 3) for v in quad.tolist()]}
+
+
+# --------------------------------------------------------------------------
+# Subaudible squelch signalling: CTCSS tones and DCS codes.
+#
+# An FM repeater channel usually carries a tag under the audio saying which
+# group the transmission belongs to: a continuous tone (CTCSS, 67-254 Hz) or a
+# continuously repeating 23-bit word (DCS, 134.4 bit/s). It is the difference
+# between "someone is on 145.500" and "this is that group's transmission" — and
+# it is decodable straight from the frequency discriminator.
+# --------------------------------------------------------------------------
+
+# The standard CTCSS tones (EIA/TIA-603). Deliberately the full set, including
+# the non-standard extras in common use, because a radio that uses one of them
+# is exactly the case worth identifying.
+CTCSS_TONES = (
+    67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4,
+    100.0, 103.5, 107.2, 110.9, 114.8, 118.8, 123.0, 127.3, 131.8, 136.5,
+    141.3, 146.2, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9, 171.3, 173.8,
+    177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5, 203.5, 206.5,
+    210.7, 213.8, 218.1, 221.3, 225.7, 229.1, 233.6, 237.1, 241.8, 245.5,
+    250.3, 254.1,
+)
+
+# The 83 standard DCS codes, written the way radios display them (octal).
+DCS_CODES = (
+    "023", "025", "026", "031", "032", "043", "047", "051", "054", "065",
+    "071", "072", "073", "074", "114", "115", "116", "125", "131", "132",
+    "134", "143", "152", "155", "156", "162", "165", "172", "174", "205",
+    "223", "226", "243", "244", "245", "251", "261", "263", "265", "271",
+    "306", "311", "315", "331", "343", "346", "351", "364", "365", "371",
+    "411", "412", "413", "423", "431", "432", "445", "464", "465", "466",
+    "503", "506", "516", "532", "546", "565", "606", "612", "624", "627",
+    "631", "632", "654", "662", "664", "703", "712", "723", "731", "732",
+    "734", "743", "754",
+)
+DCS_BITRATE = 134.4          # bit/s, fixed by the standard
+_DCS_GOLAY_POLY = 0xC75      # Golay(23,12) generator
+
+
+def _golay23(data12):
+    """Golay(23,12) codeword for 12 data bits (pure).
+
+    DCS sends a 23-bit word: 12 data bits (the 9-bit octal code plus three fixed
+    bits) followed by 11 parity bits from this generator.
+    """
+    reg = (int(data12) & 0xFFF) << 11
+    out = reg
+    for i in range(22, 10, -1):
+        if reg & (1 << i):
+            reg ^= _DCS_GOLAY_POLY << (i - 11)
+    return (out & ~0x7FF) | (reg & 0x7FF)
+
+
+def dcs_word(code_octal):
+    """The 23-bit on-air word for a DCS code like "023" (pure), LSB first.
+
+    The transmitted order is least-significant bit first, which is why a naive
+    decoder sees every code reversed.
+    """
+    try:
+        c = int(str(code_octal), 8) & 0x1FF
+    except (TypeError, ValueError):
+        return None
+    data = c | (0x4 << 9)                     # the three fixed bits: 100
+    w = _golay23(data)
+    return [(w >> i) & 1 for i in range(23)]
+
+
+def _dcs_table():
+    tab = {}
+    for c in DCS_CODES:
+        w = dcs_word(c)
+        if w:
+            tab[tuple(w)] = c
+    return tab
+
+
+_DCS_TABLE = None
+
+
+def _goertzel(x, fs, f):
+    """Power of frequency ``f`` in samples ``x`` (pure-ish; numpy for speed)."""
+    import numpy as np
+    n = len(x)
+    if n < 8 or fs <= 0:
+        return 0.0
+    k = 2.0 * math.cos(2.0 * math.pi * f / fs)
+    s1 = s2 = 0.0
+    arr = np.asarray(x, dtype=np.float64)
+    # vectorised second-order section is not worth it at these lengths; the loop
+    # runs on a decimated stream (a few thousand samples)
+    for v in arr:
+        s0 = v + k * s1 - s2
+        s2, s1 = s1, s0
+    return float(s1 * s1 + s2 * s2 - k * s1 * s2)
+
+
+def ctcss_detect(disc, fs, tones=CTCSS_TONES):
+    """Find a CTCSS tone in a frequency-discriminator stream (pure-ish).
+
+    Returns the best tone with how far it stands above the next-best candidate,
+    which is the figure that actually says whether it is there: a real CTCSS
+    tone is many dB clear of every other tone in the table, while noise scores
+    all of them about equally.
+    """
+    import numpy as np
+    x = np.asarray(disc, dtype=np.float64)
+    if x.size < int(fs * 0.2) or fs <= 0:
+        return None
+    x = x - x.mean()                      # drop the carrier offset
+    scores = [(t, _goertzel(x, fs, t)) for t in tones]
+    scores.sort(key=lambda p: p[1], reverse=True)
+    best, second = scores[0], scores[1]
+    if best[1] <= 0:
+        return None
+    margin = 10.0 * math.log10(best[1] / (second[1] + 1e-30))
+    return {"tone_hz": best[0], "margin_db": round(margin, 1),
+            "present": bool(margin >= 6.0),
+            "runner_up_hz": second[0]}
+
+
+def dcs_detect(disc, fs, bitrate=DCS_BITRATE):
+    """Recover a DCS code from a frequency-discriminator stream (pure-ish).
+
+    Slices the stream at the standard 134.4 bit/s, tries every sample phase,
+    and looks for the 23-bit word repeating — then matches it against the
+    standard code table at any rotation, because a receiver has no idea where
+    the word starts.
+    """
+    import numpy as np
+    global _DCS_TABLE
+    if _DCS_TABLE is None:
+        _DCS_TABLE = _dcs_table()
+    x = np.asarray(disc, dtype=np.float64)
+    spb = fs / float(bitrate)
+    if x.size < spb * 46 or spb < 2:
+        return None
+    x = x - np.mean(x)
+    nbits = int(x.size / spb) - 1
+    best = None
+    for phase in range(max(1, int(spb))):
+        idx = (np.arange(nbits) * spb + phase).astype(int)
+        idx = idx[idx < x.size]
+        if idx.size < 46:
+            continue
+        # integrate each bit rather than point-sampling it: the waveform is
+        # heavily filtered, so a single sample is mostly noise
+        w = max(1, int(spb / 2))
+        sums = np.array([x[max(0, i - w):i + w + 1].sum() for i in idx])
+        bits = (sums > 0).astype(int)
+        # score how well the stream repeats with period 23
+        rep = bits[:-23] == bits[23:]
+        score = float(np.mean(rep)) if rep.size else 0.0
+        if best is None or score > best[0]:
+            best = (score, bits)
+    if not best or best[0] < 0.9:
+        return {"present": False, "repeat_score": round(best[0], 3) if best else 0.0}
+    bits = best[1]
+    word = tuple(int(b) for b in bits[:23])
+    for rot in range(23):
+        rolled = tuple(word[(i + rot) % 23] for i in range(23))
+        code = _DCS_TABLE.get(rolled)
+        if code:
+            return {"present": True, "code": code, "inverted": False,
+                    "repeat_score": round(best[0], 3)}
+        inv = tuple(1 - b for b in rolled)
+        code = _DCS_TABLE.get(inv)
+        if code:
+            # an inverted-polarity DCS transmission ("DCS-N" vs "DCS-I")
+            return {"present": True, "code": code, "inverted": True,
+                    "repeat_score": round(best[0], 3)}
+    return {"present": True, "code": None, "repeat_score": round(best[0], 3),
+            "note": "a 23-bit word repeats, but it is not a standard DCS code"}
+
+
+def subaudible(name, f_offset_hz=0.0, bw_hz=None, t0=None, t1=None):
+    """CTCSS tone / DCS code under an FM transmission.
+
+    Both are read from the frequency discriminator, low-passed to the
+    subaudible band. A transmission carries one or the other, never both, so
+    whichever answers is the one to believe.
+    """
+    import numpy as np
+    from scipy import signal as sig
+    x, nfs = _prep_selection(name, f_offset_hz, bw_hz or 12_500, t0, t1)
+    if len(x) < 512:
+        return {"ok": False, "error": "selection too short"}
+    amp = np.abs(x)
+    peak = float(np.max(amp)) + 1e-12
+    d = x[1:] * np.conj(x[:-1])
+    disc = np.angle(d) * nfs / (2 * np.pi)
+    disc = np.where(amp[1:] > peak * 0.1, disc, 0.0)
+    # decimate to a few kHz: everything of interest is below 260 Hz
+    dec = int(max(1, nfs // 2400))
+    if dec > 1:
+        disc = sig.decimate(disc, dec, ftype="fir")
+    fs2 = nfs / dec
+    # low-pass away the voice so the tone search is not fighting speech
+    try:
+        b, a = sig.butter(4, min(0.95, 300.0 / (fs2 / 2)), btype="low")
+        sub = sig.filtfilt(b, a, disc)
+    except Exception:
+        sub = disc
+    ct = ctcss_detect(sub, fs2)
+    dc = dcs_detect(sub, fs2)
+    return {"ok": True, "sample_rate_hz": round(fs2, 1),
+            "ctcss": ct, "dcs": dc,
+            "note": "CTCSS is a continuous tone, DCS a repeating 23-bit word at "
+                    "134.4 bit/s; a transmission carries one or the other. "
+                    "Nothing found usually means the channel is carrier-squelch."}
 
 
 def fm_deviation(inst_freq_hz, pct=99.5):
@@ -2986,6 +3198,49 @@ def selftest():
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
         _CACHE.clear()
+
+    # --- subaudible squelch: CTCSS tones and DCS codes ------------------------
+    import numpy as _np
+    from scipy import signal as _sg
+    _sfs = 2400.0
+    _st = _np.arange(int(_sfs * 2)) / _sfs
+    # a 100 Hz CTCSS tone buried under much louder "speech" at 900 Hz
+    _disc = (600 * _np.sin(2 * _np.pi * 100.0 * _st)
+             + 2500 * _np.sin(2 * _np.pi * 900.0 * _st)
+             + _np.random.RandomState(1).normal(0, 300, _st.size))
+    _ct = ctcss_detect(_disc, _sfs)
+    check("ctcss: finds the tone under louder voice",
+          _ct["present"] and _ct["tone_hz"] == 100.0 and _ct["margin_db"] > 15,
+          str(_ct))
+    check("ctcss: noise alone is not a tone",
+          ctcss_detect(_np.random.RandomState(2).normal(0, 300, int(_sfs * 2)),
+                       _sfs)["present"] is False)
+    check("ctcss: too little data returns nothing", ctcss_detect([0.0] * 10, _sfs) is None)
+    check("ctcss: every standard tone is in the table",
+          67.0 in CTCSS_TONES and 254.1 in CTCSS_TONES and len(CTCSS_TONES) == 54)
+
+    check("dcs: the code table holds all 83 standard codes", len(_dcs_table()) == 83)
+    check("dcs: the on-air word is 23 bits", len(dcs_word("023")) == 23)
+    check("dcs: every code has a distinct word", len(set(_dcs_table().keys())) == 83)
+    check("dcs: a bad code returns nothing", dcs_word("zz9") is None)
+    _code = "251"
+    _w = dcs_word(_code)
+    _spb = _sfs / DCS_BITRATE
+    _n = int(_sfs * 3)
+    _bits = _np.array([_w[int(i / _spb) % 23] for i in range(_n)])
+    _b, _a = _sg.butter(3, 260.0 / (_sfs / 2), "low")
+    _dsig = _sg.filtfilt(_b, _a, (_bits * 2 - 1) * 800.0)
+    _dsig = _dsig + _np.random.RandomState(3).normal(0, 120, _n)
+    _dd = dcs_detect(_dsig, _sfs)
+    check("dcs: recovers the transmitted code at any word alignment",
+          _dd["present"] and _dd["code"] == _code, str(_dd))
+    _di = dcs_detect(-_dsig, _sfs)
+    check("dcs: an inverted transmission is decoded and flagged",
+          _di["code"] == _code and _di["inverted"] is True, str(_di))
+    check("dcs: noise is not a code",
+          dcs_detect(_np.random.RandomState(4).normal(0, 300, int(_sfs * 2)),
+                     _sfs)["present"] is False)
+    check("dcs: too little data returns nothing", dcs_detect([0.0] * 50, _sfs) is None)
 
     # --- modulation quality: FM deviation + AM depth --------------------------
     import math as _m

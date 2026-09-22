@@ -26501,6 +26501,11 @@ def register_network_diagnostics(app, logger=None):
     def net_rtl_analyze_modquality():
         return _analyze(sigmf_analyzer.modulation_quality, **_sel(request.args))
 
+    # CTCSS tone / DCS code under an FM transmission.
+    @app.route('/api/net/rtl/analyze/subaudible', methods=['GET'])
+    def net_rtl_analyze_subaudible():
+        return _analyze(sigmf_analyzer.subaudible, **_sel(request.args))
+
     @app.route('/api/net/rtl/analyze/instantaneous', methods=['GET'])
     def net_rtl_analyze_instantaneous():
         return _analyze(sigmf_analyzer.instantaneous, **_sel(request.args))

@@ -976,6 +976,17 @@
     }).catch(function(){ $('modout').textContent='classify request failed'; });
     api('/api/net/rtl/analyze/constellation',q).then(function(cn){ if(cn&&cn.ok) drawScatter('constell',cn.i,cn.q); });
     api('/api/net/rtl/analyze/instantaneous',q).then(function(ins){ S._inst=ins; drawInst(ins); });
+    // Subaudible squelch signalling: which group a transmission belongs to.
+    api('/api/net/rtl/analyze/subaudible',q).then(function(sa){
+      if(!sa||!sa.ok) return; S.subaudible=sa;
+      var c=sa.ctcss||{}, d=sa.dcs||{}, out=[];
+      if(c.present) out.push('<b>CTCSS '+c.tone_hz.toFixed(1)+' Hz</b> <span style="color:var(--muted)">('+c.margin_db+' dB clear of the next tone)</span>');
+      if(d.present&&d.code) out.push('<b>DCS '+esc(d.code)+(d.inverted?' inverted':'')+'</b>');
+      else if(d.present) out.push('a 23-bit word repeats but is not a standard DCS code');
+      var el=document.getElementById('modout');
+      el.innerHTML+='<div style="margin-top:6px;font-size:12px"><b>Squelch tag</b> '
+        +(out.length?out.join(' · '):'<span style="color:var(--muted)">none — carrier squelch</span>')+'</div>';
+    });
     // Service-monitor figures. Both are always shown: an "FM" signal carrying
     // 40% AM depth is telling you something about the transmitter.
     api('/api/net/rtl/analyze/modulation_quality',q).then(function(mq){
