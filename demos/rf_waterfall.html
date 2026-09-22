@@ -373,6 +373,7 @@
     this.busy=0; this.log=[]; this._lastLog=0; this._ismPoll=null;
     this.hist=[]; this.threeD=false; this._last3D=0;   // 3D terrain waterfall state
     this._liveQ=[]; this._acc=0; this._arrEma=0; this._lastPoll=0;   // de-jitter buffer for even live scroll
+    this._tsWin=[]; this._nom=0;                                      // producer-timestamp rate estimate
     this.model=cfg.synth(cfg.synthDefault);
     this.lo=this.model.lo; this.hi=this.model.hi; this.floor=this.model.floor;
     this.homeLo=this.lo; this.homeHi=this.hi;
@@ -1066,7 +1067,7 @@
   // ---- live sweep ----
   Scope.prototype.startLive=function(){
     var self=this; this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
-    this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0;
+    this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};
     if(this.zwave){ body.lo_hz=this.zwave.lo_hz; body.hi_hz=this.zwave.hi_hz; body.label=this.zwave.sweepLabel; }
     else if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
@@ -1077,7 +1078,7 @@
         self._poll=setInterval(function(){ self.livePoll(); },120);
       }).catch(function(){ self.liveErr='Failed to start '+self.cfg.short; self.showVeil('Could not start '+self.cfg.short,self.liveErr); });
   };
-  Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} this._liveQ.length=0; this._acc=0; if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
+  Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} this._liveQ.length=0; this._acc=0; this._tsWin=[]; this._nom=0; if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
   Scope.prototype.livePoll=function(){
     if(!running || this.mode!=='live' || this.decoding || this.replaying) return;
     var self=this;
@@ -1095,14 +1096,17 @@
       if(frames.length){
         if(!self._rangeKnown||lo!==self.lo||hi!==self.hi){ self.lo=lo;self.hi=hi;self.floor=floor;self._rangeKnown=true;self.drawRuler();self.placeMarker(); }
         self.hideVeil();
-        // Measured arrival rate (rows/s) drives the paced drain in loop().
-        var _now=performance.now();
-        if(self._lastPoll){ var _dt=(_now-self._lastPoll)/1000; if(_dt>0){ var _inst=frames.length/_dt; self._arrEma=self._arrEma?self._arrEma*0.8+_inst*0.2:_inst; } }
-        self._lastPoll=_now;
-        // Enqueue instead of painting per-poll — loop() releases rows evenly so
-        // the fall is continuous, not a burst of rows then a poll-gap freeze.
-        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:self.lo,hi:self.hi,floor:floor}); });
-        if(self._liveQ.length>160) self._liveQ.splice(0,self._liveQ.length-160);
+        // Enqueue instead of painting per-poll — loop() releases rows at one
+        // steady rate, so poll/network jitter never shows as speed changes.
+        var _wall=performance.now()/1000;
+        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:self.lo,hi:self.hi,floor:floor});
+          self._tsWin.push((typeof f.ts==='number')?f.ts:_wall); });
+        // Data rate from the producer's own timestamps over the last ~5 s — a
+        // smooth, true rows/s (per-poll counts swing 0..3 and made the pace wobble).
+        var tw=self._tsWin, tl=tw[tw.length-1]; while(tw.length>2 && tl-tw[0]>5) tw.shift();
+        if(tw.length>=3 && tl-tw[0]>=0.5){ var est=(tw.length-1)/(tl-tw[0]);
+          self._nom=self._nom?self._nom+(est-self._nom)*0.1:est; }
+        if(self._liveQ.length>600) self._liveQ.splice(0,self._liveQ.length-600);
       } else if(self.liveErr){ self.showVeil('⚠ '+self.cfg.short,self.liveErr); }
       else if(!self._rangeKnown){ self.showVeil('Starting '+self.cfg.short+' sweep…','Waiting for the first frame.'); }
     }).catch(function(){});
@@ -1454,16 +1458,29 @@
   setPalette(activePalette);   // sync legend gradient + pressed state to the saved choice
 
   var acc=0,last=performance.now();
-  function loop(now){ if(!running)return; var dt=(now-last)/1000;last=now;acc+=dt;var interval=1/HZ,did=0;
+  document.addEventListener('visibilitychange',function(){ if(document.hidden) return;
+    last=performance.now(); acc=0;
+    scopes.forEach(function(s){ if(!s._liveQ) return; var t=Math.max(2,Math.round((s._nom||12)*0.8));
+      if(s._liveQ.length>t) s._liveQ.splice(0,s._liveQ.length-t); s._acc=0; }); });
+  function loop(now){ if(!running)return; var dt=Math.min(0.1,Math.max(0,(now-last)/1000));last=now;acc+=dt;var interval=1/HZ,did=0;
     while(acc>=interval&&did<4){ scopes.forEach(function(s){ if(s.mode==='synth'&&!s.decoding&&!s.replaying) s.synthStep(); }); acc-=interval;did++; }
-    // Live scopes: release queued rows at the measured arrival rate, evenly, with
-    // a small de-jitter buffer so poll-timing jitter never starves the scroll.
+    // Live scopes: release queued rows at ONE steady rate = the SDR's measured
+    // data rate. A ~0.8 s buffer absorbs poll/network jitter; the buffer is held
+    // on target by nudging the pace at most ±12% (imperceptible) — never the old
+    // 3× catch-up surge. A backlog that's seconds stale (tab was hidden, backend
+    // stalled) is skipped outright rather than fast-forwarded on screen.
     scopes.forEach(function(s){
       if(s.mode!=='live'||s.decoding||s.replaying||!s._liveQ) return;
-      var q=s._liveQ, TARGET=5, nom=s._arrEma>0?s._arrEma:16;
-      var rate=nom+2.0*(q.length-TARGET); if(rate<0)rate=0; if(rate>nom*3)rate=nom*3;
-      s._acc+=rate*dt; var g=0;
-      while(s._acc>=1 && q.length && g++<12){ var it=q.shift(); s.pushRow(it.power,it.lo,it.hi,it.floor); s._acc-=1; }
+      var q=s._liveQ; if(!s._nom){ if(q.length<3) return; s._nom=12; }
+      // buffer depth (s): grows after an underrun so a recurring hiccup is absorbed
+      // next time, then relaxes back toward 0.8 s while the feed is smooth
+      if(!q.length){ if(!s._dry){ s._dry=true; s._buf=Math.min(2.0,(s._buf||0.8)+0.4); } }
+      else { s._dry=false; if(s._buf>0.8) s._buf=Math.max(0.8,s._buf-0.01*dt); }
+      var nom=s._nom, target=Math.max(2,Math.round(nom*(s._buf||0.8)));
+      if(q.length>target+Math.max(20,nom*2)){ q.splice(0,q.length-target); s._acc=0; }
+      var err=(q.length-target)/target, k=1+0.25*err; if(k<0.88)k=0.88; if(k>1.12)k=1.12;
+      s._acc+=nom*k*dt; var g=0;
+      while(s._acc>=1 && q.length && g++<6){ var it=q.shift(); s.pushRow(it.power,it.lo,it.hi,it.floor); s._acc-=1; }
       if(s._acc>1) s._acc=1;
     });
     scopes.forEach(function(s){s.setRate(HZ);}); requestAnimationFrame(loop); }

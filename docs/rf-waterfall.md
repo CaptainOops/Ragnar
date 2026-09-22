@@ -66,11 +66,20 @@ is named under the panel title (`RTL-SDR · IQ FFT · real-time` vs
 `RTL-SDR · rtl_power sweep`), and **Rows/s** shows the *measured* frame rate, not
 the scroll-speed setting.
 
+**Steady flow.** Live rows are never painted as they arrive. They go into a small
+buffer (~0.8 s), and the page releases them at **one steady rate**: the SDR's
+measured data rate, worked out from the frames' own timestamps rather than from
+the jittery poll timing. The buffer is kept full by nudging the pace **at most
+±12%**, which you can't see, so a network or backend hiccup no longer makes the
+fall stall and then race to catch up. After a stall the buffer grows (up to 2 s)
+so a repeat hiccup is absorbed. A backlog that is seconds old (the tab was in the
+background, or the backend stalled for a long time) is skipped, not fast-forwarded.
+
 - **IQ FFT (real-time)** — for any span that fits a **single RTL-SDR tune**
   (≤ `rtl_sdr._IQ_MAX_SPAN_HZ`, ~2.8 MHz: zooms, manual tunes, Z-Wave regions,
   most mesh/LoRa overlays), Ragnar streams raw IQ from `rtl_sdr` and FFTs it
   continuously with numpy — the way SDR++/GQRX draw a waterfall. No retuning, so
-  rows scroll smoothly at `_IQ_DISPLAY_HZ` (~16/s) with sub-100 ms latency. The
+  rows scroll smoothly at `_IQ_DISPLAY_HZ` (~16/s), under a second behind real time. The
   colour floor self-calibrates to the measured noise level (`floor_dbm` tracks a
   smoothed low-percentile), since the IQ power scale is relative dBFS, not
   absolute dBm.
