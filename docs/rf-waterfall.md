@@ -156,6 +156,41 @@ is spectrum monitoring / interference-hunting the way regulators and SIGINT
 teams do it. Backend: `rtl_sdr.SpectrumBaseline` + pure
 `detect_spectrum_anomalies()`; routes `/api/net/rtl/baseline/{arm,clear,status}`.
 
+## Noise print (background subtraction)
+
+Some lines are always there: Pi/USB/PSU "birdies", the RTL-SDR DC spike at the
+centre frequency in IQ mode, a neighbour's always-on carrier. They hide the short
+bursts you actually want to see. The **Noise print** group in each panel's
+toolbar removes them from the picture:
+
+1. Pick a length (**3 / 5 / 10 / 30 s**) and press **● Record** while the band is
+   quiet. Press **■ Stop** to end early.
+2. When it finishes, the print is applied automatically. **Filter** turns it
+   on and off, and the slider sets the **strength** (0% = raw, 100% = constant
+   lines fully flattened).
+
+**How it works:** the print is the per-frequency **median** of the recorded
+rows, so a burst that is on for only part of the recording isn't learned as
+noise. Only the print's excess above its own noise floor is subtracted. Ordinary
+noise is untouched, constant lines drop to the floor, and a known line that
+suddenly gets *louder* still shows by how much louder it got. The filter applies
+to the 2D and 3D views, the spectrum trace, the peak/SNR/Busy readouts and the
+Signals list. **Click-to-measure keeps reporting true levels**, and the backend,
+recordings and IQ captures never see filtered data.
+
+A print is valid only for the exact span it was recorded on. It is saved in the
+browser per panel and per span, comes back when you return to that band or zoom,
+and simply doesn't apply elsewhere. The status line shows the print's length and
+age ("5 s print · 12 min ago"). Re-record after changing gain or if the dongle's
+temperature has drifted.
+
+**Limits:** it can't separate a signal sitting exactly on a constant line (only
+"stronger than usual" shows), and a print recorded while something was
+transmitting the whole time learns that transmitter as noise.
+
+This is separate from **Baseline** below, which *alerts* on new or vanished
+carriers but never changes what's drawn.
+
 ## Persistence + click-to-decode
 
 - **Persist** (toolbar toggle) turns the spectrum trace into a **digital-phosphor
