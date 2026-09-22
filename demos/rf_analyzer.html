@@ -126,6 +126,8 @@
   .axinfo{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);padding:6px 14px;border-top:1px solid var(--line-soft)}
   .axinfo b{color:var(--accent)}
   footer{margin-top:20px;padding-top:14px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.7}
+  .aihr{border:none;border-top:1px solid var(--line);margin:9px 0}
+  .aifollow{margin-top:2px}
 </style>
 </head>
 <body>
@@ -446,6 +448,7 @@
   function loadCapture(name){
     S.name=name; S.view=null; S.marker=null; S.markerB=null; S.hist=[];
     S.summaryData=null; S.classifyData=null; S.framesData=null; S.demod=null; S.bursts=null; S.annotations=[];
+    S.modQuality=null; S.subaudible=null; S.decoded=null;
     api('/api/net/rtl/analyze/summary',{name:name}).then(function(s){
       if(!s||!s.ok){ $('stats').innerHTML='<span class="msg">⚠ '+((s&&s.error)||'load failed')+'</span>'; return; }
       S.dur=s.duration_s; S.fs=s.sr_hz; S.fc=s.center_hz; S.summaryData=s;
@@ -671,6 +674,7 @@
     if(!S.name)return; $('decout').innerHTML='running rtl_433 over the capture…';
     api('/api/net/rtl/analyze/decode433',{name:S.name}).then(function(d){
       if(!d||!d.ok){ $('decout').innerHTML='<span style="color:var(--rose)">⚠ '+esc((d&&d.error)||'decode failed')+'</span>'; return; }
+      S.decoded=d;
       var dv=d.devices||[];
       if(!dv.length){ $('decout').innerHTML='<span style="color:var(--muted)">No known devices decoded ('+(d.events||0)+' candidate events). This capture may be a plain carrier or a protocol rtl_433 doesn\'t know — try the demodulator below.</span>'; return; }
       $('decout').innerHTML='<table class="btable"><thead><tr><th>Model</th><th>ID</th><th>×</th><th>Fields</th></tr></thead><tbody>'
@@ -1175,7 +1179,12 @@
       bursts:(S.bursts?{count:S.bursts.count, list:(S.bursts.bursts||[]).slice(0,12)}:null),
       frame_analysis:S.framesData||null,
       demod:(d?{mode:d.mode,baud:d.baud,n_bits:d.n_bits,bits:(d.bits||'').slice(0,256),
-                f_offset_hz:d.f_offset_hz,bw_hz:d.bw_hz}:null)};
+                f_offset_hz:d.f_offset_hz,bw_hz:d.bw_hz}:null),
+      modulation_quality:(S.modQuality?{fm:S.modQuality.fm,am:S.modQuality.am,
+                modulation:S.modQuality.modulation}:null),
+      subaudible:(S.subaudible?{ctcss:S.subaudible.ctcss,dcs:S.subaudible.dcs}:null),
+      decoded:(S.decoded?{events:S.decoded.events,
+                devices:(S.decoded.devices||[]).slice(0,6)}:null)};
     return c;
   }
   function aiAsk(q){
@@ -1217,19 +1226,54 @@
       if(a.mode) setDemodMode(a.mode);
       refreshWindow(); setAx();
       // now actually look at it: demodulate + classify the tuned signal, so the
-      // analysis panels fill with the new data rather than just re-centring.
+      // analysis panels fill with the new data rather than just re-centring...
       $('run').click(); $('runmod').click();
+      // ...then let the AI read those fresh measurements and interpret them.
+      aiFollowUp(aiActionLabel(a), ['demod','classifyData']);
       return;
     }
     if(a.action==='zoom'){ S.hist.push(S.view);
       S.view={t0:(a.t0!=null?a.t0:S.view.t0),t1:(a.t1!=null?a.t1:S.view.t1),
               f0:(a.f0_mhz!=null?a.f0_mhz*1e6:S.view.f0),f1:(a.f1_mhz!=null?a.f1_mhz*1e6:S.view.f1)};
       refreshWindow(); return; }
-    if(a.action==='demod'){ if(a.mode) setDemodMode(a.mode); if(a.bw_khz!=null)$('bw').value=a.bw_khz; $('run').click(); return; }
-    if(a.action==='classify'){ $('runmod').click(); return; }
+    if(a.action==='demod'){ if(a.mode) setDemodMode(a.mode); if(a.bw_khz!=null)$('bw').value=a.bw_khz; $('run').click();
+      aiFollowUp(aiActionLabel(a), ['demod']); return; }
+    if(a.action==='classify'){ $('runmod').click();
+      aiFollowUp('classify the signal', ['classifyData']); return; }
     if(a.action==='frames'){ if(a.line==='manchester'&&!manch) $('manch').click();
-      else if((!a.line||a.line==='raw')&&manch) $('manch').click(); runFrames(a.period_bits||undefined); return; }
-    if(a.action==='decode433'){ $('rundec').click(); return; }
+      else if((!a.line||a.line==='raw')&&manch) $('manch').click(); runFrames(a.period_bits||undefined);
+      aiFollowUp('analyse the frame structure', ['framesData']); return; }
+    if(a.action==='decode433'){ $('rundec').click();
+      aiFollowUp('decode with rtl_433', ['decoded']); return; }
+  }
+  // After an AI action's tools have run, let the AI read the fresh measurements
+  // and interpret them — proposal -> measure -> interpret. Waits for the specific
+  // results that action produces (or a timeout), then asks ONCE. New actions it
+  // proposes are rendered but never auto-run, so there is no runaway loop.
+  function aiFollowUp(actionText, watch){
+    if(!S.name) return;
+    var keys=watch||[], snap={}; keys.forEach(function(k){ snap[k]=S[k]; });
+    var t0=Date.now();
+    (function poll(){
+      var settled = !keys.length || keys.some(function(k){ return S[k]!==snap[k] && S[k]!=null; });
+      if(settled){ setTimeout(ask,250); return; }           // a beat for sibling panels
+      if(Date.now()-t0>6000){ ask(); return; }              // don't wait forever
+      setTimeout(poll,150);
+    })();
+    function ask(){
+      var out=$('aiout'), div=document.createElement('div'); div.className='aifollow';
+      div.innerHTML='<hr class="aihr"><span style="color:var(--muted)">investigating '+esc(actionText)+'…</span>';
+      out.appendChild(div);
+      fetch('/api/ai/signal',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:S.name,
+          question:'You proposed to '+actionText+'. The analyzer has now run it and the measurements in the context are updated. In 1-3 sentences say what the signal is and what it means; propose a further action only if it would reveal something genuinely new.',
+          context:aiContext()})})
+        .then(function(r){return r.json();}).then(function(res){
+          if(!res||res.enabled===false||res.error||!res.answer){ div.remove(); return; }
+          div.innerHTML='<hr class="aihr">'+mdLite(res.answer);
+          if(res.actions&&res.actions.length) renderAiActions(res.actions);
+        }).catch(function(){ div.remove(); });
+    }
   }
   function renderAiActions(actions){
     var el=$('aiacts'); if(!actions.length){ el.hidden=true; el.innerHTML=''; return; }
