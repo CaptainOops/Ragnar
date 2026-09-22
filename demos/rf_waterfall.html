@@ -153,6 +153,14 @@
   .drow select{width:auto;max-width:100%;min-width:0}
   .dnote{font-size:10px;line-height:1.5;color:var(--muted)}
   .dnote b{color:var(--ink-dim);font-weight:500}
+  .svbands{display:flex;flex-wrap:wrap;gap:4px 10px} .svbands label{min-width:0;color:var(--ink-dim);font-size:11px;display:inline-flex;align-items:center;gap:3px}
+  .svrep{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,8,13,.72);padding:16px}
+  .svrep[hidden]{display:none}
+  .svbox{max-width:980px;width:100%;max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .svbox h4{margin:0 0 4px;font-family:var(--head);font-size:16px;color:var(--ink)} .svbox h5{margin:14px 0 6px;color:var(--cyan);font-size:12px;letter-spacing:.06em}
+  .svbox table{border-collapse:collapse;font-variant-numeric:tabular-nums;width:100%} .svbox td,.svbox th{padding:3px 12px 3px 0;text-align:left;white-space:nowrap}
+  .svbox th{color:var(--muted);font-weight:500;font-size:10.5px;letter-spacing:.06em} .svbox .occ{display:inline-block;height:6px;border-radius:3px;background:var(--cyan);vertical-align:middle;margin-right:6px}
+  .svtw{overflow-x:auto}
   canvas.zspan{display:block;width:100%;height:78px;background:var(--panel-2);border-top:1px solid var(--line-soft)}
   canvas.zspan[hidden]{display:none}
   .kbhelp{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,8,13,.72);padding:16px}
@@ -558,6 +566,14 @@
             +'<div class="dnote lstat">Anything above the line is a <b>FAIL</b>: the trace turns red there, the panel gets a red outline and a FAIL tag, and each violation is logged below (and to Watchtower if ticked).</div>'
             +'<div class="limlog"></div>'
           +'</fieldset>'
+          +(cfg.tuner?'<fieldset class="dsec dsurv"><legend>Unattended survey</legend>'
+            +'<div class="svbands"></div>'
+            +'<div class="drow"><label>Dwell</label><input type="number" class="svdw" min="5" max="3600" value="30"><span>s / band</span>'
+              +'<select class="svrn"><option value="1">1 round</option><option value="3">3 rounds</option><option value="10">10 rounds</option><option value="0">continuous</option></select></div>'
+            +'<div class="drow"><label>Name</label><input type="text" class="svnm" placeholder="optional" style="width:130px"><button class="mini svgo">&#9654; Start</button><button class="mini svst" disabled>&#9632; Stop</button></div>'
+            +'<div class="dnote svstat">Sweeps each ticked band for the dwell time and writes a report: noise floor, occupancy and every emitter (frequency, bandwidth, peak, % of time on, first/last seen). The waterfall follows the survey while it runs.</div>'
+            +'<div class="drow"><label>Reports</label><select class="svls" style="max-width:190px"><option value="">—</option></select><button class="mini svvw">View</button><button class="mini svcsv">CSV</button><button class="mini svdel">&#128465;</button></div>'
+          +'</fieldset>':'')
           +'<fieldset class="dsec dexp"><legend>Export (CSV)</legend>'
             +'<div class="drow"><button class="mini xspec" title="Frequency + live / avg / max / min trace values">Spectrum</button>'
               +'<button class="mini xsig" title="The Signals list">Signals</button>'
@@ -757,6 +773,7 @@
     cq('.lwt').addEventListener('change',function(){ self.setLimit({alert:cq('.lwt').checked}); });
     cq('.lclr').addEventListener('click',function(){ self.limLog=[]; self.limCount=0; self._limUI(); });
     this._limUI();
+    if(cfg.tuner) this.buildSurvey();
     cq('.xspec').addEventListener('click',function(){ self.exportCSV('spectrum'); });
     cq('.xsig').addEventListener('click',function(){ self.exportCSV('signals'); });
     cq('.xmark').addEventListener('click',function(){ self.exportCSV('markers'); });
@@ -1329,6 +1346,7 @@
   };
   Scope.prototype.resetZoom=function(){ this.zoomTo(this.homeLo,this.homeHi,true); };
   Scope.prototype.applyZoom=function(z){
+    if(this._surveyOn){ this.markTxt.innerHTML='<span class="mk">Survey running</span> — stop it (⚙ Settings) to retune.'; this._pend=null; return; }
     this.zoom=z; this.resetBtn.disabled=!z;
     if(this.mode==='live'){ this._pend=z?[z[0],z[1]]:[this.homeLo,this.homeHi]; this.lo=this._pend[0]; this.hi=this._pend[1];
       this.stopLive(); this._rangeKnown=false; this.resetCanvas(); this.startLive(); }
@@ -1340,6 +1358,7 @@
 
   // ---- band / view selection ----
   Scope.prototype.selectBand=function(bandId,synthId){
+    if(this._surveyOn){ this.markTxt.innerHTML='<span class="mk">Survey running</span> — stop it (⚙ Settings) to change band.'; return; }
     Array.prototype.forEach.call(this.bandSel.querySelectorAll('button'),function(x){x.setAttribute('aria-pressed',x.getAttribute('data-band')===bandId?'true':'false');});
     if(this.ovDropdown) this.ovDropdown.value='';
     this.liveBand=bandId; this.synthBand=synthId||bandId; this.zoom=null; this.zwave=null; this.zwaveRegion=null; this.resetBtn.disabled=true;
@@ -1445,7 +1464,9 @@
 
   // ---- live sweep ----
   Scope.prototype.startLive=function(){
-    var self=this; this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
+    var self=this;
+    if(this._surveyOn){ this.seq=0; this._liveQ.length=0; this._rangeKnown=false;           // follow the survey's sweep
+      if(this._poll) clearInterval(this._poll); this._poll=setInterval(function(){ self.livePoll(); },120); return; } this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0;
     this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
     var body={band:this.liveBand};
     if(!this.cfg.tuner){ body.lna=this.hw.lna; body.vga=this.hw.vga; body.amp=this.hw.amp?1:0; body.antenna=this.hw.antenna?1:0; if(this.hw.bin_hz) body.bin_hz=this.hw.bin_hz; }
@@ -1721,6 +1742,75 @@
     q('.limlog',this).innerHTML=this.limLog.slice(0,20).map(function(e){ var d=new Date(e.t);
       return '<div><span class="lx">'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')
         +'</span> '+fmtMHz(e.f)+' · '+(Math.round(e.level*10)/10)+U+' · <b>+'+(Math.round(e.excess*10)/10)+' dB</b></div>'; }).join('');
+  };
+
+  // ---- unattended survey (RTL) --------------------------------------------------
+  Scope.prototype.buildSurvey=function(){
+    var self=this, g=this.el.querySelector('.dsurv'); if(!g) return;
+    var q=function(c){return g.querySelector(c);};
+    q('.svbands').innerHTML=this.cfg.liveBands.map(function(b){
+      return '<label><input type="checkbox" value="'+b.id+'"'+(/^(433|868|915|315)$/.test(b.id)?' checked':'')+'> '+esc(b.label)+'</label>'; }).join('');
+    q('.svgo').addEventListener('click',function(){
+      var bands=Array.prototype.filter.call(q('.svbands').querySelectorAll('input'),function(i){return i.checked;}).map(function(i){return i.value;});
+      if(!bands.length){ q('.svstat').textContent='Tick at least one band.'; return; }
+      fetch('/api/net/rtl/survey/start',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({bands:bands,dwell_s:+q('.svdw').value||30,rounds:+q('.svrn').value,name:q('.svnm').value})})
+        .then(function(r){return r.json();}).then(function(r){
+          if(!r.ok){ q('.svstat').innerHTML='<span style="color:#fb7185">'+esc(r.error||'could not start')+'</span>'; return; }
+          self._surveyName=r.name; self.surveyPoll(); }).catch(function(){ q('.svstat').textContent='start failed'; }); });
+    q('.svst').addEventListener('click',function(){ fetch('/api/net/rtl/survey/stop',{method:'POST'}).then(function(){ self.surveyPoll(); }); });
+    q('.svvw').addEventListener('click',function(){ if(q('.svls').value) self.surveyShow(q('.svls').value); });
+    q('.svcsv').addEventListener('click',function(){ if(!q('.svls').value) return; var a=document.createElement('a');
+      a.href='/api/net/rtl/survey/report.csv?name='+encodeURIComponent(q('.svls').value); a.download=q('.svls').value+'.csv'; document.body.appendChild(a); a.click(); a.remove(); });
+    q('.svdel').addEventListener('click',function(){ var n=q('.svls').value; if(!n||!window.confirm('Delete survey report "'+n+'"?')) return;
+      fetch('/api/net/rtl/survey/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})}).then(function(){ self.surveyList(); }); });
+    this.surveyList(); this.surveyPoll();
+  };
+  Scope.prototype.surveyList=function(sel){ var self=this, g=this.el.querySelector('.dsurv'); if(!g) return;
+    fetch('/api/net/rtl/survey/list').then(function(r){return r.json();}).then(function(d){ var ls=g.querySelector('.svls');
+      ls.innerHTML=(d.surveys||[]).length?(d.surveys||[]).map(function(v){ return '<option value="'+esc(v.name)+'">'+esc(v.name)+' · '+v.bands+' band'+(v.bands===1?'':'s')+' · '+v.emitters+' emitters'+(v.status==='running'?' · running':'')+'</option>'; }).join(''):'<option value="">— none yet —</option>';
+      if(sel) ls.value=sel; }).catch(function(){}); };
+  Scope.prototype.surveyPoll=function(){ var self=this, g=this.el.querySelector('.dsurv'); if(!g) return;
+    fetch('/api/net/rtl/survey/status').then(function(r){return r.json();}).then(function(st){
+      var on=st.state==='running', was=self._surveyOn; self._surveyOn=on;
+      g.querySelector('.svgo').disabled=on; g.querySelector('.svst').disabled=!on;
+      var stt=g.querySelector('.svstat');
+      if(on){ var c=st.current||{};
+        stt.innerHTML='<b>Surveying '+esc(c.band||'…')+'</b> ('+Math.round(c.elapsed_s||0)+' / '+(st.plan.dwell_s||'?')+' s) · round '+st.round+(st.plan.rounds?' / '+st.plan.rounds:' (continuous)')+' · '+st.bands_done+' band result'+(st.bands_done===1?'':'s')+' so far';
+        if(!was && self.mode==='live'){ self.stopLive(); self.startLive(); }   // follow it
+        clearTimeout(self._svT); self._svT=setTimeout(function(){ self.surveyPoll(); },2000);
+      } else {
+        if(was){ stt.innerHTML=(st.error?'<span style="color:#fb7185">Survey ended: '+esc(st.error)+'</span>':'<span style="color:var(--live)">&#10003; Survey finished</span>')+' — report <b>'+esc(st.name||'')+'</b> below.';
+          self.surveyList(st.name); if(self.mode==='live'){ self._rangeKnown=false; self.startLive(); } }
+      }
+    }).catch(function(){}); };
+  Scope.prototype.surveyShow=function(name){
+    var self=this;
+    fetch('/api/net/rtl/survey/report?name='+encodeURIComponent(name)).then(function(r){return r.json();}).then(function(d){
+      if(!d.ok) return; var r=d.report, box=document.querySelector('.svrep');
+      if(!box){ box=document.createElement('div'); box.className='svrep'; document.body.appendChild(box);
+        box.addEventListener('click',function(e){ if(e.target===box||e.target.classList.contains('svx')) box.hidden=true; }); }
+      var tm=function(t){ if(!t) return '—'; var x=new Date(t*1000); return x.toLocaleString(); };
+      var tt=function(t){ if(!t) return '—'; var x=new Date(t*1000); return String(x.getHours()).padStart(2,'0')+':'+String(x.getMinutes()).padStart(2,'0')+':'+String(x.getSeconds()).padStart(2,'0'); };
+      var html='<div class="svbox"><div style="display:flex;align-items:center;gap:10px"><h4>Survey: '+esc(r.name)+'</h4><span class="spacer" style="flex:1"></span>'
+        +'<a class="mini" style="text-decoration:none;padding:4px 10px;border:1px solid var(--line);border-radius:6px;color:var(--ink)" href="/api/net/rtl/survey/report.csv?name='+encodeURIComponent(r.name)+'" download>CSV</a>'
+        +'<button class="mini svx">&#10005; Close</button></div>'
+        +'<div>'+tm(r.started)+' → '+tm(r.finished)+' · '+esc(r.status||'')+' · dwell '+r.dwell_s+' s'+(r.device?' · '+esc(r.device):'')+'</div>';
+      (r.bands||[]).forEach(function(b){
+        var em=(b.emitters||[]).slice().sort(function(a,c){ return c.occupancy_pct-a.occupancy_pct; });
+        html+='<h5>'+esc(b.band)+' · '+b.lo_mhz+'–'+b.hi_mhz+' MHz · round '+b.round+'</h5>'
+          +'<div>noise '+b.noise_db+' dB · '+b.occupancy_pct+'% of the band busy · '+em.length+' emitter'+(em.length===1?'':'s')+' · '+b.rows+' rows · '+(b.engine||'?')+(b.rbw_hz?' · RBW '+(b.rbw_hz>=1000?(b.rbw_hz/1000).toFixed(1)+' kHz':Math.round(b.rbw_hz)+' Hz'):'')+'</div>'
+          +(em.length?'<div class="svtw"><table><thead><tr><th>FREQ</th><th>BW</th><th>PEAK</th><th>ON</th><th>FIRST</th><th>LAST</th><th>LIKELY</th></tr></thead><tbody>'
+            +em.slice(0,60).map(function(e){
+              // duty is evidence too: a narrow emitter that's on ~all the time isn't a bursty remote
+              var cl=(e.occupancy_pct>=95&&e.bw_khz<25)?'constant carrier — likely a local birdie / always-on transmitter'
+                :self.classifySignal(e.freq_mhz,e.bw_khz).label;
+              return '<tr><td>'+e.freq_mhz.toFixed(4)+' MHz</td><td>'+e.bw_khz+' kHz</td><td>'+e.peak_db+' dB</td>'
+                +'<td><span class="occ" style="width:'+Math.max(2,Math.round(e.occupancy_pct*0.6))+'px"></span>'+e.occupancy_pct+'%</td>'
+                +'<td>'+tt(e.first_seen)+'</td><td>'+tt(e.last_seen)+'</td><td>'+esc(cl)+'</td></tr>'; }).join('')+'</tbody></table></div>':'');
+      });
+      html+='<p class="dnote" style="margin-top:12px">"ON" = share of the dwell the emitter was ≥10 dB over the noise floor. Constant lines at ~100% are often local birdies (see Noise print). Wide bands use the slower rtl_power sweep, so short bursts can be missed there.</p></div>';
+      box.innerHTML=html; box.hidden=false; }).catch(function(){});
   };
 
   // ---- CSV export ------------------------------------------------------------

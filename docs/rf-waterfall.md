@@ -183,7 +183,7 @@ analysers) give you as a matter of course. Each item is ticked when it ships.
 **Tier 3 — differentiators**
 - [x] Band-plan labels
 - [x] Signal-ID hints
-- [ ] Unattended survey with a log and a report
+- [x] Unattended survey with a log and a report
 - [ ] Mesh-wide direction finding (RSSI across Ragnar units)
 
 ## Local Radio
@@ -318,6 +318,29 @@ The **Markers** strip under the toolbar handles up to four markers, **M1–M4**
   skipped.
 - **↔ Centre** re-centres the view on the active marker (at full band span it
   zooms 4× onto it instead). **Clear** removes all markers.
+
+## Unattended survey
+
+**⚙ Settings → Unattended survey** (RTL-SDR panel) visits each ticked band for a
+**dwell** time (5 s – 1 h per band), for 1 / 3 / 10 rounds or continuously, and
+writes a **report**. While it runs it owns the dongle: the panel's waterfall
+follows it, and band/zoom changes wait until you stop it.
+
+For each band the report gives the **noise floor**, how much of the band was
+busy, and every **emitter**: frequency, bandwidth, peak level, **how much of
+the time it was on** (≥10 dB over the row's noise floor), first/last seen, and
+a likely identity. A narrow emitter that's on ≥95% of the time is flagged as
+a constant carrier (usually a local birdie; see Noise print). Reports are kept
+in `data/rf_surveys/` and can be viewed, downloaded as **CSV** or deleted from
+the same section.
+
+Narrow bands (≤ 2.8 MHz, e.g. 433) are surveyed with the real-time engine
+(~16 rows/s). Wide ones (868, 915, the full sub-GHz) use the `rtl_power` sweep
+(~1 row/s), so very short bursts can be missed there.
+
+API: `POST /api/net/rtl/survey/start {bands, dwell_s, rounds, name}`,
+`POST …/stop`, `GET …/status`, `GET …/list`, `GET …/report?name=`,
+`GET …/report.csv?name=`, `POST …/delete {name}`.
 
 ## Band plan and signal identification
 

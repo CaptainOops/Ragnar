@@ -2205,6 +2205,258 @@ class SpectrumBaseline:
 
 _baseline = SpectrumBaseline()
 
+
+# --------------------------------------------------------------------------
+# Unattended spectrum survey — visit a list of bands for a dwell time each
+# (one round, or continuously), and write a report: per band the noise floor
+# and overall occupancy, and every emitter found (frequency, bandwidth, peak,
+# how much of the time it was on, first / last seen). The sweep runs through
+# the normal PowerSweep, so the RF Waterfall page shows what's being surveyed.
+# --------------------------------------------------------------------------
+
+def survey_stats(frames, lo_hz, hi_hz, thr_db=10.0, occ_min=0.05, t0=None, t1=None):
+    """Summarise one band's frames (pure; selftested).
+
+    ``frames``: list of power rows (dB, same width) or dicts with ``power`` + ``ts``.
+    A bin is *busy* in a row when it's ``thr_db`` over that row's noise floor
+    (30th percentile). Contiguous bins busy in >= ``occ_min`` of the rows form an
+    emitter. Returns the band summary + emitters sorted by frequency.
+    """
+    rows, ts = [], []
+    for f in frames or []:
+        p = f.get("power") if isinstance(f, dict) else f
+        if p:
+            rows.append(p)
+            ts.append(f.get("ts") if isinstance(f, dict) else None)
+    if not rows:
+        return {"rows": 0, "emitters": [], "occupancy_pct": 0.0, "noise_db": None}
+    n = min(len(r) for r in rows)
+    busy = [0] * n
+    peak = [-1e9] * n
+    first = [None] * n
+    last = [None] * n
+    floors = []
+    for k, r in enumerate(rows):
+        srt = sorted(r[:n])
+        nf = srt[int(n * 0.30)]
+        floors.append(nf)
+        for i in range(n):
+            v = r[i]
+            if v > peak[i]:
+                peak[i] = v
+            if v >= nf + thr_db:
+                busy[i] += 1
+                t = ts[k]
+                if t is not None:
+                    if first[i] is None:
+                        first[i] = t
+                    last[i] = t
+    R = float(len(rows))
+    occ = [b / R for b in busy]
+    binw = (hi_hz - lo_hz) / float(n)
+    emitters = []
+    i = 0
+    while i < n:
+        if occ[i] >= occ_min:
+            j = i
+            while j + 1 < n and occ[j + 1] >= occ_min:
+                j += 1
+            pk = max(range(i, j + 1), key=lambda q: peak[q])
+            fs = [first[q] for q in range(i, j + 1) if first[q] is not None]
+            ls = [last[q] for q in range(i, j + 1) if last[q] is not None]
+            emitters.append({"freq_mhz": round((lo_hz + (pk + 0.5) * binw) / 1e6, 4),
+                             "bw_khz": round((j - i + 1) * binw / 1e3, 1),
+                             "peak_db": round(peak[pk], 1),
+                             "occupancy_pct": round(100.0 * max(occ[q] for q in range(i, j + 1)), 1),
+                             "first_seen": min(fs) if fs else None, "last_seen": max(ls) if ls else None})
+            i = j + 1
+        else:
+            i += 1
+    floors.sort()
+    return {"rows": len(rows), "bins": n, "noise_db": round(floors[len(floors) // 2], 1),
+            "occupancy_pct": round(100.0 * sum(1 for o in occ if o >= occ_min) / n, 1),
+            "emitters": emitters, "t0": t0, "t1": t1,
+            "lo_mhz": round(lo_hz / 1e6, 4), "hi_mhz": round(hi_hz / 1e6, 4)}
+
+
+def _survey_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "rf_surveys")
+
+
+class SpectrumSurvey:
+    MAX_DWELL_S = 3600
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop = threading.Event()
+        self._state = "idle"
+        self._plan = None
+        self._cur = None
+        self._round = 0
+        self._report = None
+        self._name = None
+        self._error = None
+
+    def start(self, bands, dwell_s=30, rounds=1, label=None):
+        bl = []
+        for b in bands or []:
+            if isinstance(b, dict):
+                try:
+                    lo, hi = int(float(b["lo_hz"])), int(float(b["hi_hz"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if hi - lo >= 100_000:
+                    bl.append({"id": str(b.get("label") or "%.3f-%.3f" % (lo / 1e6, hi / 1e6))[:40], "lo_hz": lo, "hi_hz": hi})
+            elif str(b) in RTL_BANDS:
+                lo, hi = RTL_BANDS[str(b)]
+                bl.append({"id": str(b), "lo_hz": lo, "hi_hz": hi})
+        if not bl:
+            return {"ok": False, "error": "no valid bands"}
+        try:
+            dwell_s = max(5, min(self.MAX_DWELL_S, int(float(dwell_s))))
+            rounds = max(0, min(1000, int(float(rounds))))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "dwell / rounds must be numbers"}
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"ok": False, "error": "a survey is already running"}
+            self._stop = threading.Event()
+            self._plan = {"bands": bl, "dwell_s": dwell_s, "rounds": rounds}
+            self._name = _rec_safe(label) or time.strftime("survey-%Y%m%d-%H%M%S")
+            self._report = {"name": self._name, "started": time.time(), "finished": None,
+                            "dwell_s": dwell_s, "rounds_planned": rounds, "bands": [], "status": "running",
+                            "device": (_detect_cache or {}).get("model_name") if isinstance(_detect_cache, dict) else None}
+            self._state, self._round, self._error = "running", 0, None
+            self._thread = threading.Thread(target=self._run, daemon=True, name="rf-survey")
+            self._thread.start()
+        return {"ok": True, "name": self._name, "bands": [b["id"] for b in bl], "dwell_s": dwell_s, "rounds": rounds}
+
+    def stop(self):
+        self._stop.set()
+        return {"ok": True}
+
+    def _run(self):
+        plan, stop = self._plan, self._stop
+        try:
+            while not stop.is_set():
+                self._round += 1
+                for b in plan["bands"]:
+                    if stop.is_set():
+                        break
+                    self._cur = {"band": b["id"], "since": time.time()}
+                    r = power_start(b["id"] if b["id"] in RTL_BANDS else "433",
+                                    lo_hz=None if b["id"] in RTL_BANDS else b["lo_hz"],
+                                    hi_hz=None if b["id"] in RTL_BANDS else b["hi_hz"], label="survey")
+                    if not r.get("ok"):
+                        self._error = r.get("error", "sweep failed")
+                        stop.set()
+                        break
+                    t0, seq, frames = time.time(), 0, []
+                    while not stop.is_set() and time.time() - t0 < plan["dwell_s"]:
+                        stop.wait(0.5)
+                        fr = power_frames(since=seq)
+                        for f in fr.get("frames", []):
+                            seq = max(seq, f["seq"])
+                            frames.append({"power": f["power"], "ts": f.get("ts")})
+                        if len(frames) > 20000:
+                            frames = frames[-20000:]
+                    stats = survey_stats(frames, b["lo_hz"], b["hi_hz"], t0=t0, t1=time.time())
+                    stats.update({"band": b["id"], "round": self._round, "engine": fr.get("engine") if frames else None,
+                                  "rbw_hz": fr.get("rbw_hz") if frames else None})
+                    with self._lock:
+                        self._report["bands"].append(stats)
+                    self._save()
+                if plan["rounds"] and self._round >= plan["rounds"]:
+                    break
+        except Exception as exc:  # pragma: no cover - defensive
+            self._error = str(exc)
+        finally:
+            self._cur = None
+            try:
+                power_stop()
+            except Exception:
+                pass
+            with self._lock:
+                self._report["finished"] = time.time()
+                self._report["status"] = "error" if self._error else ("stopped" if stop.is_set() else "done")
+                if self._error:
+                    self._report["error"] = self._error
+                self._state = "idle"
+            self._save()
+
+    def _save(self):
+        try:
+            os.makedirs(_survey_dir(), exist_ok=True)
+            with self._lock:
+                rep = json.dumps(self._report)
+            with open(os.path.join(_survey_dir(), self._name + ".json"), "w") as fh:
+                fh.write(rep)
+        except OSError:
+            pass
+
+    def status(self):
+        with self._lock:
+            cur = dict(self._cur) if self._cur else None
+            plan = self._plan or {}
+            done = len(self._report["bands"]) if self._report else 0
+        if cur:
+            cur["elapsed_s"] = round(time.time() - cur["since"], 1)
+        return {"state": self._state, "name": self._name, "current": cur, "round": self._round,
+                "bands_done": done, "plan": {"bands": [b["id"] for b in plan.get("bands", [])],
+                                             "dwell_s": plan.get("dwell_s"), "rounds": plan.get("rounds")},
+                "error": self._error}
+
+
+_survey = SpectrumSurvey()
+
+
+def survey_list():
+    import glob
+    out = []
+    for path in sorted(glob.glob(os.path.join(_survey_dir(), "*.json")), reverse=True):
+        try:
+            with open(path) as fh:
+                r = json.load(fh)
+            out.append({"name": r.get("name"), "started": r.get("started"), "finished": r.get("finished"),
+                        "status": r.get("status"), "bands": len(r.get("bands", [])),
+                        "emitters": sum(len(b.get("emitters", [])) for b in r.get("bands", []))})
+        except (OSError, ValueError):
+            continue
+    return {"surveys": out[:100]}
+
+
+def survey_report(name):
+    path = os.path.join(_survey_dir(), _rec_safe(name) + ".json")
+    try:
+        with open(path) as fh:
+            return {"ok": True, "report": json.load(fh)}
+    except (OSError, ValueError):
+        return {"ok": False, "error": "no such survey"}
+
+
+def survey_csv(name):
+    """Emitters of a survey report as CSV text (pure over the saved report)."""
+    r = survey_report(name)
+    if not r.get("ok"):
+        return None
+    lines = ["band,round,freq_mhz,bw_khz,peak_db,occupancy_pct,first_seen_utc,last_seen_utc"]
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t else ""
+    for b in r["report"].get("bands", []):
+        for e in b.get("emitters", []):
+            lines.append("%s,%s,%.4f,%.1f,%.1f,%.1f,%s,%s" % (b.get("band"), b.get("round"), e["freq_mhz"], e["bw_khz"],
+                                                           e["peak_db"], e["occupancy_pct"], iso(e.get("first_seen")), iso(e.get("last_seen"))))
+    return "\n".join(lines) + "\n"
+
+
+def survey_delete(name):
+    path = os.path.join(_survey_dir(), _rec_safe(name) + ".json")
+    try:
+        os.remove(path)
+        return {"ok": True}
+    except OSError:
+        return {"ok": False, "error": "no such survey"}
+
 # Limit-line / mask alarms from the RF Waterfall page (pass/fail spectrum
 # monitoring). The page evaluates each row against the user's limit and posts
 # when a violation starts; we log it to the Watchtower feed, rate-limited per
@@ -2762,6 +3014,49 @@ def selftest():
     finally:
         set_tuning(ppm=_saved["ppm"], gain=_saved["gain"], fft=_saved["fft"], avg=_saved["avg"], window=_saved["window"],
                    bins=_saved["bins"], bias_t=_saved["bias_t"], direct=_saved["direct"], conv_hz=_saved["conv_hz"])
+
+    # --- unattended survey: band statistics (pure) ---
+    _fr = []
+    for _k in range(100):
+        _row = [-60.0 + ((_k * 7 + _i * 13) % 5) for _i in range(200)]    # noise ~-60..-56
+        for _i in range(40, 44):
+            _row[_i] = -20.0                                               # constant carrier
+        if _k % 10 == 0:
+            for _i in range(150, 160):
+                _row[_i] = -30.0                                           # 10% duty burst
+        _fr.append({"power": _row, "ts": 1000.0 + _k})
+    _ss = survey_stats(_fr, 433_000_000, 435_000_000)
+    _em = {round(e["freq_mhz"], 2): e for e in _ss["emitters"]}
+    check("survey: constant carrier found, 100% occupancy, right freq",
+          any(abs(f - 433.42) < 0.03 and e["occupancy_pct"] == 100.0 for f, e in _em.items()), str(_em)[:200])
+    check("survey: 10% burst found with its duty + first/last seen",
+          any(abs(f - 434.55) < 0.06 and abs(e["occupancy_pct"] - 10.0) < 0.5 and e["first_seen"] == 1000.0 and e["last_seen"] == 1090.0
+              for f, e in _em.items()), str(_em)[:200])
+    check("survey: exactly the two emitters, noise floor measured",
+          len(_ss["emitters"]) == 2 and -61 < _ss["noise_db"] < -55, str(len(_ss["emitters"])) + " " + str(_ss["noise_db"]))
+    check("survey: bad band list rejected", _survey.start(["nope"], 10)["ok"] is False)
+    # report round-trip: save -> list -> report -> CSV -> delete (temp dir)
+    global _survey_dir
+    _sd_old = _survey_dir
+    _sd_tmp = _tf2 = None
+    try:
+        import tempfile as _tf2
+        _sd_tmp = _tf2.mkdtemp(prefix="rfsv-")
+        _survey_dir = lambda: _sd_tmp
+        _t = SpectrumSurvey(); _t._name = "unit-test"
+        _t._report = {"name": "unit-test", "started": 1000.0, "finished": 1100.0, "status": "done",
+                      "bands": [dict(_ss, band="433", round=1)]}
+        _t._save()
+        _li = survey_list()["surveys"]
+        check("survey: saved report is listed with its emitter count",
+              len(_li) == 1 and _li[0]["name"] == "unit-test" and _li[0]["emitters"] == 2, str(_li))
+        _csv = survey_csv("unit-test").splitlines()
+        check("survey: CSV has a header + one line per emitter",
+              _csv[0].startswith("band,round,freq_mhz") and len(_csv) == 3 and _csv[1].startswith("433,1,"), str(_csv[:2]))
+        check("survey: report + delete", survey_report("unit-test")["ok"] and survey_delete("unit-test")["ok"]
+              and survey_list()["surveys"] == [])
+    finally:
+        _survey_dir = _sd_old
 
     # --- limit-line alarms -> Watchtower feed (rate-limited per panel) ---
     import tempfile as _tf

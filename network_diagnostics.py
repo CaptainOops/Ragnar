@@ -26300,6 +26300,49 @@ def register_network_diagnostics(app, logger=None):
         _log("net/rtl/baseline/clear")
         return jsonify(rtl_sdr.baseline_clear())
 
+    # Unattended spectrum survey (RTL-SDR): visit bands for a dwell time each,
+    # write a report (noise floor, occupancy, emitters with duty + first/last seen).
+    @app.route('/api/net/rtl/survey/start', methods=['POST'])
+    def net_rtl_survey_start():
+        d = request.get_json(silent=True) or {}
+        _log("net/rtl/survey/start bands=%s dwell=%s rounds=%s" % (d.get('bands'), d.get('dwell_s'), d.get('rounds')))
+        try: adsb.stop(); pager.stop(); acars.stop(); vdl2.stop(); radio.stop(); vor.stop(); aprs.stop()   # one dongle
+        except Exception: pass
+        return jsonify(rtl_sdr._survey.start(d.get('bands') or [], dwell_s=d.get('dwell_s', 30),
+                                             rounds=d.get('rounds', 1), label=d.get('name')))
+
+    @app.route('/api/net/rtl/survey/stop', methods=['POST'])
+    def net_rtl_survey_stop():
+        return jsonify(rtl_sdr._survey.stop())
+
+    @app.route('/api/net/rtl/survey/status', methods=['GET'])
+    def net_rtl_survey_status():
+        return jsonify(rtl_sdr._survey.status())
+
+    @app.route('/api/net/rtl/survey/list', methods=['GET'])
+    def net_rtl_survey_list():
+        return jsonify(rtl_sdr.survey_list())
+
+    @app.route('/api/net/rtl/survey/report', methods=['GET'])
+    def net_rtl_survey_report():
+        return jsonify(rtl_sdr.survey_report(request.args.get('name', '')))
+
+    @app.route('/api/net/rtl/survey/report.csv', methods=['GET'])
+    def net_rtl_survey_csv():
+        from flask import Response
+        name = request.args.get('name', '')
+        txt = rtl_sdr.survey_csv(name)
+        if txt is None:
+            return jsonify({"ok": False, "error": "no such survey"}), 404
+        resp = Response(txt, mimetype='text/csv')
+        resp.headers['Content-Disposition'] = 'attachment; filename="%s.csv"' % rtl_sdr._rec_safe(name)
+        return resp
+
+    @app.route('/api/net/rtl/survey/delete', methods=['POST'])
+    def net_rtl_survey_delete():
+        d = request.get_json(silent=True) or {}
+        return jsonify(rtl_sdr.survey_delete(d.get('name', '')))
+
     # Limit-line / mask alarm from the RF Waterfall page -> Watchtower feed.
     @app.route('/api/net/rtl/limit/alarm', methods=['POST'])
     def net_rtl_limit_alarm():
