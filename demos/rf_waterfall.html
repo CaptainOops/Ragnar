@@ -768,7 +768,7 @@
         if(self.threeD && cv===self.fall){                 // drag rotates the 3D view
           var rdx=e.clientX-dg.lx, rdy=e.clientY-dg.ly; dg.lx=e.clientX; dg.ly=e.clientY;
           self.rot3d.yaw+=rdx*0.010;
-          self.rot3d.pitch=Math.max(0.12,Math.min(1.48,self.rot3d.pitch-rdy*0.008));
+          self.rot3d.pitch=Math.max(0.02,Math.min(1.5708,self.rot3d.pitch-rdy*0.008));  // up to 90deg = straight-down top view
           self._hint3d=false; self._persistRot(); self.draw3D();
         }
         else if(dg.vert){ self.setScrollBack(dg.back+Math.round(dy*self.d/(self.STEP||1))); }
