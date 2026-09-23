@@ -14431,13 +14431,15 @@ def _wardrift_seq_done(idem_key):
 
 
 def _wardrift_iso(ts):
-    """Session timestamps are naive local 'YYYY-MM-DD HH:MM:SS' -> ISO 8601 UTC."""
+    """CSV FirstSeen (WiGLE 'YYYY-MM-DD HH:MM:SS' UTC, or ISO) -> ISO 8601 UTC."""
     from datetime import datetime, timezone
     try:
-        dt = datetime.strptime(ts.strip(), '%Y-%m-%d %H:%M:%S').astimezone()
-        return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        dt = datetime.fromisoformat(ts.strip().replace('Z', '+00:00'))
     except Exception:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def _wardrift_signal_items(csv_text):

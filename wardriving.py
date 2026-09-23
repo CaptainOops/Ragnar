@@ -111,6 +111,85 @@ def _freq_to_channel(freq_mhz):
     return 0
 
 
+# A row whose position is within this many metres of the GPS track (inside the
+# row's own first..last-seen window, plus slack) is re-timed to that moment.
+_ALIGN_MAX_M = 300
+_ALIGN_SLACK_S = 15
+
+
+def _ts_to_epoch(s):
+    """Session timestamp -> epoch seconds or None.
+
+    Live rows are UTC ISO-8601 ('2026-09-23T16:37:44.420181+00:00'); imported
+    CSVs carry WiGLE's naive 'YYYY-MM-DD HH:MM:SS' (read as UTC, per WiGLE)."""
+    from datetime import datetime, timezone
+    v = str(s or '').strip()
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(v.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _wigle_time(epoch):
+    """epoch -> WiGLE CSV FirstSeen ('YYYY-MM-DD HH:MM:SS', UTC)."""
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch))
+
+
+def _align_rows_to_track(recs, track):
+    """Pure: keep GPS-located rows, re-time them to the track, sort by time.
+
+    `recs` are export dicts with first/last ('YYYY-MM-DD HH:MM:SS') and
+    lat/lon; `track` is [(epoch, lat, lon)] sorted by epoch. A row's position
+    is where its signal peaked, but its FirstSeen is when it was first heard,
+    so the two can be minutes and kilometres apart; route-building services
+    then see the trail jump back and forth. Each row gets the track moment,
+    inside its own seen window, that is closest to its position. Rows without
+    a usable position are dropped. With no track, rows keep FirstSeen.
+    FirstSeen is written in WiGLE's 'YYYY-MM-DD HH:MM:SS' (UTC) form."""
+    import bisect
+    import math
+    out = []
+    ts = [t[0] for t in track]
+    for r in recs:
+        try:
+            lat, lon = float(r['lat']), float(r['lon'])
+        except (TypeError, ValueError):
+            continue
+        if (lat == 0 and lon == 0) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        r = dict(r, lat=lat, lon=lon)
+        t0, t1 = _ts_to_epoch(r.get('first')), _ts_to_epoch(r.get('last'))
+        when = t0
+        if track and t0 is not None:
+            t1 = t1 if (t1 is not None and t1 >= t0) else t0
+            lo = bisect.bisect_left(ts, t0 - _ALIGN_SLACK_S)
+            hi = bisect.bisect_right(ts, t1 + _ALIGN_SLACK_S)
+            kx = math.cos(math.radians(lat)) * 111320.0
+            best = None
+            # Bound the scan on very long sightings (a network heard for hours).
+            step = max(1, (hi - lo) // 4000)
+            for i in range(lo, hi, step):
+                _, tlat, tlon = track[i]
+                d2 = ((tlat - lat) * 110540.0) ** 2 + ((tlon - lon) * kx) ** 2
+                if best is None or d2 < best[0]:
+                    best = (d2, track[i][0])
+            if best is not None and best[0] <= _ALIGN_MAX_M ** 2:
+                when = best[1]
+        if when is not None:
+            r['first'] = _wigle_time(when)
+        r['_t'] = when if when is not None else float('inf')
+        out.append(r)
+    out.sort(key=lambda x: x['_t'])
+    for r in out:
+        r.pop('_t', None)
+    return out
+
+
 class _CompanionState:
     """All mutable state for one USB-serial companion (Huginn / Piglet / Piglet Core / Piglet Coordinator)."""
 
@@ -1152,6 +1231,13 @@ class WardrivingSession:
 
         `include_backfilled` controls rows flagged gps_backfilled = 1.
 
+        Only rows with a GPS position are written, as ONE time-ordered list
+        across WiFi / BT / cell (not table after table), and each row's
+        FirstSeen is re-timed to when we were actually at its position (see
+        _align_rows_to_track). Services that rebuild the drive route from the
+        CSV (Wardrift) otherwise see the trail teleport: a row's position is
+        where its signal peaked, often minutes after it was first seen.
+
         Zigbee / 802.15.4 devices are excluded by default: WiGLE has no
         standard 802.15.4 record type, so those rows are only useful for the
         user's own tooling. Set `include_zigbee=True` (opt-in from the config
@@ -1162,105 +1248,84 @@ class WardrivingSession:
         lines.append(f'WigleWifi-1.4,appRelease=Ragnar,model=RaspberryPi,release=1.0,device={dn},display=EPD,board=RPi,brand=Ragnar')
         lines.append(','.join(WIGLE_HEADER))
 
+        # Each entry: dict(mac, name, auth, first, last, channel, rssi, lat, lon, alt, acc, type)
+        recs = []
+        track = []
         with self._lock:
             try:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
-                    # WiFi networks (skip backfilled positions)
-                    rows = conn.execute(
-                        f"SELECT * FROM networks {bf}"
-                        "ORDER BY first_seen"
-                    ).fetchall()
-                    for row in rows:
+                    for row in conn.execute(f"SELECT * FROM networks {bf}"):
                         r = dict(row)
-                        lines.append(','.join([
-                            r.get('bssid', ''),
-                            r.get('ssid', '').replace(',', '\\,'),
-                            _map_security(r.get('security', '')),
-                            r.get('first_seen', ''),
-                            str(r.get('channel', 0)),
-                            str(r.get('best_rssi', -100)),
-                            str(r.get('best_lat', '') or ''),
-                            str(r.get('best_lon', '') or ''),
-                            str(r.get('altitude', '') or ''),
-                            str(r.get('hdop', '') or ''),
-                            'WIFI'
-                        ]))
-                    # Bluetooth devices
+                        recs.append(dict(
+                            mac=r.get('bssid', ''), name=r.get('ssid', '') or '',
+                            auth=_map_security(r.get('security', '')),
+                            first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                            channel=str(r.get('channel', 0)), rssi=str(r.get('best_rssi', -100)),
+                            lat=r.get('best_lat'), lon=r.get('best_lon'),
+                            alt=r.get('altitude'), acc=r.get('hdop'), type='WIFI'))
                     try:
-                        bt_rows = conn.execute(
-                            f"SELECT * FROM bluetooth_devices {bf}"
-                            "ORDER BY first_seen"
-                        ).fetchall()
-                        for row in bt_rows:
+                        for row in conn.execute(f"SELECT * FROM bluetooth_devices {bf}"):
                             r = dict(row)
-                            lines.append(','.join([
-                                r.get('mac', ''),
-                                r.get('name', '').replace(',', '\\,'),
-                                '[BT]',
-                                r.get('first_seen', ''),
-                                '0',
-                                str(r.get('rssi', -100)),
-                                str(r.get('latitude', '') or ''),
-                                str(r.get('longitude', '') or ''),
-                                str(r.get('altitude', '') or ''),
-                                '',
-                                'BT'
-                            ]))
+                            recs.append(dict(
+                                mac=r.get('mac', ''), name=r.get('name', '') or '', auth='[BT]',
+                                first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                                channel='0', rssi=str(r.get('rssi', -100)),
+                                lat=r.get('latitude'), lon=r.get('longitude'),
+                                alt=r.get('altitude'), acc=None, type='BT'))
                     except Exception:
                         pass
-                    # Cell towers
                     try:
-                        cell_rows = conn.execute(
-                            f"SELECT * FROM cell_towers {bf}"
-                            "ORDER BY first_seen"
-                        ).fetchall()
-                        for row in cell_rows:
+                        for row in conn.execute(f"SELECT * FROM cell_towers {bf}"):
                             r = dict(row)
-                            lines.append(','.join([
-                                r.get('cell_id', ''),
-                                f"{r.get('provider', '')} {r.get('tech', '')}".strip().replace(',', '\\,'),
-                                f"[{r.get('tech', 'GSM')}]",
-                                r.get('first_seen', ''),
-                                str(r.get('band_freq', '')),
-                                str(r.get('signal_dbm', -120)),
-                                str(r.get('latitude', '') or ''),
-                                str(r.get('longitude', '') or ''),
-                                '',
-                                '',
-                                'GSM'
-                            ]))
+                            recs.append(dict(
+                                mac=r.get('cell_id', ''),
+                                name=f"{r.get('provider', '')} {r.get('tech', '')}".strip(),
+                                auth=f"[{r.get('tech', 'GSM')}]",
+                                first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                                channel=str(r.get('band_freq', '')), rssi=str(r.get('signal_dbm', -120)),
+                                lat=r.get('latitude'), lon=r.get('longitude'),
+                                alt=None, acc=None, type='GSM'))
                     except Exception:
                         pass
                     # Zigbee / 802.15.4 devices — opt-in only (see docstring).
                     if include_zigbee:
                         try:
-                            zb_rows = conn.execute(
-                                f"SELECT * FROM zigbee_devices {bf}"
-                                "ORDER BY first_seen"
-                            ).fetchall()
-                            for row in zb_rows:
+                            for row in conn.execute(f"SELECT * FROM zigbee_devices {bf}"):
                                 r = dict(row)
                                 zlat = r.get('best_lat') if r.get('best_lat') is not None else r.get('latitude')
                                 zlon = r.get('best_lon') if r.get('best_lon') is not None else r.get('longitude')
-                                lines.append(','.join([
-                                    r.get('addr', ''),
-                                    (r.get('panid', '') or '').replace(',', '\\,'),
-                                    '[ZIGBEE]',
-                                    r.get('first_seen', ''),
-                                    str(r.get('channel', 0)),
-                                    str(r.get('best_rssi', -100)),
-                                    str(zlat if zlat is not None else ''),
-                                    str(zlon if zlon is not None else ''),
-                                    str(r.get('altitude', '') or ''),
-                                    '',
-                                    'ZIGBEE'
-                                ]))
+                                recs.append(dict(
+                                    mac=r.get('addr', ''), name=r.get('panid', '') or '', auth='[ZIGBEE]',
+                                    first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                                    channel=str(r.get('channel', 0)), rssi=str(r.get('best_rssi', -100)),
+                                    lat=zlat, lon=zlon, alt=r.get('altitude'), acc=None, type='ZIGBEE'))
                         except Exception:
                             pass
+                    try:
+                        track = conn.execute(
+                            "SELECT timestamp, latitude, longitude FROM gps_track ORDER BY timestamp"
+                        ).fetchall()
+                    except Exception:
+                        track = []
             except Exception as e:
                 logger.error(f"WiGLE export error: {e}")
 
+        recs = _align_rows_to_track(recs, [tuple(t) for t in track])
+        for r in recs:
+            lines.append(','.join([
+                r['mac'],
+                r['name'].replace(',', '\\,'),
+                r['auth'],
+                r['first'],
+                r['channel'],
+                r['rssi'],
+                str(r['lat']),
+                str(r['lon']),
+                str(r['alt'] or ''),
+                str(r['acc'] or ''),
+                r['type'],
+            ]))
         return '\n'.join(lines)
 
     def export_kml(self):
