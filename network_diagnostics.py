@@ -26205,8 +26205,63 @@ def register_network_diagnostics(app, logger=None):
                                               fft=data.get('fft'), avg=data.get('avg'),
                                               window=data.get('window'), bins=data.get('bins'),
                                               bias_t=data.get('bias_t'), direct=data.get('direct'),
-                                              conv_hz=data.get('conv_hz')))
+                                              conv_hz=data.get('conv_hz'),
+                                              detector=data.get('detector')))
         return jsonify(rtl_sdr.get_tuning())
+
+    # Prove a peak is a transmitter and not a mixer image or the DC spike: the
+    # frequency is measured through two different tuner centres and compared.
+    @app.route('/api/net/rtl/image-check', methods=['POST'])
+    def net_rtl_image_check():
+        data = request.get_json(silent=True) or {}
+        _log("net/rtl/image-check")
+        return jsonify(rtl_sdr.image_check(data.get('freq_hz'),
+                                           bw_hz=data.get('bw_hz') or 50000,
+                                           secs=data.get('secs') or 1.5))
+
+    # Put every tuner setting back to what a fresh install ships with.
+    @app.route('/api/net/rtl/tuning/reset', methods=['POST'])
+    def net_rtl_tuning_reset():
+        _log("net/rtl/tuning/reset")
+        return jsonify(rtl_sdr.reset_tuning())
+
+    # Recover a wedged dongle without walking to the box: re-enumerate it over
+    # USB, which is what replugging does.
+    @app.route('/api/net/rtl/reset', methods=['POST'])
+    def net_rtl_reset():
+        _log("net/rtl/reset")
+        return jsonify(rtl_sdr.usb_reset())
+
+    # Harmonic check: measures 2x..nx the carrier, one tune at a time.
+    @app.route('/api/net/rtl/harmonics', methods=['POST'])
+    def net_rtl_harmonics():
+        data = request.get_json(silent=True) or {}
+        _log("net/rtl/harmonics")
+        return jsonify(rtl_sdr.harmonics(data.get('freq_hz'),
+                                         bw_hz=data.get('bw_hz') or 50000,
+                                         n=data.get('n') or 4))
+
+    # Armed trigger: watch the live rows for a mask crossing and capture raw IQ
+    # around the event, including the second before it.
+    @app.route('/api/net/rtl/trigger/arm', methods=['POST'])
+    def net_rtl_trigger_arm():
+        data = request.get_json(silent=True) or {}
+        _log("net/rtl/trigger/arm")
+        return jsonify(rtl_sdr.trigger_arm(
+            mask=data.get('mask'), level_db=data.get('level_db'),
+            f0_hz=data.get('f0_hz'), f1_hz=data.get('f1_hz'),
+            pre_s=data.get('pre_s'), post_s=data.get('post_s'),
+            max_events=data.get('max_events'), min_gap_s=data.get('min_gap_s'),
+            margin_db=data.get('margin_db'), name=data.get('name')))
+
+    @app.route('/api/net/rtl/trigger/disarm', methods=['POST'])
+    def net_rtl_trigger_disarm():
+        _log("net/rtl/trigger/disarm")
+        return jsonify(rtl_sdr.trigger_disarm())
+
+    @app.route('/api/net/rtl/trigger/status', methods=['GET'])
+    def net_rtl_trigger_status():
+        return jsonify(rtl_sdr.trigger_status())
 
     # Session recording — capture the running power sweep to a JSONL file and
     # replay it later. Frames are small, so this is cheap; files live under data/.
@@ -26454,6 +26509,16 @@ def register_network_diagnostics(app, logger=None):
     def net_rtl_analyze_constellation():
         return _analyze(sigmf_analyzer.constellation, **_sel(request.args))
 
+    # Service-monitor figures for the selection: FM deviation and AM depth.
+    @app.route('/api/net/rtl/analyze/modulation_quality', methods=['GET'])
+    def net_rtl_analyze_modquality():
+        return _analyze(sigmf_analyzer.modulation_quality, **_sel(request.args))
+
+    # CTCSS tone / DCS code under an FM transmission.
+    @app.route('/api/net/rtl/analyze/subaudible', methods=['GET'])
+    def net_rtl_analyze_subaudible():
+        return _analyze(sigmf_analyzer.subaudible, **_sel(request.args))
+
     @app.route('/api/net/rtl/analyze/instantaneous', methods=['GET'])
     def net_rtl_analyze_instantaneous():
         return _analyze(sigmf_analyzer.instantaneous, **_sel(request.args))
@@ -26544,6 +26609,17 @@ def register_network_diagnostics(app, logger=None):
 
     def _b(v):       # query-string boolean
         return str(v).lower() in ('1', 'true', 'yes', 'on')
+
+    # Test CRC / checksum algorithms over exactly the bits shown (no frame
+    # detection) — a standalone version of what /frames reports inline.
+    @app.route('/api/net/rtl/analyze/crc', methods=['GET'])
+    def net_rtl_analyze_crc():
+        a = request.args
+        bits = (a.get('bits', '') or '')[:8192]
+        return _analyze(sigmf_analyzer.crc_check, bits=bits, line=a.get('line', 'raw'),
+                        invert=(a.get('invert') in ('1', 'true')),
+                        reflect=(a.get('reflect') in ('1', 'true')),
+                        offset=int(a.get('offset', 0) or 0))
 
     @app.route('/api/net/rtl/analyze/frames', methods=['GET'])
     def net_rtl_analyze_frames():

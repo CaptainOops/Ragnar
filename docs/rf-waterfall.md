@@ -120,6 +120,55 @@ background, or the backend stalled for a long time) is skipped, not fast-forward
 Both engines emit the same frame shape, feed the same ring buffer, recorder and
 `/api/net/rtl/power/frames`, so nothing else on the page changes.
 
+## What ships by default, and why
+
+
+These are the settings a fresh install starts with. They were chosen by
+measurement on real hardware, not by taste, and each one is a click away from
+being something else. **Your changes are saved** (`data/rf_settings.json`) and
+survive a restart; a fresh install has no such file and gets the defaults below.
+
+| Setting | Default | Why |
+| --- | --- | --- |
+| **Gain** | **Managed**, starting at 25.4 dB | The dongle's own AGC is *not* the default: on an R820T it routinely drives the 8-bit ADC into clipping near any strong signal, and a clipped capture invents harmonics and intermodulation that look like transmitters. Measured on a real dongle: 9–22% of samples pinned to the rail on AGC, none at all at 12–28 dB. |
+| **Detector** | **RMS** | Measured cost against peak on live signals: **0.54 dB** of visible SNR, because auto FFT sizing already keeps ~2 bins per display column, and the wide sweep asks `rtl_power` for exactly one bin per column (where the detector does nothing at all). In exchange every level, channel power and noise figure is a true power measurement instead of one biased high. |
+| **FFT size** | Auto | Keeps ≥2 bins per display column at any zoom, so a narrow zoom sharpens the resolution instead of leaving dead columns. |
+| **Averaging** | 24 windows | Uses most of each row's samples for the estimate. It averages *within* a row, so it does not blur bursts across time. |
+| **Window** | Hann | The general-purpose compromise between resolution and leakage. |
+| **Columns** | 480 | Matches a typical display width without wasting CPU. |
+| **Display range** | Auto | Follows the measured noise floor, so the picture is usable before anything is configured. |
+
+### Managed gain
+
+An RTL-SDR has one knob that decides whether you can hear anything and whether
+what you hear is real. Too little and the ADC's own noise sets the floor; too
+much and it clips. Both extremes are silent about it.
+
+The managed loop uses the same measurement the **Front end** tile shows — the
+fraction of samples on a rail, and the headroom of the loudest sample — and
+holds the gain so the headroom stays between **10 and 25 dB**, within
+**7.7–38.6 dB** of tuner gain. It moves one tuner notch at a time, at most once
+every 12 seconds, and only when the headroom is outside that band, so it settles
+instead of hunting — each change restarts the capture, and restarting captures
+in a tight loop is what wedges an RTL-SDR.
+
+Why it starts at 25.4 dB: measuring the noise floor against gain on a real
+dongle, the floor rises *slower* than the gain up to about 24 dB (the ADC is
+still setting the floor, so more gain genuinely buys sensitivity) and 1 dB per
+dB above it (the front end sets the floor, so more gain buys nothing and costs
+headroom). 25.4 dB is the first supported tuner notch past that knee. On this
+antenna it settles at 16–18 dB of headroom and the loop makes no changes at all.
+
+**↺ Restore defaults** (⚙ Settings → Hardware, or
+`POST /api/net/rtl/tuning/reset`) puts PPM, gain, detector, resolution and the
+hardware options back to the values above — useful when a box has been
+experimented on and you want to know what it is measuring with again.
+
+The gain control in **⚙ Settings → Hardware** offers all three: **Managed**,
+**Manual** (you set the dB, nothing touches it) and **Hardware AGC** (the
+dongle's own, labelled as able to clip). The panel shows the managed gain and
+the reason for its last change.
+
 ## Resolution and hardware settings
 
 
@@ -135,6 +184,25 @@ bandwidth (the width of one FFT bin).
   `rtl_power` sweep included (which now uses a proper window, not its
   rectangle default).
 - *HackRF:* **RBW** (hackrf_sweep bin width: Auto, or 2.5 kHz–1 MHz).
+
+**Detector.** An FFT produces far more bins than the display has columns, so
+several bins have to be combined into each column — and the rule used decides
+every level on the page. The **Det** tile shows the active rule and
+**⚙ Settings → Resolution → Detector** changes it:
+
+| Detector | Combines a column's bins by | Use it for |
+| --- | --- | --- |
+| **Peak** (default) | the largest bin | *finding* signals — catches anything narrower than a column, but reads a noise floor several dB high |
+| **RMS** | averaging in the power domain | *measuring* — the right detector for a level, channel power or noise figure |
+| **Average** | averaging in dB (video average) | a steady trace; reads noise ~2.5 dB below RMS, so never quote it as power |
+| **Sample** | the bin at the column centre | seeing the trace exactly as the FFT produced it |
+| **Min** | the smallest bin | digging the true floor out from under bursty traffic |
+
+Peak finds, RMS measures. Quote a noise floor or a channel power from a
+peak-detected trace and it will be optimistic; the ordering
+`peak ≥ rms ≥ avg ≥ min` always holds on noise. The setting applies to the
+dongle (both engines) and to the browser's own bin→pixel reduction, so zooming
+out cannot silently change what a level means.
 
 **Hardware.**
 - *RTL-SDR:* PPM / Gain / Calibrate (moved here from the toolbar), plus:
@@ -187,6 +255,8 @@ per-row dB history). Add one by dropping an entry into `PALETTES` +
 `PALETTE_ORDER` in the page — the selector builds itself from that list.
 
 ## 2D / 3D waterfall view
+
+**The 3D view is rotatable** — drag to turn and tilt it, wheel or pinch to zoom; the angle is remembered per browser. Power is height, older sweeps recede along the time axis.
 
 
 Each panel has a **View: 2D | 3D** toggle in the toolbar (default **2D**, the
@@ -268,6 +338,102 @@ live spectrum client-side from the incoming frames:
   with centre frequency, bandwidth, SNR and a **duty-cycle** estimate (so a
   bursty remote reads ~5% and a continuous carrier ~100%). This is the "what's
   actually on the band" answer.
+
+## When the dongle stops responding
+
+
+An RTL2832U can end up in a state where it still enumerates, still opens and
+still passes `rtl_test` — but never delivers a single sample. The panel then
+sits there: engine running, no rows. Repeated open/close cycles are what put it
+there, which is why captures are serialised and the USB device is given time to
+settle between them.
+
+The panel now detects it — running, but nothing arriving for several seconds —
+and offers **⭮ Reset dongle**, which is also in **⚙ Settings → Hardware**. It
+re-enumerates the device over USB (`USBDEVFS_RESET`), exactly what the kernel
+does when you unplug and replug it: whatever is using the radio is stopped
+first, the device is reset, and the sweep you were running is restarted. No walk
+to the box, no `sudo`, no power cycle.
+
+It needs root (the web UI normally runs as root); if it cannot, it says so
+rather than pretending to have fixed anything.
+API: `POST /api/net/rtl/reset`.
+
+## Front-end health and proving a signal is real
+
+
+Two things routinely put transmitters on a screen that are not on the air. Both
+are reported rather than quietly drawn.
+
+**Overload.** The **Front end** tile appears when the receiver is being driven
+too hard: the RTL-SDR's 8-bit ADC starts clipping, and clipping manufactures
+harmonics and intermodulation products that look exactly like signals. The panel
+measures this from the samples themselves — the fraction sitting on a rail, and
+how much headroom the loudest sample leaves — and shows `near clip` (under 3 dB
+of headroom) or a flashing `OVERLOAD` with a red outline on the waterfall. When
+it appears, **lower the gain**: every level in an overloaded capture is wrong,
+and some of the signals are not there at all. The `rtl_power` sweep engine never
+sees raw samples, so it reports no figure.
+
+**Images and the DC spike.** A mixer also delivers signals from the wrong side
+of the local oscillator, and the dongle has a permanent spike at whatever it is
+tuned to. Both measure like transmitters. The **✓ Verify** button next to a
+measurement settles it on the hardware: the frequency is measured through two
+tuner centres 500 kHz apart, and
+
+- a **real signal** keeps its radio frequency in both,
+- an **image / alias** moves with the tuner,
+- the **DC spike** sits at the centre of both windows,
+- **nothing heard** is reported as such, not as a pass.
+
+It takes a few seconds and needs the dongle, so it refuses while the dongle is
+busy with a decode or a survey, and restores the sweep you were running
+afterwards. API: `POST /api/net/rtl/image-check {freq_hz, bw_hz}`.
+
+## Measurement set (band power, noise, ACPR, spurs, harmonics)
+
+
+Buttons in the **Markers** strip. Each one answers a question the raw trace
+cannot.
+
+- **Σ Band power** — total power between the two outermost markers, plus the
+  same figure per Hz. The per-Hz density is what makes two measurements taken at
+  different spans or RBWs comparable. It names the detector in use, and says so
+  when that detector is peak (which reads high).
+- **N Noise** — the level at the marker normalised to a 1 Hz bandwidth. The raw
+  reading is corrected for the resolution bandwidth, for the FFT window's
+  noise-equivalent bandwidth (Hann 1.5×, Blackman-Harris 2.0×, Flat-top 3.77×,
+  rectangular 1.0×) and for the +2.51 dB bias of a log-averaged trace, and it is
+  averaged over a window of bins rather than read off one. Those corrections are
+  worth several dB, which is the difference between a noise figure and a guess.
+- **ACPR** — power in the channels either side of the marked carrier, relative
+  to the carrier's own channel. The channel width comes from the signal's
+  measured 99% occupied bandwidth, so it works without knowing the standard.
+  It refuses, rather than guesses, when the neighbouring channels are not in
+  view.
+- **Spurs** — every other peak in view as an offset and a level in **dBc**
+  relative to the marked carrier. A peak counts when it rises 6 dB out of the
+  dip beside it and sits 10 dB over the noise, so ripple is not reported as a
+  spurious emission. Use **✓ Verify** on anything surprising: a receiver image
+  is not a transmitter's spur.
+- **Harmonics** (RTL panel) — measures 2×, 3× and 4× the marked frequency on the
+  hardware, one tune at a time, and reports each in dBc against the fundamental
+  measured the same way. Harmonics past the tuner's range are reported as out of
+  reach, not as absent. It takes roughly 7 s per harmonic and interrupts the
+  sweep, then puts it back. A strong "harmonic" can also be made inside an
+  overloaded receiver, so check the **Front end** tile and repeat with less
+  gain. API: `POST /api/net/rtl/harmonics {freq_hz, bw_hz, n}`.
+
+**Reference trace (⎖ Store ref).** Stores the live trace and switches the plot
+to **live − reference**, drawn against its own zero line with an auto-ranged
+±dB scale. This is how you show what changed since yesterday, or measure a
+filter, an attenuator or an antenna against a known-good baseline. The
+reference belongs to the span it was taken on and retires itself when the view
+moves off it.
+
+A **spectral emission mask** is the existing
+[limit line / mask](#limit-lines-and-masks-pass--fail): learn it from Max-hold,
+or set it flat, and the trace fills red where the signal exceeds it.
 
 ## Markers
 
@@ -455,6 +621,80 @@ to Watchtower** to also send it to the Watchtower feed as `RF_LIMIT_EXCEEDED`
 (`/var/log/ragnar/rfwatch.jsonl`, same feed as Baseline). This is rate-limited
 to one alert per panel per 10 s, both in the page and the backend.
 
+## Memory channels (a watch list)
+
+
+**⚙ Settings → Channels** keeps up to 32 frequencies per panel with a name each,
+and measures them from the rows already arriving — adding a channel never
+retunes the radio, because repeated retuning is what fights the waterfall for
+the one dongle. Each channel shows its live level, the share of the time it has
+been active (above the noise floor by the margin you set), and when it was last
+heard. A channel outside the current span says *not in view* rather than reading
+zero. Add one by typing a frequency, or straight from the marker, with the
+band-plan identification as its name. Channels are kept in the browser per
+panel, and travel with a saved [setup](#setups-and-reports).
+
+## Setups and reports
+
+
+**⚙ Settings → Setups & report**.
+
+A **setup** is everything that decides what a number means: span and zoom,
+display range and palette, resolution, detector, gain / PPM / bias-T /
+converter, markers, the limit line and its learned mask, channels, the level
+calibration and the antenna factor. Save it under a name, recall it before
+repeating a measurement, or download it as a file and load it on another unit so
+it measures the same way. Recalling a setup pushes the tuner settings back to
+the radio, and retunes only if the span actually changed. A setup saved on one
+panel is refused on the other rather than half-applied.
+
+A **measurement report** opens a printable page — print it to keep a PDF — with
+the marked measurement, the marker table, the waterfall image, and the
+conditions behind the numbers: engine, RBW, detector, gain, PPM, window,
+calibration state, antenna factor, noise floor, front-end health and the
+pass/fail verdict of any limit line. It says plainly when the detector was not
+RMS, and when the front end was overloading, because a report that hides that is
+worse than no report.
+
+## Trigger and capture (armed recording with a lead-in)
+
+
+Free-running recording is a bet: press record and hope the burst happens while
+the file is open. **⚙ Settings → Trigger & capture** arms a condition instead,
+and the radio keeps a rolling buffer of raw samples — so when the condition
+fires, the recording **starts before the event**: the rise, the preamble and the
+first bits, which is exactly the part a decoder needs and the part free-running
+recording misses.
+
+- **Trigger on** — the limit line / mask you already set up, or a flat level.
+  A mask is the useful case: learn it from Max-hold over normal traffic, and the
+  trigger fires on anything that is not normal.
+- **Watch** — the whole visible span, or just the marked signal's channel.
+- **Capture** — seconds *before* the event (up to 5) and seconds *after* (up to
+  30). At 2 MS/s each second is about 4 MB, so a 1 s lead-in holds ~4 MB of
+  samples in memory; the buffer is bounded in bytes, not in blocks.
+- **Stop after** *n* captures, with a minimum gap between them, so an armed
+  panel left overnight cannot fill the disk.
+
+Each event writes a SigMF pair into the same folder as manual captures, so the
+[Signal Analyzer](#signal-analyzer-on-box-sigmf-analysis) lists it, with two
+annotations: the event itself, and a **`trigger point`** marker at the exact
+sample where the mask was crossed — everything before it is lead-in. Events are
+also logged to Watchtower as `RF_TRIGGER_CAPTURE`.
+
+The trigger runs inside the real-time IQ engine, so it needs a span that fits one
+tune; the `rtl_power` sweep has no samples to keep. Levels are sent as the
+capture produces them, with any dBm calibration offset removed first, so the
+arm means what the trace shows.
+
+API: `POST /api/net/rtl/trigger/arm {mask|level_db, f0_hz, f1_hz, pre_s, post_s,
+max_events, min_gap_s}`, `POST …/trigger/disarm`, `GET …/trigger/status`.
+
+Measured on the hardware: armed at 2.001 MS/s with a 1.5 s lead-in, the rolling
+buffer held a steady 1.5 s for 90 s without firing, and the capture it finally
+wrote was 2.117 s long with the trigger point annotated at sample 3,110,912 —
+1.555 s in.
+
 ## Baseline + anomaly detection (Watchtower)
 
 
@@ -590,6 +830,25 @@ takes priority: rows are only computed when there is time for them, so a
 recording is never shortened or thinned for the sake of the display. Band and
 zoom changes wait until the capture finishes.
 
+## What a capture records about itself
+
+
+Every SigMF recording this unit writes — manual, and triggered — carries more
+than samples, because a recording that cannot say where and when it was made is
+an anecdote:
+
+- `core:datetime` — UTC start time.
+- `core:sha512` — a hash of the data file, so tampering or corruption shows.
+- `core:geolocation` — a GeoJSON point (longitude first, per the spec) from the
+  live GPS fix when there is one, plus `ragnar:position_source` saying whether
+  it was a live fix, a manually set position or the last known one, and the
+  satellite count and HDOP when the receiver reports them.
+- `core:frequency`, `core:sample_rate`, `core:gain_db`,
+  `core:freq_correction_ppm` and `ragnar:detector` — enough to reproduce the
+  measurement.
+
+No fix means no `core:geolocation` key at all, rather than a zero-zero position.
+
 ## Signal Analyzer (on-box SigMF analysis)
 
 
@@ -624,6 +883,29 @@ that requests windows:
 - **Decoded devices** — runs **rtl_433** over the whole capture (`-r`) to *name*
   known ISM devices (TPMS / weather / remotes / doorbells…) straight from the
   recording, with their decoded fields.
+- **Modulation quality** — service-monitor figures for the selection, shown
+  alongside the classification: **FM peak and RMS deviation**, the carrier
+  offset and the Carson bandwidth, and **AM modulation depth**. Both families
+  are always computed, because the interesting answer is often the one you did
+  not ask for — an "FM" transmitter carrying 40% AM depth is telling you
+  something about itself. The frequency discriminator ignores samples where the
+  envelope collapses (they carry no phase), and deviation is taken at a
+  percentile so one wild sample cannot become the answer. Verified against
+  synthesised signals: a ±25 kHz tone reads 25.6 kHz peak / 17680 Hz RMS
+  (theory 17678), and a 60%-modulated carrier reads 61.1%.
+  Route `/analyze/modulation_quality`.
+- **Squelch tag (CTCSS / DCS)** — an FM repeater channel usually carries a tag
+  under the audio saying which group a transmission belongs to. Both are read
+  straight from the frequency discriminator: a **CTCSS** tone (the full 54-tone
+  standard table, found by Goertzel and reported with how many dB it stands
+  clear of the next candidate — a real tone is many dB clear, noise scores every
+  tone alike), or a **DCS** code (the repeating 23-bit Golay word at
+  134.4 bit/s, matched against all 83 standard codes at any rotation, with
+  inverted-polarity transmissions decoded and flagged). Nothing found normally
+  means the channel is carrier-squelch. Verified against synthesised signals: a
+  100 Hz tone under 12 dB louder "speech" reads 100.0 Hz with a 28.8 dB margin,
+  and DCS 251 decodes exactly in both polarities while noise is rejected.
+  Route `/analyze/subaudible`.
 - **Constellation demod (PSK)** — on one clean burst, recover symbol timing +
   carrier and classify the constellation (BPSK / QPSK / 8PSK) with an EVM/SNR
   read and a scatter plot, plus rotation-invariant differential bits. PSK only,
@@ -717,11 +999,59 @@ capability that isn't here is a gap worth closing.
 - [x] Keyboard shortcuts
 - [x] Zero-span (level over time at one frequency)
 
+**Tier 11 — recovery**
+- [x] Managed gain: held where the front end has headroom, seeded at the measured knee
+- [x] Settings persist across restarts; shipped defaults chosen by measurement
+- [x] Software USB reset for a wedged dongle, with automatic detection
+
+**Tier 10 — signalling**
+- [x] CTCSS tone decode (54-tone table)
+- [x] DCS code decode (83 codes, Golay(23,12), both polarities)
+- [ ] RDS on broadcast FM — not implemented (57 kHz subcarrier, differential
+      BPSK and group parsing; a project of its own, not a gap in the analyser's
+      measurement path)
+
+**Tier 9 — operating**
+- [x] Memory channels with live activity monitoring
+- [x] Instrument setups: save, recall, export and import
+- [x] Printable measurement report with the conditions behind the numbers
+- [x] Documented remote API for scripting (docs/rf-api.md)
+
+**Tier 8 — provenance**
+- [x] Geotagged captures (GeoJSON, with the source of the fix)
+- [x] Antenna factor + feedline loss → field strength in dBµV/m
+
+**Tier 7 — modulation**
+- [x] FM deviation (peak / RMS / Carson) and AM modulation depth
+- [x] EVM for PSK (constellation demod, Segment 9)
+
+**Tier 6 — measurement set**
+- [x] Band-power markers and a corrected noise marker (dB/Hz)
+- [x] ACPR, spur search (dBc), hardware harmonic check
+- [x] Reference trace with live − reference trace math
+
+**Tier 5 — capture**
+- [x] Frequency-mask / level trigger with pre-trigger buffer
+- [x] Triggered SigMF capture with the trigger point annotated
+
+**Tier 4 — measurement correctness**
+- [x] Detectors: peak / RMS / average / sample / min, applied on device and in the browser
+- [x] Front-end overload + clipping indicator
+- [x] Image / alias / DC-spike verification against the hardware
+
 **Tier 3 — differentiators**
 - [x] Band-plan labels
 - [x] Signal-ID hints
 - [x] Unattended survey with a log and a report
 - [x] Mesh-wide direction finding (RSSI across Ragnar units)
+
+## Driving it from a script
+
+
+Every control on the page is an HTTP call, documented in
+[rf-api.md](rf-api.md): sweep a band, set the detector and gain, arm a trigger,
+pull frames, run any analyzer operation. A cron job can arm a mask overnight and
+a notebook can pull the captures out in the morning without the page being open.
 
 ## Notes
 

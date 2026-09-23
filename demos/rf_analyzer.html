@@ -126,6 +126,8 @@
   .axinfo{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);padding:6px 14px;border-top:1px solid var(--line-soft)}
   .axinfo b{color:var(--accent)}
   footer{margin-top:20px;padding-top:14px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.7}
+  .aihr{border:none;border-top:1px solid var(--line);margin:9px 0}
+  .aifollow{margin-top:2px}
 </style>
 </head>
 <body>
@@ -297,11 +299,13 @@
           <span class="lbl">offset</span><input id="boff" class="mini" type="number" value="0" min="0" step="1" title="Drop this many leading bits — slide the byte grid to align a frame">
           <button id="copybits" title="Copy the bits to the clipboard">Copy</button>
           <button id="frames" title="Find preamble, repeated frames (fixed vs rolling bits) and scan for a CRC/checksum">⌗ Frames</button>
+          <button id="crcbtn" title="Test CRC / checksum algorithms over exactly the bits shown — for a frame you have already aligned with offset / Invert / Reflect">✓ CRC</button>
           <button id="addcmp" title="Add these bits to the Field-diff compare set — capture the same emitter again to see which bits change">＋ Compare <span id="cmpn" class="cnt">0</span></button>
         </div>
         <canvas class="rowcanvas" id="wave" style="height:90px"></canvas>
         <div class="bits" id="bits">Place a marker on a signal (or click a burst), then Demodulate.</div>
         <div id="framesout" class="msg" hidden></div>
+        <div id="crcout" class="msg" hidden></div>
         <div id="fpout" class="fp" hidden></div>
       </div>
       <div class="card" style="margin-top:16px">
@@ -444,6 +448,7 @@
   function loadCapture(name){
     S.name=name; S.view=null; S.marker=null; S.markerB=null; S.hist=[];
     S.summaryData=null; S.classifyData=null; S.framesData=null; S.demod=null; S.bursts=null; S.annotations=[];
+    S.modQuality=null; S.subaudible=null; S.decoded=null;
     api('/api/net/rtl/analyze/summary',{name:name}).then(function(s){
       if(!s||!s.ok){ $('stats').innerHTML='<span class="msg">⚠ '+((s&&s.error)||'load failed')+'</span>'; return; }
       S.dur=s.duration_s; S.fs=s.sr_hz; S.fc=s.center_hz; S.summaryData=s;
@@ -669,6 +674,7 @@
     if(!S.name)return; $('decout').innerHTML='running rtl_433 over the capture…';
     api('/api/net/rtl/analyze/decode433',{name:S.name}).then(function(d){
       if(!d||!d.ok){ $('decout').innerHTML='<span style="color:var(--rose)">⚠ '+esc((d&&d.error)||'decode failed')+'</span>'; return; }
+      S.decoded=d;
       var dv=d.devices||[];
       if(!dv.length){ $('decout').innerHTML='<span style="color:var(--muted)">No known devices decoded ('+(d.events||0)+' candidate events). This capture may be a plain carrier or a protocol rtl_433 doesn\'t know — try the demodulator below.</span>'; return; }
       $('decout').innerHTML='<table class="btable"><thead><tr><th>Model</th><th>ID</th><th>×</th><th>Fields</th></tr></thead><tbody>'
@@ -818,6 +824,30 @@
   }
   renderCmp();
   $('frames').addEventListener('click',function(){ runFrames(); });
+  // Standalone CRC over the exact bits shown (offset / Invert / Reflect / Manchester
+  // applied), no frame-repetition detection — for a single frame you have aligned.
+  function runCRC(){
+    var d=S.demod; if(!d||!d.bits){ var c0=$('crcout'); c0.hidden=false;
+      c0.innerHTML='<span style="color:var(--rose)">Demodulate a signal first.</span>'; return; }
+    var co=$('crcout'); co.hidden=false; co.textContent='testing CRC / checksums…';
+    var off=parseInt($('boff').value,10)||0;
+    api('/api/net/rtl/analyze/crc',{bits:d.bits, line:(manch?'manchester':'raw'),
+        invert:(binv?1:0), reflect:(brefl?1:0), offset:off}).then(function(r){
+      if(!r||!r.ok){ co.innerHTML='<span style="color:var(--rose)">⚠ '+esc((r&&r.error)||'failed')+'</span>'; return; }
+      var fmt=function(m){ return esc(m.algo)+' <span style="color:var(--muted)">('+m.width+'-bit over '+m.over_bytes+' B'
+        +(m.skip_bytes?', skip '+m.skip_bytes:'')+(m.endian?', '+m.endian+'-endian':'')+')</span>'; };
+      var lines=['<span style="color:var(--muted)">'+r.n_bytes+' bytes'+xfLabel()+'</span>'];
+      if(r.note) lines.push('<span style="color:var(--muted)">'+esc(r.note)+'</span>');
+      if(r.matches&&r.matches.length)
+        lines.push('<span style="color:var(--live)">✓ trailing check:</span> '+r.matches.map(fmt).join(', '));
+      if(r.brute_extra&&r.brute_extra.length)
+        lines.push('<span style="color:var(--live)">✓ with a header/tail:</span> '+r.brute_extra.slice(0,6).map(fmt).join(', '));
+      if(!(r.matches&&r.matches.length)&&!(r.brute_extra&&r.brute_extra.length)&&!r.note)
+        lines.push('<span style="color:var(--muted)">no CRC or checksum validates these bytes. Try <b>offset</b> to align the frame, or <b>Invert</b> / <b>Reflect</b>.</span>');
+      co.innerHTML=lines.join('<br>');
+    }).catch(function(){ co.innerHTML='<span style="color:var(--rose)">CRC request failed</span>'; });
+  }
+  $('crcbtn').addEventListener('click',runCRC);
   function toHex(b){var h=[];for(var i=0;i+8<=b.length;i+=8)h.push(('0'+parseInt(b.substr(i,8),2).toString(16)).slice(-2));
     var r=b.length%8; var s=h.join(' '); if(r)s+=' +'+b.substr(b.length-r); return s;}
   function manchester(b){var o='';for(var i=0;i+2<=b.length;i+=2){var p=b.substr(i,2);o+=(p==='01'?'1':(p==='10'?'0':'?'));}return o;}
@@ -976,6 +1006,29 @@
     }).catch(function(){ $('modout').textContent='classify request failed'; });
     api('/api/net/rtl/analyze/constellation',q).then(function(cn){ if(cn&&cn.ok) drawScatter('constell',cn.i,cn.q); });
     api('/api/net/rtl/analyze/instantaneous',q).then(function(ins){ S._inst=ins; drawInst(ins); });
+    // Subaudible squelch signalling: which group a transmission belongs to.
+    api('/api/net/rtl/analyze/subaudible',q).then(function(sa){
+      if(!sa||!sa.ok) return; S.subaudible=sa;
+      var c=sa.ctcss||{}, d=sa.dcs||{}, out=[];
+      if(c.present) out.push('<b>CTCSS '+c.tone_hz.toFixed(1)+' Hz</b> <span style="color:var(--muted)">('+c.margin_db+' dB clear of the next tone)</span>');
+      if(d.present&&d.code) out.push('<b>DCS '+esc(d.code)+(d.inverted?' inverted':'')+'</b>');
+      else if(d.present) out.push('a 23-bit word repeats but is not a standard DCS code');
+      var el=document.getElementById('modout');
+      el.innerHTML+='<div style="margin-top:6px;font-size:12px"><b>Squelch tag</b> '
+        +(out.length?out.join(' · '):'<span style="color:var(--muted)">none — carrier squelch</span>')+'</div>';
+    });
+    // Service-monitor figures. Both are always shown: an "FM" signal carrying
+    // 40% AM depth is telling you something about the transmitter.
+    api('/api/net/rtl/analyze/modulation_quality',q).then(function(mq){
+      if(!mq||!mq.ok) return; S.modQuality=mq;
+      var fm=mq.fm||{}, am=mq.am||{}, hz=function(v){ return v==null?'—':(Math.abs(v)>=1000?(v/1000).toFixed(2)+' kHz':Math.round(v)+' Hz'); };
+      var el=document.getElementById('modout');
+      el.innerHTML+='<div style="margin-top:8px;font-size:12px">'
+        +'<b>FM</b> peak deviation <b>'+hz(fm.peak_dev_hz)+'</b> · RMS '+hz(fm.rms_dev_hz)
+        +' · carrier offset '+hz(fm.carrier_offset_hz)+' · Carson BW '+hz(fm.carson_bw_hz)
+        +' &nbsp;·&nbsp; <b>AM</b> depth <b>'+(am.depth_pct==null?'—':am.depth_pct+'%')+'</b>'
+        +'<div style="color:var(--muted);font-size:11px;margin-top:2px">'+esc(mq.note||'')+'</div></div>';
+    });
   });
 
   // ---- filter: band-pass / notch, spectrum before vs after ----
@@ -1126,7 +1179,12 @@
       bursts:(S.bursts?{count:S.bursts.count, list:(S.bursts.bursts||[]).slice(0,12)}:null),
       frame_analysis:S.framesData||null,
       demod:(d?{mode:d.mode,baud:d.baud,n_bits:d.n_bits,bits:(d.bits||'').slice(0,256),
-                f_offset_hz:d.f_offset_hz,bw_hz:d.bw_hz}:null)};
+                f_offset_hz:d.f_offset_hz,bw_hz:d.bw_hz}:null),
+      modulation_quality:(S.modQuality?{fm:S.modQuality.fm,am:S.modQuality.am,
+                modulation:S.modQuality.modulation}:null),
+      subaudible:(S.subaudible?{ctcss:S.subaudible.ctcss,dcs:S.subaudible.dcs}:null),
+      decoded:(S.decoded?{events:S.decoded.events,
+                devices:(S.decoded.devices||[]).slice(0,6)}:null)};
     return c;
   }
   function aiAsk(q){
@@ -1155,23 +1213,67 @@
   }
   function runAiAction(a){
     if(a.action==='reset'){ $('reset').click(); return; }
+    // Every action except reset needs a loaded capture with a view.
+    if(!S.name || !S.view){ var an=$('aiacts'); if(an) an.insertAdjacentHTML('beforeend',
+      '<span class="albl" style="color:var(--rose)">open a capture first</span>'); return; }
     if(a.action==='tune'){
+      // Tune = point AT the signal AND investigate it. Repositioning alone looked
+      // like "nothing happened" when the view was already near the frequency.
       if(a.f_mhz!=null){ var f=a.f_mhz*1e6, span=(a.bw_khz?a.bw_khz*1e3*4:Math.max(60e3,(S.view.f1-S.view.f0)));
         S.marker={f:f,t:(S.view.t0+S.view.t1)/2}; S.hist.push(S.view);
         S.view={t0:S.view.t0,t1:S.view.t1,f0:f-span/2,f1:f+span/2}; }
       if(a.bw_khz!=null) $('bw').value=a.bw_khz;
       if(a.mode) setDemodMode(a.mode);
-      refreshWindow(); setAx(); return;
+      refreshWindow(); setAx();
+      // now actually look at it: demodulate + classify the tuned signal, so the
+      // analysis panels fill with the new data rather than just re-centring...
+      $('run').click(); $('runmod').click();
+      // ...then let the AI read those fresh measurements and interpret them.
+      aiFollowUp(aiActionLabel(a), ['demod','classifyData']);
+      return;
     }
     if(a.action==='zoom'){ S.hist.push(S.view);
       S.view={t0:(a.t0!=null?a.t0:S.view.t0),t1:(a.t1!=null?a.t1:S.view.t1),
               f0:(a.f0_mhz!=null?a.f0_mhz*1e6:S.view.f0),f1:(a.f1_mhz!=null?a.f1_mhz*1e6:S.view.f1)};
       refreshWindow(); return; }
-    if(a.action==='demod'){ if(a.mode) setDemodMode(a.mode); if(a.bw_khz!=null)$('bw').value=a.bw_khz; $('run').click(); return; }
-    if(a.action==='classify'){ $('runmod').click(); return; }
+    if(a.action==='demod'){ if(a.mode) setDemodMode(a.mode); if(a.bw_khz!=null)$('bw').value=a.bw_khz; $('run').click();
+      aiFollowUp(aiActionLabel(a), ['demod']); return; }
+    if(a.action==='classify'){ $('runmod').click();
+      aiFollowUp('classify the signal', ['classifyData']); return; }
     if(a.action==='frames'){ if(a.line==='manchester'&&!manch) $('manch').click();
-      else if((!a.line||a.line==='raw')&&manch) $('manch').click(); runFrames(a.period_bits||undefined); return; }
-    if(a.action==='decode433'){ $('rundec').click(); return; }
+      else if((!a.line||a.line==='raw')&&manch) $('manch').click(); runFrames(a.period_bits||undefined);
+      aiFollowUp('analyse the frame structure', ['framesData']); return; }
+    if(a.action==='decode433'){ $('rundec').click();
+      aiFollowUp('decode with rtl_433', ['decoded']); return; }
+  }
+  // After an AI action's tools have run, let the AI read the fresh measurements
+  // and interpret them — proposal -> measure -> interpret. Waits for the specific
+  // results that action produces (or a timeout), then asks ONCE. New actions it
+  // proposes are rendered but never auto-run, so there is no runaway loop.
+  function aiFollowUp(actionText, watch){
+    if(!S.name) return;
+    var keys=watch||[], snap={}; keys.forEach(function(k){ snap[k]=S[k]; });
+    var t0=Date.now();
+    (function poll(){
+      var settled = !keys.length || keys.some(function(k){ return S[k]!==snap[k] && S[k]!=null; });
+      if(settled){ setTimeout(ask,250); return; }           // a beat for sibling panels
+      if(Date.now()-t0>6000){ ask(); return; }              // don't wait forever
+      setTimeout(poll,150);
+    })();
+    function ask(){
+      var out=$('aiout'), div=document.createElement('div'); div.className='aifollow';
+      div.innerHTML='<hr class="aihr"><span style="color:var(--muted)">investigating '+esc(actionText)+'…</span>';
+      out.appendChild(div);
+      fetch('/api/ai/signal',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:S.name,
+          question:'You proposed to '+actionText+'. The analyzer has now run it and the measurements in the context are updated. In 1-3 sentences say what the signal is and what it means; propose a further action only if it would reveal something genuinely new.',
+          context:aiContext()})})
+        .then(function(r){return r.json();}).then(function(res){
+          if(!res||res.enabled===false||res.error||!res.answer){ div.remove(); return; }
+          div.innerHTML='<hr class="aihr">'+mdLite(res.answer);
+          if(res.actions&&res.actions.length) renderAiActions(res.actions);
+        }).catch(function(){ div.remove(); });
+    }
   }
   function renderAiActions(actions){
     var el=$('aiacts'); if(!actions.length){ el.hidden=true; el.innerHTML=''; return; }

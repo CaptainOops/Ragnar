@@ -14,6 +14,8 @@ the layout still makes sense.
 
 ## Start here
 
+0. Nothing needs configuring first: the gain is managed, the detector is RMS and
+   the display range follows the noise floor. Anything you change is remembered.
 1. Pick a **band** (e.g. `433`) or type a centre frequency into **Tune**.
 2. Let it run a few seconds so **Max-hold** and the **Signals** list fill in.
 3. **Click a signal.** The marker snaps to its peak and prints frequency, level,
@@ -42,6 +44,13 @@ with averaging, the FFT window and the number of display columns, in
 
 - **Averaging** — more averaging is smoother and steadier, less averaging reacts
   faster to bursts.
+- **Detector** — how the FFT bins inside one display column are combined, and
+  therefore what every level on the page means. **RMS** is the default and is
+  the one to measure with. Switch to **Peak** when hunting for something very
+  narrow at a wide span: it catches a signal thinner than a column, at the cost
+  of reading the noise floor several dB high. *Average* is steadier and
+  reads lower still, *Sample* is unsmoothed, *Min* digs out the floor under
+  bursty traffic.
 - **Window** — *Hann* for general use, *Blackman-Harris* to separate a weak
   signal sitting next to a strong one, *Flat-top* when the level reading matters
   most, *Rectangular* for the sharpest possible peaks (and the worst leakage).
@@ -65,7 +74,7 @@ recolours as you change it. Five palettes are available in the top bar.
   through the last few minutes. The view holds still while new rows keep
   recording; **▲ Live** returns to the live edge. Clock times run down the left
   edge of the waterfall.
-- **2D / 3D** switches between the flat waterfall and a receding 3D surface.
+- **2D / 3D** switches between the flat waterfall and a 3D surface (power = height). **Drag the 3D view to rotate it**, wheel or pinch to zoom; the angle is remembered.
 
 ---
 
@@ -98,9 +107,33 @@ Read numbers; don't judge by colour.
 - **Signals list** — every emitter above the floor with frequency, bandwidth,
   SNR and a **duty-cycle** estimate. ~5% means a bursty remote; ~100% means a
   continuous carrier.
+- **Σ Band power / N Noise** measure a segment's total power (and its power per
+  Hz) and a noise level normalised to 1 Hz. The noise figure corrects for RBW,
+  the window and the detector — without those corrections a noise reading is
+  several dB out.
+- **ACPR / Spurs / Harmonics** answer "how clean is this transmitter?": power
+  leaking into the neighbouring channels, every other peak in view in dBc, and —
+  on the hardware — whether 2× and 3× the frequency are radiating too.
+- **⎖ Store ref** freezes the current trace and shows **live − reference**. Use
+  it to prove what changed, or to measure an antenna, filter or attenuator.
 - **Persist** turns the trace into a fading density cloud, so frequently
   occupied frequencies glow and rare bursts leave a trail — the real-time
   analyser view for spotting intermittent signals and modulation shape.
+
+---
+
+**Two checks before you believe a signal.**
+
+- The **Front end** tile appears when the receiver is overloading. An
+  overdriven ADC clips, and clipping invents harmonics and intermodulation that
+  look like transmitters. `OVERLOAD` (red, and the waterfall gets an outline)
+  means lower the gain and measure again — nothing in that capture is
+  trustworthy. `near clip` means you have under 3 dB left.
+- **✓ Verify** next to a measurement proves the peak is on the air. It measures
+  the frequency through two different tuner centres: a real transmitter keeps
+  its frequency, a mixer image moves with the tuner, and the receiver's own DC
+  spike stays at the centre of both. Use it before recording or reporting
+  anything you have not seen before.
 
 ---
 
@@ -144,6 +177,11 @@ panel. Re-record after changing gain.
 - **Frequency (PPM)** — click a carrier whose exact frequency you know, enter
   that frequency and press **Calibrate**. The crystal offset is measured and
   applied to every capture. Do this before trusting narrow-channel work.
+- **Field strength (dBµV/m)** — once levels read dBm, enter your antenna's gain
+  (or its antenna factor) and the cable loss under **⚙ Settings → Level
+  calibration**, and measurements also report field strength — the unit EMC and
+  site-survey work is specified in. The gain form is frequency-dependent and is
+  recomputed for each measurement.
 - **Level (dBm)** — levels are relative dB until calibrated. Put a marker on a
   signal of known strength, enter that level under **⚙ Settings → Level
   calibration** and press **Calibrate to marker**. Every level on the page then
@@ -196,6 +234,13 @@ outdoors, and worse indoors.
   2 MS/s. The waterfall keeps scrolling while it records, showing the capture's
   own window, so you can see what you are getting. Retuning waits until it
   finishes.
+- **Trigger & capture** (⚙ Settings) records *on a condition* instead of on
+  hope. Set a limit line or learn a mask, choose how many seconds before and
+  after the event you want, and arm it. The radio keeps a rolling buffer, so
+  the file starts before the thing that triggered it — you get the rise and the
+  preamble, not the tail. Each capture opens in the Signal Analyzer with the
+  trigger point marked. Leave it armed: it stops after the number of captures
+  you set.
 - **Rec / Replay** records the sweep itself and plays it back through the same
   view.
 - **CSV** exports the spectrum, the Signals list, the markers, or the whole
@@ -214,6 +259,22 @@ One dongle serves one job, so listening pauses the sub-GHz sweep.
 
 ---
 
+## 11. Repeating a measurement, and writing it up
+
+- **Channels** (⚙ Settings) is a watch list: add the frequencies you care about
+  and the panel tracks each one's level, how much of the time it is active and
+  when it was last heard, without retuning anything.
+- **Setups** save everything that decides what a number means — span, display
+  range, resolution, detector, gain, markers, limits, channels, calibration.
+  Recall one before repeating a measurement so you are measuring the same way;
+  export it to a file to give another unit the same configuration.
+- **⎙ Measurement report** produces a printable page with the measurement, the
+  markers, the waterfall and the conditions: detector, RBW, gain, calibration,
+  front-end health and the limit verdict. Print it to PDF. If the detector was
+  not RMS, or the front end was overloading, the report says so.
+
+---
+
 ## A practical workflow
 
 1. Pick a band, let **Max-hold** and the **Signals** list fill.
@@ -226,6 +287,16 @@ One dongle serves one job, so listening pauses the sub-GHz sweep.
 7. Leaving it running? **Baseline** or a **limit line** for alerts, or a
    **survey** for a written report of the whole band.
 8. Several units? **Locate (mesh)** for an estimate of where it transmits from.
+
+---
+
+## If the panel goes quiet
+
+An RTL-SDR that has been started and stopped many times can get stuck: it still
+opens, but sends no samples. The panel notices (running, but no rows) and offers
+**⭮ Reset dongle** — also in ⚙ Settings → Hardware. It re-enumerates the device
+over USB, which is the same as unplugging and replugging it, and restarts your
+sweep.
 
 ---
 
@@ -243,5 +314,11 @@ One dongle serves one job, so listening pauses the sub-GHz sweep.
   Zoom into a span that fits one tune to catch it.
 - Direction finding is RSSI-based and needs 3+ positioned units for a real fix;
   accuracy is hundreds of metres at best.
+- **Gain is managed for you by default**, held where the front end has headroom
+  but is not deaf (see
+  [what ships by default](rf-waterfall.md#what-ships-by-default-and-why)). If you
+  switch to the dongle's own **Hardware AGC**, expect it to clip near strong
+  signals — the **Front end** tile will say so, and everything measured while it
+  is lit is wrong.
 - One dongle does one thing at a time: decoding, listening, ADS-B, a survey and
   the waterfall take turns.

@@ -43,6 +43,7 @@ CLI
 """
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -244,46 +245,216 @@ _IQ_EDGE_MARGIN = 1.15        # oversample the span this much so band edges stay
 # in dB, or None for the driver's automatic gain. Applied to every rtl_power /
 # rtl_433 command; changing them reapplies to a running capture.
 _ppm = 0
-_gain = None               # None = automatic gain control
+# Shipped gain default. The dongle's own AGC is NOT the default: on an R820T it
+# routinely drives the 8-bit ADC into clipping near any strong signal, and a
+# clipped capture invents harmonics and intermodulation that look like real
+# transmitters. Instead we start at a sensible gain and manage it from the
+# measured headroom (see agc_step) — which adapts to the antenna and the site
+# rather than hoping one number suits everyone.
+_gain = 25.4               # dB, an R820T notch just past the sensitivity knee
+_agc = True                # manage the gain from the measured headroom
 
 # Resolution + hardware extras, shared by every capture on the one dongle.
 _FFT_SIZES = (256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
 _WINDOWS = ("hann", "blackman-harris", "flattop", "rect")
 _BIN_CHOICES = (240, 480, 960, 1920)
+# Detectors. An FFT produces far more bins than the display has columns, so each
+# column has to combine several bins, and WHICH rule is used changes every level
+# the page prints. Professional analysers make this an explicit choice because
+# there is no universally right answer: peak finds signals, rms measures them.
+_DETECTORS = ("peak", "rms", "avg", "sample", "min")
 _DIRECT_MAX_HZ = 28_800_000   # direct sampling covers ~0.5-28.8 MHz (HF)
 _fft = 0                   # FFT size; 0 = auto (enough bins for the display at any zoom)
 _avg = _IQ_AVG_MAX         # FFT windows averaged per row (more = smoother, slower to react)
 _window = "hann"           # FFT window (flattop = amplitude-accurate, rect = sharpest/leakiest)
 _bins = _POWER_BINS        # display columns per frame
+# Measured on a real dongle: with auto FFT sizing (>=2 bins per display column)
+# an RMS detector costs about 0.5 dB of visible SNR against peak, and in return
+# every level, channel power and noise figure is a true power measurement
+# instead of one biased high. So RMS ships as the default and peak is one click
+# away for hunting very narrow signals at wide spans.
+_detector = "rms"          # how the bins inside one display column are combined
 _bias_t = False            # 4.5 V on the antenna port (RTL-SDR Blog V3/V4) to power an LNA
 _direct = "auto"           # direct sampling: "auto" (on below 28.8 MHz), "on", "off"
 _conv_hz = 0               # up/down-converter LO: hardware freq = RF freq + _conv_hz
 
 
+# The R820T's discrete tuner gains (dB). Asking for anything else gets the
+# nearest of these, so the managed loop steps through them directly.
+_R820T_GAINS = (0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6,
+                19.7, 20.7, 22.9, 25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 37.2,
+                38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6)
+_AGC_HEADROOM_MIN = 10.0    # below this, the next burst clips -> come down
+_AGC_HEADROOM_MAX = 25.0    # above this we are wasting sensitivity -> go up
+_AGC_GAIN_MIN = 7.7         # below this the ADC's own noise starts to dominate
+_AGC_GAIN_MAX = 38.6        # above this an R820T mostly amplifies its own noise
+_AGC_INTERVAL_S = 12.0      # a gain change restarts the capture: do it rarely
+_agc_last_t = 0.0
+_agc_log = []               # recent adjustments, for the UI to explain itself
+
+
+def _nearest_gain(v):
+    """The supported tuner gain closest to ``v`` (pure)."""
+    return min(_R820T_GAINS, key=lambda g: abs(g - v))
+
+
+def agc_step(level, headroom_db, gain, lo=_AGC_GAIN_MIN, hi=_AGC_GAIN_MAX):
+    """Decide the next tuner gain from the measured front-end health (pure).
+
+    Returns ``(new_gain, reason)`` or ``(None, reason)`` when nothing should
+    change. One step at a time, and only outside the target headroom band, so
+    the loop settles instead of hunting — each change restarts the capture, and
+    restarting a capture repeatedly is what wedges an RTL-SDR.
+
+    Coming down on clipping is urgent (the samples are already wrong); going up
+    for sensitivity is not, so it only happens when there is a lot of headroom
+    going spare.
+    """
+    try:
+        gain = float(gain)
+    except (TypeError, ValueError):
+        return None, "no manual gain to adjust"
+    steps = [g for g in _R820T_GAINS if lo - 1e-9 <= g <= hi + 1e-9] or list(_R820T_GAINS)
+    cur = _nearest_gain(gain)
+    idx = steps.index(cur) if cur in steps else None
+    if idx is None:
+        return _nearest_gain(max(lo, min(hi, gain))), "gain outside the managed range"
+    if level == "overload":
+        if idx == 0:
+            return None, "clipping at the lowest usable gain — the signal is too strong for this front end"
+        return steps[idx - 1], "clipping"
+    if headroom_db is None:
+        return None, "no measurement yet"
+    if headroom_db < _AGC_HEADROOM_MIN:
+        if idx == 0:
+            return None, "little headroom left, already at the lowest usable gain"
+        return steps[idx - 1], "only %.1f dB of headroom" % headroom_db
+    if headroom_db > _AGC_HEADROOM_MAX:
+        if idx >= len(steps) - 1:
+            return None, "plenty of headroom, already at the highest useful gain"
+        return steps[idx + 1], "%.1f dB of headroom going spare" % headroom_db
+    return None, "headroom %.1f dB is in band" % headroom_db
+
+
+def agc_status():
+    """What the managed gain has been doing, for the UI."""
+    return {"managed": bool(_agc and _gain is not None),
+            "gain": _gain, "log": list(_agc_log[-6:]),
+            "band_db": [_AGC_HEADROOM_MIN, _AGC_HEADROOM_MAX],
+            "range_db": [_AGC_GAIN_MIN, _AGC_GAIN_MAX]}
+
+
+def _settings_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data", "rf_settings.json")
+
+
+_SETTINGS_KEYS = ("ppm", "gain", "agc", "fft", "avg", "window", "bins",
+                  "bias_t", "direct", "conv_hz", "detector")
+_SETTINGS_KEYS_G = tuple("_" + k for k in _SETTINGS_KEYS)
+
+
+_no_persist = False        # the selftest drives set_tuning(); it must not save
+
+
+def _save_settings():
+    """Remember the tuner settings across restarts (best effort, never raises).
+
+    Without this a restart silently threw away the gain, the detector and the
+    converter offset and went back to the shipped defaults — which is how you
+    end up measuring with settings you did not choose.
+    """
+    if _no_persist:
+        return False
+    try:
+        d = {"ppm": _ppm, "gain": _gain, "agc": _agc, "fft": _fft, "avg": _avg,
+             "window": _window, "bins": _bins, "bias_t": _bias_t,
+             "direct": _direct, "conv_hz": _conv_hz, "detector": _detector}
+        path = _settings_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(d, fh, indent=2)
+        os.replace(tmp, path)               # never leave a half-written file
+        return True
+    except OSError:
+        return False
+
+
+def _load_settings():
+    """Apply the saved settings at import. A fresh install has none, and gets
+    the shipped defaults."""
+    global _ppm, _gain, _agc, _fft, _avg, _window, _bins, _bias_t, _direct
+    global _conv_hz, _detector
+    try:
+        with open(_settings_path()) as fh:
+            d = json.load(fh)
+        if not isinstance(d, dict):
+            return False
+    except (OSError, ValueError):
+        return False
+    try:
+        if "ppm" in d:
+            _ppm = int(d["ppm"])
+        if "gain" in d:
+            _gain = None if d["gain"] is None else float(d["gain"])
+        if "agc" in d:
+            _agc = bool(d["agc"])
+        if d.get("fft") in _FFT_SIZES or d.get("fft") == 0:
+            _fft = int(d["fft"])
+        if "avg" in d:
+            _avg = max(1, min(64, int(d["avg"])))
+        if d.get("window") in _WINDOWS:
+            _window = d["window"]
+        if d.get("bins") in _BIN_CHOICES:
+            _bins = int(d["bins"])
+        if "bias_t" in d:
+            _bias_t = bool(d["bias_t"])
+        if d.get("direct") in ("auto", "on", "off"):
+            _direct = d["direct"]
+        if "conv_hz" in d:
+            _conv_hz = int(d["conv_hz"])
+        if d.get("detector") in _DETECTORS:
+            _detector = d["detector"]
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def get_tuning():
     """Current tuner corrections + resolution/hardware settings for the UI."""
     return {"ppm": _ppm, "gain": ("auto" if _gain is None else _gain),
-            "gain_is_auto": _gain is None,
+            "gain_is_auto": _gain is None, "agc": bool(_agc),
+            "agc_status": agc_status(),
             "fft": _fft, "avg": _avg, "window": _window, "bins": _bins,
             "bias_t": _bias_t, "direct": _direct, "conv_hz": _conv_hz,
+            "detector": _detector,
             "fft_sizes": list(_FFT_SIZES), "windows": list(_WINDOWS),
-            "bin_choices": list(_BIN_CHOICES)}
+            "bin_choices": list(_BIN_CHOICES), "detectors": list(_DETECTORS)}
 
 
 def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
-               bias_t=None, direct=None, conv_hz=None):
+               bias_t=None, direct=None, conv_hz=None, detector=None, agc=None):
     """Set PPM freq-correction, tuner gain and the resolution / hardware extras,
     then reapply to any running capture. gain may be a number (dB), or
     'auto'/'' /None for AGC. Invalid values are ignored (the setting is kept)."""
     global _ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz
+    global _detector, _agc
     if ppm is not None:
         try:
             _ppm = max(-1000, min(1000, int(float(ppm))))
         except (TypeError, ValueError):
             pass
+    if agc is not None:
+        _agc = str(agc).lower() in ("1", "true", "on", "yes", "managed")
     if gain is not None:
-        if gain in ("auto", "", "AUTO"):
-            _gain = None
+        if str(gain).lower() in ("managed", "auto-managed"):
+            _agc = True
+            if _gain is None:
+                _gain = 25.4
+        elif gain in ("auto", "", "AUTO"):
+            _gain = None            # the dongle's own AGC: explicit opt-in
+            _agc = False
         else:
             try:
                 _gain = max(0.0, min(50.0, round(float(gain), 1)))
@@ -311,6 +482,8 @@ def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
                 _bins = v
         except (TypeError, ValueError):
             pass
+    if detector is not None and str(detector).lower() in _DETECTORS:
+        _detector = str(detector).lower()
     if bias_t is not None:
         _bias_t = str(bias_t).lower() in ("1", "true", "on", "yes")
     if direct is not None and str(direct).lower() in ("auto", "on", "off"):
@@ -320,7 +493,20 @@ def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
             _conv_hz = max(-12_000_000_000, min(12_000_000_000, int(float(conv_hz))))
         except (TypeError, ValueError):
             pass
+    _save_settings()          # the choice survives a restart
     # Reapply live so the change takes effect without the user restarting.
+    try:
+        _power.reapply()
+        _ism.reapply()
+    except Exception:
+        pass
+    return get_tuning()
+
+
+def reset_tuning():
+    """Put every tuner setting back to what a fresh install ships with."""
+    globals().update(_DEFAULTS)
+    _save_settings()
     try:
         _power.reapply()
         _ism.reapply()
@@ -332,7 +518,8 @@ def set_tuning(ppm=None, gain=None, fft=None, avg=None, window=None, bins=None,
 def _settings_sig():
     """Everything that changes a capture's output — a start() with a new value
     restarts the sweep even on the same span."""
-    return (_ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz)
+    return (_ppm, _gain, _fft, _avg, _window, _bins, _bias_t, _direct, _conv_hz,
+            _detector)
 
 
 def _parse_hz(txt):
@@ -920,6 +1107,7 @@ class _PowerFrameBuilder:
 
     def _reset(self):
         self.grid = [_FLOOR_DBM] * self.bins
+        self._acc = [None] * self.bins      # per-column bin values, detector applied on finish
         self._filled = False
 
     def _bucket(self, hz):
@@ -941,9 +1129,16 @@ class _PowerFrameBuilder:
             center = hz_low + (i + 0.5) * hz_step
             b = self._bucket(center)
             if b is not None:
-                if db > self.grid[b]:
-                    self.grid[b] = db
+                if self._acc[b] is None:
+                    self._acc[b] = [db]
+                else:
+                    self._acc[b].append(db)
                 self._filled = True
+        # Apply the detector as we go, so a frame read out mid-sweep is still
+        # consistent with a finished one.
+        for b, vals in enumerate(self._acc):
+            if vals:
+                self.grid[b] = _combine_db(vals, _detector)
         return frame
 
 
@@ -988,18 +1183,88 @@ def _iq_plan(lo_hz, hi_hz):
     return center, sr
 
 
+_CLIP_WARN_FRAC = 1e-4     # >0.01% of samples pinned at the rail = overloading
+_HEADROOM_WARN_DB = 3.0    # closer than this to full scale = about to clip
+
+
+def adc_health(clip_frac, peak_fs):
+    """Grade the front end from a block of raw samples (pure).
+
+    ``clip_frac`` is the fraction of 8-bit samples sitting on a rail (0 or 255),
+    ``peak_fs`` the largest sample magnitude as a fraction of full scale. An
+    RTL-SDR that is driven too hard does not simply read high: the ADC clips, and
+    clipping generates harmonics and intermodulation products that look exactly
+    like real transmitters. Every level in an overloaded capture is suspect, so
+    this is reported rather than silently corrected.
+
+    Returns ``(level, headroom_db)`` where level is ok / near / overload.
+    """
+    try:
+        clip_frac = max(0.0, float(clip_frac))
+        peak_fs = max(1e-6, min(1.0, float(peak_fs)))
+    except (TypeError, ValueError):
+        return "ok", None
+    headroom = -20.0 * math.log10(peak_fs)          # dB below full scale
+    if clip_frac > _CLIP_WARN_FRAC:
+        return "overload", headroom
+    if headroom < _HEADROOM_WARN_DB:
+        return "near", headroom
+    return "ok", headroom
+
+
+def _detector_name(detector=None):
+    """Normalise a detector name, falling back to the global setting (pure)."""
+    d = str(detector or _detector or "peak").strip().lower()
+    return d if d in _DETECTORS else "peak"
+
+
+def _combine_db(vals, detector="peak"):
+    """Combine the dB values of the FFT bins that share one display column (pure).
+
+    * ``peak``   — positive-peak: the largest bin. Finds every signal, including
+      one narrower than a column, but reads a noise floor several dB high because
+      it keeps the largest of several noisy samples. The right detector for
+      *looking*, the wrong one for *measuring*.
+    * ``rms``    — averages in the power domain. The correct detector for a level,
+      channel-power or noise measurement: it reports the true average power in the
+      column regardless of how many bins fall in it.
+    * ``avg``    — averages in dB (log / "video" average). Steadier than rms and
+      reads noise about 2.5 dB lower, which is why a log-averaged floor must not
+      be quoted as a power figure.
+    * ``sample`` — the single bin nearest the column centre. No smoothing at all;
+      shows the trace as the FFT actually produced it, and can miss a narrow
+      signal that falls between samples.
+    * ``min``    — negative-peak: the smallest bin. Digs the true noise floor out
+      from under bursty traffic.
+    """
+    if not vals:
+        return None
+    det = _detector_name(detector)
+    if det == "rms":
+        return 10.0 * math.log10(
+            sum(10.0 ** (v / 10.0) for v in vals) / len(vals) + 1e-30)
+    if det == "avg":
+        return sum(vals) / float(len(vals))
+    if det == "sample":
+        return vals[len(vals) // 2]
+    if det == "min":
+        return min(vals)
+    return max(vals)
+
+
 def _iq_to_grid(psd_db, center_hz, sr_hz, lo_hz, hi_hz,
-                bins=_POWER_BINS, floor=_FLOOR_DBM):
-    """Fold an fftshifted PSD (dB, low→high freq) onto ``bins`` display columns.
+                bins=_POWER_BINS, floor=_FLOOR_DBM, detector=None):
+    """Fold an fftshifted PSD (dB, low->high freq) onto ``bins`` display columns.
 
     ``psd_db[i]`` is the power of FFT bin ``i`` of a capture centred at
     ``center_hz`` sampled at ``sr_hz`` (so bin 0 sits at ``center - sr/2``). Each
     bin is dropped into the display column its centre frequency lands in over
-    [lo,hi], keeping the per-column max — the same peak-hold the rtl_power frame
-    builder uses. Bins outside [lo,hi] (the oversampled edges) are ignored;
-    columns no bin reached stay at ``floor``. Pure list math — no numpy — so the
-    selftest verifies it and it also serves as the loop's binning step.
+    [lo,hi], and the bins sharing a column are combined by the selected detector
+    (see :func:`_combine_db`). Bins outside [lo,hi] (the oversampled edges) are
+    ignored; columns no bin reached stay at ``floor``. Pure list math — no numpy —
+    so the selftest verifies it and it also serves as the loop's binning step.
     """
+    det = _detector_name(detector)
     grid = [floor] * bins
     n = len(psd_db)
     span = hi_hz - lo_hz
@@ -1007,18 +1272,43 @@ def _iq_to_grid(psd_db, center_hz, sr_hz, lo_hz, hi_hz,
         return grid
     bin_w = sr_hz / float(n)
     f0 = center_hz - sr_hz / 2.0        # centre frequency of the first (lowest) bin
+    col_w = span / float(bins)
+    cnt = [0] * bins
+    acc = [0.0] * bins
+    near = [None] * bins                # sample detector: distance to column centre
     for i in range(n):
         fc = f0 + i * bin_w
         col = int((fc - lo_hz) / span * bins)
         if col < 0 or col >= bins:
             continue
         v = psd_db[i]
-        if v > grid[col]:
-            grid[col] = v
+        c = cnt[col]
+        if det == "rms":
+            acc[col] += 10.0 ** (v / 10.0)
+        elif det == "avg":
+            acc[col] += v
+        elif det == "sample":
+            d = abs(fc - (lo_hz + (col + 0.5) * col_w))
+            if near[col] is None or d < near[col]:
+                near[col], acc[col] = d, v
+        elif det == "min":
+            acc[col] = v if not c else min(acc[col], v)
+        else:
+            acc[col] = v if not c else max(acc[col], v)
+        cnt[col] = c + 1
+    for c in range(bins):
+        if not cnt[c]:
+            continue
+        if det == "rms":
+            grid[c] = 10.0 * math.log10(acc[c] / cnt[c] + 1e-30)
+        elif det == "avg":
+            grid[c] = acc[c] / cnt[c]
+        else:
+            grid[c] = acc[c]
     # Fewer FFT bins than columns (a narrow zoom): interpolate the columns no bin
     # landed in, instead of leaving dead floor-level stripes. Only between
     # filled columns, so a genuinely uncovered edge still reads as floor.
-    filled = [c for c in range(bins) if grid[c] > floor]
+    filled = [c for c in range(bins) if cnt[c]]
     if filled and len(filled) < bins:
         for a, b in zip(filled, filled[1:]):
             if b - a > 1:
@@ -1172,6 +1462,8 @@ class PowerSweep:
         self._proc = None
         self._thread = None
         self._stop = threading.Event()
+        self._overload = None      # {"clip_frac":..,"headroom_db":..,"level":..}
+        self._agc_pending = None   # a gain the managed loop wants applied
         self._frames = []
         self._seq = 0
         self._maxhold = None
@@ -1277,8 +1569,21 @@ class PowerSweep:
         if self._stop.is_set():
             return
         plan = _iq_plan(lo, hi) if _iq_available() else None
-        if plan and self._run_iq(lo, hi, plan[0], plan[1]):
-            return
+        # The managed gain restarts the capture here rather than through
+        # set_tuning(), so it never reaches into this thread's own lifecycle.
+        while plan and not self._stop.is_set():
+            ok = self._run_iq(lo, hi, plan[0], plan[1])
+            want = self._agc_pending
+            if want is not None and not self._stop.is_set():
+                self._agc_pending = None
+                global _gain
+                _gain = want
+                _save_settings()
+                _usb_settle(self._stop)
+                continue
+            if ok:
+                return
+            break
         # A quick restart can find the dongle still held by the previous capture;
         # give the IQ engine one more try before settling for the slow sweep.
         stop = self._stop
@@ -1289,6 +1594,7 @@ class PowerSweep:
             return
         self._engine = "rtl_power"
         self._floor_dyn = None
+        self._overload = None        # the sweep engine never sees raw samples
         self._run_rtl_power(lo, hi)
 
     def _run_iq(self, lo, hi, center, sr):
@@ -1309,6 +1615,7 @@ class PowerSweep:
         bins = _bins
         N = _fft or _auto_fft(sr, lo, hi, bins)
         self._rbw = sr / float(N)
+        self._detector = _detector
         win = _fft_window(N)
         win_norm = float(np.sum(win ** 2)) * N   # PSD normaliser (window + FFT gain)
         # Read a whole display row of samples per iteration, rounded to full FFT
@@ -1327,6 +1634,11 @@ class PowerSweep:
         _set_biast(_bias_t)                       # rtl_sdr has no -T; set the GPIO first
         cmd += ["-"]                              # stream raw IQ to stdout
         self._stderr_tail = None
+        old = self._proc
+        if old is not None and old.poll() is None:
+            _terminate(old)              # never launch on top of our own capture
+            self._proc = None
+            _usb_settle(self._stop)
         # Capture our own stop event + proc handle locally. A restart (band change
         # / PPM calibrate) installs a *new* self._stop and nulls self._proc, so
         # touching those through self here would race the new run; the locals keep
@@ -1352,7 +1664,12 @@ class PowerSweep:
                 # scale to +-1.0 full scale so the PSD reads in dBFS (roughly
                 # -80 noise .. 0 full-scale), which sits under the page's -20
                 # colour ceiling.
-                raw = (np.frombuffer(buf, dtype=np.uint8).astype(np.float32) - 127.5) / 127.5
+                u8 = np.frombuffer(buf, dtype=np.uint8)
+                # Front-end health, measured on the samples as the ADC delivered
+                # them: how many sit on a rail, and how close the loudest gets.
+                clip = float(np.count_nonzero((u8 == 0) | (u8 == 255))) / max(1, u8.size)
+                raw = (u8.astype(np.float32) - 127.5) / 127.5
+                self._note_overload(clip, float(np.abs(raw).max()))
                 nwin = (raw.shape[0] // 2) // N
                 if nwin <= 0:
                     continue
@@ -1365,6 +1682,15 @@ class PowerSweep:
                 grid = _iq_to_grid(db.tolist(), center, sr, lo, hi, bins=bins)
                 floor_ema = self._update_iq_floor(grid, floor_ema)
                 self._push_frame(grid)
+                if self._agc_pending is not None:
+                    break                 # restart this capture at the new gain
+                # Same row the page draws, same samples it was made from: the
+                # trigger sees exactly what you see, and keeps the moment before.
+                try:
+                    _trigger.feed(buf, grid, lo - _conv_hz, hi - _conv_hz,
+                                  center - _conv_hz, sr)
+                except Exception as exc:      # never let it break the waterfall
+                    _trigger._error = str(exc)
                 produced += 1
         except Exception as exc:  # pragma: no cover - defensive
             if not stop.is_set():
@@ -1376,6 +1702,14 @@ class PowerSweep:
             if (not stop.is_set() and proc.poll() not in (None, 0)
                     and not self._error and self._stderr_tail):
                 self._error = self._stderr_tail
+        # A managed-gain change restarts this capture, so the old rtl_sdr has to
+        # be closed here: leaving it running would hold the device and the
+        # relaunch would fail (and a device left half-open is how one gets
+        # wedged). The stop path does its own termination.
+        if self._agc_pending is not None:
+            _terminate(proc)
+            self._proc = None
+            return True
         # Nothing produced and we didn't ask it to stop -> let rtl_power try.
         if produced == 0 and not stop.is_set():
             _terminate(proc)
@@ -1383,6 +1717,33 @@ class PowerSweep:
             self._error = None
             return False
         return True
+
+    def _note_overload(self, clip_frac, peak_fs):
+        """Record front-end health for the UI (called once per waterfall row).
+
+        This is also where the managed gain gets its measurement. It asks for a
+        change at most every _AGC_INTERVAL_S, and only when the headroom is
+        outside the target band, because applying one restarts the capture.
+        """
+        global _agc_last_t
+        level, headroom = adc_health(clip_frac, peak_fs)
+        self._overload = {"level": level, "clip_frac": round(clip_frac, 6),
+                          "headroom_db": (round(headroom, 1)
+                                          if headroom is not None else None),
+                          "gain": ("auto" if _gain is None else _gain),
+                          "managed": bool(_agc and _gain is not None)}
+        if not (_agc and _gain is not None) or self._agc_pending is not None:
+            return
+        now = time.time()
+        if now - _agc_last_t < _AGC_INTERVAL_S:
+            return
+        new, why = agc_step(level, headroom, _gain)
+        if new is None or abs(new - _gain) < 1e-6:
+            return
+        _agc_last_t = now
+        _agc_log.append({"ts": now, "from": _gain, "to": new, "why": why})
+        del _agc_log[:-20]
+        self._agc_pending = new
 
     def _update_iq_floor(self, grid, floor_ema):
         """Track a smoothed noise floor from the row's low percentile.
@@ -1499,6 +1860,7 @@ class PowerSweep:
                     "band_hz": [self._lo, self._hi] if self._lo else None,
                     "frames_buffered": len(self._frames), "seq": self._seq,
                     "floor_dbm": self._active_floor(), "engine": self._engine,
+                    "detector": _detector, "overload": self._overload,
                     "error": self._error}
 
     def get_frames(self, since=0):
@@ -1513,7 +1875,8 @@ class PowerSweep:
                     "bins": _bins, "floor_dbm": self._active_floor(),
                     "engine": self._engine,
                     "rbw_hz": round(self._rbw, 1) if getattr(self, "_rbw", None) else None,
-                    "conv_hz": _conv_hz,
+                    "conv_hz": _conv_hz, "detector": _detector,
+                    "overload": self._overload,
                     "max_hold": list(self._maxhold) if self._maxhold else None,
                     "running": bool(self._thread and self._thread.is_alive()),
                     "error": self._error}
@@ -1615,7 +1978,97 @@ def _read_exact(pipe, n):
 # modes are mutually exclusive.
 _ism = IsmScanner()
 _power = PowerSweep()
+# Snapshot what a fresh install runs with, BEFORE any saved file is applied, so
+# "reset to defaults" and the selftest both have something honest to refer to.
+_DEFAULTS = {k: globals()[k] for k in
+             ("_ppm", "_gain", "_agc", "_fft", "_avg", "_window", "_bins",
+              "_bias_t", "_direct", "_conv_hz", "_detector")}
+_load_settings()          # a saved configuration wins over the shipped defaults
 _detect_cache = None
+
+
+_USB_IDS = (("0bda", "2838"), ("0bda", "2832"), ("0bda", "2834"), ("0bda", "2837"))
+_USBDEVFS_RESET = (ord("U") << 8) | 20
+
+
+def _usb_device_path():
+    """Path of the RTL-SDR under /dev/bus/usb, from sysfs (pure-ish, no lsusb)."""
+    root = "/sys/bus/usb/devices"
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    for name in sorted(names):
+        d = os.path.join(root, name)
+        try:
+            with open(os.path.join(d, "idVendor")) as fh:
+                vid = fh.read().strip().lower()
+            with open(os.path.join(d, "idProduct")) as fh:
+                pid = fh.read().strip().lower()
+            if (vid, pid) not in _USB_IDS:
+                continue
+            with open(os.path.join(d, "busnum")) as fh:
+                bus = int(fh.read().strip())
+            with open(os.path.join(d, "devnum")) as fh:
+                dev = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        return "/dev/bus/usb/%03d/%03d" % (bus, dev)
+    return None
+
+
+def usb_reset():
+    """Power-cycle the RTL-SDR over USB, the way replugging it does.
+
+    An RTL2832U can end up in a state where it still enumerates and still opens
+    — ``rtl_test`` is happy — but never delivers a single sample. Repeated
+    open/close cycles are what puts it there. Until now the only cure was
+    walking to the box and pulling the dongle out; this does the same thing from
+    software (USBDEVFS_RESET), which is what the kernel does on a replug.
+
+    Stops anything using the device first, because resetting the bus underneath
+    a running capture is how you get a *second* wedged device.
+    """
+    path = _usb_device_path()
+    if not path:
+        return {"ok": False, "error": "no RTL-SDR found on USB"}
+    was = _power.status()
+    resume = ([was.get("band_hz"), was.get("band")] if was.get("running") else None)
+    try:
+        power_stop()
+    except Exception:
+        pass
+    try:
+        _ism.stop()
+    except Exception:
+        pass
+    _usb_settle()
+    try:
+        import fcntl
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            fcntl.ioctl(fd, _USBDEVFS_RESET, 0)
+        finally:
+            os.close(fd)
+    except PermissionError:
+        return {"ok": False, "path": path,
+                "error": "no permission to reset the USB device — run the web UI "
+                         "as root, or replug the dongle by hand"}
+    except OSError as exc:
+        return {"ok": False, "path": path, "error": "USB reset failed: %s" % exc}
+    time.sleep(2.0)                       # the device re-enumerates
+    global _detect_cache
+    _detect_cache = None                  # force a fresh probe next status()
+    out = {"ok": True, "path": path,
+           "note": "the dongle was re-enumerated, as if it had been replugged"}
+    if resume and resume[0]:
+        try:
+            time.sleep(1.0)
+            r = power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+            out["resumed"] = bool(r.get("ok"))
+        except Exception:
+            out["resumed"] = False
+    return out
 
 
 def _running():
@@ -1844,8 +2297,60 @@ def _iq_cap_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "iq_captures")
 
 
+# A recording that does not say where and when it was made is an anecdote. This
+# module owns no GPS, so the app registers a provider and every capture written
+# here carries the fix if there is one.
+_pos_provider = None
+
+
+def set_position_provider(fn):
+    """Register a callable returning {'lat','lon',...} (or None) for captures."""
+    global _pos_provider
+    _pos_provider = fn if callable(fn) else None
+
+
+def current_position():
+    """This unit's position for a capture, or None. Never raises."""
+    try:
+        if _pos_provider is None:
+            return None
+        p = _pos_provider()
+        if not p or p.get("lat") is None or p.get("lon") is None:
+            return None
+        out = {"lat": float(p["lat"]), "lon": float(p["lon"]),
+               "source": p.get("source") or "gps"}
+        for k in ("alt", "satellites", "hdop", "fix"):
+            if p.get(k) is not None:
+                out[k] = p[k]
+        return out
+    except Exception:
+        return None
+
+
+def geojson_point(pos):
+    """SigMF core:geolocation for a position dict (pure), or None.
+
+    SigMF carries geolocation as a GeoJSON Point, coordinates [lon, lat, alt] —
+    longitude FIRST, which is the opposite order to how everyone says it.
+    """
+    if not pos:
+        return None
+    try:
+        lon, lat = float(pos["lon"]), float(pos["lat"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    coords = [lon, lat]
+    if pos.get("alt") is not None:
+        try:
+            coords.append(float(pos["alt"]))
+        except (TypeError, ValueError):
+            pass
+    return {"type": "Point", "coordinates": coords}
+
+
 def sigmf_meta(center_hz, sr_hz, datatype="cu8", hw="RTL-SDR",
-               sha512=None, dt_iso=None, label=None, ppm=0, gain=None):
+               sha512=None, dt_iso=None, label=None, ppm=0, gain=None,
+               position=None, detector=None):
     """Build a SigMF metadata dict (SigMF v1.0.0). Pure — the selftest checks it.
 
     ``core:datatype`` "cu8" is complex unsigned-8-bit, exactly rtl_sdr's native
@@ -1865,6 +2370,17 @@ def sigmf_meta(center_hz, sr_hz, datatype="cu8", hw="RTL-SDR",
         glob["core:freq_correction_ppm"] = int(ppm)      # extension namespace-free hint
     if gain is not None:
         glob["core:gain_db"] = float(gain)
+    geo = geojson_point(position)
+    if geo:
+        glob["core:geolocation"] = geo
+        # Where the fix came from matters: a live GPS fix and a position typed in
+        # last week are not the same evidence.
+        glob["ragnar:position_source"] = position.get("source", "gps")
+        for k in ("satellites", "hdop"):
+            if position.get(k) is not None:
+                glob["ragnar:gps_" + k] = position[k]
+    if detector:
+        glob["ragnar:detector"] = str(detector)
     cap = {"core:sample_start": 0, "core:frequency": float(center_hz)}
     if dt_iso:
         cap["core:datetime"] = dt_iso
@@ -2026,7 +2542,8 @@ class IqCapture:
             meta = sigmf_meta(self._center, self._sr, sha512=h.hexdigest(),
                               hw="RTL-SDR (%s)" % (_capture_hw_name()),
                               dt_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._started)),
-                              label=self._label, ppm=_ppm, gain=_gain)
+                              label=self._label, ppm=_ppm, gain=_gain,
+                              position=current_position(), detector=_detector)
             with open(self._path[:-len(".sigmf-data")] + ".sigmf-meta", "w") as fh:
                 json.dump(meta, fh, indent=2)
             self._done = True
@@ -2164,6 +2681,303 @@ def iq_capture_stop():
 
 _RF_WT_DIR = os.environ.get("RAGNAR_WATCH_LOG_DIR", "/var/log/ragnar")
 _RF_WT_FILE = "rfwatch.jsonl"
+
+
+
+# --------------------------------------------------------------------------
+# Frequency-mask trigger with pre-trigger capture
+# --------------------------------------------------------------------------
+#
+# Free-running recording is a bet: press record and hope the burst happens while
+# the file is open. A real-time analyser instead *arms* a condition and keeps a
+# rolling buffer of raw samples, so when the condition fires the recording starts
+# BEFORE the event — the part that is normally missed, and the part a decoder
+# needs (preamble, rise time, the first bit).
+#
+# Here the condition is a frequency mask: a level, or a per-column limit line,
+# inside a frequency window. It is evaluated on the same waterfall row the page
+# draws, so what arms the trigger is exactly what you see.
+
+_TRIG_PRE_MAX_S = 5.0        # cap the rolling buffer (2 MS/s cu8 = 4 MB/s)
+_TRIG_POST_MAX_S = 30.0
+
+
+def mask_cross(grid, mask, lo_hz, hi_hz, f0_hz=None, f1_hz=None, margin_db=0.0):
+    """Find where a waterfall row crosses its mask (pure).
+
+    ``mask`` is either a single level in dB or a per-column limit line (any
+    length — it is stretched onto the row). ``f0_hz``/``f1_hz`` narrow the test
+    to a frequency window, so a trigger can watch one channel and ignore the
+    rest of the span. Returns the strongest crossing as a dict, or None.
+    """
+    n = len(grid or ())
+    if not n or hi_hz <= lo_hz:
+        return None
+    span = hi_hz - lo_hz
+    c0, c1 = 0, n - 1
+    if f0_hz is not None:
+        c0 = max(0, int((f0_hz - lo_hz) / span * n))
+    if f1_hz is not None:
+        c1 = min(n - 1, int((f1_hz - lo_hz) / span * n))
+    if c1 < c0:
+        return None
+    flat = not isinstance(mask, (list, tuple))
+    m = len(mask) if not flat else 0
+    best = None
+    for c in range(c0, c1 + 1):
+        lim = (float(mask) if flat
+               else float(mask[min(m - 1, int(c * m / float(n)))]))
+        lim += margin_db
+        v = grid[c]
+        if v is None or v <= lim:
+            continue
+        exc = v - lim
+        if best is None or exc > best["excess_db"]:
+            best = {"col": c, "freq_hz": lo_hz + (c + 0.5) * span / n,
+                    "level_db": round(v, 1), "limit_db": round(lim, 1),
+                    "excess_db": round(exc, 1)}
+    return best
+
+
+class SignalTrigger:
+    """Watch live rows for a mask crossing and write a SigMF capture around it.
+
+    Fed from the IQ engine's loop: every block of raw samples goes into a rolling
+    pre-trigger buffer, and every waterfall row is tested against the mask. On a
+    crossing the buffer is flushed to a new capture and recording continues for
+    ``post_s``, so the file contains the event *and* the moment before it.
+
+    Never blocks the capture loop: writes are plain file writes on the same
+    thread, and the buffer is bounded in bytes rather than in blocks.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        self._armed = False
+        self._cfg = {}
+        self._pre = []             # [(ts, bytes)] most recent last
+        self._pre_bytes = 0
+        self._rec = None           # {"fh","path","name","bytes","want","ts","hit"}
+        self._events = []
+        self._last_fire = 0.0
+        self._error = None
+
+    # -- control -----------------------------------------------------------
+    def arm(self, mask=None, level_db=None, f0_hz=None, f1_hz=None, pre_s=1.0,
+            post_s=2.0, max_events=10, min_gap_s=3.0, margin_db=0.0, name=None):
+        """Arm the trigger. ``mask`` (a limit line) wins over a flat ``level_db``."""
+        if mask is None and level_db is None:
+            return {"ok": False, "error": "give a mask or a level to trigger on"}
+        try:
+            pre_s = max(0.0, min(_TRIG_PRE_MAX_S, float(pre_s or 0)))
+            post_s = max(0.1, min(_TRIG_POST_MAX_S, float(post_s or 2.0)))
+            max_events = max(1, min(500, int(max_events or 10)))
+            min_gap_s = max(0.0, min(3600.0, float(min_gap_s or 0)))
+            margin_db = float(margin_db or 0.0)
+            if mask is not None:
+                mask = [float(v) for v in mask]
+                if not mask:
+                    return {"ok": False, "error": "empty mask"}
+            else:
+                mask = float(level_db)
+            f0_hz = int(f0_hz) if f0_hz not in (None, "") else None
+            f1_hz = int(f1_hz) if f1_hz not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            return {"ok": False, "error": "bad trigger settings: %s" % exc}
+        with self._lock:
+            self._close_locked(abort=True)
+            self.reset()
+            self._cfg = {"mask": mask, "f0_hz": f0_hz, "f1_hz": f1_hz,
+                         "pre_s": pre_s, "post_s": post_s, "margin_db": margin_db,
+                         "max_events": max_events, "min_gap_s": min_gap_s,
+                         "name": _rec_safe(name or "trig"),
+                         "flat": not isinstance(mask, list)}
+            self._armed = True
+        return self.status()
+
+    def disarm(self):
+        with self._lock:
+            self._close_locked(abort=True)
+            self._armed = False
+            self._pre, self._pre_bytes = [], 0
+        return self.status()
+
+    def status(self):
+        with self._lock:
+            c = dict(self._cfg)
+            c.pop("mask", None)
+            return {"armed": self._armed, "recording": bool(self._rec),
+                    "config": c, "events": list(self._events),
+                    "pre_buffered_s": round(self._pre_span(), 2),
+                    "count": len(self._events), "error": self._error}
+
+    # -- feed from the capture loop ---------------------------------------
+    def _pre_span(self):
+        if len(self._pre) < 2:
+            return 0.0
+        return max(0.0, self._pre[-1][0] - self._pre[0][0])
+
+    def feed(self, buf, grid, lo_hz, hi_hz, center_hz, sr_hz, ts=None):
+        """One block of raw samples + the row computed from it. Cheap when idle."""
+        if not self._armed and not self._rec:
+            return
+        ts = ts or time.time()
+        with self._lock:
+            if not self._armed and not self._rec:
+                return
+            if self._rec:
+                self._write_locked(buf)
+                return
+            # keep the rolling pre-trigger buffer bounded in BYTES, not blocks,
+            # so a sample-rate change can't blow memory up
+            keep = int(self._cfg["pre_s"] * sr_hz * 2)
+            if keep > 0:
+                self._pre.append((ts, buf))
+                self._pre_bytes += len(buf)
+                while self._pre and self._pre_bytes - len(self._pre[0][1]) >= keep:
+                    self._pre_bytes -= len(self._pre.pop(0)[1])
+            else:
+                self._pre, self._pre_bytes = [], 0
+            if ts - self._last_fire < self._cfg["min_gap_s"]:
+                return
+            hit = mask_cross(grid, self._cfg["mask"], lo_hz, hi_hz,
+                             self._cfg["f0_hz"], self._cfg["f1_hz"],
+                             self._cfg["margin_db"])
+            if hit:
+                self._fire_locked(hit, center_hz, sr_hz, ts)
+
+    def _fire_locked(self, hit, center_hz, sr_hz, ts):
+        name = "%s-%s" % (self._cfg["name"], time.strftime("%Y%m%d-%H%M%S",
+                                                           time.localtime(ts)))
+        path = os.path.join(_iq_cap_dir(), name + ".sigmf-data")
+        try:
+            os.makedirs(_iq_cap_dir(), exist_ok=True)
+            fh = open(path, "wb", buffering=1 << 18)
+        except OSError as exc:
+            self._error = "could not open %s: %s" % (path, exc)
+            self._armed = False
+            return
+        pre_bytes = sum(len(b) for _, b in self._pre)
+        want = pre_bytes + int(self._cfg["post_s"] * sr_hz * 2)
+        self._rec = {"fh": fh, "path": path, "name": name, "bytes": 0,
+                     "want": want, "pre_bytes": pre_bytes, "sr": sr_hz,
+                     "center": center_hz, "ts": ts, "hit": hit}
+        self._last_fire = ts
+        for _, b in self._pre:                       # the moment before the event
+            self._write_locked(b)
+        self._pre, self._pre_bytes = [], 0
+
+    def _write_locked(self, buf):
+        r = self._rec
+        if not r:
+            return
+        try:
+            r["fh"].write(buf)
+        except OSError as exc:
+            self._error = str(exc)
+            self._close_locked(abort=True)
+            return
+        r["bytes"] += len(buf)
+        if r["bytes"] >= r["want"]:
+            self._close_locked()
+
+    def _close_locked(self, abort=False):
+        r = self._rec
+        self._rec = None
+        if not r:
+            return
+        try:
+            r["fh"].close()
+        except OSError:
+            pass
+        if abort and r["bytes"] < r["pre_bytes"]:
+            try:
+                os.unlink(r["path"])
+            except OSError:
+                pass
+            return
+        ev = {"name": r["name"], "ts": r["ts"], "freq_hz": round(r["hit"]["freq_hz"]),
+              "level_db": r["hit"]["level_db"], "limit_db": r["hit"]["limit_db"],
+              "excess_db": r["hit"]["excess_db"], "seconds": round(r["bytes"] / (2.0 * r["sr"]), 3),
+              "pre_s": round(r["pre_bytes"] / (2.0 * r["sr"]), 3),
+              "bytes": r["bytes"], "center_hz": r["center"], "sr_hz": r["sr"]}
+        try:
+            import hashlib
+            h = hashlib.sha512()
+            with open(r["path"], "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            meta = sigmf_meta(r["center"], r["sr"], sha512=h.hexdigest(),
+                              hw="RTL-SDR (%s)" % _capture_hw_name(),
+                              dt_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["ts"])),
+                              label="trigger %.4f MHz %+0.1f dB over the mask" % (
+                                  r["hit"]["freq_hz"] / 1e6, r["hit"]["excess_db"]),
+                              ppm=_ppm, gain=_gain,
+                              position=current_position(), detector=_detector)
+            # Mark where the trigger actually fired, so the analyzer can show the
+            # pre-trigger lead-in as lead-in rather than as part of the event.
+            meta["annotations"].append({
+                "core:sample_start": int(r["pre_bytes"] / 2),
+                "core:label": "trigger point",
+                "core:freq_lower_edge": float(r["hit"]["freq_hz"]) - 5000.0,
+                "core:freq_upper_edge": float(r["hit"]["freq_hz"]) + 5000.0})
+            with open(r["path"][:-len(".sigmf-data")] + ".sigmf-meta", "w") as fh:
+                json.dump(meta, fh, indent=2)
+        except OSError as exc:
+            self._error = "capture saved but metadata write failed: %s" % exc
+        self._events.append(ev)
+        self._write_wt(ev)
+        if len(self._events) >= self._cfg.get("max_events", 10):
+            self._armed = False
+
+    def _write_wt(self, ev):
+        """Log the event to the Watchtower feed, like the other RF alerts."""
+        try:
+            line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ev["ts"])),
+                    "module": "rfwatch", "code": "RF_TRIGGER_CAPTURE",
+                    "severity": "info",
+                    "msg": "mask trigger at %.4f MHz (%+0.1f dB over the mask) -> %s"
+                           % (ev["freq_hz"] / 1e6, ev["excess_db"], ev["name"]),
+                    "freq_mhz": round(ev["freq_hz"] / 1e6, 4),
+                    "capture": ev["name"], "seconds": ev["seconds"]}
+            d = "/var/log/ragnar"
+            if os.path.isdir(d):
+                with open(os.path.join(d, "rfwatch.jsonl"), "a") as fh:
+                    fh.write(json.dumps(line) + "\n")
+        except Exception:
+            pass
+
+
+_trigger = SignalTrigger()
+
+
+def trigger_arm(**kw):
+    """Arm the frequency-mask trigger (see :meth:`SignalTrigger.arm`)."""
+    return _trigger.arm(**kw)
+
+
+def trigger_disarm():
+    return _trigger.disarm()
+
+
+def trigger_status():
+    return _trigger.status()
+
+
+def _sigmf_hash_ok(path, meta):
+    """True when a capture's bytes still match the core:sha512 in its sidecar."""
+    want = (meta.get("global") or {}).get("core:sha512")
+    if not want:
+        return False
+    import hashlib
+    h = hashlib.sha512()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest() == want
 
 
 def _regionize(bins_idx):
@@ -2660,6 +3474,190 @@ def measure_level(freq_hz, bw_hz=25_000, secs=2.0):
             power_stop()
 
 
+def image_verdict(peak_a_hz, peak_b_hz, center_a_hz, center_b_hz,
+                  tol_hz=8_000, dc_tol_hz=6_000):
+    """Decide whether a peak seen at two different tuner centres is real (pure).
+
+    A receiver does not only show what is on the air. A mixer also produces
+    *images* — a signal from the other side of the local oscillator folded into
+    the passband — and the RTL-SDR has a permanent DC spike at whatever it is
+    tuned to. Both look like transmitters, and both will happily be measured,
+    named by the band plan and recorded.
+
+    The test: look at the same radio frequency through two different tuner
+    centres. A real transmitter does not move — its RF is its RF. An image moves,
+    because it is defined by its distance from the LO, not by the air. The DC
+    spike does not move relative to the tuner at all, so it sits at the centre of
+    both windows.
+
+    ``tol_hz`` is how far the two measurements may disagree and still count as
+    the same signal (RBW plus tuner error).
+    """
+    if peak_a_hz is None or peak_b_hz is None:
+        return {"verdict": "absent", "moved_hz": None,
+                "detail": "nothing above the noise in one of the two captures"}
+    da = abs(peak_a_hz - center_a_hz)
+    db = abs(peak_b_hz - center_b_hz)
+    moved = abs(peak_a_hz - peak_b_hz)
+    if da <= dc_tol_hz and db <= dc_tol_hz:
+        return {"verdict": "dc-spike", "moved_hz": round(moved, 1),
+                "detail": "the peak stays at the tuner centre in both captures — "
+                          "this is the receiver's own DC offset, not a signal"}
+    if moved <= tol_hz:
+        return {"verdict": "real", "moved_hz": round(moved, 1),
+                "detail": "the peak holds the same radio frequency through two "
+                          "different tuner centres"}
+    return {"verdict": "image", "moved_hz": round(moved, 1),
+            "detail": "the peak moved with the tuner — a mixer image or an "
+                      "alias, not a transmitter on this frequency"}
+
+
+def _peek_window(center_hz, f_hz, bw_hz, secs):
+    """Tune a short capture around ``center_hz`` and find the peak near ``f_hz``.
+
+    Returns (peak_hz, level_db) or (None, None). Intrusive by design: the caller
+    has already established the dongle is free.
+    """
+    r = power_start("433", lo_hz=center_hz - 500_000, hi_hz=center_hz + 500_000,
+                    label="image-check")
+    if not r.get("ok"):
+        return None, None
+    try:
+        time.sleep(1.5 + secs)
+        fr = power_frames(since=0)
+        now = time.time()
+        rows = [x for x in fr.get("frames", []) if (x.get("ts") or 0) >= now - secs]
+        lo, hi = (fr.get("band_hz") or [None, None])
+        if not rows or not lo:
+            return None, None
+        # average the rows so a single noisy frame can't set the verdict
+        n = len(rows[-1]["power"])
+        avg = [sum(row["power"][i] for row in rows) / float(len(rows))
+               for i in range(n)]
+        m = level_from_frames(rows, lo, hi, f_hz, bw_hz)
+        pk = _peak_freq_hz(avg, lo, hi, near_hz=f_hz, window_hz=max(bw_hz * 4, 200_000))
+        if m and (m.get("snr_db") or 0) < 6:
+            return None, None            # nothing convincing in this capture
+        return pk, (m or {}).get("level_db")
+    finally:
+        power_stop()
+
+
+_HW_TUNE_MIN_HZ = 24_000_000      # RTL-SDR R820T practical tuning range
+_HW_TUNE_MAX_HZ = 1_766_000_000
+
+
+def harmonic_plan(f0_hz, n=4, lo_hz=_HW_TUNE_MIN_HZ, hi_hz=_HW_TUNE_MAX_HZ):
+    """Which harmonics of ``f0_hz`` this receiver can actually look at (pure).
+
+    Returns [(n, freq_hz, reachable)] for 2f0..nf0. A harmonic past the tuner's
+    range is reported as out of reach rather than silently dropped — "no
+    harmonic found" and "could not look" are different answers.
+    """
+    out = []
+    try:
+        f0 = float(f0_hz)
+    except (TypeError, ValueError):
+        return out
+    for k in range(2, max(2, int(n or 4)) + 1):
+        f = f0 * k
+        out.append((k, f, bool(lo_hz <= f <= hi_hz)))
+    return out
+
+
+def harmonics(freq_hz, bw_hz=50_000, n=4, secs=1.2):
+    """Measure the harmonics of a carrier, one tune at a time.
+
+    Each harmonic gets its own short capture centred on it, so this is slow and
+    intrusive by design — it is a deliberate measurement, not something the
+    display does continuously. Levels are reported in dBc: relative to the
+    fundamental measured the same way, which cancels most of the tuner's gain.
+    """
+    try:
+        f0 = int(float(freq_hz))
+        bw = max(5_000, int(float(bw_hz or 50_000)))
+        secs = max(0.5, min(5.0, float(secs or 1.2)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "freq_hz must be a number"}
+    if (_ism.status().get("running")
+            or _survey.status().get("state") == "running"):
+        return {"ok": False, "error": "busy — this unit's dongle is in use"}
+    was = _power.status()
+    resume = ([was.get("band_hz"), was.get("band")] if was.get("running") else None)
+    plan = harmonic_plan(f0, n)
+    out, skipped = [], 0
+    pk0, lvl0 = _peek_window(f0, f0, bw, secs)
+    if lvl0 is None:
+        if resume and resume[0]:
+            power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+        return {"ok": False, "error": "could not hear the fundamental — measure it first"}
+    for k, f, ok in plan:
+        if not ok:
+            skipped += 1
+            out.append({"n": k, "freq_hz": f, "heard": False,
+                        "reason": "outside this receiver's tuning range"})
+            continue
+        _usb_settle()
+        _pk, lvl = _peek_window(int(f), int(f), bw * k, secs)
+        if lvl is None:
+            out.append({"n": k, "freq_hz": f, "heard": False,
+                        "reason": "nothing above the noise"})
+        else:
+            out.append({"n": k, "freq_hz": f, "heard": True,
+                        "level_db": round(lvl, 1), "dbc": round(lvl - lvl0, 1)})
+    if resume and resume[0]:
+        try:
+            power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+        except Exception:
+            pass
+    heard = [h for h in out if h.get("heard")]
+    note = "%d of %d measured" % (len(heard), len(out))
+    if skipped:
+        note += ", %d out of tuning range" % skipped
+    return {"ok": True, "freq_hz": f0, "fundamental_db": round(lvl0, 1),
+            "harmonics": out, "note": note,
+            "caveat": "a harmonic can also be made inside the receiver — check "
+                      "it is still there with the gain turned down"}
+
+
+def image_check(freq_hz, bw_hz=50_000, secs=1.5):
+    """Prove a peak is a real transmitter and not an image or the DC spike.
+
+    Measures the frequency twice with the tuner deliberately placed on either
+    side of it, and compares (see :func:`image_verdict`). Takes a few seconds and
+    needs the dongle, so it refuses rather than interrupting other work.
+    """
+    try:
+        f = int(float(freq_hz))
+        bw = max(1_000, int(float(bw_hz or 50_000)))
+        secs = max(0.5, min(5.0, float(secs or 1.5)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "freq_hz / bw_hz must be numbers"}
+    if (_ism.status().get("running")
+            or _survey.status().get("state") == "running"):
+        return {"ok": False, "error": "busy — this unit's dongle is in use"}
+    was = _power.status()
+    resume = ([was.get("band_hz"), was.get("band")] if was.get("running") else None)
+    # Offset the tuner by a quarter of the capture either way, so the signal sits
+    # well clear of DC in both passes and the two LOs are 500 kHz apart.
+    off = 250_000
+    a_c, b_c = f - off, f + off
+    pa, la = _peek_window(a_c, f, bw, secs)
+    _usb_settle()
+    pb, lb = _peek_window(b_c, f, bw, secs)
+    out = image_verdict(pa, pb, a_c, b_c)
+    out.update({"ok": True, "freq_hz": f, "bw_hz": bw,
+                "peaks_hz": [pa, pb], "levels_db": [la, lb],
+                "centers_hz": [a_c, b_c]})
+    if resume and resume[0]:
+        try:
+            power_start(resume[1] or "433", lo_hz=resume[0][0], hi_hz=resume[0][1])
+            out["resumed"] = True
+        except Exception:
+            pass
+    return out
+
+
 def _enu(lat, lon, lat0, lon0):
     """Local east/north metres from a reference point (equirectangular, fine for a few km)."""
     import math
@@ -2892,6 +3890,21 @@ def status():
 # --------------------------------------------------------------------------
 
 def selftest():
+    global _no_persist
+    _no_persist = True                      # never write the user's settings
+    _saved_globals = {k: globals()[k] for k in
+                      ("_ppm", "_gain", "_agc", "_fft", "_avg", "_window",
+                       "_bins", "_bias_t", "_direct", "_conv_hz", "_detector")}
+    try:
+        return _selftest_body(_saved_globals)
+    finally:
+        globals().update(_saved_globals)    # the tests change settings; undo that
+        _no_persist = False
+
+
+def _selftest_body(_saved_globals=None):
+    _saved_globals = _saved_globals or {k: globals()[k] for k in
+                                        ("_gain", "_agc", "_detector")}
     results = []
 
     def check(name, ok, detail=""):
@@ -3027,11 +4040,273 @@ def selftest():
     check("iq: grid width = display bins", len(_g) == _POWER_BINS)
     _pk = max(range(len(_g)), key=lambda i: _g[i])
     check("iq: centre tone lands mid-grid", abs(_pk - _POWER_BINS // 2) <= 2, str(_pk))
-    check("iq: tone column strong, rest near floor",
-          _g[_pk] >= -31 and sum(1 for v in _g if v <= -95) > _POWER_BINS * 0.5)
+    check("iq: tone column strong, rest near floor (peak detector)",
+          _iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector="peak")[_pk] >= -31
+          and sum(1 for v in _g if v <= -95) > _POWER_BINS * 0.5)
+    check("iq: the shipped RMS detector keeps the tone well clear of the floor",
+          _iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector="rms")[_pk] >= -40,
+          "%.1f" % _iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector="rms")[_pk])
     check("iq: oversampled edge bins fall outside [lo,hi] (dropped)",
           _iq_to_grid([-40.0] * _N, _ctr, _sr, _lo, _hi).count(_FLOOR_DBM) == 0
           and all(v >= -95 for v in _iq_to_grid([-40.0] * _N, _ctr, _sr, _lo, _hi)))
+
+    # --- detectors: same bins, different (and predictable) answers -----------
+    _dv = [-100.0, -100.0, -70.0, -100.0]
+    check("detector: peak takes the largest bin", _combine_db(_dv, "peak") == -70.0)
+    check("detector: min takes the smallest", _combine_db(_dv, "min") == -100.0)
+    check("detector: avg is the mean in dB",
+          abs(_combine_db(_dv, "avg") - (-92.5)) < 1e-6)
+    # rms averages power: one bin 30 dB up over four -> 10*log10((3*1e-10+1e-7)/4)
+    _rms = _combine_db(_dv, "rms")
+    check("detector: rms averages in the power domain, above avg and below peak",
+          -76.5 < _rms < -75.5 and _rms > _combine_db(_dv, "avg") and _rms < -70.0,
+          "%.2f" % _rms)
+    check("detector: rms >= avg for any spread (Jensen)",
+          all(_combine_db(v, "rms") >= _combine_db(v, "avg") - 1e-9
+              for v in ([-90, -80, -70], [-100] * 5, [-50, -95])))
+    check("detector: unknown name falls back to peak",
+          _combine_db(_dv, "nonsense") == -70.0 and _combine_db([], "rms") is None)
+    # ... and through the real binning path: a noisy floor reads high on peak
+    _noise = [(-100.0 + (i * 37 % 11)) for i in range(_N)]
+    _gp = _iq_to_grid(_noise, _ctr, _sr, _lo, _hi, detector="peak")
+    _gr = _iq_to_grid(_noise, _ctr, _sr, _lo, _hi, detector="rms")
+    _gm = _iq_to_grid(_noise, _ctr, _sr, _lo, _hi, detector="min")
+    _mid = _POWER_BINS // 2
+    check("detector: on noise, peak reads above rms reads above min",
+          _gp[_mid] > _gr[_mid] > _gm[_mid],
+          "peak %.1f rms %.1f min %.1f" % (_gp[_mid], _gr[_mid], _gm[_mid]))
+    _tone = dict((_d, max(_iq_to_grid(_psd, _ctr, _sr, _lo, _hi, detector=_d)))
+                 for _d in _DETECTORS)
+    check("detector: peak and rms both hold a tone that shares its column",
+          _tone["peak"] >= -30.1 and _tone["rms"] > -40.0,
+          "peak %.1f rms %.1f" % (_tone["peak"], _tone["rms"]))
+    check("detector: the ordering peak >= rms >= avg >= min always holds",
+          _tone["peak"] >= _tone["rms"] >= _tone["avg"] >= _tone["min"],
+          str({_k: round(_v, 1) for _k, _v in _tone.items()}))
+    check("detector: min is a floor detector — it drops a narrow tone on purpose",
+          _tone["min"] <= -95.0, "%.1f" % _tone["min"])
+    check("detector: setting round-trips and is part of the restart signature",
+          set_tuning(detector="rms")["detector"] == "rms"
+          and _settings_sig()[-1] == "rms"
+          and set_tuning(detector="bogus")["detector"] == "rms"
+          and set_tuning(detector="peak")["detector"] == "peak")
+
+    # --- frequency-mask trigger ---------------------------------------------
+    _row = [-100.0] * 100
+    _row[40] = -50.0
+    check("mask: a flat level is crossed where the signal is",
+          mask_cross(_row, -70.0, 433_000_000, 434_000_000)["col"] == 40)
+    check("mask: a quiet row does not fire",
+          mask_cross([-100.0] * 100, -70.0, 433_000_000, 434_000_000) is None)
+    check("mask: the frequency window is respected",
+          mask_cross(_row, -70.0, 433_000_000, 434_000_000,
+                     f0_hz=433_600_000, f1_hz=433_900_000) is None
+          and mask_cross(_row, -70.0, 433_000_000, 434_000_000,
+                         f0_hz=433_300_000, f1_hz=433_600_000) is not None)
+    check("mask: a per-column mask is stretched onto the row",
+          mask_cross(_row, [-40.0] * 10, 433_000_000, 434_000_000) is None
+          and mask_cross(_row, [-40.0] * 4 + [-60.0] * 6,
+                         433_000_000, 434_000_000)["excess_db"] == 10.0)
+    check("mask: margin raises the whole mask",
+          mask_cross(_row, -70.0, 433_000_000, 434_000_000, margin_db=30.0) is None)
+    check("mask: the crossing reports the right frequency",
+          abs(mask_cross(_row, -70.0, 433_000_000, 434_000_000)["freq_hz"]
+              - 433_405_000) < 6000)
+    check("mask: bad input returns nothing rather than raising",
+          mask_cross([], -70.0, 1, 0) is None and mask_cross(None, -70.0, 0, 1) is None)
+
+    # end-to-end: pre-trigger buffer, file, sidecar and trigger-point annotation
+    _sr = 100_000                       # cu8 at 100 kS/s = 200 kB of file per second
+    _blk = b"\x7f" * _sr                # one block = 0.5 s of samples
+    _tg = SignalTrigger()
+    _tga = _tg.arm(level_db=-70.0, pre_s=1.0, post_s=1.0, min_gap_s=0,
+                   max_events=1, name="selftest")
+    check("trigger: arms and reports its settings",
+          _tga["armed"] and _tga["config"]["pre_s"] == 1.0)
+    check("trigger: refuses to arm with nothing to trigger on",
+          SignalTrigger().arm()["ok"] is False)
+    for _i in range(4):                 # 2 s of quiet -> only the last 1 s is kept
+        _tg.feed(_blk, [-100.0] * 100, 433_000_000, 434_000_000, 433_500_000, _sr)
+    check("trigger: the pre-buffer is bounded to the armed lead-in",
+          _tg._pre_bytes <= int(1.0 * _sr * 2) + len(_blk),
+          "%d bytes" % _tg._pre_bytes)
+    _hot = [-100.0] * 100
+    _hot[40] = -50.0
+    for _i in range(4):                 # the event, then enough to fill post_s
+        _tg.feed(_blk, _hot, 433_000_000, 434_000_000, 433_500_000, _sr)
+    _st = _tg.status()
+    check("trigger: fires once and disarms at max_events",
+          _st["count"] == 1 and not _st["armed"] and not _st["recording"],
+          json.dumps(_st["events"])[:120])
+    _ev = _st["events"][0] if _st["events"] else {}
+    check("trigger: the capture holds the lead-in AND the event",
+          abs(_ev.get("pre_s", 0) - 1.0) < 0.51 and _ev.get("seconds", 0) >= 1.9,
+          "pre %.2fs total %.2fs" % (_ev.get("pre_s", 0), _ev.get("seconds", 0)))
+    check("trigger: the event names the frequency that crossed",
+          abs(_ev.get("freq_hz", 0) - 433_405_000) < 6000 and _ev.get("excess_db") == 20.0)
+    _tp = os.path.join(_iq_cap_dir(), _ev.get("name", "x") + ".sigmf-data")
+    _tm = _tp[:-len(".sigmf-data")] + ".sigmf-meta"
+    _ok = os.path.exists(_tp) and os.path.exists(_tm)
+    check("trigger: writes a SigMF pair the analyzer can open", _ok)
+    if _ok:
+        _mj = json.load(open(_tm))
+        _ann = [a for a in _mj.get("annotations", []) if a.get("core:label") == "trigger point"]
+        check("trigger: the sidecar marks where the trigger fired",
+              len(_ann) == 1 and abs(_ann[0]["core:sample_start"] - _sr) < _sr * 0.6,
+              str(_ann))
+        check("trigger: the data hash matches the file", _sigmf_hash_ok(_tp, _mj))
+        check("trigger: file length matches the event's own figures",
+              os.path.getsize(_tp) == _ev["bytes"])
+    for _f in (_tp, _tm):            # never leave test captures behind
+        try:
+            os.unlink(_f)
+        except OSError:
+            pass
+    check("trigger: disarm clears everything",
+          SignalTrigger().disarm()["armed"] is False)
+
+    # --- front-end health: clipping is reported, not silently measured -------
+    check("adc: a clean capture with headroom is ok",
+          adc_health(0.0, 0.25)[0] == "ok")
+    check("adc: headroom is dB below full scale",
+          abs(adc_health(0.0, 0.5)[1] - 6.0) < 0.1)
+    check("adc: samples on the rail = overload",
+          adc_health(0.01, 1.0)[0] == "overload")
+    check("adc: no clipping yet but nearly full scale = near",
+          adc_health(0.0, 0.95)[0] == "near")
+    check("adc: bad input never raises", adc_health(None, "x")[0] == "ok")
+
+    # --- shipped defaults + managed gain -------------------------------------
+    check("defaults: the dongle's own AGC is not what ships",
+          _DEFAULTS["_gain"] == 25.4 and _DEFAULTS["_agc"] is True,
+          str(_DEFAULTS["_gain"]))
+    check("defaults: RMS is the shipped detector", _DEFAULTS["_detector"] == "rms")
+    check("defaults: a saved setting overrides the shipped default, not the reverse",
+          set(_DEFAULTS) == set(_SETTINGS_KEYS_G))
+    check("agc: clipping steps the gain down one notch",
+          agc_step("overload", 0.0, 25.4)[0] == 22.9)
+    check("agc: too little headroom steps down",
+          agc_step("ok", 4.0, 25.4)[0] == 22.9)
+    check("agc: plenty of headroom steps up",
+          agc_step("ok", 30.0, 25.4)[0] == 28.0)
+    check("agc: in-band headroom changes nothing (no hunting)",
+          agc_step("ok", 15.0, 25.4)[0] is None
+          and agc_step("ok", _AGC_HEADROOM_MIN + 0.1, 25.4)[0] is None
+          and agc_step("ok", _AGC_HEADROOM_MAX - 0.1, 25.4)[0] is None)
+    check("agc: one step at a time, never a jump",
+          all(abs(_R820T_GAINS.index(_nearest_gain(agc_step("overload", 0.0, g)[0]))
+                  - _R820T_GAINS.index(_nearest_gain(g))) == 1
+              for g in (12.5, 20.7, 28.0, 36.4)))
+    check("agc: it stays inside the useful gain range",
+          agc_step("ok", 40.0, _AGC_GAIN_MAX)[0] is None
+          and agc_step("overload", 0.0, _AGC_GAIN_MIN)[0] is None)
+    check("agc: clipping at the lowest gain is reported, not silently ignored",
+          "too strong" in agc_step("overload", 0.0, _AGC_GAIN_MIN)[1])
+    check("agc: with no measurement yet it does nothing",
+          agc_step("ok", None, 24.0)[0] is None)
+    check("agc: hardware AGC (gain None) is left alone",
+          agc_step("overload", 0.0, None)[0] is None)
+    check("agc: a gain between notches is pulled onto a supported one",
+          _nearest_gain(23.5) == 22.9 and _nearest_gain(0.2) == 0.0)
+    _conv = 25.4
+    for _i in range(12):            # a loud site: it must settle, not oscillate
+        _n, _ = agc_step("overload" if _conv > 15.7 else "ok",
+                         2.0 if _conv > 15.7 else 14.0, _conv)
+        if _n is None:
+            break
+        _conv = _n
+    check("agc: converges and then stops", _conv == 15.7 and _i < 11,
+          "settled at %s after %d steps" % (_conv, _i))
+
+    # --- settings survive a restart ------------------------------------------
+    import tempfile as _tf
+    _sdir = _tf.mkdtemp()
+    _sp = globals()["_settings_path"]
+    globals()["_settings_path"] = lambda: os.path.join(_sdir, "rf_settings.json")
+    _np_was = _no_persist
+    try:
+        globals()["_no_persist"] = False
+        globals()["_detector"], globals()["_gain"], globals()["_conv_hz"] = "min", 33.8, 125_000_000
+        check("settings: saving writes a file", _save_settings() is True
+              and os.path.exists(_settings_path()))
+        globals()["_detector"], globals()["_gain"], globals()["_conv_hz"] = "peak", None, 0
+        check("settings: loading restores what was saved",
+              _load_settings() is True and _detector == "min" and _gain == 33.8
+              and _conv_hz == 125_000_000)
+        with open(_settings_path(), "w") as _fh:
+            _fh.write("{not json")
+        check("settings: a corrupt file is ignored, not fatal",
+              _load_settings() is False)
+        os.unlink(_settings_path())
+        check("settings: a fresh install has no file and keeps the defaults",
+              _load_settings() is False)
+        globals()["_no_persist"] = True
+        check("settings: the selftest never writes the real file",
+              _save_settings() is False)
+    finally:
+        globals()["_settings_path"] = _sp
+        globals()["_no_persist"] = _np_was
+        import shutil as _sh
+        _sh.rmtree(_sdir, ignore_errors=True)
+
+    # --- USB recovery --------------------------------------------------------
+    _up = _usb_device_path()
+    check("usb: the dongle is found by its sysfs ids (or absent, cleanly)",
+          _up is None or (_up.startswith("/dev/bus/usb/") and len(_up.split("/")) == 6),
+          str(_up))
+    check("usb: the reset path names a device node that exists",
+          _up is None or os.path.exists(_up), str(_up))
+    check("usb: the known RTL vendor/product ids are all Realtek",
+          all(v == "0bda" for v, _pid in _USB_IDS) and ("0bda", "2838") in _USB_IDS)
+
+    # --- geolocation on captures --------------------------------------------
+    check("geo: SigMF geolocation is a GeoJSON point, longitude first",
+          geojson_point({"lat": 57.7, "lon": 11.97})
+          == {"type": "Point", "coordinates": [11.97, 57.7]})
+    check("geo: altitude is included when known",
+          geojson_point({"lat": 57.7, "lon": 11.97, "alt": 42.0})["coordinates"][2] == 42.0)
+    check("geo: no fix -> no geolocation, not a zero-zero fix",
+          geojson_point(None) is None and geojson_point({"lat": None, "lon": 1}) is None)
+    _gm = sigmf_meta(433_920_000, 2_000_000,
+                     position={"lat": 57.7, "lon": 11.97, "source": "gps", "satellites": 9},
+                     detector="rms")
+    check("geo: a capture carries the fix, its source and the detector used",
+          _gm["global"]["core:geolocation"]["coordinates"] == [11.97, 57.7]
+          and _gm["global"]["ragnar:position_source"] == "gps"
+          and _gm["global"]["ragnar:gps_satellites"] == 9
+          and _gm["global"]["ragnar:detector"] == "rms")
+    check("geo: a capture without a fix carries no geolocation key",
+          "core:geolocation" not in sigmf_meta(433_920_000, 2_000_000)["global"])
+    check("geo: no provider registered -> no position, no exception",
+          current_position() is None)
+    set_position_provider(lambda: {"lat": 1.5, "lon": 2.5, "alt": 3.0, "source": "manual"})
+    check("geo: a registered provider is used",
+          current_position()["lat"] == 1.5 and current_position()["source"] == "manual")
+    set_position_provider(lambda: (_ for _ in ()).throw(RuntimeError("gps died")))
+    check("geo: a provider that raises is not allowed to break a capture",
+          current_position() is None)
+    set_position_provider(None)
+
+    # --- harmonics ----------------------------------------------------------
+    _hp = harmonic_plan(433_920_000, 4)
+    check("harmonics: plans 2x..nx the carrier",
+          [h[0] for h in _hp] == [2, 3, 4]
+          and _hp[0][1] == 867_840_000 and _hp[2][1] == 1_735_680_000)
+    check("harmonics: a harmonic past the tuner is marked out of reach, not dropped",
+          [h[2] for h in harmonic_plan(600_000_000, 4)] == [True, False, False]
+          and len(harmonic_plan(600_000_000, 4)) == 3)
+    check("harmonics: bad input returns an empty plan", harmonic_plan(None) == [])
+
+    # --- image / DC-spike check ---------------------------------------------
+    _ca, _cb = 433_670_000, 434_170_000
+    check("image: a peak that holds its frequency is real",
+          image_verdict(433_920_100, 433_919_500, _ca, _cb)["verdict"] == "real")
+    check("image: a peak that moves with the tuner is an image",
+          image_verdict(433_920_000, 434_420_000, _ca, _cb)["verdict"] == "image")
+    check("image: a peak pinned to the tuner centre is the DC spike",
+          image_verdict(_ca + 900, _cb - 700, _ca, _cb)["verdict"] == "dc-spike")
+    check("image: nothing heard is reported as absent, not as real",
+          image_verdict(None, 433_920_000, _ca, _cb)["verdict"] == "absent")
 
     # numpy IQ math matches the pure grid (only when numpy is importable) ---
     try:

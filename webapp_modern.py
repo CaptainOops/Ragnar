@@ -4360,6 +4360,15 @@ def _df_position():
     return None
 
 
+# Every SigMF capture this unit writes carries the fix, so a recording says
+# where and when it was taken, not just what was on the air.
+try:
+    import rtl_sdr as _rtl_for_pos
+    _rtl_for_pos.set_position_provider(_df_position)
+except Exception:
+    pass
+
+
 @app.route('/api/mesh/rf/level', methods=['GET'])
 def mesh_rf_level():
     """Level of a signal at freq_hz on THIS unit's RTL-SDR + this unit's position."""
