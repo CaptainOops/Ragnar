@@ -31378,12 +31378,13 @@ function renderWardrivingSessions(sessions) {
                 <span class="text-xs text-gray-500">${s.total_networks || 0} networks</span>
                 ${isActive ? '<span class="text-xs text-cyan-400">● viewing</span>' : ''}
             </div>
-            <div class="flex gap-3 shrink-0">
+            <div class="flex flex-wrap gap-x-3 gap-y-1 shrink-0">
                 <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=report" target="_blank" rel="noopener" class="text-xs text-emerald-400 hover:text-emerald-300 whitespace-nowrap font-semibold" onclick="event.stopPropagation()">Report</a>
                 <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=wigle" class="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap" onclick="event.stopPropagation()">WiGLE CSV</a>
                 <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=kml" class="text-xs text-purple-400 hover:text-purple-300 whitespace-nowrap" onclick="event.stopPropagation()">KML</a>
                 <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wdgwars')" class="text-xs text-fuchsia-400 hover:text-fuchsia-300 whitespace-nowrap font-semibold" title="Upload this session to WDGWars">↑ WDGWars</button>
                 <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wigle')" class="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap" title="Upload this session to WiGLE">↑ WiGLE</button>
+                <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wardrift')" class="text-xs text-amber-400 whitespace-nowrap" title="Upload this session to Wardrift">↑ Wardrift</button>
             </div>
         </div>`;
     }).join('');
@@ -31419,6 +31420,101 @@ async function loadWardriveUploadConfig() {
     if (sel && d.auto_upload_target) sel.value = d.auto_upload_target;
     const aus = document.getElementById('wd-auto-upload-status');
     if (aus) aus.textContent = (d.auto_upload ? '✓ on' : '') + (d.pending ? ` · ${d.pending} queued` : '');
+    _renderWardriftConfig(d);
+}
+
+// ---- Wardrift (wardrift.net): session sign-in -> route uploads + stats; API key -> signal ingest
+function _renderWardriftConfig(d) {
+    const badge = document.getElementById('wd-wardrift-status');
+    if (badge) {
+        let txt = 'Not set', cls = 'bg-gray-700 text-gray-400';
+        if (d.wardrift_signed_in) { txt = '✓ ' + (d.wardrift_username || 'signed in'); cls = 'bg-emerald-900/60 text-emerald-300'; }
+        else if (d.wardrift_key_configured) { txt = 'API key ready'; cls = 'bg-amber-900/60 text-amber-300'; }
+        badge.textContent = txt;
+        badge.className = 'text-xs px-2 py-0.5 rounded-full ' + cls;
+    }
+    document.getElementById('wd-wardrift-signin')?.classList.toggle('hidden', !!d.wardrift_signed_in);
+    document.getElementById('wd-wardrift-signin-btn')?.classList.toggle('hidden', !!d.wardrift_signed_in);
+    document.getElementById('wd-wardrift-signout-btn')?.classList.toggle('hidden', !d.wardrift_signed_in);
+    const pub = document.getElementById('wd-wardrift-public');
+    if (pub) pub.checked = !!d.wardrift_public_route;
+    const stats = document.getElementById('wd-wardrift-stats');
+    if (!d.wardrift_signed_in) { stats?.classList.add('hidden'); return; }
+    loadWardriftStats();
+}
+
+function _wardriftMsg(msg, ok) {
+    const out = document.getElementById('wd-wardrift-result');
+    if (!out) return;
+    out.textContent = msg;
+    out.className = 'text-xs mt-2 ' + (ok ? 'text-emerald-400' : 'text-red-400');
+}
+
+async function loadWardriftStats() {
+    const box = document.getElementById('wd-wardrift-stats');
+    if (!box) return;
+    try {
+        const r = await fetch('/api/wardriving/wardrift/dashboard');
+        const d = await r.json();
+        if (!r.ok) {
+            box.classList.add('hidden');
+            if (d.expired) _wardriftMsg('Wardrift session expired — sign in again.', false);
+            return;
+        }
+        const ch = (d.characters || [])[0] || {};
+        const life = (d.wardrive && d.wardrive.lifetime) || {};
+        const tile = (label, val) => `<div class="bg-slate-700/50 rounded px-2 py-1.5 min-w-0"><div class="text-gray-500 text-xs truncate">${escapeHtml(label)}</div><div class="text-white text-sm font-semibold truncate">${escapeHtml(String(val))}</div></div>`;
+        box.innerHTML = [
+            tile(ch.name ? `${ch.name} · Lv` : 'Level', ch.level ?? '—'),
+            tile('EXP to next', ch.exp_to_next_level ?? '—'),
+            tile('Currency', ch.currency ?? '—'),
+            tile('Routes · APs', `${life.routes_logged ?? 0} · ${life.access_points_discovered ?? 0}`),
+        ].join('');
+        box.classList.remove('hidden');
+    } catch (e) { box.classList.add('hidden'); }
+}
+
+async function wardriftSignIn() {
+    const u = document.getElementById('wd-wardrift-user')?.value.trim();
+    const pw = document.getElementById('wd-wardrift-pass');
+    if (!u || !pw?.value) { _wardriftMsg('Enter username and password.', false); return; }
+    try {
+        const r = await fetch('/api/wardriving/wardrift/signin', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: u, password: pw.value })
+        });
+        const d = await r.json().catch(() => ({}));
+        pw.value = '';
+        if (!r.ok || !d.success) { _wardriftMsg('Sign-in failed: ' + (d.error || ('HTTP ' + r.status)), false); return; }
+        _wardriftMsg('Signed in to Wardrift.', true);
+        loadWardriveUploadConfig();
+    } catch (e) { _wardriftMsg('Sign-in error: ' + e.message, false); }
+}
+
+async function wardriftSignOut() {
+    try {
+        await fetch('/api/wardriving/wardrift/signout', { method: 'POST' });
+        _wardriftMsg('Signed out.', true);
+        loadWardriveUploadConfig();
+    } catch (e) { _wardriftMsg('Sign-out error: ' + e.message, false); }
+}
+
+async function saveWardriftKey() {
+    const el = document.getElementById('wd-wardrift-key');
+    const key = el?.value.trim();
+    if (!key) { _wardriftMsg('Paste your Wardrift API key first.', false); return; }
+    try {
+        await _postUploadConfig({ wardrift_api_key: key });
+        el.value = '';
+        _wardriftMsg('Wardrift API key saved.', true);
+        loadWardriveUploadConfig();
+    } catch (e) { _wardriftMsg('Save failed: ' + e.message, false); }
+}
+
+async function saveWardriftPublic() {
+    const on = !!document.getElementById('wd-wardrift-public')?.checked;
+    try { await _postUploadConfig({ wardrift_public_route: on }); }
+    catch (e) { _wardriftMsg('Save failed: ' + e.message, false); }
 }
 
 function _wdUploadCfgMsg(msg, ok) {
@@ -31475,7 +31571,7 @@ async function saveAutoUpload() {
 }
 
 async function uploadWardriveSession(sessionId, target) {
-    const name = target === 'wdgwars' ? 'WDGWars' : 'WiGLE';
+    const name = { wdgwars: 'WDGWars', wigle: 'WiGLE', wardrift: 'Wardrift' }[target] || target;
     if (!confirm(`Upload session "${sessionId}" to ${name}?`)) return;
     try {
         const r = await fetch('/api/wardriving/upload/' + encodeURIComponent(sessionId), {
@@ -31484,8 +31580,17 @@ async function uploadWardriveSession(sessionId, target) {
         const d = await r.json();
         if (r.ok && d.success) {
             const res = (d.results && d.results[target]) || {};
-            const tid = res.response && (res.response.transid || res.response.id);
-            alert(`✓ Sent ${d.located} located networks to ${name}.` + (tid ? `\nTransID: ${tid}` : '\nQueued for processing.'));
+            const resp = res.response || {};
+            let extra;
+            if (target === 'wardrift') {
+                extra = res.duplicate ? '\nAlready uploaded — no double awards.'
+                    : `\n+${resp.awarded_exp || 0} EXP, +${resp.awarded_currency || 0} currency` + (res.mode === 'signals' ? ` (${resp.batches} batches)` : '');
+            } else {
+                const tid = resp.transid || resp.id;
+                extra = tid ? `\nTransID: ${tid}` : '\nQueued for processing.';
+            }
+            alert(`✓ Sent ${d.located} located networks to ${name}.` + extra);
+            if (target === 'wardrift') loadWardriftStats();
         } else if (r.status === 422) {
             alert('No GPS-located networks in this session yet — do a drive with a fix first (or the export has no coordinates).');
         } else {

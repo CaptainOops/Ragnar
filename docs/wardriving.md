@@ -522,6 +522,11 @@ Falls back to linear when either endpoint speed is NULL or both are zero. The ch
 | GET/POST | `/api/wardriving/huginn_config` | Read / push HuginnESP runtime knobs |
 | POST | `/api/wardriving/device_name` | Set device name |
 | GET/POST | `/api/wardriving/on_boot` | Auto-start on boot |
+| GET/POST | `/api/wardriving/upload-config` | Upload creds status (never reveals secrets) / save WiGLE, WDGWars, Wardrift creds + auto-upload |
+| POST | `/api/wardriving/upload/<id>` | Upload a session — body `{"target": "wigle"\|"wdgwars"\|"wardrift"\|"both"\|"all"\|"a,b", "force": false}` |
+| POST | `/api/wardriving/wardrift/signin` | Sign in to Wardrift (`username`, `password`); stores only the session token |
+| POST | `/api/wardriving/wardrift/signout` | Forget the Wardrift session token |
+| GET | `/api/wardriving/wardrift/dashboard` | Proxy of Wardrift `GET /v1/dashboard` (character level, EXP, currency, route stats) |
 
 > **Mutually exclusive with On-Screen Network Diagnostic mode.** Both take over
 > the e-Paper panel and HAT keys, so starting wardriving turns Network Diagnostic
@@ -635,6 +640,38 @@ Standard format for uploading to wigle.net. Contains MAC, SSID, AuthMode, channe
 
 ### KML
 Google Earth format with network positions as markers.
+
+### Uploading sessions — WiGLE, WDGWars, Wardrift
+Each saved session has **↑ WDGWars**, **↑ WiGLE** and **↑ Wardrift** buttons, and
+the upload cards in the wardriving tab store credentials on the device only
+(they are excluded from fleet config export). Every upload reuses the exact WiGLE
+CSV the export produces, and a session with no GPS-located rows is refused unless
+you force it. GPS-backfilled (interpolated) positions are never sent.
+
+**Auto-upload:** tick *Auto-upload finished wardrives* and pick a target (WDGWars,
+WiGLE, WiGLE + WDGWars, Wardrift, WDGWars + Wardrift, or all three). Stopping a
+wardrive queues it in `data/wardriving/pending_uploads.json`; the worker retries
+every 60 s until the box is online, and only retries the services that failed.
+
+**[Wardrift](https://wardrift.net)** (faction / territory wardriving game, API at
+`https://wardrift.net/v1`, overridable via the `wardrift_base_url` config key)
+has two auth paths and Ragnar supports both:
+
+| Mode | How to set it up | What an upload does |
+|------|------------------|---------------------|
+| **Signed in** (preferred) | Enter your Wardrift username + password and hit *Sign in*. Ragnar keeps only the session token; the password is never stored. | `POST /v1/wardrive/logs` with the WiGLE CSV. The session becomes an archived route (distance, AP count, streak), public if *Public routes* is ticked. A re-upload returns `409 duplicate_route`, which Ragnar treats as success. The card shows your character level, EXP to next level, currency and lifetime routes/APs. |
+| **API key** | Paste a **character-bound** Wardrift key (`wdk_…`). | `POST /v1/ingest/signals` in batches of 250. Each row becomes a signal item (`wifi` / `bluetooth` / `cellular` / `other`) with SSID and BSSID sent **only as SHA-256 hashes**, timestamps converted to UTC. |
+
+If both are set, the signed-in route upload is used, and it falls back to the API
+key when the session has expired. For the API-key path, `sequence_no` and pending
+`idempotency_key`s persist in `data/wardriving/wardrift_state.json`. The
+idempotency key comes from the batch content, so a retry or a re-upload of the
+same session returns `duplicate: true` and doesn't award twice. A retry resends
+the same `sequence_no`. Sequences are seeded from wall-clock seconds, so losing
+the state file can't replay a lower number, and a server "replay" rejection gets
+one retry with a fresh, higher sequence. Envelopes are sent with an empty
+`signature`, so a key with a registered Ed25519 device key server-side will be
+rejected. Mesh node telemetry (`/v1/ingest/mesh`) isn't wired up yet.
 
 ### Survey report (HTML → PDF)
 A self-contained, printable **Wi-Fi survey report** — the "Report" link on each

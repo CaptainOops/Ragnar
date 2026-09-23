@@ -7674,12 +7674,45 @@
                                 <select id="wd-auto-upload-target" onchange="saveAutoUpload()" class="bg-slate-700 text-white text-xs rounded px-1.5 py-0.5 border border-slate-600">
                                     <option value="wdgwars">to WDGWars</option>
                                     <option value="wigle">to WiGLE</option>
-                                    <option value="both">to both</option>
+                                    <option value="both">to WiGLE + WDGWars</option>
+                                    <option value="wardrift">to Wardrift</option>
+                                    <option value="wdgwars,wardrift">to WDGWars + Wardrift</option>
+                                    <option value="all">to all three</option>
                                 </select>
                                 <span id="wd-auto-upload-status" class="text-gray-500"></span>
                             </label>
                             <div class="text-xs text-gray-500 mt-1">Offline? It queues and uploads automatically once Wi-Fi is back.</div>
                             <div id="wd-upload-cfg-result" class="text-xs mt-2 hidden"></div>
+                        </div>
+
+                        <!-- Upload to Wardrift Card -->
+                        <div class="glass rounded-lg p-4">
+                            <div class="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                                <h4 class="font-medium">Upload to Wardrift</h4>
+                                <span id="wd-wardrift-status" class="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400">Not set</span>
+                            </div>
+                            <div class="text-sm text-gray-400 mb-3">
+                                Push finished sessions to <a href="https://wardrift.net" target="_blank" rel="noopener" class="text-amber-400">Wardrift</a> for EXP, currency and faction hex influence. Sign in to upload sessions as archived routes and see your stats, or paste a character-bound API key. Credentials stay on this device; the password is never stored.
+                            </div>
+                            <div id="wd-wardrift-signin" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                                <input type="text" id="wd-wardrift-user" placeholder="Wardrift username" autocomplete="username" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                <input type="password" id="wd-wardrift-pass" placeholder="Password" autocomplete="current-password" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                            </div>
+                            <div class="flex gap-2 items-center flex-wrap mb-3">
+                                <button id="wd-wardrift-signin-btn" onclick="wardriftSignIn()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Sign in</button>
+                                <button id="wd-wardrift-signout-btn" onclick="wardriftSignOut()" class="hidden bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Sign out</button>
+                                <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                                    <input type="checkbox" id="wd-wardrift-public" onchange="saveWardriftPublic()" class="accent-amber-500">
+                                    <span>Public routes</span>
+                                </label>
+                            </div>
+                            <div id="wd-wardrift-stats" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3"></div>
+                            <div class="flex gap-2 items-center flex-wrap">
+                                <input type="password" id="wd-wardrift-key" placeholder="API key (wdk_…) — optional" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 flex-1 min-w-0">
+                                <button onclick="saveWardriftKey()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Save key</button>
+                            </div>
+                            <div class="text-xs text-gray-500 mt-2">Then use the <span class="text-amber-400">↑ Wardrift</span> button on each session below, or pick Wardrift in auto-upload above.</div>
+                            <div id="wd-wardrift-result" class="text-xs mt-2 hidden"></div>
                         </div>
 
                         <!-- Serial ESP32 Listener Card -->
@@ -8689,7 +8722,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260921-upload-progress"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260923-wardrift"></script>
 
 
 
