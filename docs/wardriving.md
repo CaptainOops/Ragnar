@@ -686,6 +686,12 @@ card makes Ragnar that uplink:
 2. Paste the node's **node-bound** Wardrift key (a character key is rejected),
    pick an interval (2–30 min) and tick **Report this node**.
 
+   Your Wardrift dashboard's **API keys** panel lists each key with its
+   *device kind* and can reveal or rotate it, but it can't create one. If you
+   only have a character key, Wardrift answers `mesh endpoint requires a node
+   device`. The card then says so and waits for the next interval instead of
+   retrying. Ask Wardrift to register the node and issue its key.
+
 Every interval Ragnar reads the node's own telemetry: uptime, battery/voltage,
 channel utilisation, TX airtime, nodes heard, and LocalStats packet counters
 (TX/RX/bad/relayed/relay-cancelled/dupes). It POSTs that to

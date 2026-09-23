@@ -31494,7 +31494,7 @@ async function loadWardriftMesh(fillForm) {
                 const bits = [];
                 if (n.battery_level != null) bits.push(`battery ${n.battery_level}%`);
                 if (n.channel_utilization != null) bits.push(`ch util ${Number(n.channel_utilization).toFixed(1)}%`);
-                if (n.num_online_nodes != null) bits.push(`${n.num_online_nodes} nodes heard`);
+                if (n.num_online_nodes != null) bits.push(`${n.num_online_nodes} node${n.num_online_nodes === 1 ? '' : 's'} heard`);
                 if (bits.length) parts.push(escapeHtml(bits.join(' · ')));
             }
         }

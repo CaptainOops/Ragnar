@@ -14900,13 +14900,20 @@ def _wardrift_mesh_send(key):
         r = requests.post(_wardrift_base() + '/v1/ingest/mesh', json=env,
                           headers={'X-API-Key': key}, timeout=30)
     except Exception as e:
-        return False, f'offline? {e}'
+        return False, {'error': f'offline? {e}', 'permanent': False}
     body = _wardrift_body(r)
     if r.ok and (body.get('accepted') or body.get('duplicate')):
         return True, body
+    msg = body.get('message') or body.get('error') or f'HTTP {r.status_code}'
     if r.status_code == 401:
-        return False, 'Wardrift rejected the node key (it must be a node-bound key)'
-    return False, body.get('message') or body.get('error') or f'HTTP {r.status_code}'
+        msg = 'Wardrift rejected the key (unknown or revoked)'
+    elif 'node device' in str(msg).lower():
+        msg = ('This key is not bound to a mesh node (it is probably your character key). '
+               'Use a key whose device kind is a node - Wardrift lists them under API keys '
+               'on your dashboard; if there is none, ask Wardrift to register your node.')
+    # 4xx (bar timeout / rate-limit) will fail the same way on a resend.
+    permanent = 400 <= r.status_code < 500 and r.status_code not in (408, 429)
+    return False, {'error': msg, 'permanent': permanent}
 
 
 def _wardrift_mesh_desired(cfg):
@@ -14980,12 +14987,15 @@ def _wardrift_mesh_tick():
         st['totals']['exp'] += int(res.get('awarded_exp') or 0)
         st['totals']['currency'] += int(res.get('awarded_currency') or 0)
     else:
-        st['error'] = res
+        st['error'] = res['error']
         _wardrift_mesh['pending_tries'] += 1
-        _wardrift_mesh['next_report'] = time.time() + 60   # retry the same envelope soon
-        if _wardrift_mesh['pending_tries'] >= 5:           # stale - start a fresh report
+        if res['permanent'] or _wardrift_mesh['pending_tries'] >= 5:
+            # Rejected (bad key, bad payload) or stale: resending the same
+            # envelope won't help - drop it and wait for the next interval.
             _wardrift_seq_done(idem)
             _wardrift_mesh['pending'] = None
+        else:
+            _wardrift_mesh['next_report'] = time.time() + 60   # offline - retry the same envelope soon
     link.request_local_stats()                             # fresh counters for next time
 
 
