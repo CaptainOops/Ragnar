@@ -58,6 +58,7 @@ import cyd_node
 import cyd_serial_bridge
 import cyd_sensor
 import cyd_waterfall
+import meshtastic_node
 from safe_vault import SafeVault, SafeError, SafeLockedError
 from wifi_interfaces import gather_wifi_interfaces, gather_ethernet_interfaces, is_ethernet_available, get_active_ethernet_interface
 from utils import WebUtils
@@ -3645,6 +3646,11 @@ _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     # skip it instead of stealing its bytes.
     publish_port=lambda p: setattr(shared_data, 'cyd_serial_active_port', p),
 )
+try:
+    import serial_claims
+    serial_claims.register('cyd', lambda: getattr(shared_data, 'cyd_serial_active_port', None))
+except Exception as _claims_exc:  # pragma: no cover - never block startup
+    logger.debug(f"[cyd] serial claim registration failed: {_claims_exc}")
 try:
     _cyd_bridge.start()
 except Exception as _cyd_exc:  # pragma: no cover - never block startup
@@ -10568,6 +10574,9 @@ CONFIG_EXPORT_EXCLUDE = {
     'wardrift_api_key',        # Wardrift character API key — per-operator secret
     'wardrift_session_token',  # Wardrift signed-in session — per-operator secret
     'wardrift_username',       # Wardrift account name — per-operator identity
+    'wardrift_mesh_key',       # Wardrift node API key — per-node secret
+    'wardrift_mesh_port',      # per-device serial port of the Meshtastic node
+    'wardrift_mesh_host',      # per-install WiFi address of the Meshtastic node
     'mac_scan_blacklist',      # per-device scan blacklist
     'rusense_node_positions',  # per-install physical node layout
     'rusense_node_names',      # per-install node naming
@@ -14798,6 +14807,280 @@ def wardrift_dashboard():
         return jsonify(body), (200 if r.ok else 502)
     except Exception as e:
         return jsonify({'error': str(e)}), 502
+
+
+# ---------------------------------------------------------------------------
+# Wardrift mesh reporter - Ragnar as the uplink for a Meshtastic node.
+#
+# Stock Meshtastic firmware can't call Wardrift itself, so Ragnar reads the
+# node (USB serial, or WiFi/TCP on port 4403) through the shared
+# meshtastic_node link and POSTs its health to /v1/ingest/mesh with the
+# node-bound API key every `wardrift_mesh_interval` seconds.
+#
+# LocalStats packet counters are cumulative since the node booted; Wardrift
+# treats them as per-window counts, so we send the delta since the previous
+# report (persisted in wardrift_state.json; a reboot resets the baseline).
+# The serial port is published via serial_claims, so the GPS, CYD bridge and
+# wardriving companion monitor never open it (and vice versa).
+# ---------------------------------------------------------------------------
+_MESH_COUNTERS = ('num_packets_tx', 'num_packets_rx', 'num_packets_rx_bad',
+                  'num_tx_relay', 'num_tx_relay_canceled', 'num_rx_dupe')
+_wardrift_mesh = {'thread': None, 'pending': None, 'pending_tries': 0,
+                  'next_report': 0.0, 'next_connect': 0.0,
+                  'status': {'state': 'off', 'error': None, 'last_report_at': None,
+                             'last_ok': None, 'last_response': None,
+                             'totals': {'reports': 0, 'exp': 0, 'currency': 0}}}
+
+
+def _wardrift_mesh_cfg():
+    c = shared_data.config
+    try:
+        interval = min(max(int(c.get('wardrift_mesh_interval') or 300), 60), 3600)
+    except (TypeError, ValueError):
+        interval = 300
+    return {'enabled': bool(c.get('wardrift_mesh_enabled', False)),
+            'key': (c.get('wardrift_mesh_key') or '').strip(),
+            'conn': 'wifi' if c.get('wardrift_mesh_conn') == 'wifi' else 'usb',
+            'port': (c.get('wardrift_mesh_port') or '').strip(),
+            'host': (c.get('wardrift_mesh_host') or '').strip(),
+            'interval': interval}
+
+
+def _wardrift_mesh_counter_deltas(node_id, rep):
+    """Cumulative LocalStats counters -> per-window deltas (None if no baseline)."""
+    cur = {k: rep.get(k) for k in _MESH_COUNTERS}
+    if not node_id or all(v is None for v in cur.values()):
+        return {k: None for k in _MESH_COUNTERS}
+    with _WARDRIFT_STATE_LOCK:
+        st = _wardrift_state_load()
+        last = (st.setdefault('mesh_last', {})).get(node_id)
+        st['mesh_last'][node_id] = {'uptime': rep.get('uptime_seconds'), 'counters': cur}
+        _wardrift_state_save(st)
+    out = {}
+    rebooted = bool(last) and (rep.get('uptime_seconds') or 0) < (last.get('uptime') or 0)
+    for k, v in cur.items():
+        prev = (last or {}).get('counters', {}).get(k)
+        if v is None:
+            out[k] = None
+        elif rebooted:
+            out[k] = int(v)                 # counters restarted at boot
+        elif prev is None or v < prev:
+            out[k] = None                   # first sighting - no window yet
+        else:
+            out[k] = int(v - prev)
+    return out
+
+
+def _wardrift_mesh_item(rep):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    item = {'ts': now, 'source_ts': None}
+    for k in ('lat', 'lon', 'uptime_seconds', 'battery_level', 'voltage',
+              'channel_utilization', 'air_util_tx', 'num_online_nodes', 'num_total_nodes'):
+        if rep.get(k) is not None:
+            item[k] = rep[k]
+    for k, v in _wardrift_mesh_counter_deltas(rep.get('node_id'), rep).items():
+        if v is not None:
+            item[k] = v
+    if 'uptime_seconds' in item:
+        item['uptime_seconds'] = int(item['uptime_seconds'])
+    if 'battery_level' in item:
+        item['battery_level'] = int(item['battery_level'])
+    item['metadata'] = {k: rep[k] for k in ('node_id', 'long_name', 'hw_model', 'firmware') if rep.get(k)}
+    item['metadata']['source'] = 'ragnar'
+    return item
+
+
+def _wardrift_mesh_send(key):
+    """POST the pending envelope (a retry resends the same idempotency key +
+    sequence_no). Returns (ok, body_or_error)."""
+    import requests
+    env = _wardrift_mesh['pending']
+    try:
+        r = requests.post(_wardrift_base() + '/v1/ingest/mesh', json=env,
+                          headers={'X-API-Key': key}, timeout=30)
+    except Exception as e:
+        return False, f'offline? {e}'
+    body = _wardrift_body(r)
+    if r.ok and (body.get('accepted') or body.get('duplicate')):
+        return True, body
+    if r.status_code == 401:
+        return False, 'Wardrift rejected the node key (it must be a node-bound key)'
+    return False, body.get('message') or body.get('error') or f'HTTP {r.status_code}'
+
+
+def _wardrift_mesh_desired(cfg):
+    if cfg['conn'] == 'wifi':
+        h, p = meshtastic_node.parse_host(cfg['host'])
+        return ('tcp', f'{h}:{p}') if h else None
+    return ('serial', os.path.realpath(cfg['port']) if cfg['port'] else None)
+
+
+def _wardrift_mesh_tick():
+    st = _wardrift_mesh['status']
+    cfg = _wardrift_mesh_cfg()
+    link = meshtastic_node.link()
+    lst = link.status()
+    ours = lst.get('owner') == 'wardrift'
+    if not (cfg['enabled'] and cfg['key']):
+        if ours:
+            meshtastic_node.stop()          # release the port we opened
+        st.update(state='off' if not cfg['enabled'] else 'no key', error=None)
+        return
+    want = _wardrift_mesh_desired(cfg)
+    if want is None:
+        st.update(state='error', error='Set the node\'s WiFi address (ip or ip:port)')
+        return
+    cur = link.target()
+    now = time.time()
+    if cur and ours and (cur[0] != want[0] or (want[1] and cur[1] != want[1])):
+        meshtastic_node.stop()              # settings changed - reconnect
+        cur = None
+    if cur is None:
+        if now < _wardrift_mesh['next_connect']:
+            return
+        st.update(state='connecting', error=None)
+        if want[0] == 'tcp':
+            res = meshtastic_node.start(host=want[1], owner='wardrift')
+        else:
+            res = meshtastic_node.start(port=cfg['port'] or None, owner='wardrift')
+        if not res.get('ok'):
+            _wardrift_mesh['next_connect'] = now + 30
+            st.update(state='error', error=res.get('error'))
+            return
+        link.request_local_stats()
+        _wardrift_mesh['next_report'] = now + 20   # let the stats reply land first
+    st['state'] = 'connected'
+    if now < _wardrift_mesh['next_report']:
+        return
+    _wardrift_mesh['next_report'] = now + cfg['interval']
+    if _wardrift_mesh['pending'] is None:
+        rep = link.local_report()
+        if not rep:
+            st.update(state='error', error='node not reporting yet')
+            return
+        from datetime import datetime, timezone
+        idem = str(uuid.uuid4())
+        _wardrift_mesh['pending'] = {
+            'idempotency_key': idem, 'sequence_no': _wardrift_seq_for(idem),
+            'device_ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'signature': '', 'items': [_wardrift_mesh_item(rep)]}
+        _wardrift_mesh['pending_tries'] = 0
+    ok, res = _wardrift_mesh_send(cfg['key'])
+    idem = _wardrift_mesh['pending']['idempotency_key']
+    st['last_report_at'] = time.time()
+    st['last_ok'] = ok
+    if ok:
+        _wardrift_seq_done(idem)
+        _wardrift_mesh['pending'] = None
+        st['error'] = None
+        st['last_response'] = {k: res.get(k) for k in ('awarded_exp', 'awarded_currency',
+                                                       'validation_score', 'flags', 'duplicate')}
+        st['totals']['reports'] += 1
+        st['totals']['exp'] += int(res.get('awarded_exp') or 0)
+        st['totals']['currency'] += int(res.get('awarded_currency') or 0)
+    else:
+        st['error'] = res
+        _wardrift_mesh['pending_tries'] += 1
+        _wardrift_mesh['next_report'] = time.time() + 60   # retry the same envelope soon
+        if _wardrift_mesh['pending_tries'] >= 5:           # stale - start a fresh report
+            _wardrift_seq_done(idem)
+            _wardrift_mesh['pending'] = None
+    link.request_local_stats()                             # fresh counters for next time
+
+
+def _wardrift_mesh_worker():
+    while True:
+        try:
+            _wardrift_mesh_tick()
+        except Exception as e:
+            _wardrift_mesh['status'].update(state='error', error=str(e))
+            logger.debug(f"wardrift mesh tick: {e}")
+        time.sleep(5)
+
+
+def _wardrift_mesh_start_worker():
+    t = _wardrift_mesh['thread']
+    if t is None or not t.is_alive():
+        t = threading.Thread(target=_wardrift_mesh_worker, daemon=True, name='wardrift-mesh')
+        _wardrift_mesh['thread'] = t
+        t.start()
+
+
+def _wardrift_mesh_ports():
+    """USB serial ports for the picker, each tagged with why it is/isn't usable."""
+    try:
+        ports = meshtastic_node._list_usb_serial()
+        cands, skipped = meshtastic_node.classify_mesh_candidates(
+            ports, meshtastic_node._foreign_ports(allow_wardrive_companions=True))
+        held = meshtastic_node.claimed_port()
+        out = [{'port': p, 'usable': True, 'note': 'in use by this link' if held and os.path.realpath(p) == held else ''}
+               for p in cands]
+        out += [{'port': p, 'usable': False, 'note': why} for p, why in skipped]
+        return sorted(out, key=lambda x: (not x['usable'], x['port']))
+    except Exception:
+        return []
+
+
+@app.route('/api/wardriving/wardrift/mesh', methods=['GET', 'POST'])
+def wardrift_mesh():
+    """Wardrift mesh-node reporter: GET status (never the key) / POST settings.
+
+    POST keys: enabled, key, conn ('usb'|'wifi'), port ('' = auto), host, interval.
+    """
+    try:
+        if request.method == 'POST':
+            d = request.get_json(silent=True) or {}
+            c = shared_data.config
+            if 'key' in d:
+                c['wardrift_mesh_key'] = str(d['key']).strip()
+            if 'conn' in d:
+                c['wardrift_mesh_conn'] = 'wifi' if d['conn'] == 'wifi' else 'usb'
+            if 'port' in d:
+                port = str(d['port'] or '').strip()
+                if port and not re.match(r'^/dev/[A-Za-z0-9_./:-]+$', port):
+                    return jsonify({'error': 'port must be a /dev path'}), 400
+                c['wardrift_mesh_port'] = port
+            if 'host' in d:
+                host = str(d['host'] or '').strip()
+                if host and not meshtastic_node.parse_host(host)[0]:
+                    return jsonify({'error': 'host must be ip or ip:port'}), 400
+                c['wardrift_mesh_host'] = host
+            if 'interval' in d:
+                try:
+                    c['wardrift_mesh_interval'] = min(max(int(d['interval']), 60), 3600)
+                except (TypeError, ValueError):
+                    return jsonify({'error': 'interval must be seconds (60-3600)'}), 400
+            if 'enabled' in d:
+                c['wardrift_mesh_enabled'] = bool(d['enabled'])
+            shared_data.save_config()
+            _wardrift_mesh['next_connect'] = 0.0
+            if d.get('report_now'):
+                _wardrift_mesh['next_report'] = 0.0
+            _wardrift_mesh_start_worker()
+        cfg = _wardrift_mesh_cfg()
+        lst = meshtastic_node.link().status()
+        st = dict(_wardrift_mesh['status'])
+        return jsonify({
+            'enabled': cfg['enabled'], 'key_configured': bool(cfg['key']),
+            'conn': cfg['conn'], 'port': cfg['port'], 'host': cfg['host'],
+            'interval': cfg['interval'],
+            'status': st,
+            'next_report_in': max(0, int(_wardrift_mesh['next_report'] - time.time()))
+                              if st.get('state') == 'connected' else None,
+            'link': {'connected': lst.get('running'), 'port': lst.get('port'),
+                     'host': lst.get('host'), 'owner': lst.get('owner'),
+                     'firmware': (lst.get('info') or {}).get('firmware')},
+            'node': meshtastic_node.link().local_report() if lst.get('running') else None,
+            'ports': _wardrift_mesh_ports() if cfg['conn'] == 'usb' else [],
+        })
+    except Exception as e:
+        logger.error(f"Wardrift mesh config error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+if shared_data.config.get('wardrift_mesh_enabled'):
+    _wardrift_mesh_start_worker()
 
 
 @app.route('/api/wardriving/gps')

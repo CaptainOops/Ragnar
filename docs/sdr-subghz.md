@@ -149,9 +149,14 @@ those are marked "~" / "default" — scan the band for the actual chirps.
 
 The spectrum overlay shows *where* a LoRa mesh is; the **Mesh Nodes** page
 (`/mesh-nodes`, `meshtastic_node.py`) shows *who's on it*. A cheap Meshtastic
-device (Heltec / RAK / LILYGO T-Beam …) plugged into **USB** does the LoRa
-demodulation in hardware, and the `meshtastic` Python API hands Ragnar the
-decoded mesh:
+device (Heltec / RAK / LILYGO T-Beam …) plugged into **USB** (or reached over
+**WiFi** on TCP 4403) does the LoRa demodulation in hardware, and the
+`meshtastic` Python API hands Ragnar the decoded mesh. USB auto-detect only
+considers Meshtastic USB chips that no other component holds. It never takes
+a GPS (u-blox/Prolific) or the CYD port, and it asks you to pick when several
+qualify. The meshtastic library's own auto-detect would otherwise fall back to
+*any* serial port, so it isn't used. The same link feeds the
+[Wardrift mesh reporter](wardriving.md#wardrift-mesh-node-meshtastic):
 
 - **Node DB** — id, long/short name, hardware model, role, SNR, hops away,
   battery/voltage, GPS position, last-heard. Plotted on a compact node radar

@@ -66,8 +66,11 @@ The transport is chosen at compile time (`CYD_TRANSPORT_SERIAL` in `config.h`):
   `gps`/`gnss`, Prolific BU-353), and it only falls back to a bare
   `ttyUSB*`/`ttyACM*` when that port has no by-id name. The bridge publishes
   the port it holds and wardriving skips it, so claiming a GPS here would hide
-  the GPS from wardriving ("GPS: no"). If your CYD uses some other bridge
-  chip, set the port explicitly.
+  the GPS from wardriving ("GPS: no"). It also skips any port another
+  component holds (`serial_claims.py`), e.g. a Meshtastic Heltec V3 on the
+  same CP2102 chip. If the Meshtastic link later pins an auto-detected port,
+  the bridge hands it back. If your CYD uses some other bridge chip, or shares
+  a chip type with another device, set the port explicitly.
 
 - **WiFi (`=0`) — legacy, limited.** The node joins WiFi and calls the REST API
   below, authenticated by a Bearer device token, provisioned via the on-device

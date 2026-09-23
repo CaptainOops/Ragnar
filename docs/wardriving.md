@@ -527,6 +527,7 @@ Falls back to linear when either endpoint speed is NULL or both are zero. The ch
 | POST | `/api/wardriving/wardrift/signin` | Sign in to Wardrift (`username`, `password`); stores only the session token |
 | POST | `/api/wardriving/wardrift/signout` | Forget the Wardrift session token |
 | GET | `/api/wardriving/wardrift/dashboard` | Proxy of Wardrift `GET /v1/dashboard` (character level, EXP, currency, route stats) |
+| GET/POST | `/api/wardriving/wardrift/mesh` | Mesh-node reporter status (node, link, ports, last report) / settings: `enabled`, `key`, `conn` (`usb`\|`wifi`), `port`, `host`, `interval`, `report_now` |
 
 > **Mutually exclusive with On-Screen Network Diagnostic mode.** Both take over
 > the e-Paper panel and HAT keys, so starting wardriving turns Network Diagnostic
@@ -671,7 +672,49 @@ the same `sequence_no`. Sequences are seeded from wall-clock seconds, so losing
 the state file can't replay a lower number, and a server "replay" rejection gets
 one retry with a fresh, higher sequence. Envelopes are sent with an empty
 `signature`, so a key with a registered Ed25519 device key server-side will be
-rejected. Mesh node telemetry (`/v1/ingest/mesh`) isn't wired up yet.
+rejected.
+
+#### Wardrift mesh node (Meshtastic)
+Wardrift also rewards running **Meshtastic** nodes (Mesh XP, currency and hex
+influence), but stock Meshtastic firmware can't make HTTP calls, so something
+has to report on the node's behalf. The **Mesh node** section of the Wardrift
+card makes Ragnar that uplink:
+
+1. Connect the node: **USB cable** into the Pi (auto-detected, or pick the
+   port), or **WiFi**. For WiFi, turn on the node's WiFi and enter its IP, e.g.
+   `192.168.1.50`; the Meshtastic API is on TCP 4403.
+2. Paste the node's **node-bound** Wardrift key (a character key is rejected),
+   pick an interval (2–30 min) and tick **Report this node**.
+
+Every interval Ragnar reads the node's own telemetry: uptime, battery/voltage,
+channel utilisation, TX airtime, nodes heard, and LocalStats packet counters
+(TX/RX/bad/relayed/relay-cancelled/dupes). It POSTs that to
+`/v1/ingest/mesh`, with the node id, name, hardware model and firmware in
+`metadata`. The counters are cumulative on the node, so Ragnar sends the
+difference since the previous report. The first report after setup has no
+baseline and omits them; a node reboot restarts the baseline. A failed report
+is retried with the same `idempotency_key` + `sequence_no`. The card shows
+the node, the connection, the last report and the XP/currency earned.
+
+The connection is the same one the **Mesh Nodes** page uses (one node, one
+link). If you connected the node there first, the reporter shares it instead
+of opening a second one.
+
+**Serial port safety.** Every component that opens a USB serial port
+publishes what it holds in `serial_claims.py`, and every auto-detect skips the
+others' ports:
+
+| Component | Holds | Skips |
+|-----------|-------|-------|
+| Wardriving GPS (and the device gpsd is pinned to) | the GPS | CYD, Meshtastic |
+| Wardriving companion monitor (HuginnESP/Piglet) | companion ports | CYD, Meshtastic |
+| CYD serial bridge | its CYD port | GPS, Meshtastic (wardriving yields to it) |
+| Meshtastic link | the node's port | GPS, CYD, companions |
+
+A Heltec V4 is an ESP32-S3 like a HuginnESP. Auto-detect therefore only picks
+a Meshtastic port when exactly one free candidate exists, and asks you to pick
+one otherwise. Picking a port a wardriving companion listener holds makes the
+wardriving monitor release it; the GPS and CYD ports are never taken.
 
 ### Survey report (HTML → PDF)
 A self-contained, printable **Wi-Fi survey report** — the "Report" link on each

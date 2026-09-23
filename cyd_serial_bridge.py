@@ -50,13 +50,29 @@ def _gps_keywords():
         return ('gps', 'u-blox', 'ublox', 'nmea', 'gnss', 'bn-', 'vk-')
 
 
-def detect_port():
+def _foreign_ports():
+    """Ports other Ragnar components hold right now (see serial_claims.py).
+
+    Wardriving companion listeners are not counted: wardriving yields a port
+    to the CYD (its USB monitor drops ports the CYD publishes), so the CYD
+    must still be able to take one the monitor grabbed first."""
+    try:
+        import serial_claims
+        return serial_claims.claimed(exclude_owner=('cyd', 'wardrive-companions'))
+    except Exception:
+        return set()
+
+
+def detect_port(exclude=None):
     """First CP210x/CH340-style device a CYD presents, or None.
 
     Prefers the stable /dev/serial/by-id path and only accepts the USB-UART
-    bridges CYDs ship with - never anything that names itself a GPS. The bare
-    ttyUSB*/ttyACM* fallback only considers ports with NO by-id link (an
-    identified device that didn't match above is somebody else's port)."""
+    bridges CYDs ship with - never anything that names itself a GPS, nor a
+    port in ``exclude`` (held by another component, e.g. a Meshtastic Heltec
+    V3 on the same CP2102 chip). The bare ttyUSB*/ttyACM* fallback only
+    considers ports with NO by-id link (an identified device that didn't
+    match above is somebody else's port)."""
+    exclude = set(exclude or ())
     gps_kw = _gps_keywords()
     identified = set()
     for link in sorted(glob.glob('/dev/serial/by-id/*')):
@@ -68,11 +84,14 @@ def detect_port():
         low = os.path.basename(link).lower()
         if any(h in low for h in gps_kw) or any(h in low for h in _NOT_CYD_HINTS):
             continue
+        if real in exclude:
+            continue
         if any(h in low for h in _CYD_BYID_HINTS):
             return real
     cands = sorted(glob.glob('/dev/ttyUSB*')) + sorted(glob.glob('/dev/ttyACM*'))
     for c in cands:
-        if os.path.realpath(c) not in identified:
+        real = os.path.realpath(c)
+        if real not in identified and real not in exclude:
             return c
     return None
 
@@ -183,7 +202,7 @@ class CydSerialBridge:
                 continue
             # A configured port (e.g. /dev/serial0 for the GPIO-UART wiring) wins;
             # otherwise auto-detect a USB device.
-            port = self._configured_port() or detect_port()
+            port = self._configured_port() or detect_port(exclude=_foreign_ports())
             if not port:
                 self._teardown('no port (set one, or plug in a USB CYD)')
                 time.sleep(2.0)
@@ -261,12 +280,20 @@ class CydSerialBridge:
         next_mesh = 0.0
         next_wifi = 0.0
         opened_on = self.port
+        next_claim_check = 0.0
         while not self._stop.is_set() and self._safe_enabled():
             # If the operator points us at a different explicit port, drop this
             # session so _run reopens on the new one.
             cfg = self._configured_port()
             if cfg and cfg != opened_on:
                 break
+            # An auto-detected port that another component has since reserved
+            # (e.g. the Meshtastic link pinned to it) is not ours - hand it back.
+            if not cfg and time.time() >= next_claim_check:
+                next_claim_check = time.time() + 2.0
+                if os.path.realpath(opened_on or '') in _foreign_ports():
+                    self.last_error = 'port reserved by another device (set the CYD port explicitly)'
+                    break
             # ── inbound: drain available bytes, split on newline ──────────────
             try:
                 n = ser.in_waiting

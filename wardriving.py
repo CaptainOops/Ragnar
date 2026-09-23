@@ -1930,6 +1930,14 @@ class WardrivingEngine:
         # Multi-companion support: one _CompanionState per USB-serial port.
         # Keyed by port path (e.g. '/dev/ttyACM0').
         self._companions: dict[str, _CompanionState] = {}
+        # Publish the serial ports this engine holds so the CYD bridge and the
+        # Meshtastic link never open them (see serial_claims.py).
+        try:
+            import serial_claims
+            serial_claims.register('wardrive-companions', lambda: list(self._companions.keys()))
+            serial_claims.register('wardrive-gps', self._held_gps_ports)
+        except Exception:
+            pass
         self._esp_stations = []
 
     # ------------------------------------------------------------------
@@ -2006,6 +2014,27 @@ class WardrivingEngine:
         for c in self._companions.values():
             alerts.extend(c.esp_alerts)
         return sorted(alerts, key=lambda a: a.get('time', 0))
+
+    def _held_gps_ports(self):
+        """GPS ports this engine (or the gpsd it pins) holds - for serial_claims."""
+        ports = []
+        gps = getattr(self, '_gps', None)
+        port = getattr(gps, 'port', None) if gps is not None else None
+        if port and port != 'gpsd':
+            ports.append(port)
+        pinned = self._gpsd_configured_realpath()
+        if pinned and os.path.exists(pinned):
+            ports.append(pinned)
+        return ports
+
+    @staticmethod
+    def _foreign_ports():
+        """realpaths held by other components (CYD bridge, Meshtastic link, ...)."""
+        try:
+            import serial_claims
+            return serial_claims.claimed(exclude_owner='wardrive-*')
+        except Exception:
+            return set()
 
     def _gpsd_configured_realpath(self):
         """realpath of the device gpsd is currently pinned to, or None.
@@ -2131,6 +2160,7 @@ class WardrivingEngine:
         import glob as _glob
         _raw_candidates = sorted(_glob.glob('/dev/ttyACM*') + _glob.glob('/dev/ttyUSB*'))
         esp_exclude = {p for p in _raw_candidates if self._port_is_espressif(p)}
+        esp_exclude |= self._foreign_ports()
 
         # If gpsd is installed, make sure it's running and pinned to the current
         # USB GPS (any puck, hot-swap aware). gps_manager auto-detection then
@@ -2769,23 +2799,17 @@ class WardrivingEngine:
         while self._running:
             try:
                 present = self._enumerate_serial_devices()
-                # Never touch the CYD's own serial-bridge port. The CYD is an
-                # ESP32 on a CH340/CP2102 bridge, so it classifies as a
-                # 'companion' and this monitor would open /dev/ttyUSB0 in
-                # parallel with the CYD serial bridge — the two readers then
-                # split the CYD's byte stream, so status frames (wardrive
-                # running/stopped etc.) reach the screen garbled or not at all.
-                # Drop it here: if it was already attached, it drops out of
-                # `present` and the removal path below stops that listener,
-                # handing the port back to the bridge.
-                cyd_port = getattr(self.shared_data, 'cyd_serial_active_port', None)
-                if cyd_port:
-                    try:
-                        cyd_real = os.path.realpath(cyd_port)
-                        present = {k: v for k, v in present.items()
-                                   if os.path.realpath(v) != cyd_real}
-                    except Exception:
-                        pass
+                # Never touch a port another component holds. The CYD is an
+                # ESP32 on a CH340/CP2102 bridge and a Meshtastic Heltec is an
+                # ESP32-S3, so both classify as a 'companion' and this monitor
+                # would open them in parallel with their owner — the two readers
+                # then split the byte stream. Drop them here: if one was already
+                # attached, it drops out of `present` and the removal path below
+                # stops that listener, handing the port back to its owner.
+                foreign = self._foreign_ports()
+                if foreign:
+                    present = {k: v for k, v in present.items()
+                               if os.path.realpath(v) not in foreign}
                 managed = self._managed_devices
 
                 # Removals: a managed device id is no longer present.
@@ -2941,11 +2965,9 @@ class WardrivingEngine:
                     try:
                         from gps_manager import detect_gps_device
                         exclude = set(self._companions.keys())
-                        # Also skip the CYD's serial port (published by its bridge)
-                        # so the NMEA probe doesn't steal the console's bytes.
-                        cyd_port = getattr(self.shared_data, 'cyd_serial_active_port', None)
-                        if cyd_port:
-                            exclude.add(cyd_port)
+                        # Also skip ports other components hold (CYD bridge,
+                        # Meshtastic link) so the NMEA probe doesn't steal bytes.
+                        exclude |= self._foreign_ports()
                         det = detect_gps_device(exclude_ports=exclude or None)
                     except Exception:
                         det = None

@@ -7718,6 +7718,45 @@
                             </div>
                             <div class="text-xs text-gray-500 mt-2">Then use the <span class="text-amber-400">↑ Wardrift</span> button on each session below, or pick Wardrift in auto-upload above.</div>
                             <div id="wd-wardrift-result" class="text-xs mt-2 hidden"></div>
+
+                            <!-- Wardrift mesh node: Ragnar is the uplink for a Meshtastic node -->
+                            <div class="border-t border-slate-700 mt-4 pt-3">
+                                <div class="flex items-center justify-between gap-2 flex-wrap mb-2">
+                                    <h5 class="text-sm font-medium">Mesh node (Meshtastic)</h5>
+                                    <span id="wd-wdm-badge" class="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400">Off</span>
+                                </div>
+                                <div class="text-xs text-gray-400 mb-3">
+                                    Meshtastic firmware can't reach Wardrift by itself, so Ragnar reads your node and reports its health (uptime, battery, airtime, packets relayed) for Mesh XP and influence. Plug it into the Pi over USB, or turn on the node's WiFi and enter its address. Needs a <span class="text-amber-400">node</span> key; character keys are rejected.
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                                    <select id="wd-wdm-conn" onchange="_wdmConnChanged()" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                        <option value="usb">USB cable (serial)</option>
+                                        <option value="wifi">WiFi (node's IP address)</option>
+                                    </select>
+                                    <select id="wd-wdm-port" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                        <option value="">Auto-detect port</option>
+                                    </select>
+                                    <input type="text" id="wd-wdm-host" placeholder="Node IP, e.g. 192.168.1.50 (port 4403)" class="hidden bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                    <input type="password" id="wd-wdm-key" placeholder="Node API key (wdk_…)" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                    <select id="wd-wdm-interval" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                        <option value="120">Report every 2 min</option>
+                                        <option value="300">Report every 5 min</option>
+                                        <option value="600">Report every 10 min</option>
+                                        <option value="900">Report every 15 min</option>
+                                        <option value="1800">Report every 30 min</option>
+                                    </select>
+                                </div>
+                                <div class="flex gap-2 items-center flex-wrap">
+                                    <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                                        <input type="checkbox" id="wd-wdm-enabled" class="accent-amber-500">
+                                        <span>Report this node</span>
+                                    </label>
+                                    <button onclick="saveWardriftMesh()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Save</button>
+                                    <button onclick="saveWardriftMesh(true)" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Report now</button>
+                                </div>
+                                <div id="wd-wdm-node" class="text-xs text-gray-400 mt-2"></div>
+                                <div id="wd-wdm-msg" class="text-xs mt-1"></div>
+                            </div>
                         </div>
 
                         <!-- Serial ESP32 Listener Card -->
@@ -8727,7 +8766,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260923-wardrift"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260923-wardrift-mesh"></script>
 
 
 

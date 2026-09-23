@@ -31421,6 +31421,130 @@ async function loadWardriveUploadConfig() {
     const aus = document.getElementById('wd-auto-upload-status');
     if (aus) aus.textContent = (d.auto_upload ? '✓ on' : '') + (d.pending ? ` · ${d.pending} queued` : '');
     _renderWardriftConfig(d);
+    loadWardriftMesh();
+}
+
+// ---- Wardrift mesh node: Ragnar reports a Meshtastic node (USB or WiFi) to /v1/ingest/mesh
+let _wdmFormFilled = false, _wdmTimer = null;
+
+function _wdmConnChanged() {
+    const wifi = document.getElementById('wd-wdm-conn')?.value === 'wifi';
+    document.getElementById('wd-wdm-port')?.classList.toggle('hidden', wifi);
+    document.getElementById('wd-wdm-host')?.classList.toggle('hidden', !wifi);
+}
+
+function _wdmAgo(ts) {
+    if (!ts) return 'never';
+    const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+async function loadWardriftMesh(fillForm) {
+    let d;
+    try {
+        const r = await fetch('/api/wardriving/wardrift/mesh');
+        d = await r.json();
+        if (!r.ok) return;
+    } catch (e) { return; }
+    const st = d.status || {};
+    const badge = document.getElementById('wd-wdm-badge');
+    if (badge) {
+        const map = {
+            connected: ['Reporting', 'bg-emerald-900/60 text-emerald-300'],
+            connecting: ['Connecting…', 'bg-amber-900/60 text-amber-300'],
+            error: ['Problem', 'bg-red-900/60 text-red-300'],
+            'no key': ['Key missing', 'bg-amber-900/60 text-amber-300'],
+        };
+        const [txt, cls] = d.enabled ? (map[st.state] || ['Starting…', 'bg-gray-700 text-gray-400']) : ['Off', 'bg-gray-700 text-gray-400'];
+        badge.textContent = txt;
+        badge.className = 'text-xs px-2 py-0.5 rounded-full ' + cls;
+    }
+    // Port list refreshes every time (plug/unplug), keeping the current choice.
+    const portSel = document.getElementById('wd-wdm-port');
+    if (portSel) {
+        const keep = _wdmFormFilled ? portSel.value : (d.port || '');
+        portSel.innerHTML = '<option value="">Auto-detect port</option>' + (d.ports || []).map(p =>
+            `<option value="${escapeHtml(p.port)}"${p.usable ? '' : ' disabled'}>${escapeHtml(p.port)}${p.note ? ' — ' + escapeHtml(p.note) : ''}</option>`).join('');
+        if (keep && ![...portSel.options].some(o => o.value === keep)) {
+            portSel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(keep)}">${escapeHtml(keep)} — not present</option>`);
+        }
+        portSel.value = keep;
+    }
+    // Only fill the form once (or after a save) so polling never clobbers typing.
+    if (!_wdmFormFilled || fillForm) {
+        _wdmFormFilled = true;
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+        set('wd-wdm-conn', d.conn || 'usb');
+        set('wd-wdm-host', d.host || '');
+        set('wd-wdm-interval', String(d.interval || 300));
+        const en = document.getElementById('wd-wdm-enabled'); if (en) en.checked = !!d.enabled;
+        const key = document.getElementById('wd-wdm-key');
+        if (key) key.placeholder = d.key_configured ? 'Node key saved — paste to replace' : 'Node API key (wdk_…)';
+        _wdmConnChanged();
+    }
+    const nodeEl = document.getElementById('wd-wdm-node');
+    if (nodeEl) {
+        const n = d.node, l = d.link || {}, tot = st.totals || {};
+        const parts = [];
+        if (l.connected) {
+            const via = l.host ? `WiFi ${l.host}` : `USB ${l.port || ''}`;
+            const name = n && (n.long_name || n.node_id) ? `${n.long_name || n.node_id}${n.hw_model ? ' (' + n.hw_model + ')' : ''}` : 'Meshtastic node';
+            parts.push(`<span class="text-emerald-400">●</span> ${escapeHtml(name)} via ${escapeHtml(via)}${l.owner && l.owner !== 'wardrift' ? ' · shared with RF Waterfall' : ''}`);
+            if (n) {
+                const bits = [];
+                if (n.battery_level != null) bits.push(`battery ${n.battery_level}%`);
+                if (n.channel_utilization != null) bits.push(`ch util ${Number(n.channel_utilization).toFixed(1)}%`);
+                if (n.num_online_nodes != null) bits.push(`${n.num_online_nodes} nodes heard`);
+                if (bits.length) parts.push(escapeHtml(bits.join(' · ')));
+            }
+        }
+        if (d.enabled) {
+            parts.push(`Last report: ${_wdmAgo(st.last_report_at)}${st.last_ok === false ? ' (failed)' : ''}` +
+                (d.next_report_in != null ? ` · next in ${d.next_report_in}s` : '') +
+                (tot.reports ? ` · ${tot.reports} sent, +${tot.exp || 0} XP, +${tot.currency || 0} currency` : ''));
+        }
+        nodeEl.innerHTML = parts.join('<br>');
+    }
+    const msg = document.getElementById('wd-wdm-msg');
+    if (msg && !msg.dataset.sticky) {
+        msg.textContent = d.enabled && st.error ? st.error : '';
+        msg.className = 'text-xs mt-1 text-red-400';
+    }
+    // Keep the status live while the card is on screen.
+    clearTimeout(_wdmTimer);
+    if (document.getElementById('wd-wdm-badge')?.offsetParent) _wdmTimer = setTimeout(() => loadWardriftMesh(), 10000);
+}
+
+async function saveWardriftMesh(reportNow) {
+    const g = id => document.getElementById(id);
+    const body = {
+        conn: g('wd-wdm-conn')?.value || 'usb',
+        port: g('wd-wdm-port')?.value || '',
+        host: (g('wd-wdm-host')?.value || '').trim(),
+        interval: parseInt(g('wd-wdm-interval')?.value || '300', 10),
+        enabled: !!g('wd-wdm-enabled')?.checked,
+    };
+    const key = (g('wd-wdm-key')?.value || '').trim();
+    if (key) body.key = key;
+    if (reportNow) { body.report_now = true; body.enabled = true; }
+    const msg = g('wd-wdm-msg');
+    try {
+        const r = await fetch('/api/wardriving/wardrift/mesh', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+        if (g('wd-wdm-key')) g('wd-wdm-key').value = '';
+        if (msg) {
+            msg.textContent = reportNow ? 'Reporting now…' : 'Saved.';
+            msg.className = 'text-xs mt-1 text-emerald-400';
+            msg.dataset.sticky = '1';
+            setTimeout(() => { delete msg.dataset.sticky; }, 4000);
+        }
+        loadWardriftMesh(true);
+    } catch (e) {
+        if (msg) { msg.textContent = 'Save failed: ' + e.message; msg.className = 'text-xs mt-1 text-red-400'; }
+    }
 }
 
 // ---- Wardrift (wardrift.net): session sign-in -> route uploads + stats; API key -> signal ingest

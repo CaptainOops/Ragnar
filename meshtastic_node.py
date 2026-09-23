@@ -110,6 +110,82 @@ def _serial_ports():
     return sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
 
 
+# USB vendor IDs of chips Meshtastic boards use (Espressif native USB, Adafruit/
+# RAK nRF52, Silicon Labs CP210x, QinHeng CH340/CH9102, Seeed).
+_MESH_VIDS = {0x303A, 0x239A, 0x10C4, 0x1A86, 0x2886}
+# Never a Meshtastic node: u-blox GPS, Prolific (BU-353 GPS pucks).
+_NOT_MESH_VIDS = {0x1546, 0x067B}
+_GPS_WORDS = ('gps', 'gnss', 'u-blox', 'ublox', 'nmea')
+
+
+def _foreign_ports(allow_wardrive_companions=False):
+    """Ports other Ragnar components hold (see serial_claims.py)."""
+    try:
+        import serial_claims
+        excl = ('meshtastic', 'wardrive-companions') if allow_wardrive_companions else 'meshtastic'
+        return serial_claims.claims(exclude_owner=excl)
+    except Exception:
+        return {}
+
+
+def classify_mesh_candidates(ports, foreign):
+    """Pure: [(device, vid, desc)] + {realpath: owner} -> (candidates, skipped).
+
+    A candidate is a port on a Meshtastic-style USB chip that nobody else holds
+    and doesn't name itself a GPS. ``skipped`` explains every rejected port."""
+    cands, skipped = [], []
+    for dev, vid, desc in ports:
+        real = os.path.realpath(dev)
+        low = (desc or '').lower()
+        if real in foreign:
+            skipped.append((dev, 'in use by %s' % foreign[real]))
+        elif vid in _NOT_MESH_VIDS or any(w in low for w in _GPS_WORDS):
+            skipped.append((dev, 'GPS receiver'))
+        elif vid not in _MESH_VIDS:
+            skipped.append((dev, 'not a Meshtastic USB chip'))
+        else:
+            cands.append(dev)
+    return cands, skipped
+
+
+def _list_usb_serial():
+    """[(device, vid, description)] without opening any port."""
+    try:
+        from serial.tools import list_ports
+        return [(p.device, p.vid, ' '.join(filter(None, (p.manufacturer, p.product, p.description))))
+                for p in list_ports.comports() if p.vid is not None]
+    except Exception:
+        return [(d, None, '') for d in _serial_ports()]
+
+
+def pick_serial_port():
+    """Auto-pick the Meshtastic node's port -> (port, error).
+
+    Unlike the meshtastic library's own auto-detect (which falls back to ANY
+    non-blacklisted port - a u-blox GPS included), this only considers
+    Meshtastic USB chips that no other component holds, and refuses to guess
+    when several qualify (a Heltec and a HuginnESP are both ESP32-S3)."""
+    cands, skipped = classify_mesh_candidates(_list_usb_serial(), _foreign_ports())
+    if len(cands) == 1:
+        return cands[0], None
+    if not cands:
+        why = '; '.join('%s: %s' % s for s in skipped)
+        return None, 'no free Meshtastic node on USB' + (' (%s)' % why if why else '')
+    return None, 'several possible Meshtastic ports (%s) - pick one' % ', '.join(cands)
+
+
+def parse_host(host):
+    """'host' or 'host:port' -> (host, port) or (None, None) if malformed."""
+    import re as _re
+    m = _re.match(r'^\s*([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::(\d{1,5}))?\s*$', host or '')
+    if not m:
+        return None, None
+    port = int(m.group(2)) if m.group(2) else 4403
+    if not 0 < port < 65536:
+        return None, None
+    return m.group(1).strip('[]'), port
+
+
 def detect():
     """Report Meshtastic capability.
 
@@ -216,6 +292,12 @@ class MeshLink:
         self._info = {}
         self._error = None
         self._connected = False
+        self._port = None        # serial device we hold (realpath)
+        self._host = None        # "host:port" when connected over WiFi/TCP
+        self._reserved = None    # port pinned before opening (others must yield)
+        self._owner = None       # who started the link ('user', 'wardrift', ...)
+        self._local_stats = {}   # latest LocalStats telemetry from our own node
+        self._local_stats_ts = 0.0
 
     def status(self):
         with self._lock:
@@ -224,7 +306,19 @@ class MeshLink:
                     "messages": len(self._messages),
                     "my_num": self._my_num,
                     "info": self._info,
+                    "port": self._port, "host": self._host, "owner": self._owner,
                     "error": self._error}
+
+    def claimed_port(self):
+        """Serial port this link holds or has reserved (for serial_claims)."""
+        with self._lock:
+            return self._port or self._reserved
+
+    def target(self):
+        with self._lock:
+            if not self._connected:
+                return None
+            return ("tcp", self._host) if self._host else ("serial", self._port)
 
     def nodes(self):
         with self._lock:
@@ -236,7 +330,32 @@ class MeshLink:
         with self._lock:
             return {"messages": list(self._messages), "count": len(self._messages)}
 
+    def _take_local_stats(self, packet):
+        """Keep LocalStats telemetry that our own node reports."""
+        try:
+            dec = (packet or {}).get("decoded") or {}
+            if dec.get("portnum") not in ("TELEMETRY_APP", 67):
+                return
+            ls = (dec.get("telemetry") or {}).get("localStats")
+            if ls and (self._my_num is None or packet.get("from") == self._my_num):
+                with self._lock:
+                    self._local_stats = dict(ls)
+                    self._local_stats_ts = time.time()
+        except Exception:
+            pass
+
+    def _on_lost(self, interface=None):  # pragma: no cover - hw
+        if interface is not None and interface is not self._iface:
+            return
+        with self._lock:
+            self._connected = False
+            self._error = "connection to the Meshtastic node lost"
+            self._port = None
+
     def _on_receive(self, packet=None, interface=None):  # pragma: no cover - hw
+        if interface is not None and self._iface is not None and interface is not self._iface:
+            return
+        self._take_local_stats(packet)
         try:
             dec = (packet or {}).get("decoded") or {}
             if dec.get("portnum") not in ("TEXT_MESSAGE_APP", 1):
@@ -266,7 +385,9 @@ class MeshLink:
             with self._lock:
                 self._error = "node refresh failed: %s" % exc
 
-    def start(self, port=None):  # pragma: no cover - hardware path
+    def start(self, port=None, host=None, owner="user"):  # pragma: no cover - hardware path
+        """Connect to a node over USB serial (``port``; None = safe auto-pick)
+        or over WiFi/TCP (``host`` = 'ip' or 'ip:port', default port 4403)."""
         with self._lock:
             if self._connected:
                 return {"ok": True, "already": True}
@@ -275,16 +396,61 @@ class MeshLink:
         try:
             import meshtastic
             import meshtastic.serial_interface
+            import meshtastic.tcp_interface
             from pubsub import pub
         except Exception as exc:
             return {"ok": False, "error": "meshtastic import failed: %s" % exc}
         self._stop.clear()
         self._error = None
-        try:
-            self._iface = meshtastic.serial_interface.SerialInterface(devPath=port)
-        except Exception as exc:
-            self._iface = None
-            return {"ok": False, "error": "could not open Meshtastic node: %s" % exc}
+        old = self._iface            # a dead link (connection lost) - release it
+        self._iface = None
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        if host:
+            h, hp = parse_host(host)
+            if not h:
+                return {"ok": False, "error": "bad host (use ip or ip:port)"}
+            try:
+                self._iface = meshtastic.tcp_interface.TCPInterface(hostname=h, portNumber=hp, timeout=20)
+            except Exception as exc:
+                self._iface = None
+                return {"ok": False, "error": "could not reach Meshtastic node at %s:%s: %s" % (h, hp, exc)}
+            with self._lock:
+                self._host, self._port = "%s:%s" % (h, hp), None
+        else:
+            if not port:
+                port, err = pick_serial_port()
+                if not port:
+                    return {"ok": False, "error": err}
+            real = os.path.realpath(port)
+            # GPS / CYD ports are never taken. A wardriving companion listener
+            # yields: reserve the port, then give its USB monitor a moment to
+            # drop it before we open.
+            hard = _foreign_ports(allow_wardrive_companions=True)
+            if real in hard:
+                return {"ok": False, "error": "%s is in use by %s" % (port, hard[real])}
+            with self._lock:
+                self._reserved = real
+            for _ in range(12):
+                if real not in _foreign_ports():
+                    break
+                time.sleep(0.5)
+            else:
+                with self._lock:
+                    self._reserved = None
+                return {"ok": False, "error": "%s is still held by another reader" % port}
+            try:
+                self._iface = meshtastic.serial_interface.SerialInterface(devPath=port)
+            except Exception as exc:
+                self._iface = None
+                with self._lock:
+                    self._reserved = None
+                return {"ok": False, "error": "could not open Meshtastic node: %s" % exc}
+            with self._lock:
+                self._port, self._host = real, None
         # our own node number + basic info
         try:
             mine = getattr(self._iface, "myInfo", None)
@@ -295,13 +461,77 @@ class MeshLink:
             pass
         try:
             pub.subscribe(self._on_receive, "meshtastic.receive")
+            pub.subscribe(self._on_lost, "meshtastic.connection.lost")
         except Exception:
             pass
-        self._connected = True
+        with self._lock:
+            self._connected = True
+            self._owner = owner
+            self._local_stats, self._local_stats_ts = {}, 0.0
         self._refresh_nodes()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="mesh-link")
         self._thread.start()
-        return {"ok": True}
+        return {"ok": True, "port": self._port, "host": self._host}
+
+    def request_local_stats(self):  # pragma: no cover - hardware path
+        """Ask our own node for fresh LocalStats (non-blocking; the reply lands
+        in _take_local_stats). Older firmware may not answer - that's fine."""
+        with self._lock:
+            iface, me = self._iface, self._my_num
+            if not (iface and self._connected and me is not None):
+                return False
+        try:
+            from meshtastic.protobuf import portnums_pb2, telemetry_pb2
+            t = telemetry_pb2.Telemetry()
+            t.local_stats.CopyFrom(telemetry_pb2.LocalStats())
+            iface.sendData(t, destinationId=me, portNum=portnums_pb2.PortNum.TELEMETRY_APP,
+                           wantResponse=True, onResponse=self._take_local_stats)
+            return True
+        except Exception:
+            return False
+
+    def local_report(self):
+        """Our own node's health, shaped like Wardrift's mesh report item.
+
+        Packet counters are CUMULATIVE since the node booted (callers diff
+        them per report window). Missing values are None."""
+        with self._lock:
+            if not self._connected:
+                return None
+            ls, ls_ts, me = dict(self._local_stats), self._local_stats_ts, self._my_num
+            raw_nodes = dict(getattr(self._iface, "nodes", None) or {})
+        mine = next((n for n in raw_nodes.values() if n.get("num") == me), {}) if me is not None else {}
+        dm = mine.get("deviceMetrics") or {}
+        ls = ls or dict(mine.get("localStats") or {})
+        pos = normalize_node(mine, my_num=me) if mine else {}
+        now = time.time()
+        online = sum(1 for n in raw_nodes.values()
+                     if n.get("num") != me and (now - (n.get("lastHeard") or 0)) < 7200)
+
+        def pick(*vals):
+            return next((v for v in vals if v is not None), None)
+
+        return {
+            "node_id": (pos or {}).get("id"),
+            "long_name": (pos or {}).get("long_name"),
+            "hw_model": (pos or {}).get("hw_model"),
+            "firmware": self._info.get("firmware"),
+            "lat": (pos or {}).get("lat"), "lon": (pos or {}).get("lon"),
+            "uptime_seconds": pick(ls.get("uptimeSeconds"), dm.get("uptimeSeconds")),
+            "battery_level": dm.get("batteryLevel"),
+            "voltage": dm.get("voltage"),
+            "channel_utilization": pick(ls.get("channelUtilization"), dm.get("channelUtilization")),
+            "air_util_tx": pick(ls.get("airUtilTx"), dm.get("airUtilTx")),
+            "num_packets_tx": ls.get("numPacketsTx"),
+            "num_packets_rx": ls.get("numPacketsRx"),
+            "num_packets_rx_bad": ls.get("numPacketsRxBad"),
+            "num_tx_relay": ls.get("numTxRelay"),
+            "num_tx_relay_canceled": ls.get("numTxRelayCanceled"),
+            "num_rx_dupe": ls.get("numRxDupe"),
+            "num_online_nodes": pick(ls.get("numOnlineNodes"), online),
+            "num_total_nodes": pick(ls.get("numTotalNodes"), max(len(raw_nodes) - 1, 0)),
+            "local_stats_age": (now - ls_ts) if ls_ts else None,
+        }
 
     def _loop(self):  # pragma: no cover - hardware path
         while not self._stop.is_set():
@@ -345,6 +575,7 @@ class MeshLink:
         with self._lock:
             self._iface = None
             self._connected = False
+            self._port = self._host = self._reserved = self._owner = None
         return {"ok": True}
 
 
@@ -710,11 +941,32 @@ _link = MeshLink()
 _mqtt = MeshMqtt()
 
 
-def start(port=None):
+def start(port=None, host=None, owner="user"):
+    if host:
+        if not _have_meshtastic():
+            return {"ok": False, "error": "meshtastic package not installed"}
+        return _link.start(host=host, owner=owner)
     d = detect()
     if not d.get("available"):
         return {"ok": False, "error": d.get("error", "meshtastic unavailable")}
-    return _link.start(port=port)
+    return _link.start(port=port, owner=owner)
+
+
+def link():
+    """The shared node link (one connection, shared by the RF Waterfall mesh
+    panel and the Wardrift mesh reporter)."""
+    return _link
+
+
+def claimed_port():
+    return _link.claimed_port()
+
+
+try:  # publish our port so GPS / CYD / wardriving probes never open it
+    import serial_claims as _serial_claims
+    _serial_claims.register("meshtastic", claimed_port)
+except Exception:  # pragma: no cover
+    pass
 
 
 def stop():
