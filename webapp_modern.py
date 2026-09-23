@@ -14770,6 +14770,11 @@ def _auto_upload_recover_unfinished():
         return
     since = _ts_epoch(shared_data.config.get('wardriving_auto_upload_since'))
     if since is None:
+        # Switched on before this timestamp existed: start the clock now, so
+        # power-cut drives from here on are recovered but older ones aren't.
+        from datetime import datetime, timezone
+        shared_data.config['wardriving_auto_upload_since'] = datetime.now(timezone.utc).isoformat()
+        shared_data.save_config()
         return
     import types
     from wardriving import WardrivingEngine
