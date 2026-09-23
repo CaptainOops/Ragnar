@@ -140,8 +140,17 @@ def _wigle_time(epoch):
     return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch))
 
 
+def _csv_field(v):
+    """RFC 4180 quoting: WiGLE / WDGWars / Wardrift parse standard CSV, so a
+    comma inside an SSID must be quoted - '\\,' made them split the row there."""
+    v = '' if v is None else str(v)
+    if any(c in v for c in ',"\r\n'):
+        return '"' + v.replace('"', '""') + '"'
+    return v
+
+
 def _align_rows_to_track(recs, track):
-    """Pure: keep GPS-located rows, re-time them to the track, sort by time.
+    """Pure: keep GPS-pinned rows, re-time them to the track, sort by time.
 
     `recs` are export dicts with first/last ('YYYY-MM-DD HH:MM:SS') and
     lat/lon; `track` is [(epoch, lat, lon)] sorted by epoch. A row's position
@@ -149,7 +158,10 @@ def _align_rows_to_track(recs, track):
     so the two can be minutes and kilometres apart; route-building services
     then see the trail jump back and forth. Each row gets the track moment,
     inside its own seen window, that is closest to its position. Rows without
-    a usable position are dropped. With no track, rows keep FirstSeen.
+    a usable position are dropped, and - when the session has a track - so are
+    rows the track can't confirm (seen while the GPS had no fix): Wardrift
+    rejects a drive whose trail it "couldn't piece together". With no track at
+    all (e.g. an imported CSV), located rows keep their FirstSeen.
     FirstSeen is written in WiGLE's 'YYYY-MM-DD HH:MM:SS' (UTC) form."""
     import bisect
     import math
@@ -180,6 +192,8 @@ def _align_rows_to_track(recs, track):
                     best = (d2, track[i][0])
             if best is not None and best[0] <= _ALIGN_MAX_M ** 2:
                 when = best[1]
+            else:
+                continue                    # not pinned to a GPS fix
         if when is not None:
             r['first'] = _wigle_time(when)
         r['_t'] = when if when is not None else float('inf')
@@ -1225,13 +1239,11 @@ class WardrivingSession:
                 logger.error(f"GPS backfill error: {e}")
         return result
 
-    def export_wigle_csv(self, device_name='Ragnar', include_zigbee=False,
-                         include_backfilled=False):
+    def export_wigle_csv(self, device_name='Ragnar', include_zigbee=False):
         """Export session to WiGLE CSV format string including WiFi, BT, and cell.
 
-        `include_backfilled` controls rows flagged gps_backfilled = 1.
-
-        Only rows with a GPS position are written, as ONE time-ordered list
+        Only GPS-pinned rows are written (measured with a fix; never an
+        estimated position), as ONE time-ordered list
         across WiFi / BT / cell (not table after table), and each row's
         FirstSeen is re-timed to when we were actually at its position (see
         _align_rows_to_track). Services that rebuild the drive route from the
@@ -1243,7 +1255,7 @@ class WardrivingSession:
         user's own tooling. Set `include_zigbee=True` (opt-in from the config
         tab) to append them with a `ZIGBEE` type token."""
         lines = []
-        bf = "" if include_backfilled else "WHERE COALESCE(gps_backfilled, 0) = 0 "
+        bf = "WHERE COALESCE(gps_backfilled, 0) = 0 "
         dn = device_name or 'Ragnar'
         lines.append(f'WigleWifi-1.4,appRelease=Ragnar,model=RaspberryPi,release=1.0,device={dn},display=EPD,board=RPi,brand=Ragnar')
         lines.append(','.join(WIGLE_HEADER))
@@ -1313,19 +1325,9 @@ class WardrivingSession:
 
         recs = _align_rows_to_track(recs, [tuple(t) for t in track])
         for r in recs:
-            lines.append(','.join([
-                r['mac'],
-                r['name'].replace(',', '\\,'),
-                r['auth'],
-                r['first'],
-                r['channel'],
-                r['rssi'],
-                str(r['lat']),
-                str(r['lon']),
-                str(r['alt'] or ''),
-                str(r['acc'] or ''),
-                r['type'],
-            ]))
+            lines.append(','.join(_csv_field(v) for v in (
+                r['mac'], r['name'], r['auth'], r['first'], r['channel'], r['rssi'],
+                r['lat'], r['lon'], r['alt'] or '', r['acc'] or '', r['type'])))
         return '\n'.join(lines)
 
     def export_kml(self):

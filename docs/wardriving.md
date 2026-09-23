@@ -639,6 +639,16 @@ GPS breadcrumb trail — one row every 5 s during a session, only while GPS has 
 ### WiGLE CSV
 Standard format for uploading to wigle.net. Contains MAC, SSID, AuthMode, channel, RSSI, GPS coordinates.
 
+The export (and every upload, which uses the same file) contains only
+**GPS-pinned** rows: sightings whose position matches a real GPS fix on the
+session's track. All row types are written as one time-ordered list, each
+row's `FirstSeen` is the moment the drive was at that position (UTC,
+`YYYY-MM-DD HH:MM:SS`), and fields are standard CSV-quoted (an SSID with a
+comma is `"name,with,comma"`). Services that rebuild the drive route from the
+file, such as Wardrift, otherwise reject it ("The GPS trail has a few jumps").
+A session with no recorded track, such as an imported CSV, exports its
+located rows as they are.
+
 ### KML
 Google Earth format with network positions as markers.
 

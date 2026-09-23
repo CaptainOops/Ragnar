@@ -14276,9 +14276,7 @@ def wardriving_export(session_id):
         else:
             device_name = engine.device_name or shared_data.config.get('wardriving_device_name', 'Ragnar')
             include_zigbee = bool(shared_data.config.get('wardriving_wigle_include_zigbee', False))
-            content = session.export_wigle_csv(
-                device_name=device_name, include_zigbee=include_zigbee,
-                include_backfilled=bool(shared_data.config.get('wardriving_allow_backfill', False)))
+            content = session.export_wigle_csv(device_name=device_name, include_zigbee=include_zigbee)
             return app.response_class(
                 content, mimetype='text/csv',
                 headers={'Content-Disposition': f'attachment; filename=ragnar_wardriving_{session_id}.csv'}
@@ -14307,16 +14305,14 @@ def _wardrive_session_csv(session_id):
     session = WardrivingSession(engine.data_dir, session_id=session_id)
     device_name = engine.device_name or shared_data.config.get('wardriving_device_name', 'Ragnar')
     include_zigbee = bool(shared_data.config.get('wardriving_wigle_include_zigbee', False))
-    return session.export_wigle_csv(
-        device_name=device_name, include_zigbee=include_zigbee,
-        include_backfilled=bool(shared_data.config.get('wardriving_allow_backfill', False)))
+    return session.export_wigle_csv(device_name=device_name, include_zigbee=include_zigbee)
 
 
 def _wardrive_located_count(csv_text):
     """Count rows that carry a GPS fix (WiGLE cols 7/8 = lat/lon)."""
+    import csv
     n = 0
-    for line in csv_text.splitlines()[2:]:          # skip WigleWifi banner + header
-        parts = line.split(',')
+    for parts in csv.reader(csv_text.splitlines()[2:]):   # skip WigleWifi banner + header
         if len(parts) > 8 and parts[6].strip() and parts[7].strip():
             n += 1
     return n
@@ -14446,10 +14442,10 @@ def _wardrift_signal_items(csv_text):
     """WiGLE CSV rows -> Wardrift signal items. SSID/BSSID travel as SHA-256
     hashes only; rows without a GPS fix are dropped."""
     from datetime import datetime, timezone
+    import csv
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     items = []
-    for line in csv_text.splitlines()[2:]:          # skip WigleWifi banner + header
-        parts = [p.replace('\\,', ',') for p in re.split(r'(?<!\\),', line)]
+    for parts in csv.reader(csv_text.splitlines()[2:]):   # skip WigleWifi banner + header
         if len(parts) < 11:
             continue
         mac, ssid, _auth, first_seen, channel, rssi, lat, lon = parts[:8]
