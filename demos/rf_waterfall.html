@@ -573,6 +573,8 @@
             +'<div class="dnote">Top of the colour scale = <b>Ref level</b>, bottom = Ref − <b>Range</b>. Narrow the range to dig weak signals out; the whole waterfall recolours at once.</div>'
             +'<div class="drow"><label>Band plan</label><button class="mini bpon" aria-pressed="true" title="Show frequency allocations under the ruler">On</button>'
               +'<select class="bpreg" title="Allocations differ slightly by ITU region"><option value="1">Region 1 (Europe / Africa)</option><option value="2">Region 2 (Americas)</option><option value="3">Region 3 (Asia-Pacific)</option></select></div>'
+            +'<div class="drow"><label>Time axis</label><button class="mini tson" aria-pressed="false" title="Show clock times down the left edge of the waterfall">Off</button>'
+              +'<span class="dnote" style="margin:0">Clock labels on the left edge. Off by default so they never cover the signal.</span></div>'
           +'</fieldset>'
           +'<fieldset class="dsec dres"><legend>Resolution</legend></fieldset>'
           +'<fieldset class="dsec dcal"><legend>Level calibration</legend>'
@@ -659,6 +661,10 @@
       scopes.forEach(function(s){ var b=s.el.querySelector('.bpon'); b.setAttribute('aria-pressed',bpShow?'true':'false'); b.textContent=bpShow?'On':'Off'; s.drawBandPlan(); }); });
     bps.addEventListener('change',function(){ bpRegion=+bps.value; try{ localStorage.setItem('rfwf.bpreg',String(bpRegion)); }catch(e){}
       scopes.forEach(function(s){ s.el.querySelector('.bpreg').value=String(bpRegion); s.drawBandPlan(); }); });
+    var tsb=el.querySelector('.tson');
+    if(tsb){ tsb.setAttribute('aria-pressed',tsShow?'true':'false'); tsb.textContent=tsShow?'On':'Off';
+      tsb.addEventListener('click',function(){ tsShow=!tsShow; try{ localStorage.setItem('rfwf.tsshow',tsShow?'1':'0'); }catch(e){}
+        scopes.forEach(function(s){ var b=s.el.querySelector('.tson'); if(b){ b.setAttribute('aria-pressed',tsShow?'true':'false'); b.textContent=tsShow?'On':'Off'; } s._drawTimeGrid(); }); }); }
     this.zs=el.querySelector('.zspan'); this.zsOn=false;
     el.querySelector('.mzs').addEventListener('click',function(){ self.toggleZeroSpan(); });
     el.querySelector('.kbq').addEventListener('click',function(){ showKeys(true); });
@@ -2801,7 +2807,7 @@
     var d=this.d||1, W=this.fall.width, H=this.fall.height;
     if(cv.width!==W) cv.width=W; if(cv.height!==H) cv.height=H;
     var g=cv.getContext('2d'); g.clearRect(0,0,W,H);
-    if(this.threeD||!this.hrows.length) return;
+    if(!tsShow||this.threeD||!this.hrows.length) return;
     var S=this.STEP||1, end=this.hrows.length-1-this.scrollBack, n=Math.min(end+1,Math.ceil(H/S));
     if(n<2) return;
     var a=this.hrows[Math.max(0,end-Math.min(n-1,40))], b=this.hrows[end];
@@ -3221,8 +3227,8 @@
     [1880.0,1900.0,'DECT','DECT cordless phones','',1],[1850.0,1990.0,'PCS','cellular PCS','cell',2],[1920.0,1980.0,'2100 ↑','UMTS / LTE band 1 uplink','cell',1],[2110.0,2170.0,'2100 ↓','UMTS / LTE band 1 downlink','cell',1],
     [2400.0,2483.5,'2.4 GHz','ISM: Wi-Fi, Bluetooth, Zigbee, drones','ism',0],[2500.0,2690.0,'2600','LTE band 7 / 41','cell',0],[3400.0,3800.0,'3.5 GHz','5G NR n78','cell',1],
     [5150.0,5850.0,'5 GHz','Wi-Fi 5 GHz (UNII)','ism',0],[5725.0,5875.0,'5.8 ISM','ISM: FPV video, Wi-Fi','ism',0],[5925.0,7125.0,'6 GHz','Wi-Fi 6E','ism',0]];
-  var bpRegion=1, bpShow=true;
-  try{ var _r=+localStorage.getItem('rfwf.bpreg'); if(_r>=1&&_r<=3) bpRegion=_r; if(localStorage.getItem('rfwf.bpshow')==='0') bpShow=false; }catch(e){}
+  var bpRegion=1, bpShow=true, tsShow=false;   // clock timestamps hidden by default
+  try{ var _r=+localStorage.getItem('rfwf.bpreg'); if(_r>=1&&_r<=3) bpRegion=_r; if(localStorage.getItem('rfwf.bpshow')==='0') bpShow=false; if(localStorage.getItem('rfwf.tsshow')==='1') tsShow=true; }catch(e){}
   function bandsAt(f){ return BANDPLAN.filter(function(b){ return f>=b[0]&&f<=b[1]&&(!b[5]||b[5]===bpRegion); })
     .sort(function(a,b){ return (a[1]-a[0])-(b[1]-b[0]); }); }                 // most specific first
   // Signature hints: [lo, hi, bwMinKhz, bwMaxKhz, label, action]
