@@ -183,6 +183,11 @@ def _try_gpsd(host='127.0.0.1', port=2947, timeout=2):
     return None
 
 
+# /dev/serial/by-id name fragments that mark a USB GPS receiver. Shared with
+# cyd_serial_bridge.detect_port so its auto-detect never claims a GPS puck.
+GPS_BYID_KEYWORDS = ('gps', 'u-blox', 'ublox', 'nmea', 'gnss', 'bn-', 'vk-')
+
+
 def detect_gps_device(exclude_ports=None):
     """Auto-detect a GPS source.
 
@@ -225,7 +230,7 @@ def detect_gps_device(exclude_ports=None):
     if os.path.isdir(by_id):
         for entry in os.listdir(by_id):
             lower = entry.lower()
-            if any(kw in lower for kw in ('gps', 'u-blox', 'ublox', 'nmea', 'gnss', 'bn-', 'vk-')):
+            if any(kw in lower for kw in GPS_BYID_KEYWORDS):
                 path = _resolve(entry)
                 if os.path.exists(path) and path not in exclude:
                     return path

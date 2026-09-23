@@ -33,21 +33,48 @@ def _import_serial():
         return None
 
 
-def detect_port():
-    """First CP210x/USB-UART style device a CYD presents, or None.
+# by-id name fragments of the USB-UART bridges CYD boards ship with: Silicon
+# Labs CP210x ("..._CP2102_USB_to_UART_Bridge...") and QinHeng CH340/CH9102
+# (vendor 1a86). Deliberately NOT a bare "usb" - every by-id link starts with
+# "usb-", so that matched a u-blox GPS puck and the bridge stole its port.
+_CYD_BYID_HINTS = ('cp210', 'silicon_labs', 'uart_bridge', 'ch340', 'ch341', 'ch910', '1a86', 'qinheng')
+# Receivers that are never a CYD: GPS pucks (u-blox, BU-353 on Prolific).
+_NOT_CYD_HINTS = ('prolific', 'pl2303')
 
-    Prefers the stable /dev/serial/by-id path; falls back to a ttyUSB*/ttyACM*
-    glob. CYDs ship a CP2102 (Silicon Labs), so match those hints but stay
-    permissive."""
+
+def _gps_keywords():
+    try:
+        from gps_manager import GPS_BYID_KEYWORDS
+        return GPS_BYID_KEYWORDS
+    except Exception:
+        return ('gps', 'u-blox', 'ublox', 'nmea', 'gnss', 'bn-', 'vk-')
+
+
+def detect_port():
+    """First CP210x/CH340-style device a CYD presents, or None.
+
+    Prefers the stable /dev/serial/by-id path and only accepts the USB-UART
+    bridges CYDs ship with - never anything that names itself a GPS. The bare
+    ttyUSB*/ttyACM* fallback only considers ports with NO by-id link (an
+    identified device that didn't match above is somebody else's port)."""
+    gps_kw = _gps_keywords()
+    identified = set()
     for link in sorted(glob.glob('/dev/serial/by-id/*')):
-        low = link.lower()
-        if any(h in low for h in ('cp210', 'silicon', 'uart', 'ch340', 'usb')):
-            try:
-                return os.path.realpath(link)
-            except Exception:
-                return link
+        try:
+            real = os.path.realpath(link)
+        except Exception:
+            real = link
+        identified.add(real)
+        low = os.path.basename(link).lower()
+        if any(h in low for h in gps_kw) or any(h in low for h in _NOT_CYD_HINTS):
+            continue
+        if any(h in low for h in _CYD_BYID_HINTS):
+            return real
     cands = sorted(glob.glob('/dev/ttyUSB*')) + sorted(glob.glob('/dev/ttyACM*'))
-    return cands[0] if cands else None
+    for c in cands:
+        if os.path.realpath(c) not in identified:
+            return c
+    return None
 
 
 class CydSerialBridge:
