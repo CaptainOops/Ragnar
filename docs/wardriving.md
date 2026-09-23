@@ -692,6 +692,10 @@ card makes Ragnar that uplink:
    device`. The card then says so and waits for the next interval instead of
    retrying. Ask Wardrift to register the node and issue its key.
 
+   Press **Reveal** before copying a key. A masked key (`●●●●`) or pasted
+   page text is refused on Save, because API keys must be plain ASCII to
+   travel in an HTTP header.
+
 Every interval Ragnar reads the node's own telemetry: uptime, battery/voltage,
 channel utilisation, TX airtime, nodes heard, and LocalStats packet counters
 (TX/RX/bad/relayed/relay-cancelled/dupes). It POSTs that to

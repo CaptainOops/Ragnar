@@ -14485,6 +14485,25 @@ def _wardrift_body(r):
         return {'raw': r.text[:300]}
 
 
+def _clean_credential(value):
+    """Validate a pasted API key/token -> (clean_value, error_or_None).
+
+    Keys travel in HTTP headers, which only carry plain ASCII. A masked key
+    copied from a dashboard ('\u25cf\u25cf\u25cf' / '\u2022\u2022\u2022') or a pasted block
+    of page text would otherwise be saved and then fail every request with a
+    cryptic 'latin-1' codec error."""
+    v = str(value or '').strip()
+    if not v:
+        return '', None
+    if any(ch in v for ch in '\u25cf\u2022\u2219\u00b7') or '****' in v:
+        return None, 'That looks like a hidden key - press Reveal on Wardrift and copy the revealed key'
+    if len(v) > 256 or any(c.isspace() for c in v):
+        return None, 'Paste only the key itself (no spaces or surrounding text)'
+    if not all(0x21 <= ord(c) <= 0x7e for c in v):
+        return None, 'The key contains characters an API key never has - copy it again'
+    return v, None
+
+
 def _upload_wardrift_route(csv_text, token):
     import requests
     public = bool(shared_data.config.get('wardrift_public_route', False))
@@ -14544,7 +14563,11 @@ def _upload_wardrift_signals(csv_text, key):
 
 def _upload_wardrift(csv_text):
     token = (shared_data.config.get('wardrift_session_token') or '').strip()
-    key = (shared_data.config.get('wardrift_api_key') or '').strip()
+    key, bad = _clean_credential(shared_data.config.get('wardrift_api_key'))
+    if bad:
+        if not token:
+            return {'ok': False, 'error': f'The saved Wardrift API key is invalid: {bad}'}
+        key = ''
     if not (token or key):
         return {'ok': False, 'error': 'Wardrift not configured (sign in or add an API key)'}
     try:
@@ -14686,7 +14709,10 @@ def wardriving_upload_config():
             data = request.get_json(silent=True) or {}
             for k in ('wigle_api_name', 'wigle_api_token', 'wdg_key', 'wardrift_api_key'):
                 if k in data:
-                    shared_data.config[k] = str(data[k]).strip()
+                    val, err = _clean_credential(data[k])
+                    if err:
+                        return jsonify({'error': err}), 400
+                    shared_data.config[k] = val
             if 'wardrift_base_url' in data:
                 u = str(data['wardrift_base_url']).strip().rstrip('/')
                 if u and not re.match(r'^https?://[A-Za-z0-9.-]+(:\d+)?(/[^\s]*)?$', u):
@@ -14896,11 +14922,16 @@ def _wardrift_mesh_send(key):
     sequence_no). Returns (ok, body_or_error)."""
     import requests
     env = _wardrift_mesh['pending']
+    key, bad = _clean_credential(key)
+    if bad:     # saved before keys were validated - needs re-pasting
+        return False, {'error': f'The saved node key is invalid: {bad}', 'permanent': True}
     try:
         r = requests.post(_wardrift_base() + '/v1/ingest/mesh', json=env,
                           headers={'X-API-Key': key}, timeout=30)
+    except (requests.ConnectionError, requests.Timeout) as e:
+        return False, {'error': f'Wardrift unreachable (offline?): {e}', 'permanent': False}
     except Exception as e:
-        return False, {'error': f'offline? {e}', 'permanent': False}
+        return False, {'error': str(e), 'permanent': False}
     body = _wardrift_body(r)
     if r.ok and (body.get('accepted') or body.get('duplicate')):
         return True, body
@@ -15043,7 +15074,10 @@ def wardrift_mesh():
             d = request.get_json(silent=True) or {}
             c = shared_data.config
             if 'key' in d:
-                c['wardrift_mesh_key'] = str(d['key']).strip()
+                val, err = _clean_credential(d['key'])
+                if err:
+                    return jsonify({'error': err}), 400
+                c['wardrift_mesh_key'] = val
             if 'conn' in d:
                 c['wardrift_mesh_conn'] = 'wifi' if d['conn'] == 'wifi' else 'usb'
             if 'port' in d:
