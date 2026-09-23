@@ -30456,8 +30456,7 @@ async function setBleProvisioningAdapter(sel) {
 }
 
 // GPS backfill is gated: the map "Backfill GPS" button stays hidden until the
-// user opts in here. Backfilled positions are estimates (not WDGWARS-legal) and
-// are excluded from WiGLE export, so this defaults off.
+// user opts in here. Defaults off.
 function applyWardrivingBackfillVisibility(allow) {
     const btn = document.getElementById('wd-map-backfill-btn');
     if (btn) btn.classList.toggle('hidden', !allow);
@@ -30471,7 +30470,7 @@ async function toggleWardrivingBackfill() {
         await postAPI('/api/config', { wardriving_allow_backfill: enabled });
         applyWardrivingBackfillVisibility(enabled);
         addConsoleMessage(
-            'GPS backfill ' + (enabled ? 'enabled — backfilled data is excluded from WiGLE export' : 'disabled'),
+            'GPS backfill ' + (enabled ? 'enabled' : 'disabled'),
             enabled ? 'warning' : 'info'
         );
     } catch (e) {

@@ -476,7 +476,7 @@ Each session writes one row to `gps_track` every 5 s while GPS has a fix:
 gps_track (timestamp, latitude, longitude, altitude, speed_kmh, satellites, hdop)
 ```
 
-> **Opt-in only.** Backfilled positions are **estimated, not measured** — interpolated coordinates, not real observations. The "Backfill GPS" map button is hidden by default; enable it under **Config → Wardriving → Allow GPS Backfill** (sets `wardriving_allow_backfill`). The endpoint returns `403` while the flag is off. Any row backfilled this way is flagged `gps_backfilled = 1` and is **excluded from WiGLE CSV export** so interpolated coordinates aren't submitted as real observations (it still appears on the map and in KML).
+> **Opt-in only.** The "Backfill GPS" map button is hidden by default; enable it under **Config → Wardriving → Allow GPS Backfill** (sets `wardriving_allow_backfill`). The endpoint returns `403` while the flag is off. Any row backfilled this way is flagged `gps_backfilled = 1`.
 
 `POST /api/wardriving/backfill_gps` (or the "Backfill GPS" button) fills in missing positions on `networks`, `bluetooth_devices`, and `cells` rows by looking up each row's `first_seen` against the breadcrumb track:
 
@@ -647,7 +647,7 @@ Each saved session has **↑ WDGWars**, **↑ WiGLE** and **↑ Wardrift** butto
 the upload cards in the wardriving tab store credentials on the device only
 (they are excluded from fleet config export). Every upload reuses the exact WiGLE
 CSV the export produces, and a session with no GPS-located rows is refused unless
-you force it. GPS-backfilled (interpolated) positions are never sent.
+you force it.
 
 **Auto-upload:** tick *Auto-upload finished wardrives* and pick a target (WDGWars,
 WiGLE, WiGLE + WDGWars, Wardrift, WDGWars + Wardrift, or all three). Stopping a

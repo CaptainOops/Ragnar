@@ -1146,18 +1146,18 @@ class WardrivingSession:
                 logger.error(f"GPS backfill error: {e}")
         return result
 
-    def export_wigle_csv(self, device_name='Ragnar', include_zigbee=False):
+    def export_wigle_csv(self, device_name='Ragnar', include_zigbee=False,
+                         include_backfilled=False):
         """Export session to WiGLE CSV format string including WiFi, BT, and cell.
 
-        Rows whose position was estimated via backfill_gps_from_track
-        (gps_backfilled = 1) are excluded — they are interpolated coordinates,
-        not real observations, and must not be submitted to WiGLE.
+        `include_backfilled` controls rows flagged gps_backfilled = 1.
 
         Zigbee / 802.15.4 devices are excluded by default: WiGLE has no
         standard 802.15.4 record type, so those rows are only useful for the
         user's own tooling. Set `include_zigbee=True` (opt-in from the config
         tab) to append them with a `ZIGBEE` type token."""
         lines = []
+        bf = "" if include_backfilled else "WHERE COALESCE(gps_backfilled, 0) = 0 "
         dn = device_name or 'Ragnar'
         lines.append(f'WigleWifi-1.4,appRelease=Ragnar,model=RaspberryPi,release=1.0,device={dn},display=EPD,board=RPi,brand=Ragnar')
         lines.append(','.join(WIGLE_HEADER))
@@ -1168,7 +1168,7 @@ class WardrivingSession:
                     conn.row_factory = sqlite3.Row
                     # WiFi networks (skip backfilled positions)
                     rows = conn.execute(
-                        "SELECT * FROM networks WHERE COALESCE(gps_backfilled, 0) = 0 "
+                        f"SELECT * FROM networks {bf}"
                         "ORDER BY first_seen"
                     ).fetchall()
                     for row in rows:
@@ -1189,7 +1189,7 @@ class WardrivingSession:
                     # Bluetooth devices
                     try:
                         bt_rows = conn.execute(
-                            "SELECT * FROM bluetooth_devices WHERE COALESCE(gps_backfilled, 0) = 0 "
+                            f"SELECT * FROM bluetooth_devices {bf}"
                             "ORDER BY first_seen"
                         ).fetchall()
                         for row in bt_rows:
@@ -1212,7 +1212,7 @@ class WardrivingSession:
                     # Cell towers
                     try:
                         cell_rows = conn.execute(
-                            "SELECT * FROM cell_towers WHERE COALESCE(gps_backfilled, 0) = 0 "
+                            f"SELECT * FROM cell_towers {bf}"
                             "ORDER BY first_seen"
                         ).fetchall()
                         for row in cell_rows:
@@ -1236,7 +1236,7 @@ class WardrivingSession:
                     if include_zigbee:
                         try:
                             zb_rows = conn.execute(
-                                "SELECT * FROM zigbee_devices WHERE COALESCE(gps_backfilled, 0) = 0 "
+                                f"SELECT * FROM zigbee_devices {bf}"
                                 "ORDER BY first_seen"
                             ).fetchall()
                             for row in zb_rows:

@@ -14276,7 +14276,9 @@ def wardriving_export(session_id):
         else:
             device_name = engine.device_name or shared_data.config.get('wardriving_device_name', 'Ragnar')
             include_zigbee = bool(shared_data.config.get('wardriving_wigle_include_zigbee', False))
-            content = session.export_wigle_csv(device_name=device_name, include_zigbee=include_zigbee)
+            content = session.export_wigle_csv(
+                device_name=device_name, include_zigbee=include_zigbee,
+                include_backfilled=bool(shared_data.config.get('wardriving_allow_backfill', False)))
             return app.response_class(
                 content, mimetype='text/csv',
                 headers={'Content-Disposition': f'attachment; filename=ragnar_wardriving_{session_id}.csv'}
@@ -14305,7 +14307,9 @@ def _wardrive_session_csv(session_id):
     session = WardrivingSession(engine.data_dir, session_id=session_id)
     device_name = engine.device_name or shared_data.config.get('wardriving_device_name', 'Ragnar')
     include_zigbee = bool(shared_data.config.get('wardriving_wigle_include_zigbee', False))
-    return session.export_wigle_csv(device_name=device_name, include_zigbee=include_zigbee)
+    return session.export_wigle_csv(
+        device_name=device_name, include_zigbee=include_zigbee,
+        include_backfilled=bool(shared_data.config.get('wardriving_allow_backfill', False)))
 
 
 def _wardrive_located_count(csv_text):
@@ -15420,16 +15424,11 @@ def wardriving_backfill_gps():
     session's gps_track table by interpolating each row's first_seen
     timestamp. Covers brief GPS dropouts and the warm-up window before TTFF.
 
-    Gated behind the `wardriving_allow_backfill` config flag (off by default):
-    backfilled positions are estimated, not measured, and are excluded from
-    WiGLE export once written so interpolated coordinates aren't submitted as
-    real observations."""
+    Gated behind the `wardriving_allow_backfill` config flag (off by default)."""
     try:
         if not shared_data.config.get('wardriving_allow_backfill', False):
             return jsonify({
-                'error': 'GPS backfill is disabled. Enable it in Config → Wardriving. '
-                         'Backfilled positions are estimated, not measured, and are excluded '
-                         'from WiGLE export to avoid submitting interpolated coordinates as real observations.'
+                'error': 'GPS backfill is disabled. Enable it in Config → Wardriving.'
             }), 403
         engine = _get_wardriving_engine()
         body = request.get_json(silent=True) or {}
