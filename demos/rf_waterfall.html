@@ -473,6 +473,10 @@
     this.replaying=false; this.replay=null; this._recPoll=null;
     this.busy=0; this.log=[]; this._lastLog=0; this._ismPoll=null;
     this.hist=[]; this.threeD=false; this._last3D=0;   // 3D terrain waterfall state
+    this.rot3d={yaw:0.55, pitch:0.72};  // 3D camera: yaw (turn), pitch (tilt down) — a landscape angle by default
+    this.zoom3d=1.0;
+    try{ var _r3=JSON.parse(localStorage.getItem('rfwf.rot3d.'+cfg.short)||'null');
+      if(_r3){ if(isFinite(_r3.yaw))this.rot3d.yaw=_r3.yaw; if(isFinite(_r3.pitch))this.rot3d.pitch=_r3.pitch; if(isFinite(_r3.zoom))this.zoom3d=_r3.zoom; } }catch(e){}
     // Row history: every raw row with its span + timestamp. Drives repaint (range /
     // palette / resize / zoom keep what's on screen), hover values and scroll-back.
     this.hrows=[]; this.scrollBack=0;
@@ -729,6 +733,10 @@
     [this.fall,this.trace].forEach(function(cv){
       cv.addEventListener('wheel',function(e){
         if(e.shiftKey) return;                        // Shift+wheel = history (handled on the fall)
+        if(self.threeD && cv===self.fall){            // wheel zooms the 3D camera
+          e.preventDefault(); var dz=e.deltaMode===1?e.deltaY*16:e.deltaY;
+          self.zoom3d=Math.max(0.4,Math.min(3.0,(self.zoom3d||1)*Math.exp(-dz*0.0012)));
+          self._hint3d=false; self._persistRot(); self.draw3D(); return; }
         if(self.mode==='idle'||self.decoding) return;
         e.preventDefault();
         var r=cv.getBoundingClientRect(), fx=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
@@ -740,7 +748,7 @@
         if(e.pointerType==='mouse'&&e.button!==0) return;
         self._pts[e.pointerId]={x:e.clientX,y:e.clientY};
         var ids=Object.keys(self._pts), r=cv.getBoundingClientRect();
-        if(ids.length===1) self._drag={x:e.clientX,y:e.clientY,lo:self.lo,hi:self.hi,back:self.scrollBack,moved:false,type:e.pointerType,w:r.width,cv:cv,id:e.pointerId};
+        if(ids.length===1) self._drag={x:e.clientX,y:e.clientY,lx:e.clientX,ly:e.clientY,lo:self.lo,hi:self.hi,back:self.scrollBack,moved:false,type:e.pointerType,w:r.width,cv:cv,id:e.pointerId};
         else if(ids.length===2){ var a=self._pts[ids[0]],b=self._pts[ids[1]];
           self._pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,lo:self.lo,hi:self.hi,fx:(((a.x+b.x)/2)-r.left)/r.width}; self._drag=null; }
       });
@@ -748,13 +756,22 @@
         if(!self._pts[e.pointerId]) return; self._pts[e.pointerId]={x:e.clientX,y:e.clientY};
         var ids=Object.keys(self._pts);
         if(self._pinch && ids.length===2){ var a=self._pts[ids[0]],b=self._pts[ids[1]], pz=self._pinch;
-          var ns=(pz.hi-pz.lo)*pz.d/(Math.hypot(a.x-b.x,a.y-b.y)||1), fc=pz.lo+pz.fx*(pz.hi-pz.lo);
+          var nd=Math.hypot(a.x-b.x,a.y-b.y)||1;
+          if(self.threeD){ if(pz.z3==null) pz.z3=self.zoom3d||1;
+            self.zoom3d=Math.max(0.4,Math.min(3.0,pz.z3*nd/pz.d)); self._hint3d=false; self._persistRot(); self.draw3D(); return; }
+          var ns=(pz.hi-pz.lo)*pz.d/nd, fc=pz.lo+pz.fx*(pz.hi-pz.lo);
           self.zoomTo(fc-pz.fx*ns,fc-pz.fx*ns+ns); return; }
         var dg=self._drag; if(!dg) return;
         var dx=e.clientX-dg.x, dy=e.clientY-dg.y;
         if(!dg.moved){ if(Math.hypot(dx,dy)<5) return; dg.moved=true; dg.vert=(dg.type==='mouse'&&Math.abs(dy)>Math.abs(dx)&&cv===self.fall&&!self.threeD);
           try{ cv.setPointerCapture(e.pointerId); }catch(_e){} self.hideHover(); }
-        if(dg.vert){ self.setScrollBack(dg.back+Math.round(dy*self.d/(self.STEP||1))); }
+        if(self.threeD && cv===self.fall){                 // drag rotates the 3D view
+          var rdx=e.clientX-dg.lx, rdy=e.clientY-dg.ly; dg.lx=e.clientX; dg.ly=e.clientY;
+          self.rot3d.yaw+=rdx*0.010;
+          self.rot3d.pitch=Math.max(0.12,Math.min(1.48,self.rot3d.pitch-rdy*0.008));
+          self._hint3d=false; self._persistRot(); self.draw3D();
+        }
+        else if(dg.vert){ self.setScrollBack(dg.back+Math.round(dy*self.d/(self.STEP||1))); }
         else if(self.mode!=='idle'&&!self.decoding){ var sh=-dx/dg.w*(dg.hi-dg.lo); self.zoomTo(dg.lo+sh,dg.hi+sh); }
       });
       var up=function(e){ if(self._drag&&self._drag.moved) self._noClick=true;
@@ -2909,37 +2926,66 @@
       var m=-999; for(var i=a;i<b&&i<N;i++){ if(power[i]>m)m=power[i]; } row[c]=m; }
     this.hist.push(row); if(this.hist.length>ROWS3D) this.hist.shift();
   };
+  // Rotatable 3D terrain: each recent row is a line across the frequency axis,
+  // older rows recede along the time axis, power is height. Every vertex is a
+  // real 3D point put through a yaw (turn) + pitch (tilt) rotation and projected
+  // orthographically — pure 2D canvas, no WebGL, so it runs on the Pi. Drag to
+  // rotate, wheel / pinch to zoom.
+  function row3(hist,r,c){ var row=hist[r]; return row[c]; }
   Scope.prototype.draw3D=function(){
-    var f=this.fctx, W=this.W, H=this.H, d=this.d||1;
+    var f=this.fctx, W=this.W, H=this.H;
     f.fillStyle='#05080d'; f.fillRect(0,0,W,H);
     var hist=this.hist, R=hist.length; if(!R) return;
-    var floor=this.rangeLo(), span=(this.rangeHi()-floor)||1, cx=W/2, _chi=this.rangeHi();
-    var yTop=Math.round(16*d), yBot=H-Math.round(8*d), depthSpan=yBot-yTop;
-    var back=0.46, MAXH=depthSpan*0.62, topClip=Math.round(4*d);   // shrink + ridge height + top clamp
-    var yAt=function(dep){ return yTop+dep*depthSpan; };
-    for(var r=0;r<R;r++){                              // r=0 oldest (back) .. R-1 newest (front)
-      var dep=R>1?r/(R-1):1, persp=back+(1-back)*dep, dim=0.5+0.5*dep;
-      var yRow=yAt(dep), yFill=(r<R-1)?yAt((r+1)/(R-1)):yBot;   // fill down to the next row (no gaps)
-      var row=hist[r], C=row.length, yy=new Array(C), xx=new Array(C);
-      // clamped + lightly smoothed (3-tap) heights, so crests read rounded not stepped
+    var C=hist[0].length; if(!C) return;
+    var floor=this.rangeLo(), span=(this.rangeHi()-floor)||1, chi=this.rangeHi();
+    var yaw=this.rot3d.yaw, pitch=this.rot3d.pitch;
+    var cosT=Math.cos(yaw), sinT=Math.sin(yaw), cosP=Math.cos(pitch), sinP=Math.sin(pitch);
+    var SCALE=Math.min(W,H)*0.82*(this.zoom3d||1), HEIGHT=0.55;
+    var cx=W/2, cy=H*0.60;
+    // smoothed, clamped normalized heights (3-tap along frequency, so crests read
+    // rounded not stepped) + projected screen coords for every vertex
+    var SX=new Float32Array(R*C), SY=new Float32Array(R*C), HT=new Float32Array(R*C);
+    for(var r=0;r<R;r++){ var row=hist[r];
       for(var c=0;c<C;c++){
         var a=(c>0?row[c-1]:row[c]), b=row[c], e=(c<C-1?row[c+1]:row[c]);
-        var t=((a+2*b+e)/4-floor)/span; if(t<0)t=0; if(t>1)t=1;
-        var y=yRow-t*MAXH*persp; yy[c]=y<topClip?topClip:y;      // clamp tall far-row ridges to the top
-        xx[c]=cx+((c/(C-1))-0.5)*W*persp;
+        var t=((a+2*b+e)/4-floor)/span; if(t<0)t=0; if(t>1)t=1; HT[r*C+c]=t;
+        var X=(c/(C-1)-0.5), Z=(r/(R-1)-0.5), Y=t*HEIGHT;
+        var Xr=X*cosT+Z*sinT, Zr=-X*sinT+Z*cosT, Yp=Y*cosP-Zr*sinP;
+        SX[r*C+c]=cx+Xr*SCALE; SY[r*C+c]=cy-Yp*SCALE;
       }
-      // sloped-top quads between adjacent columns — anti-aliased, so the ridgeline
-      // is a smooth surface instead of a row of flat-topped bars.
-      for(var c=0;c<C-1;c++){
-        var col=colorRGB(row[c],floor,_chi);
-        f.fillStyle='rgb('+((col[0]*dim)|0)+','+((col[1]*dim)|0)+','+((col[2]*dim)|0)+')';
-        f.beginPath(); f.moveTo(xx[c],yy[c]); f.lineTo(xx[c+1],yy[c+1]);
-        f.lineTo(xx[c+1],yFill); f.lineTo(xx[c],yFill); f.closePath(); f.fill();
-      }
-      // faint lit crest highlights the ridge (brighter on nearer rows)
-      f.strokeStyle='rgba(255,255,255,'+(0.04+0.10*dep).toFixed(3)+')'; f.lineWidth=1;
-      f.beginPath(); for(var c=0;c<C;c++){ c?f.lineTo(xx[c],yy[c]):f.moveTo(xx[c],yy[c]); } f.stroke();
     }
+    // Painter's order: the projected grid's PLANAR depth is affine in (r,c), so
+    // it is monotonic along each axis — pick the iteration direction that goes
+    // far -> near and no per-quad sort is needed.
+    var rAsc=(cosT<0), cAsc=(sinT>0);
+    // per-quad shading: nearness (for depth dimming) from the same planar depth
+    var dR=cosT*cosP, dC=-sinT*cosP;           // depth gradient in r,c (planar)
+    var d00=0, d01=dC, d10=dR, d11=dR+dC;
+    var dMin=Math.min(d00,d01,d10,d11), dMax=Math.max(d00,d01,d10,d11), dRng=(dMax-dMin)||1;
+    for(var ri=0;ri<R-1;ri++){ var rr=rAsc?ri:(R-2-ri);
+      for(var ci=0;ci<C-1;ci++){ var cc=cAsc?ci:(C-2-ci);
+        var i0=rr*C+cc, i1=i0+1, i2=i0+C, i3=i2+1;
+        var dep=dR*(rr/(R-1))+dC*(cc/(C-1)), near=(dMax-((dep-dMin)+dMin))/dRng;
+        near=(dep-dMin)/dRng; near=1-near;      // 1 = nearest
+        var dim=0.5+0.5*near;
+        var col=colorRGB(row3(hist,rr,cc),floor,chi);
+        // a touch of slope shading: brighter where the ridge rises toward us
+        var slope=HT[i2]-HT[i0]; var lit=1+Math.max(-0.35,Math.min(0.35,slope*1.2));
+        var kr=(col[0]*dim*lit)|0, kg=(col[1]*dim*lit)|0, kb=(col[2]*dim*lit)|0;
+        f.fillStyle='rgb('+(kr>255?255:kr<0?0:kr)+','+(kg>255?255:kg<0?0:kg)+','+(kb>255?255:kb<0?0:kb)+')';
+        f.beginPath(); f.moveTo(SX[i0],SY[i0]); f.lineTo(SX[i1],SY[i1]);
+        f.lineTo(SX[i3],SY[i3]); f.lineTo(SX[i2],SY[i2]); f.closePath(); f.fill();
+      }
+      // faint crest highlight along this row's ridgeline
+      f.strokeStyle='rgba(255,255,255,'+(0.05+0.10*(ri/(R-1))).toFixed(3)+')'; f.lineWidth=1;
+      f.beginPath(); for(var c2=0;c2<C;c2++){ var ii=rr*C+c2; c2?f.lineTo(SX[ii],SY[ii]):f.moveTo(SX[ii],SY[ii]); } f.stroke();
+    }
+    if(this._hint3d!==false){ f.fillStyle='rgba(205,214,228,.5)'; f.font=(11*(this.d||1))+'px "IBM Plex Mono",monospace';
+      f.fillText('drag to rotate · wheel to zoom', 12*(this.d||1), H-10*(this.d||1)); }
+  };
+  Scope.prototype._persistRot=function(){
+    try{ localStorage.setItem('rfwf.rot3d.'+this.cfg.short,
+      JSON.stringify({yaw:this.rot3d.yaw,pitch:this.rot3d.pitch,zoom:this.zoom3d})); }catch(e){}
   };
   Scope.prototype.setThreeD=function(on){
     on=!!on; this.threeD=on;

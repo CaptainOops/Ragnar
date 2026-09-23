@@ -74,7 +74,7 @@ recolours as you change it. Five palettes are available in the top bar.
   through the last few minutes. The view holds still while new rows keep
   recording; **▲ Live** returns to the live edge. Clock times run down the left
   edge of the waterfall.
-- **2D / 3D** switches between the flat waterfall and a receding 3D surface.
+- **2D / 3D** switches between the flat waterfall and a 3D surface (power = height). **Drag the 3D view to rotate it**, wheel or pinch to zoom; the angle is remembered.
 
 ---
 
