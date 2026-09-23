@@ -15074,6 +15074,12 @@ def wardrift_dashboard():
 # The serial port is published via serial_claims, so the GPS, CYD bridge and
 # wardriving companion monitor never open it (and vice versa).
 # ---------------------------------------------------------------------------
+# Wardrift mesh rewards are not live yet. The owner says they will be based on
+# the messages a node passes on / tries to pass on (LocalStats num_tx_relay /
+# num_tx_relay_canceled, which the report below already carries as per-window
+# deltas). Until then the reporter never sends and the UI shows "Coming soon";
+# flip this to True when Wardrift launches it.
+WARDRIFT_MESH_LIVE = False
 _MESH_COUNTERS = ('num_packets_tx', 'num_packets_rx', 'num_packets_rx_bad',
                   'num_tx_relay', 'num_tx_relay_canceled', 'num_rx_dupe')
 _wardrift_mesh = {'thread': None, 'pending': None, 'pending_tries': 0,
@@ -15185,6 +15191,11 @@ def _wardrift_mesh_tick():
     link = meshtastic_node.link()
     lst = link.status()
     ours = lst.get('owner') == 'wardrift'
+    if not WARDRIFT_MESH_LIVE:
+        if ours:
+            meshtastic_node.stop()          # release the node port we opened
+        st.update(state='coming soon', error=None)
+        return
     if not (cfg['enabled'] and cfg['key']):
         if ours:
             meshtastic_node.stop()          # release the port we opened
@@ -15295,6 +15306,8 @@ def wardrift_mesh():
     POST keys: enabled, key, conn ('usb'|'wifi'), port ('' = auto), host, interval.
     """
     try:
+        if request.method == 'POST' and not WARDRIFT_MESH_LIVE:
+            return jsonify({'error': 'Wardrift mesh rewards are coming soon', 'available': False}), 409
         if request.method == 'POST':
             d = request.get_json(silent=True) or {}
             c = shared_data.config
@@ -15330,7 +15343,11 @@ def wardrift_mesh():
         cfg = _wardrift_mesh_cfg()
         lst = meshtastic_node.link().status()
         st = dict(_wardrift_mesh['status'])
+        if not WARDRIFT_MESH_LIVE:
+            return jsonify({'available': False, 'enabled': False,
+                            'key_configured': bool(cfg['key']), 'status': {'state': 'coming soon'}})
         return jsonify({
+            'available': True,
             'enabled': cfg['enabled'], 'key_configured': bool(cfg['key']),
             'conn': cfg['conn'], 'port': cfg['port'], 'host': cfg['host'],
             'interval': cfg['interval'],
@@ -15348,7 +15365,7 @@ def wardrift_mesh():
         return jsonify({'error': str(e)}), 500
 
 
-if shared_data.config.get('wardrift_mesh_enabled'):
+if WARDRIFT_MESH_LIVE and shared_data.config.get('wardrift_mesh_enabled'):
     _wardrift_mesh_start_worker()
 
 
