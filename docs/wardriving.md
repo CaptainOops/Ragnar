@@ -522,7 +522,7 @@ Falls back to linear when either endpoint speed is NULL or both are zero. The ch
 | GET/POST | `/api/wardriving/huginn_config` | Read / push HuginnESP runtime knobs |
 | POST | `/api/wardriving/device_name` | Set device name |
 | GET/POST | `/api/wardriving/on_boot` | Auto-start on boot |
-| GET/POST | `/api/wardriving/upload-config` | Upload creds status (never reveals secrets) / save WiGLE, WDGWars, Wardrift creds + auto-upload |
+| GET/POST | `/api/wardriving/upload-config` | Upload creds status (never reveals secrets), auto-upload settings (`auto_upload`, `auto_upload_targets` list) and `recent` upload outcomes / save them |
 | POST | `/api/wardriving/upload/<id>` | Upload a session — body `{"target": "wigle"\|"wdgwars"\|"wardrift"\|"both"\|"all"\|"a,b", "force": false}` |
 | POST | `/api/wardriving/wardrift/signin` | Sign in to Wardrift (`username`, `password`); stores only the session token |
 | POST | `/api/wardriving/wardrift/signout` | Forget the Wardrift session token |
@@ -659,10 +659,29 @@ the upload cards in the wardriving tab store credentials on the device only
 CSV the export produces, and a session with no GPS-located rows is refused unless
 you force it.
 
-**Auto-upload:** tick *Auto-upload finished wardrives* and pick a target (WDGWars,
-WiGLE, WiGLE + WDGWars, Wardrift, WDGWars + Wardrift, or all three). Stopping a
-wardrive queues it in `data/wardriving/pending_uploads.json`; the worker retries
-every 60 s until the box is online, and only retries the services that failed.
+**Auto-upload** has its own card in the wardriving tab: switch it on and tick
+the services to upload to (WiGLE, WDGWars, Wardrift). Unconfigured services
+are marked *(not set up)*.
+
+- **Every stop queues the drive.** The engine runs `SESSION_FINISHED_HOOKS`
+  from `stop()`, so it doesn't matter whether the web UI, the CYD, the display
+  keys or On-Screen Network Diagnostic mode stopped the drive, or whether the
+  boot-time engine ran it.
+- **Power cuts.** A drive cut off by a power loss has no end time. About two
+  minutes after start-up, such drives that began after auto-upload was switched
+  on (`wardriving_auto_upload_since`) are queued, unless one was already
+  uploaded, is already queued, or is still being written.
+- **Offline.** The queue (`data/pending_uploads.json`) is retried every 60 s
+  until the box is online, and only for the services that failed. A drive
+  with no GPS-pinned rows is given up after 30 tries.
+- **Wardrift verdicts.** Wardrift answers a route upload with *pending* and
+  decides later, so Ragnar follows each upload
+  (`GET /v1/wardrive/uploads/{id}`) to *succeeded* or *failed* for up to
+  45 minutes.
+- **Recent uploads.** Every outcome, manual or automatic, is kept in
+  `data/upload_history.json` and shown under **Recent uploads** in the card:
+  ✓ uploaded (e.g. "431 readings saved, +285 XP"), ✕ failed with the reason,
+  … still processing, – skipped.
 
 **[Wardrift](https://wardrift.net)** (faction / territory wardriving game, API at
 `https://wardrift.net/v1`, overridable via the `wardrift_base_url` config key)

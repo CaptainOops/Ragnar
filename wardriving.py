@@ -111,6 +111,10 @@ def _freq_to_channel(freq_mhz):
     return 0
 
 
+# Callables run with the session id whenever any engine stops a session
+# (the webapp registers auto-upload here).
+SESSION_FINISHED_HOOKS = []
+
 # A row whose position is within this many metres of the GPS track (inside the
 # row's own first..last-seen window, plus slack) is re-timed to that moment.
 _ALIGN_MAX_M = 300
@@ -2513,6 +2517,15 @@ class WardrivingEngine:
 
         stats = self.session.get_stats() if self.session else {}
         logger.info(f"Wardriving stopped. Networks: {stats.get('total_networks', 0)}")
+        # Every stop path (web UI, CYD, display keys, diagnostic mode) and every
+        # engine instance (webapp or the boot-time one in Ragnar.py) lands here,
+        # so this is where a finished drive is handed to auto-upload.
+        if self.session:
+            for cb in list(SESSION_FINISHED_HOOKS):
+                try:
+                    cb(self.session.session_id)
+                except Exception as e:
+                    logger.error(f"session-finished hook failed: {e}")
         return {'success': True, 'stats': stats}
 
     def _start_companion_thread(self, port: str) -> '_CompanionState | None':

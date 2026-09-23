@@ -14167,17 +14167,10 @@ def wardriving_stop():
     """
     try:
         engine = _get_wardriving_engine()
-        finished_id = engine.session.session_id if getattr(engine, 'session', None) else None
         result = engine.stop()
 
-        # Auto-upload the just-finished wardrive if enabled (queued + retried
-        # until the box has connectivity).
-        if finished_id and shared_data.config.get('wardriving_auto_upload'):
-            try:
-                _auto_upload_enqueue(finished_id,
-                                     shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'))
-            except Exception as _e:
-                logger.error(f"auto-upload enqueue failed: {_e}")
+        # Auto-upload of the finished drive is queued by the engine's
+        # SESSION_FINISHED_HOOKS (covers every stop path, not just this route).
 
         ap_teardown = False
         if getattr(shared_data, 'wardrive_ap_active', False):
@@ -14603,45 +14596,212 @@ def _upload_target_list(target):
 
 
 # ---------------------------------------------------------------------------
-# Auto-upload: when a wardrive finishes, queue it and push to WDGWars/WiGLE.
-# The queue is persisted to disk, so an offline box simply retries every 60 s
-# until it has connectivity again - "upload when Wi-Fi comes back".
+# Auto-upload: when a wardrive finishes, queue it and push it to the services
+# ticked in the Auto-upload card (WiGLE / WDGWars / Wardrift).
+#
+# * Every stop path queues the drive: the engine calls SESSION_FINISHED_HOOKS
+#   from stop(), whoever stopped it (web UI, CYD, display keys, diagnostic
+#   mode) and whichever engine instance ran it (webapp or the boot engine).
+# * A drive cut off by power loss has no end_time; once the box is back up,
+#   unfinished sessions started after auto-upload was switched on are queued.
+# * The queue is persisted, so an offline box retries every 60 s until it has
+#   connectivity again, and only retries the services that failed.
+# * Wardrift processes route uploads asynchronously (202 "pending", decided
+#   seconds to minutes later), so its uploads are followed to the final
+#   succeeded/failed result. Every outcome lands in upload_history.json, which
+#   the Auto-upload card shows as "Recent uploads".
 # ---------------------------------------------------------------------------
 _AUTO_UPLOAD_SAVE_LOCK = threading.Lock()
 _AUTO_UPLOAD_PROC_LOCK = threading.Lock()
 _auto_upload_worker_started = False
+_AUTO_UPLOAD_RETRY_S = 60
+_AUTO_UPLOAD_TICK_S = 15
+_WARDRIFT_FOLLOW_MAX_S = 45 * 60
+_UPLOAD_HISTORY_MAX = 40
+_UPLOAD_NAMES = {'wigle': 'WiGLE', 'wdgwars': 'WDGWars', 'wardrift': 'Wardrift'}
+
+
+def _wd_data_dir():
+    # Same directory the engine uses, without constructing an engine.
+    return getattr(shared_data, 'data_dir', 'data')
 
 
 def _auto_upload_queue_path():
-    return os.path.join(_get_wardriving_engine().data_dir, 'pending_uploads.json')
+    return os.path.join(_wd_data_dir(), 'pending_uploads.json')
+
+
+def _upload_history_path():
+    return os.path.join(_wd_data_dir(), 'upload_history.json')
+
+
+def _json_load(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f) or default
+    except Exception:
+        return default
+
+
+def _json_save(path, obj):
+    with _AUTO_UPLOAD_SAVE_LOCK:
+        try:
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(obj, f)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.error(f"auto-upload save failed ({os.path.basename(path)}): {e}")
 
 
 def _auto_upload_load():
-    try:
-        with open(_auto_upload_queue_path()) as f:
-            return json.load(f) or []
-    except Exception:
-        return []
+    return _json_load(_auto_upload_queue_path(), [])
 
 
 def _auto_upload_save(items):
-    with _AUTO_UPLOAD_SAVE_LOCK:
+    _json_save(_auto_upload_queue_path(), items)
+
+
+def _upload_history_load():
+    return _json_load(_upload_history_path(), {})
+
+
+def _upload_record(session_id, target, **rec):
+    """Store the latest outcome of one service for one session."""
+    hist = _upload_history_load()
+    entry = hist.setdefault(session_id, {})
+    prev = entry.get(target) or {}
+    rec.setdefault('at', time.time())
+    entry[target] = dict(prev, **rec)
+    entry['_updated'] = time.time()
+    if len(hist) > _UPLOAD_HISTORY_MAX:          # keep the newest sessions
+        for sid in sorted(hist, key=lambda k: hist[k].get('_updated', 0))[:len(hist) - _UPLOAD_HISTORY_MAX]:
+            hist.pop(sid, None)
+    _json_save(_upload_history_path(), hist)
+
+
+def _upload_outcome(target, res):
+    """Uploader result -> history record."""
+    resp = res.get('response') or {}
+    if not res.get('ok'):
+        msg = res.get('error') or resp.get('message') or resp.get('error') or f"HTTP {res.get('status')}"
+        return {'state': 'failed', 'message': str(msg)[:300]}
+    if target == 'wardrift' and res.get('mode') == 'route' and resp.get('upload_id') \
+            and resp.get('status') in ('pending', 'processing'):
+        return {'state': 'processing', 'upload_id': resp['upload_id'], 'message': 'Wardrift is processing'}
+    if target == 'wardrift' and res.get('duplicate'):
+        return {'state': 'ok', 'message': 'Already on Wardrift'}
+    xp = resp.get('awarded_exp')
+    return {'state': 'ok', 'message': f'+{xp} XP' if xp else 'Uploaded'}
+
+
+def _upload_session(session_id, targets, csv_text=None):
+    """Upload one session to each target, record the outcomes -> {target: res}."""
+    csv_text = csv_text if csv_text is not None else _wardrive_session_csv(session_id)
+    results = {}
+    for t in targets:
+        res = _UPLOADERS[t](csv_text)
+        results[t] = res
+        _upload_record(session_id, t, **_upload_outcome(t, res))
+    return results
+
+
+def _wardrift_follow_uploads():
+    """Poll Wardrift for route uploads still processing; record the verdict."""
+    token = (shared_data.config.get('wardrift_session_token') or '').strip()
+    hist = _upload_history_load()
+    for sid, entry in hist.items():
+        rec = entry.get('wardrift') or {}
+        if rec.get('state') != 'processing' or not rec.get('upload_id'):
+            continue
+        if time.time() - rec.get('at', 0) > _WARDRIFT_FOLLOW_MAX_S:
+            _upload_record(sid, 'wardrift', state='unknown',
+                           message='Wardrift never reported a result - check wardrift.net')
+            continue
+        if not token:
+            continue
         try:
-            with open(_auto_upload_queue_path(), 'w') as f:
-                json.dump(items, f)
-        except Exception as e:
-            logger.error(f"auto-upload queue save failed: {e}")
+            import requests
+            r = requests.get(_wardrift_base() + '/v1/wardrive/uploads/' + rec['upload_id'],
+                             headers={'Authorization': f'Bearer {token}'}, timeout=20)
+            body = _wardrift_body(r)
+        except Exception:
+            continue                                  # offline - ask again next tick
+        status = body.get('status')
+        if status == 'succeeded':
+            result = body.get('result') or {}
+            parts = [f"{result.get('accepted_signals', 0)} readings saved"]
+            if result.get('awarded_exp'):
+                parts.append(f"+{result['awarded_exp']} XP")
+            skipped = sum(x.get('count', 0) for x in result.get('reasons', [])
+                          if x.get('stage') in ('parse_skipped', 'validation_excluded'))
+            if skipped:
+                parts.append(f'{skipped} skipped')
+            _upload_record(sid, 'wardrift', state='ok', message=', '.join(parts), at=rec.get('at'))
+            logger.info(f"auto-upload: Wardrift accepted session {sid}")
+        elif status == 'failed':
+            _upload_record(sid, 'wardrift', state='failed', at=rec.get('at'),
+                           message=str(body.get('error') or 'Wardrift rejected the upload')[:300])
+            logger.warning(f"auto-upload: Wardrift rejected session {sid}: {body.get('error')}")
+        elif r.status_code == 401:
+            _upload_record(sid, 'wardrift', message='Signed out of Wardrift - sign in to see the result')
 
 
 def _auto_upload_enqueue(session_id, target):
     items = _auto_upload_load()
     if not any(i.get('session_id') == session_id for i in items):
         items.append({'session_id': session_id, 'target': target,
-                      'added': time.time(), 'attempts': 0})
+                      'added': time.time(), 'attempts': 0, 'next_try': 0})
         _auto_upload_save(items)
         logger.info(f"auto-upload: queued session {session_id} -> {target}")
     _auto_upload_start_worker()
     threading.Thread(target=_auto_upload_process_once, daemon=True).start()
+
+
+def _auto_upload_on_finished(session_id):
+    """SESSION_FINISHED_HOOKS entry: queue a just-stopped drive if auto-upload is on."""
+    if shared_data.config.get('wardriving_auto_upload'):
+        _auto_upload_enqueue(session_id, shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'))
+
+
+def _auto_upload_recover_unfinished():
+    """Queue drives cut off by power loss: no end_time, started after auto-upload
+    was switched on, never uploaded or queued, and not the drive running now."""
+    if not shared_data.config.get('wardriving_auto_upload'):
+        return
+    since = _ts_epoch(shared_data.config.get('wardriving_auto_upload_since'))
+    if since is None:
+        return
+    import types
+    from wardriving import WardrivingEngine
+    sessions = WardrivingEngine.get_session_list(types.SimpleNamespace(data_dir=_wd_data_dir()))
+    eng = _wardriving_engine
+    live = eng.session.session_id if (eng is not None and getattr(eng, '_running', False)
+                                      and getattr(eng, 'session', None)) else None
+    queued = {i.get('session_id') for i in _auto_upload_load()}
+    hist = _upload_history_load()
+    for s in sessions:
+        sid = s.get('session_id')
+        if not sid or s.get('end_time') or sid == live or sid in queued or sid in hist:
+            continue
+        started = _ts_epoch(s.get('start_time'))
+        if started is None or started < since:
+            continue
+        try:                                   # still being written -> a live drive
+            if time.time() - os.path.getmtime(s['db_path']) < 300:
+                continue
+        except Exception:
+            continue
+        logger.info(f"auto-upload: recovering unfinished drive {sid}")
+        _auto_upload_enqueue(sid, shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'))
+
+
+def _ts_epoch(v):
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(v).strip().replace('Z', '+00:00'))
+    except Exception:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def _auto_upload_process_once():
@@ -14652,26 +14812,35 @@ def _auto_upload_process_once():
         if not items:
             return
         remaining = []
+        now = time.time()
         for it in items:
+            if it.get('next_try', 0) > now:
+                remaining.append(it)
+                continue
             sid = it.get('session_id')
             target = (it.get('target') or 'wdgwars').lower()
-            it['attempts'] = it.get('attempts', 0) + 1
             todo = _upload_target_list(target)
             if not todo:
                 continue                      # unknown target (hand-edited queue) - drop it
+            it['attempts'] = it.get('attempts', 0) + 1
+            it['next_try'] = now + _AUTO_UPLOAD_RETRY_S
             try:
                 csv_text = _wardrive_session_csv(sid)
                 if _wardrive_located_count(csv_text) == 0:
-                    # No GPS-located rows yet; keep it a while in case a fix arrives.
+                    # No GPS-pinned rows (yet); keep it a while, then give up.
                     if it['attempts'] < 30:
                         remaining.append(it)
+                    else:
+                        for t in todo:
+                            _upload_record(sid, t, state='skipped', message='No GPS-pinned rows in this drive')
                     continue
-                failed = [tgt for tgt in todo if not _UPLOADERS[tgt](csv_text).get('ok')]
+                results = _upload_session(sid, todo, csv_text)
+                failed = [t for t, res in results.items() if not res.get('ok')]
                 if failed:
                     it['target'] = ','.join(failed)   # only retry what didn't land
-                    remaining.append(it)      # retry later (probably offline)
+                    remaining.append(it)              # retry later (probably offline)
                 else:
-                    logger.info(f"auto-upload: session {sid} uploaded ({target})")
+                    logger.info(f"auto-upload: session {sid} sent ({target})")
             except Exception as e:
                 logger.debug(f"auto-upload retry {sid}: {e}")
                 remaining.append(it)
@@ -14681,12 +14850,20 @@ def _auto_upload_process_once():
 
 
 def _auto_upload_worker():
+    started = time.time()
+    recovered = False
     while True:
         try:
             _auto_upload_process_once()
+            _wardrift_follow_uploads()
+            # Give a boot-time drive a couple of minutes to register as live
+            # before looking for power-loss leftovers.
+            if not recovered and time.time() - started > 120:
+                recovered = True
+                _auto_upload_recover_unfinished()
         except Exception as e:
             logger.error(f"auto-upload worker error: {e}")
-        time.sleep(60)
+        time.sleep(_AUTO_UPLOAD_TICK_S)
 
 
 def _auto_upload_start_worker():
@@ -14697,14 +14874,35 @@ def _auto_upload_start_worker():
     threading.Thread(target=_auto_upload_worker, daemon=True, name='wdg-auto-upload').start()
 
 
+def _auto_upload_recent(limit=6):
+    hist = _upload_history_load()
+    out = []
+    for sid in sorted(hist, key=lambda k: hist[k].get('_updated', 0), reverse=True)[:limit]:
+        entry = hist[sid]
+        out.append({'session_id': sid, 'results': [
+            {'target': t, 'name': _UPLOAD_NAMES.get(t, t), 'state': v.get('state'),
+             'message': v.get('message', ''), 'at': v.get('at')}
+            for t, v in entry.items() if not t.startswith('_')]})
+    return out
+
+
+try:
+    import wardriving as _wardriving_mod
+    if _auto_upload_on_finished not in _wardriving_mod.SESSION_FINISHED_HOOKS:
+        _wardriving_mod.SESSION_FINISHED_HOOKS.append(_auto_upload_on_finished)
+except Exception as _hook_exc:  # pragma: no cover - never block startup
+    logger.error(f"auto-upload: could not register wardrive stop hook: {_hook_exc}")
+
+
 @app.route('/api/wardriving/upload-config', methods=['GET', 'POST'])
 def wardriving_upload_config():
     """Report (never reveal) or set WiGLE / WDGWars / Wardrift upload creds + auto-upload.
 
-    GET  -> configured booleans (no secrets) + auto_upload settings + queue size.
+    GET  -> configured booleans (no secrets) + auto_upload settings + queue size
+            + recent upload outcomes.
     POST -> saves any of wigle_api_name / wigle_api_token / wdg_key /
             wardrift_api_key / wardrift_base_url / wardrift_public_route /
-            auto_upload / auto_upload_target present.
+            auto_upload / auto_upload_targets (list) / auto_upload_target present.
     """
     try:
         if request.method == 'POST':
@@ -14722,16 +14920,25 @@ def wardriving_upload_config():
                 shared_data.config['wardrift_base_url'] = u
             if 'wardrift_public_route' in data:
                 shared_data.config['wardrift_public_route'] = bool(data['wardrift_public_route'])
-            if 'auto_upload' in data:
-                shared_data.config['wardriving_auto_upload'] = bool(data['auto_upload'])
-            if 'auto_upload_target' in data:
+            if 'auto_upload_targets' in data:
+                picked = [t for t in UPLOAD_TARGETS if t in (data['auto_upload_targets'] or [])]
+                if picked:
+                    shared_data.config['wardriving_auto_upload_target'] = ','.join(picked)
+            elif 'auto_upload_target' in data:
                 t = str(data['auto_upload_target']).lower()
                 if _upload_target_list(t):
                     shared_data.config['wardriving_auto_upload_target'] = t
+            if 'auto_upload' in data:
+                on = bool(data['auto_upload'])
+                if on and not shared_data.config.get('wardriving_auto_upload'):
+                    from datetime import datetime, timezone
+                    shared_data.config['wardriving_auto_upload_since'] = datetime.now(timezone.utc).isoformat()
+                shared_data.config['wardriving_auto_upload'] = on
             shared_data.save_config()
         # Resume the retry worker whenever auto-upload is on or items are pending.
         if shared_data.config.get('wardriving_auto_upload') or _auto_upload_load():
             _auto_upload_start_worker()
+        target = shared_data.config.get('wardriving_auto_upload_target', 'wdgwars')
         return jsonify({
             'wigle_configured': bool((shared_data.config.get('wigle_api_name') or '').strip()
                                      and (shared_data.config.get('wigle_api_token') or '').strip()),
@@ -14742,8 +14949,10 @@ def wardriving_upload_config():
             'wardrift_base_url': _wardrift_base(),
             'wardrift_public_route': bool(shared_data.config.get('wardrift_public_route', False)),
             'auto_upload': bool(shared_data.config.get('wardriving_auto_upload', False)),
-            'auto_upload_target': shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'),
+            'auto_upload_target': target,
+            'auto_upload_targets': _upload_target_list(target) or ['wdgwars'],
             'pending': len(_auto_upload_load()),
+            'recent': _auto_upload_recent(),
         })
     except Exception as e:
         logger.error(f"Wardriving upload-config error: {e}")
@@ -14756,7 +14965,8 @@ def wardriving_upload(session_id):
 
     Body: {"target": "wigle"|"wdgwars"|"wardrift"|"both"|"all"|"a,b", "force": false}
     Refuses a session with no GPS-located rows unless force=true, so we never
-    push location-less junk to the public databases.
+    push location-less junk to the public databases. Outcomes are recorded in
+    the upload history; a Wardrift route upload is followed to its verdict.
     """
     try:
         if not re.match(r'^[A-Za-z0-9_-]+$', session_id):
@@ -14772,12 +14982,20 @@ def wardriving_upload(session_id):
             return jsonify({'success': False, 'located': 0,
                             'error': 'No GPS-located networks in this session yet - get a fix first'}), 422
 
-        results = {t: _UPLOADERS[t](csv_text) for t in targets}
+        results = _upload_session(session_id, targets, csv_text)
+        if any(_upload_history_load().get(session_id, {}).get(t, {}).get('state') == 'processing'
+               for t in targets):
+            _auto_upload_start_worker()                # follows Wardrift to its verdict
         overall = all(v.get('ok') for v in results.values())
         return jsonify({'success': overall, 'located': located, 'results': results}), (200 if overall else 502)
     except Exception as e:
         logger.error(f"Wardriving upload error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+if shared_data.config.get('wardriving_auto_upload') or _auto_upload_load() or any(
+        (e.get('wardrift') or {}).get('state') == 'processing' for e in _upload_history_load().values()):
+    _auto_upload_start_worker()
 
 
 @app.route('/api/wardriving/wardrift/signin', methods=['POST'])

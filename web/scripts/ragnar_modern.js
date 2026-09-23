@@ -31413,12 +31413,7 @@ async function loadWardriveUploadConfig() {
         ws.textContent = d.wigle_configured ? '✓ configured' : 'Not set';
         ws.className = 'text-xs ' + (d.wigle_configured ? 'text-emerald-400' : 'text-gray-500');
     }
-    const cb = document.getElementById('wd-auto-upload');
-    if (cb) cb.checked = !!d.auto_upload;
-    const sel = document.getElementById('wd-auto-upload-target');
-    if (sel && d.auto_upload_target) sel.value = d.auto_upload_target;
-    const aus = document.getElementById('wd-auto-upload-status');
-    if (aus) aus.textContent = (d.auto_upload ? '✓ on' : '') + (d.pending ? ` · ${d.pending} queued` : '');
+    _renderAutoUpload(d);
     _renderWardriftConfig(d);
     loadWardriftMesh();
 }
@@ -31683,14 +31678,65 @@ async function saveWigleUploadCreds() {
     } catch (e) { if (ws) { ws.textContent = 'Save failed'; ws.className = 'text-xs text-red-400'; } }
 }
 
+// ---- Auto-upload card: one switch + a checkbox per service + recent outcomes
+const _AU_TARGETS = ['wigle', 'wdgwars', 'wardrift'];
+let _auTimer = null;
+
+function _renderAutoUpload(d) {
+    const cb = document.getElementById('wd-auto-upload');
+    if (cb) cb.checked = !!d.auto_upload;
+    const picked = d.auto_upload_targets || [];
+    const ready = {
+        wigle: d.wigle_configured,
+        wdgwars: d.wdgwars_configured,
+        wardrift: d.wardrift_signed_in || d.wardrift_key_configured,
+    };
+    _AU_TARGETS.forEach(t => {
+        const box = document.getElementById('wd-au-' + t);
+        if (box) box.checked = picked.includes(t);
+        const note = document.getElementById(`wd-au-${t}-note`);
+        if (note) note.textContent = ready[t] ? '' : '(not set up)';
+    });
+    const st = document.getElementById('wd-auto-upload-status');
+    if (st) {
+        const missing = picked.filter(t => !ready[t]).map(t => ({ wigle: 'WiGLE', wdgwars: 'WDGWars', wardrift: 'Wardrift' })[t]);
+        st.textContent = (d.auto_upload ? 'On' : 'Off') + (d.pending ? ` · ${d.pending} drive${d.pending === 1 ? '' : 's'} queued` : '') +
+            (d.auto_upload && missing.length ? ` · set up ${missing.join(', ')} below first` : '');
+        st.className = 'text-xs mt-2 ' + (d.auto_upload && missing.length ? 'text-amber-400' : 'text-gray-500');
+    }
+    const recent = d.recent || [];
+    const wrap = document.getElementById('wd-au-recent');
+    const list = document.getElementById('wd-au-recent-list');
+    if (wrap && list) {
+        wrap.classList.toggle('hidden', !recent.length);
+        const icon = { ok: ['✓', 'text-emerald-400'], failed: ['✕', 'text-red-400'], processing: ['…', 'text-amber-300'],
+                       skipped: ['–', 'text-gray-500'], unknown: ['?', 'text-gray-400'] };
+        list.innerHTML = recent.map(r => `<div class="min-w-0"><span class="font-mono text-gray-300">${escapeHtml(r.session_id)}</span> ` +
+            r.results.map(x => {
+                const [ic, cls] = icon[x.state] || ['·', 'text-gray-400'];
+                return `<span class="${cls} break-words">${ic} ${escapeHtml(x.name)}${x.message ? ': ' + escapeHtml(x.message) : ''}</span>`;
+            }).join('<span class="text-gray-600"> · </span>') + '</div>').join('');
+    }
+    // While Wardrift is still judging an upload, keep the list fresh.
+    clearTimeout(_auTimer);
+    const busy = recent.some(r => r.results.some(x => x.state === 'processing')) || d.pending;
+    if (busy && document.getElementById('wd-au-recent')?.offsetParent) _auTimer = setTimeout(loadWardriveUploadConfig, 15000);
+}
+
 async function saveAutoUpload() {
     const on = !!document.getElementById('wd-auto-upload')?.checked;
-    const tgt = document.getElementById('wd-auto-upload-target')?.value || 'wdgwars';
-    const aus = document.getElementById('wd-auto-upload-status');
+    const targets = _AU_TARGETS.filter(t => document.getElementById('wd-au-' + t)?.checked);
+    const st = document.getElementById('wd-auto-upload-status');
+    if (on && !targets.length) {
+        if (st) { st.textContent = 'Tick at least one service'; st.className = 'text-xs mt-2 text-red-400'; }
+        return;
+    }
     try {
-        await _postUploadConfig({ auto_upload: on, auto_upload_target: tgt });
+        const body = { auto_upload: on };
+        if (targets.length) body.auto_upload_targets = targets;
+        await _postUploadConfig(body);
         loadWardriveUploadConfig();
-    } catch (e) { if (aus) { aus.textContent = 'save failed'; aus.className = 'text-red-400'; } }
+    } catch (e) { if (st) { st.textContent = 'Save failed: ' + e.message; st.className = 'text-xs mt-2 text-red-400'; } }
 }
 
 async function uploadWardriveSession(sessionId, target) {
@@ -31707,13 +31753,14 @@ async function uploadWardriveSession(sessionId, target) {
             let extra;
             if (target === 'wardrift') {
                 extra = res.duplicate ? '\nAlready uploaded — no double awards.'
-                    : `\n+${resp.awarded_exp || 0} EXP, +${resp.awarded_currency || 0} currency` + (res.mode === 'signals' ? ` (${resp.batches} batches)` : '');
+                    : (res.mode === 'route' ? '\nWardrift is processing it — the result appears under Auto-upload → Recent uploads.'
+                       : `\n+${resp.awarded_exp || 0} EXP, +${resp.awarded_currency || 0} currency (${resp.batches} batches)`);
             } else {
                 const tid = resp.transid || resp.id;
                 extra = tid ? `\nTransID: ${tid}` : '\nQueued for processing.';
             }
             alert(`✓ Sent ${d.located} located networks to ${name}.` + extra);
-            if (target === 'wardrift') loadWardriftStats();
+            loadWardriveUploadConfig();
         } else if (r.status === 422) {
             alert('No GPS-located networks in this session yet — do a drive with a fix first (or the export has no coordinates).');
         } else {

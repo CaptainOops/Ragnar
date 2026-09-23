@@ -7645,6 +7645,30 @@
                             </div>
                         </div>
 
+                        <!-- Auto-upload Card -->
+                        <div class="glass rounded-lg p-4">
+                            <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                                <h4 class="font-medium">Auto-upload</h4>
+                                <label class="toggle-switch relative inline-flex items-center cursor-pointer" title="Upload every finished wardrive automatically">
+                                    <input type="checkbox" id="wd-auto-upload" class="sr-only peer" onchange="saveAutoUpload()">
+                                    <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                                </label>
+                            </div>
+                            <div class="text-sm text-gray-400 mb-3">
+                                Upload every finished wardrive, however it was stopped (web, CYD, display keys) and even after a power cut. Offline? It queues and uploads once the box is online again.
+                            </div>
+                            <div class="flex flex-wrap gap-x-3 gap-y-1 text-sm">
+                                <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="wd-au-wigle" class="accent-amber-500" onchange="saveAutoUpload()"><span>WiGLE</span><span id="wd-au-wigle-note" class="text-xs text-gray-500"></span></label>
+                                <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="wd-au-wdgwars" class="accent-amber-500" onchange="saveAutoUpload()"><span>WDGWars</span><span id="wd-au-wdgwars-note" class="text-xs text-gray-500"></span></label>
+                                <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="wd-au-wardrift" class="accent-amber-500" onchange="saveAutoUpload()"><span>Wardrift</span><span id="wd-au-wardrift-note" class="text-xs text-gray-500"></span></label>
+                            </div>
+                            <div id="wd-auto-upload-status" class="text-xs text-gray-500 mt-2"></div>
+                            <div id="wd-au-recent" class="mt-3 hidden">
+                                <div class="text-xs text-gray-400 mb-1">Recent uploads</div>
+                                <div id="wd-au-recent-list" class="space-y-1 text-xs"></div>
+                            </div>
+                        </div>
+
                         <!-- Upload to WDGWars Card -->
                         <div class="glass rounded-lg p-4">
                             <div class="flex items-center justify-between mb-3">
@@ -7664,20 +7688,6 @@
                                 <button onclick="saveWdgUploadKey()" class="bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Save key</button>
                             </div>
                             <div class="text-xs text-gray-500 mt-2">Then use the <span class="text-fuchsia-400">↑ WDGWars</span> button on each session below.</div>
-                            <label class="flex items-center gap-2 text-xs text-gray-400 mt-3 flex-wrap cursor-pointer">
-                                <input type="checkbox" id="wd-auto-upload" onchange="saveAutoUpload()" class="accent-fuchsia-500">
-                                <span>Auto-upload finished wardrives</span>
-                                <select id="wd-auto-upload-target" onchange="saveAutoUpload()" class="bg-slate-700 text-white text-xs rounded px-1.5 py-0.5 border border-slate-600">
-                                    <option value="wdgwars">to WDGWars</option>
-                                    <option value="wigle">to WiGLE</option>
-                                    <option value="both">to WiGLE + WDGWars</option>
-                                    <option value="wardrift">to Wardrift</option>
-                                    <option value="wdgwars,wardrift">to WDGWars + Wardrift</option>
-                                    <option value="all">to all three</option>
-                                </select>
-                                <span id="wd-auto-upload-status" class="text-gray-500"></span>
-                            </label>
-                            <div class="text-xs text-gray-500 mt-1">Offline? It queues and uploads automatically once Wi-Fi is back.</div>
                             <div id="wd-upload-cfg-result" class="text-xs mt-2 hidden"></div>
                         </div>
 
@@ -8762,7 +8772,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260923-wd3"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260923-autoupload"></script>
 
 
 
