@@ -31377,13 +31377,17 @@ function renderWardrivingSessions(sessions) {
                 <span class="text-xs text-gray-500">${s.total_networks || 0} networks</span>
                 ${isActive ? '<span class="text-xs text-cyan-400">● viewing</span>' : ''}
             </div>
-            <div class="flex flex-wrap gap-x-3 gap-y-1 shrink-0">
-                <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=report" target="_blank" rel="noopener" class="text-xs text-emerald-400 hover:text-emerald-300 whitespace-nowrap font-semibold" onclick="event.stopPropagation()">Report</a>
-                <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=wigle" class="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap" onclick="event.stopPropagation()">WiGLE CSV</a>
-                <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=kml" class="text-xs text-purple-400 hover:text-purple-300 whitespace-nowrap" onclick="event.stopPropagation()">KML</a>
-                <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wdgwars')" class="text-xs text-fuchsia-400 hover:text-fuchsia-300 whitespace-nowrap font-semibold" title="Upload this session to WDGWars">↑ WDGWars</button>
-                <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wigle')" class="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap" title="Upload this session to WiGLE">↑ WiGLE</button>
-                <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wardrift')" class="text-xs text-amber-400 whitespace-nowrap" title="Upload this session to Wardrift">↑ Wardrift</button>
+            <div class="flex flex-col md:flex-row md:items-center gap-y-1 gap-x-3 w-full md:w-auto">
+                <div class="flex flex-wrap gap-x-3 gap-y-1">
+                    <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=report" target="_blank" rel="noopener" class="text-xs py-1 text-emerald-400 hover:text-emerald-300 whitespace-nowrap font-semibold" onclick="event.stopPropagation()">Report</a>
+                    <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=wigle" class="text-xs py-1 text-cyan-400 hover:text-cyan-300 whitespace-nowrap" onclick="event.stopPropagation()">WiGLE CSV</a>
+                    <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=kml" class="text-xs py-1 text-purple-400 hover:text-purple-300 whitespace-nowrap" onclick="event.stopPropagation()">KML</a>
+                </div>
+                <div class="flex flex-wrap gap-x-3 gap-y-1">
+                    <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wdgwars')" class="text-xs py-1 text-fuchsia-400 hover:text-fuchsia-300 whitespace-nowrap font-semibold" title="Upload this session to WDGWars">↑ WDGWars</button>
+                    <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wigle')" class="text-xs py-1 text-cyan-400 hover:text-cyan-300 whitespace-nowrap" title="Upload this session to WiGLE">↑ WiGLE</button>
+                    <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wardrift')" class="text-xs py-1 text-amber-400 whitespace-nowrap" title="Upload this session to Wardrift">↑ Wardrift</button>
+                </div>
             </div>
         </div>`;
     }).join('');
