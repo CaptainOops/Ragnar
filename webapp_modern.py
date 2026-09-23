@@ -15074,11 +15074,8 @@ def wardrift_dashboard():
 # The serial port is published via serial_claims, so the GPS, CYD bridge and
 # wardriving companion monitor never open it (and vice versa).
 # ---------------------------------------------------------------------------
-# Wardrift mesh rewards are not live yet. The owner says they will be based on
-# the messages a node passes on / tries to pass on (LocalStats num_tx_relay /
-# num_tx_relay_canceled, which the report below already carries as per-window
-# deltas). Until then the reporter never sends and the UI shows "Coming soon";
-# flip this to True when Wardrift launches it.
+# Mesh reporting is not available yet: the reporter never sends and the UI
+# shows "Coming soon". Flip to True to enable it.
 WARDRIFT_MESH_LIVE = False
 _MESH_COUNTERS = ('num_packets_tx', 'num_packets_rx', 'num_packets_rx_bad',
                   'num_tx_relay', 'num_tx_relay_canceled', 'num_rx_dupe')

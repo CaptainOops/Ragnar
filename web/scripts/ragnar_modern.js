@@ -31440,7 +31440,7 @@ async function loadWardriftMesh(fillForm) {
         d = await r.json();
         if (!r.ok) return;
     } catch (e) { return; }
-    // Wardrift mesh rewards not launched yet: greyed out with "Coming soon".
+    // Not available yet: greyed out with a "Coming soon" badge.
     const live = d.available !== false;
     const body = document.getElementById('wd-wdm-body');
     if (body) {
@@ -31448,7 +31448,6 @@ async function loadWardriftMesh(fillForm) {
         body.setAttribute('aria-disabled', String(!live));
         body.querySelectorAll('input, select, button').forEach(el => { el.disabled = !live; });
     }
-    document.getElementById('wd-wdm-coming')?.classList.toggle('hidden', live);
     if (!live) {
         const b = document.getElementById('wd-wdm-badge');
         if (b) { b.textContent = 'Coming soon'; b.className = 'text-xs px-2 py-0.5 rounded-full bg-sky-900/60 text-sky-300'; }

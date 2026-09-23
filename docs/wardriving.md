@@ -705,13 +705,9 @@ rejected.
 
 #### Wardrift mesh node (Meshtastic)
 
-> **Coming soon.** Wardrift's mesh rewards are still being built. Its owner
-> says they will be based on the messages a node passes on or tries to pass
-> on, which the report below already carries (`num_tx_relay` /
-> `num_tx_relay_canceled`, as per-window deltas). Until then the section is
-> greyed out with a *Coming soon* badge, the reporter never sends, and
-> `POST /api/wardriving/wardrift/mesh` returns `409`. Setting
-> `WARDRIFT_MESH_LIVE = True` in `webapp_modern.py` switches it all on.
+> **Coming soon.** The section is greyed out and the reporter doesn't send
+> yet (`POST /api/wardriving/wardrift/mesh` returns `409`). Setting
+> `WARDRIFT_MESH_LIVE = True` in `webapp_modern.py` switches it on.
 Wardrift also rewards running **Meshtastic** nodes (Mesh XP, currency and hex
 influence), but stock Meshtastic firmware can't make HTTP calls, so something
 has to report on the node's behalf. The **Mesh node** section of the Wardrift
