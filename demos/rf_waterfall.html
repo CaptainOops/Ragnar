@@ -1804,9 +1804,9 @@
   // ---- live sweep ----
   Scope.prototype.startLive=function(){
     var self=this;
-    if(this._surveyOn||this._followOnly){ this.seq=0; this._liveQ.length=0; this._rangeKnown=false;   // follow whatever owns the dongle
+    if(this._surveyOn||this._followOnly){ this.seq=0; this._liveQ.length=0; this._play=null; this._newestTs=null; this._rangeKnown=false;   // follow whatever owns the dongle
       if(this._poll) clearInterval(this._poll); this._poll=setInterval(function(){ self.livePoll(); },120); return; } this.seq=0; this.liveErr=null; this._fpsEma=null; this._lastRowT=0; this._liveStartT=Date.now(); this._lastFrameT=0;
-    this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0;
+    this._liveQ.length=0; this._acc=0; this._arrEma=0; this._lastPoll=0; this._tsWin=[]; this._nom=0; this._play=null; this._newestTs=null; this._newestWall=0;
     var body={band:this.liveBand};
     if(!this.cfg.tuner){ body.lna=this.hw.lna; body.vga=this.hw.vga; body.amp=this.hw.amp?1:0; body.antenna=this.hw.antenna?1:0; if(this.hw.bin_hz) body.bin_hz=this.hw.bin_hz; }
     if(this.zoom){ body.lo_hz=Math.round(this.zoom[0]*1e6); body.hi_hz=Math.round(this.zoom[1]*1e6); }
@@ -1818,7 +1818,7 @@
         self._poll=setInterval(function(){ self.livePoll(); },120);
       }).catch(function(){ self.liveErr='Failed to start '+self.cfg.short; self.showVeil('Could not start '+self.cfg.short,self.liveErr); });
   };
-  Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} this._liveQ.length=0; this._acc=0; this._tsWin=[]; this._nom=0; if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
+  Scope.prototype.stopLive=function(){ if(this._poll){clearInterval(this._poll);this._poll=null;} this._liveQ.length=0; this._acc=0; this._tsWin=[]; this._nom=0; this._play=null; this._newestTs=null; this._newestWall=0; if(this.devEl) this.devEl.textContent=this.cfg.dev; fetch(this.cfg.api.stop,{method:'POST'}).catch(function(){}); };
   Scope.prototype.STALL_MS=15000;   // silence this long = a real wedge, not a restart gap
   Scope.prototype.livePoll=function(){
     if(!running || this.mode!=='live' || this.decoding || this.replaying) return;
@@ -1844,8 +1844,11 @@
         // Enqueue instead of painting per-poll — loop() releases rows at one
         // steady rate, so poll/network jitter never shows as speed changes.
         var _wall=performance.now()/1000;
-        frames.forEach(function(f){ self.seq=f.seq; self._liveQ.push({power:f.power,lo:lo,hi:hi,floor:floor});
-          self._tsWin.push((typeof f.ts==='number')?f.ts:_wall); });
+        frames.forEach(function(f){ self.seq=f.seq; var ts=(typeof f.ts==='number')?f.ts:_wall;
+          self._liveQ.push({power:f.power,lo:lo,hi:hi,floor:floor,t:ts});
+          self._newestTs=(self._newestTs==null)?ts:Math.max(self._newestTs,ts);
+          self._tsWin.push(ts); });
+        self._newestWall=performance.now()/1000;   // when this newest ts reached us
         // Data rate from the producer's own timestamps over the last ~5 s — a
         // smooth, true rows/s (per-poll counts swing 0..3 and made the pace wobble).
         var tw=self._tsWin, tl=tw[tw.length-1]; while(tw.length>2 && tl-tw[0]>5) tw.shift();
@@ -3351,8 +3354,10 @@
   var acc=0,last=performance.now();
   document.addEventListener('visibilitychange',function(){ if(document.hidden) return;
     last=performance.now(); acc=0;
-    scopes.forEach(function(s){ if(!s._liveQ) return; var t=Math.max(2,Math.round((s._nom||12)*0.8));
-      if(s._liveQ.length>t) s._liveQ.splice(0,s._liveQ.length-t); s._acc=0; }); });
+    scopes.forEach(function(s){ if(!s._liveQ||s._newestTs==null) return;
+      var cut=s._newestTs-2.0;                        // drop what piled up while hidden
+      while(s._liveQ.length && s._liveQ[0].t<cut) s._liveQ.shift();
+      s._play=s._newestTs-0.6; }); });
   function loop(now){ if(!running)return; var dt=Math.min(0.1,Math.max(0,(now-last)/1000));last=now;acc+=dt;var interval=1/HZ,did=0;
     while(acc>=interval&&did<4){ scopes.forEach(function(s){ if(s.mode==='synth'&&!s.decoding&&!s.replaying) s.synthStep(); }); acc-=interval;did++; }
     // Live scopes: release queued rows at ONE steady rate = the SDR's measured
@@ -3360,19 +3365,28 @@
     // on target by nudging the pace at most ±12% (imperceptible) — never the old
     // 3× catch-up surge. A backlog that's seconds stale (tab was hidden, backend
     // stalled) is skipped outright rather than fast-forwarded on screen.
+    // Genlock: play each row back at its OWN producer timestamp, at 1x real
+    // time, behind a fixed LATENCY buffer. The scroll speed is therefore exactly
+    // the rate the SDR produced rows (steady 16/s on the IQ engine, an honest
+    // ~1/s on the wide sweep) with no rate estimate to drift and no catch-up
+    // surge. A gap in the data simply pauses the scroll; a long stall (hidden
+    // tab / stalled backend) skips forward once rather than crawling through it.
+    var LAT=0.6, MAXLAG=2.0;
     scopes.forEach(function(s){
       if(s.mode!=='live'||s.decoding||s.replaying||!s._liveQ) return;
-      var q=s._liveQ; if(!s._nom){ if(q.length<3) return; s._nom=12; }
-      // buffer depth (s): grows after an underrun so a recurring hiccup is absorbed
-      // next time, then relaxes back toward 0.8 s while the feed is smooth
-      if(!q.length){ if(!s._dry){ s._dry=true; s._buf=Math.min(2.0,(s._buf||0.8)+0.4); } }
-      else { s._dry=false; if(s._buf>0.8) s._buf=Math.max(0.8,s._buf-0.01*dt); }
-      var nom=s._nom, target=Math.max(2,Math.round(nom*(s._buf||0.8)));
-      if(q.length>target+Math.max(20,nom*2)){ q.splice(0,q.length-target); s._acc=0; }
-      var err=(q.length-target)/target, k=1+0.25*err; if(k<0.88)k=0.88; if(k>1.12)k=1.12;
-      s._acc+=nom*k*dt; var g=0;
-      while(s._acc>=1 && q.length && g++<6){ var it=q.shift(); s.pushRow(it.power,it.lo,it.hi,it.floor); s._acc-=1; }
-      if(s._acc>1) s._acc=1;
+      var q=s._liveQ, newest=s._newestTs; if(newest==null){ return; }
+      // Project the live edge forward from the last row's arrival at 1x, so it
+      // advances smoothly instead of stepping once per 120 ms poll (a staircase
+      // that made the scroll lumpy). Producer and browser clocks both run in
+      // real time, so this stays honest.
+      var live=newest+(performance.now()/1000-(s._newestWall||0));
+      if(s._play==null) s._play=live-LAT;             // prime the playhead
+      s._play+=dt;                                    // advance at 1x real time
+      var cap=live-LAT;
+      if(s._play>cap) s._play=cap;                    // never outrun the buffer
+      if(s._play<cap-MAXLAG) s._play=cap-MAXLAG;      // after a stall, skip, don't crawl
+      var g=0;
+      while(q.length && q[0].t<=s._play && g++<300){ var it=q.shift(); s.pushRow(it.power,it.lo,it.hi,it.floor); }
     });
     scopes.forEach(function(s){s.setRate(HZ);}); requestAnimationFrame(loop); }
 
