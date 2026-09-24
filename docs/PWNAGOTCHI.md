@@ -24,7 +24,15 @@ Plug in a USB adapter that supports monitor mode. The installer auto-detects the
 
 - Atheros AR9271 (Alfa AWUS036NHA)
 - Ralink RT5370
-- Realtek RTL8812AU (with `aircrack-ng` driver)
+- Realtek RTL8812AU (Alfa AWUS036ACH) — needs a DKMS driver; see **[RTL8812AU Driver Setup](wifi-rtl8812au.md)**
+- MediaTek MT7612U (Alfa AWUS036ACM)
+
+> ⚠️ **Test injection before relying on a MediaTek MT7921U for Pwnagotchi.** In our testing
+> (kernel 6.18) the MT7921U had excellent monitor RX and rock-solid USB, but bettercap could
+> not inject deauths through it, so it captured almost nothing — it worked well only for
+> *passive* wardriving (logging networks + GPS). Whether that's universal to the chipset or
+> specific to a driver/kernel version isn't confirmed, so verify it can actually deauth and
+> capture on your setup before counting on it.
 
 #### Option B — Onboard WiFi with Nexmon (advanced)
 
@@ -383,6 +391,20 @@ sudo iw dev wlan1 interface add mon0 type monitor
 | `No such device` | Wrong interface name in config | Edit `/etc/pwnagotchi/config.toml` and `/usr/bin/monstart` |
 | `Device or resource busy` | NetworkManager holds the interface | Add to unmanaged list (see below) |
 | Command not found | `iw` not installed | `sudo apt install iw` |
+
+### RTL8812AU (ALFA): adapter resets, few or no handshakes
+
+If you use a Realtek RTL8812AU adapter and it captures almost nothing (AP count drops to 0,
+`epoch` lines show `deauths=0`, `wlan1` keeps falling back to `type managed`), the stock
+in-kernel `rtw88_8812au` driver is likely resetting the adapter under load. Confirm with:
+
+```bash
+sudo dmesg | grep -c "idProduct=8812"   # dozens per hour = the driver is resetting the adapter
+vcgencmd get_throttled                   # 0x0 = not a power problem, so it's the driver
+```
+
+The fix is to replace it with the morrownr DKMS driver **with monitor mode enabled** (the
+non-obvious `CONFIG_WIFI_MONITOR = y` step): see **[RTL8812AU Driver Setup](wifi-rtl8812au.md)**.
 
 ### NetworkManager holds the WiFi interface
 
