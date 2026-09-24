@@ -4,6 +4,7 @@
   "description": "[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/J3J2EARPK)\r ![GitHub stars](https://img.shields.io/github/stars/PierreGode/Ragnar)\r ![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=fff)\r ![Status](https://img.shields.io/badge/Status-Development-blue.svg)\r [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)",
   "main": "tailwind.config.js",
   "scripts": {
+    "test:dashboard": "node tests/dashboard_integration.test.cjs",
     "build:css": "tailwindcss -i ./web/css/tailwind-input.css -o ./web/css/tailwind.css --minify",
     "watch:css": "tailwindcss -i ./web/css/tailwind-input.css -o ./web/css/tailwind.css --watch"
   },
@@ -19,6 +20,7 @@
   },
   "homepage": "https://github.com/PierreGode/Ragnar#readme",
   "devDependencies": {
+    "jsdom": "^26.1.0",
     "tailwindcss": "^3.4.19"
   }
 }

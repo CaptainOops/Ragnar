@@ -752,6 +752,10 @@
                     <button onclick="showTab('epaper')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap requires-display" data-tab="epaper">
                         Display
                     </button>
+                    <button onclick="showTab('toolkit')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700" data-tab="toolkit">Toolkit</button>
+                    <button onclick="showTab('livecams')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap" data-tab="livecams">
+                        Live Cams
+                    </button>
                     <button onclick="showTab('files')" class="nav-btn px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-[15px] whitespace-nowrap" data-tab="files">
                         Files
                     </button>
@@ -803,6 +807,8 @@
                 <button onclick="showTab('adv-vuln')" data-tab="adv-vuln" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Adv Scan</button>
                 <button onclick="showTab('wardriving')" data-tab="wardriving" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700 wardriving-feature hidden">Wardriving</button>
                 <button onclick="showTab('epaper')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700 requires-display">Display</button>
+                <button onclick="showTab('toolkit')" data-tab="toolkit" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Toolkit</button>
+                <button onclick="showTab('livecams')" data-tab="livecams" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Live Cams</button>
                 <button onclick="showTab('files')" data-tab="files" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Files</button>
                 <button onclick="showTab('system')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">System</button>
                 <button onclick="showTab('connect')" class="block w-full text-left px-3 py-2 rounded-lg hover:bg-slate-700">Connect</button>
@@ -5223,6 +5229,290 @@
             </div>
         </div>
 
+        <div id="toolkit-tab" class="tab-content hidden">
+  <style>
+    .tk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.tk-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;margin-bottom:18px}.tk-card h2{font-size:20px;font-weight:600;margin-bottom:12px}.tk-card p,.tk-muted{color:#94a3b8;margin:8px 0}.tk-card label{display:block;margin:12px 0 6px}.tk-card input,.tk-card select{width:100%;background:#0f172a;color:#f1f5f9;border:1px solid #475569;border-radius:6px;padding:10px}.tk-card button,.tk-link{display:inline-block;background:#334155;border-radius:6px;padding:8px 12px;margin:8px 8px 0 0}.tk-card button:disabled{opacity:.45;cursor:not-allowed}.tk-card button[type=submit]{background:#0369a1}.tk-job{border-top:1px solid #475569;padding:14px 0;overflow-wrap:anywhere}.tk-job a{color:#7dd3fc;margin-right:16px}.tk-error{color:#fda4af!important}.tk-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#0f172a;padding:14px}.tk-card [hidden]{display:none}
+  </style>
+  <div class="tk-card">
+    <h2>Toolkit</h2>
+    <p>Quick investigations, Shodan intelligence and Ethernet utilities. Every job saves its report and artifacts to this network’s loot.</p>
+    <button onclick="showTab('livecams')">Live cameras</button><button onclick="showTab('network')">Network &amp; switch tools</button><button onclick="showTab('traffic')">Traffic analysis</button><button onclick="showTab('files')">Browse loot</button>
+  </div>
+  <div class="tk-grid">
+    <form id="tk-run" class="tk-card">
+      <h2>Run a tool</h2>
+      <label for="tk-tool">Tool</label><select id="tk-tool"></select>
+      <p id="tk-description"></p><p id="tk-dependency" class="tk-error"></p>
+      <div id="tk-target-wrap"><label for="tk-target" id="tk-target-label">Target</label><input id="tk-target" maxlength="500" autocomplete="off"></div>
+      <div id="tk-interface-wrap" hidden><label for="tk-interface">Interface</label><select id="tk-interface"></select></div>
+      <div id="tk-port-wrap" hidden><label for="tk-port">TLS port</label><input id="tk-port" type="number" min="1" max="65535" value="443"></div>
+      <div id="tk-capture-wrap" hidden><label for="tk-profile">Capture profile</label><select id="tk-profile"></select><label for="tk-duration">Seconds (5–120)</label><input id="tk-duration" type="number" min="5" max="120" value="20"></div>
+      <div id="tk-page-wrap" hidden><label for="tk-page">Search page (1–20)</label><input id="tk-page" type="number" min="1" max="20" value="1"></div>
+      <button type="submit" id="tk-submit">Run &amp; save to loot</button>
+      <p id="tk-message" role="status" aria-live="polite"></p>
+    </form>
+    <form id="tk-key-form" class="tk-card">
+      <h2>Shodan</h2><p id="tk-key-status">Loading configuration…</p>
+      <p>Start with Shodan InternetDB for free IPv4 lookups—no key needed. Add a key for richer host details, search and account information. Search filters and additional pages may use query credits.</p>
+      <label for="tk-key">API key</label><input id="tk-key" type="password" autocomplete="new-password" placeholder="Stored only on the Ragnar server">
+      <button type="submit" id="tk-save-key">Verify &amp; save key</button><button type="button" id="tk-remove-key">Remove key</button>
+      <p id="tk-key-message" role="status"></p>
+    </form>
+  </div>
+  <div class="tk-card"><h2>Saved jobs</h2><p>Latest 100 jobs for the active network. Captures include a downloadable PCAP. Copy a capture’s job ID into Capture summary to inspect it.</p><button id="tk-refresh">Refresh</button><div id="tk-jobs"></div></div>
+  <div class="tk-card" id="tk-preview-wrap" hidden><h2>Result preview</h2><div id="tk-summary"></div><pre id="tk-preview" class="tk-result"></pre></div>
+</div>
+
+        <div id="livecams-tab" class="tab-content hidden">
+            <div class="glass rounded-xl p-4 sm:p-6 mb-6">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
+                    <div class="flex items-center space-x-3">
+                        <h2 class="text-lg sm:text-2xl font-bold">📷 Live Cams</h2>
+                        <span class="text-xs text-gray-400">public feeds you add</span>
+                    </div>
+                    <button onclick="lcToggleAddForm()" class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded-lg text-sm">+ Add Camera</button>
+                </div>
+                <p class="text-xs text-amber-300/80 mb-4">Add only feeds published for public viewing — traffic/DOT cams, surf cams, city or tourism webcams. Do not add cameras you are not authorized to view.</p>
+
+                <!-- Camera Recon: scan YOUR network for IP cameras -->
+                <div class="bg-slate-800/40 rounded-lg p-4 mb-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="font-medium text-sm">🔎 Camera Recon</span>
+                            <span class="text-xs text-gray-400">scan your network for IP cameras</span>
+                        </div>
+                        <span id="cr-status" class="text-xs text-gray-400">idle</span>
+                    </div>
+                    <p class="text-xs text-amber-300/70 mb-3">Scans only the target you specify (your local subnet / an IP you own) — authorized networks only. Findings save to loot; discovered live streams can be added to the grid below.</p>
+                    <div class="flex flex-wrap gap-2 items-center">
+                        <select id="cr-mode" onchange="crModeChange()" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                            <option value="lan">Local subnet (ARP neighbours)</option>
+                            <option value="single">Single IP</option>
+                            <option value="subnet">CIDR (e.g. 192.168.1.0/24)</option>
+                            <option value="list">IP list</option>
+                        </select>
+                        <input id="cr-target" type="text" placeholder="leave blank — scans ARP neighbours" disabled class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm flex-1" style="min-width:180px">
+                        <button id="cr-scan-btn" onclick="crScan()" class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm">Scan</button>
+                        <button onclick="crStop()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm">Stop</button>
+                    </div>
+                    <div id="cr-progress" class="text-xs text-gray-400 mt-2"></div>
+                    <div id="cr-results" class="mt-3 grid gap-2"></div>
+                </div>
+
+                <div id="lc-add-form" class="hidden bg-slate-800/50 rounded-lg p-4 mb-4 grid gap-3 sm:grid-cols-2">
+                    <input id="lc-label" type="text" placeholder="Label (e.g. Downtown Main St)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                    <input id="lc-category" type="text" placeholder="Category (e.g. Traffic)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                    <input id="lc-url" type="url" placeholder="Feed URL (https:// snapshot or MJPEG)" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm sm:col-span-2">
+                    <select id="lc-type" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                        <option value="snapshot">Snapshot JPG (recommended — refreshes, works with http feeds)</option>
+                        <option value="mjpeg">MJPEG stream (https only)</option>
+                        <option value="embed">Embed / YouTube live (video OR channel link)</option>
+                    </select>
+                    <div class="flex gap-2">
+                        <button onclick="lcAddCam()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm flex-1">Add</button>
+                        <button onclick="lcToggleAddForm()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm">Cancel</button>
+                    </div>
+                    <p id="lc-add-msg" class="text-xs sm:col-span-2"></p>
+                </div>
+
+                <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                    <div id="lc-filters" class="flex gap-1 flex-wrap text-xs"></div>
+                    <button onclick="lcVideoWall()" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-xs flex-shrink-0">🧱 Video Wall</button>
+                </div>
+                <div id="livecams-grid" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <p class="text-gray-400 text-sm">Loading…</p>
+                </div>
+            </div>
+            <!-- expand / fullscreen viewer -->
+            <div id="lc-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,.85)" onclick="lcClose(event)">
+                <div class="relative w-full max-w-6xl">
+                    <button onclick="lcClose()" class="absolute -top-9 right-0 text-white text-2xl leading-none hover:text-gray-300">✕</button>
+                    <div id="lc-modal-body" class="aspect-video bg-black rounded-lg overflow-hidden"></div>
+                    <div id="lc-modal-label" class="text-center text-sm text-gray-300 mt-2"></div>
+                </div>
+            </div>
+            <!-- video wall (fullscreen, all cams) -->
+            <div id="lc-wall" class="hidden fixed inset-0 z-50 bg-black">
+                <button onclick="lcCloseWall()" class="absolute top-2 right-2 z-10 bg-black/60 hover:bg-black/80 text-white text-sm rounded px-3 py-1">✕ Close</button>
+                <div id="lc-wall-body" class="w-full h-full grid gap-0.5" style="grid-template-columns:repeat(2,minmax(0,1fr))"></div>
+            </div>
+            <div id="lc-toast" class="hidden"></div>
+        </div>
+        <script>
+        (function(){
+            var REFRESH_MS = 12000;
+            function el(id){ return document.getElementById(id); }
+            function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+            window.lcToggleAddForm = function(){ var f = el('lc-add-form'); if (f) f.classList.toggle('hidden'); };
+            function camMediaHTML(cam){
+                if (cam.type === 'embed'){
+                    return '<iframe src="'+esc(cam.url)+'" class="w-full h-full" style="border:0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe>';
+                }
+                if (cam.type === 'mjpeg'){
+                    return '<img data-lc-type="mjpeg" src="'+esc(cam.url)+'" class="w-full h-full object-cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
+                }
+                var src = '/api/livecams/snapshot/' + encodeURIComponent(cam.id);
+                return '<img data-lc-type="snapshot" data-lc-proxy="'+src+'" src="'+src+'" class="w-full h-full object-cover" loading="lazy" onerror="this.classList.add(\'opacity-20\')" alt="'+esc(cam.label)+'">';
+            }
+            window._lcFilter = window._lcFilter || 'All';
+            window.lcRender = function(cams){
+                var grid = el('livecams-grid'); if (!grid) return;
+                window._lcCams = cams || [];
+                var cats = ['All']; (cams||[]).forEach(function(c){ if (cats.indexOf(c.category)<0) cats.push(c.category); });
+                if (cats.indexOf(window._lcFilter)<0) window._lcFilter = 'All';
+                var fbar = el('lc-filters');
+                if (fbar){ fbar.innerHTML = (cats.length>1 ? cats.map(function(cat){
+                    var a = (window._lcFilter===cat);
+                    return '<button data-lc-category="'+esc(cat)+'" class="px-2 py-1 rounded '+(a?'bg-Ragnar-600 text-white':'bg-slate-700 text-gray-300 hover:bg-slate-600')+'">'+esc(cat)+'</button>';
+                }).join('') : ''); }
+                if (el('livecams-tab').classList.contains('hidden')) { grid.replaceChildren(); return; }
+                var shown = (cams||[]).filter(function(c){ return window._lcFilter==='All' || c.category===window._lcFilter; });
+                if (!shown.length){ grid.innerHTML = '<p class="text-gray-400 text-sm">'+((cams&&cams.length)?'No cameras in this category.':'No cameras yet. Click &ldquo;+ Add Camera&rdquo; to add a public feed URL.')+'</p>'; return; }
+                grid.innerHTML = shown.map(function(cam){
+                    var snap = cam.type==='snapshot' ? '<button onclick="lcSnapshot(\''+esc(cam.id)+'\')" class="absolute top-1 right-10 bg-black/50 hover:bg-black/70 text-white text-sm rounded px-2 py-0.5" title="Save snapshot to loot">📸</button>' : '';
+                    return '<div class="bg-slate-800/60 rounded-lg overflow-hidden" draggable="true" ondragstart="lcDragStart(event,\''+esc(cam.id)+'\')" ondragover="event.preventDefault()" ondrop="lcDrop(event,\''+esc(cam.id)+'\')">'
+                        + '<div class="aspect-video bg-black overflow-hidden relative">' + camMediaHTML(cam) + snap
+                        + '<button onclick="lcOpen(\''+esc(cam.id)+'\')" class="absolute top-1 right-1 bg-black/50 hover:bg-black/70 text-white text-sm rounded px-2 py-0.5" title="Expand">⤢</button></div>'
+                        + '<div class="flex items-center justify-between px-3 py-2">'
+                        + '<div class="min-w-0"><div class="text-sm font-medium truncate">' + esc(cam.label) + '</div>'
+                        + '<div class="text-xs text-gray-400 truncate">' + esc(cam.category) + '</div></div>'
+                        + '<button onclick="lcDelete(\'' + esc(cam.id) + '\')" class="text-xs text-red-400 hover:text-red-300 ml-2 flex-shrink-0">Remove</button>'
+                        + '</div></div>';
+                }).join('');
+            };
+            window.lcLoad = function(){
+                fetch('/api/livecams').then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
+            };
+            window.lcAddCam = function(){
+                var msg = el('lc-add-msg');
+                var body = { label: el('lc-label').value, category: el('lc-category').value, url: el('lc-url').value, type: el('lc-type').value };
+                if (!body.url){ if(msg){ msg.textContent='Feed URL is required.'; msg.className='text-xs sm:col-span-2 text-red-400'; } return; }
+                fetch('/api/livecams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+                    .then(function(r){return r.json();}).then(function(d){
+                        if (d && d.success){ el('lc-label').value=''; el('lc-category').value=''; el('lc-url').value=''; window.lcRender(d.cams); window.lcToggleAddForm(); if(msg) msg.textContent=''; }
+                        else if (msg){ msg.textContent = (d && d.error) || 'Failed to add.'; msg.className='text-xs sm:col-span-2 text-red-400'; }
+                    }).catch(function(){ if(msg){ msg.textContent='Request failed.'; msg.className='text-xs sm:col-span-2 text-red-400'; } });
+            };
+            window.lcDelete = function(id){
+                fetch('/api/livecams/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:id})})
+                    .then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
+            };
+            window.lcOpen = function(id){
+                var cam = (window._lcCams||[]).filter(function(c){ return c.id===id; })[0]; if (!cam) return;
+                var body = el('lc-modal-body'); if (body) body.innerHTML = camMediaHTML(cam);
+                var lbl = el('lc-modal-label'); if (lbl) lbl.textContent = cam.label + ' · ' + cam.category;
+                var m = el('lc-modal'); if (m) m.classList.remove('hidden');
+            };
+            window.lcClose = function(ev){
+                if (ev && ev.currentTarget && ev.target !== ev.currentTarget) return; // clicked inside the video, keep open
+                var m = el('lc-modal'); if (m) m.classList.add('hidden');
+                var body = el('lc-modal-body'); if (body) body.innerHTML = ''; // stop the stream
+            };
+            el('lc-filters').addEventListener('click', function(event){
+                var button = event.target.closest('[data-lc-category]');
+                if (button) window.lcSetFilter(button.getAttribute('data-lc-category'));
+            });
+            window.lcSetFilter = function(cat){ window._lcFilter = cat; window.lcRender(window._lcCams); };
+            var _lcDragId = null;
+            window.lcDragStart = function(ev, id){ _lcDragId = id; if (ev.dataTransfer){ ev.dataTransfer.effectAllowed='move'; } };
+            window.lcDrop = function(ev, targetId){
+                ev.preventDefault();
+                if (!_lcDragId || _lcDragId===targetId){ _lcDragId=null; return; }
+                var cams = window._lcCams || [];
+                var ids = cams.map(function(c){ return c.id; });
+                var from = ids.indexOf(_lcDragId), to = ids.indexOf(targetId);
+                if (from<0 || to<0){ _lcDragId=null; return; }
+                var moved = cams.splice(from,1)[0]; cams.splice(to,0,moved); _lcDragId=null;
+                window.lcRender(cams);
+                fetch('/api/livecams/reorder', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({order: cams.map(function(c){return c.id;})})}).catch(function(){});
+            };
+            window.lcVideoWall = function(){
+                var cams = (window._lcCams||[]).filter(function(c){ return window._lcFilter==='All' || c.category===window._lcFilter; });
+                if (!cams.length) return;
+                var wall = el('lc-wall'), body = el('lc-wall-body'); if (!wall || !body) return;
+                var cols = cams.length<=1?1:(cams.length<=4?2:(cams.length<=9?3:4));
+                body.style.gridTemplateColumns = 'repeat('+cols+',minmax(0,1fr))';
+                body.innerHTML = cams.map(function(cam){ return '<div class="bg-black overflow-hidden relative">'+camMediaHTML(cam)+'<span class="absolute bottom-0 left-0 bg-black/60 text-white text-xs px-1">'+esc(cam.label)+'</span></div>'; }).join('');
+                wall.classList.remove('hidden');
+            };
+            window.lcCloseWall = function(){ var w=el('lc-wall'); if(w) w.classList.add('hidden'); var b=el('lc-wall-body'); if(b) b.innerHTML=''; };
+            function lcToast(msg, ok){
+                var t = el('lc-toast'); if(!t) return;
+                t.textContent = msg; t.className = 'fixed bottom-4 right-4 z-50 text-sm px-3 py-2 rounded shadow-lg text-white '+(ok?'bg-emerald-600':'bg-red-600');
+                setTimeout(function(){ t.className='hidden'; }, 2500);
+            }
+            window.lcSnapshot = function(id){
+                fetch('/api/livecams/save-snapshot', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:id})})
+                    .then(function(r){return r.json();}).then(function(d){ lcToast(d&&d.success?'📸 Snapshot saved to loot':((d&&d.error)||'Snapshot failed'), d&&d.success); })
+                    .catch(function(){ lcToast('Snapshot failed', false); });
+            };
+            document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ window.lcClose(); window.lcCloseWall(); } });
+            function refreshSnapshots(){
+                var tab = el('livecams-tab');
+                if (!tab || tab.classList.contains('hidden')) return;
+                var imgs = document.querySelectorAll('#livecams-tab img[data-lc-type="snapshot"]');
+                for (var i=0;i<imgs.length;i++){
+                    var base = imgs[i].getAttribute('data-lc-proxy'); if (!base) continue;
+                    imgs[i].classList.remove('opacity-20');
+                    imgs[i].src = base + (base.indexOf('?')>-1?'&':'?') + '_ts=' + Date.now();
+                }
+            }
+            // ----- Camera Recon (scan own network) -----
+            var crTimer = null;
+            window.crModeChange = function(){
+                var m = el('cr-mode').value, t = el('cr-target'); if (!t) return;
+                t.placeholder = m==='lan' ? 'leave blank — scans ARP neighbours' :
+                    (m==='single' ? 'e.g. 192.168.1.50' :
+                    (m==='subnet' ? 'e.g. 192.168.1.0/24' : 'IPs separated by space or comma'));
+                t.disabled = (m==='lan'); if (m==='lan') t.value='';
+            };
+            window.crScan = function(){
+                var mode = el('cr-mode').value, target = (el('cr-target')||{}).value || '';
+                var btn = el('cr-scan-btn'); if (btn) btn.disabled = true;
+                fetch('/api/camera-recon/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode:mode, target:target})})
+                    .then(function(r){return r.json();}).then(function(d){
+                        if (d && d.success){ crPoll(); if(!crTimer) crTimer = setInterval(crPoll, 2000); }
+                        else { var pg=el('cr-progress'); if(pg) pg.textContent = (d && d.error) || 'scan failed'; if(btn) btn.disabled=false; }
+                    }).catch(function(){ if(btn) btn.disabled=false; });
+            };
+            window.crStop = function(){ fetch('/api/camera-recon/stop', {method:'POST'}).catch(function(){}); };
+            function crPoll(){
+                fetch('/api/camera-recon/status').then(function(r){return r.json();}).then(function(d){
+                    if (!d || !d.success) return;
+                    crRender(d.scan);
+                    if (!d.scan.scanning){ if (crTimer){ clearInterval(crTimer); crTimer=null; } var b=el('cr-scan-btn'); if(b) b.disabled=false; }
+                }).catch(function(){});
+            }
+            function crRender(scan){
+                var st = el('cr-status'); if (st) st.textContent = scan.status + (scan.scanning?' …':'');
+                var pg = el('cr-progress'); if (pg) pg.textContent = 'scanned ' + scan.scanned + '/' + scan.total + ' · cameras found: ' + (scan.cameras||[]).length;
+                var box = el('cr-results'); if (!box) return;
+                if (!scan.cameras || !scan.cameras.length){ box.innerHTML = scan.scanning ? '' : '<p class="text-xs text-gray-500">No cameras found on that target.</p>'; return; }
+                box.innerHTML = scan.cameras.map(function(c){
+                    var creds = c.creds ? '<span class="text-red-300">default creds: '+esc(c.creds[0])+':'+esc(c.creds[1])+'</span>' : '<span class="text-gray-500">no default creds</span>';
+                    var mjpeg = (c.mjpeg_urls||[]).map(function(u){
+                        return '<div class="flex items-center gap-2 text-xs mt-1"><span class="text-emerald-300 truncate">'+esc(u)+'</span>'
+                            + '<button onclick="crAddStream(\''+esc(u)+'\',\''+esc(c.ip)+'\')" class="text-Ragnar-300 hover:text-Ragnar-200 flex-shrink-0">+ Live Cams</button></div>';
+                    }).join('');
+                    var rtsp = (c.streams||[]).map(function(u){ return '<div class="text-xs text-blue-300 truncate mt-1">'+esc(u)+' <span class="text-gray-500">(RTSP — open in VLC)</span></div>'; }).join('');
+                    return '<div class="bg-slate-900/60 rounded p-2">'
+                        + '<div class="text-sm font-medium">'+esc(c.ip)+' <span class="text-xs text-gray-400">'+esc(c.brand)+' · ports '+(c.open_ports||[]).join(',')+'</span></div>'
+                        + '<div class="text-xs mt-1">'+creds+'</div>' + mjpeg + rtsp + '</div>';
+                }).join('');
+            }
+            window.crAddStream = function(url, ip){
+                fetch('/api/livecams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({label:'Cam '+ip, category:'Recon', url:url, type:'snapshot'})})
+                    .then(function(r){return r.json();}).then(function(d){ if (d && d.success) window.lcRender(d.cams); }).catch(function(){});
+            };
+            new MutationObserver(function(){
+                if (el('livecams-tab').classList.contains('hidden')){
+                    window.lcClose(); window.lcCloseWall(); el('livecams-grid').replaceChildren();
+                } else { window.lcLoad(); }
+            }).observe(el('livecams-tab'), {attributes:true, attributeFilter:['class']});
+            (function init(){ if (!el('livecams-grid')){ return setTimeout(init, 500); } window.lcLoad(); if (window.crModeChange) window.crModeChange(); setInterval(refreshSnapshots, REFRESH_MS); })();
+        })();
+        </script>
+
         <div id="files-tab" class="tab-content hidden">
             <div class="glass rounded-xl p-4 sm:p-6 lg:h-[calc(100vh-7rem)] lg:flex lg:flex-col lg:overflow-hidden">
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 lg:flex-shrink-0">
@@ -8815,6 +9105,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
+    <script src="/web/scripts/toolkit.js?v=2"></script>
     <script src="/web/scripts/ragnar_modern.js?v=20260924-smtp-watch-v2"></script>
 
 
