@@ -179,13 +179,16 @@ def test_toolkit_inherits_real_dashboard_authentication(engine, tmp_path):
     app.register_blueprint(create_blueprint(engine, EnvManager(str(tmp_path))))
     namespace = dict(app=app, request=request, jsonify=jsonify, session=session, redirect=redirect,
                      auth_mgr=SimpleNamespace(is_configured=lambda: True),
-                     shared_data=SimpleNamespace(config={}), _valid_cyd_token=lambda: None)
+                     shared_data=SimpleNamespace(config={}), _valid_cyd_token=lambda: None,
+                     _maybe_mesh_gateway=lambda: None)
     tree = ast.parse((Path(__file__).resolve().parents[1] / 'webapp_modern.py').read_text(encoding='utf-8'))
     hook = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'check_authentication')
     exec(compile(ast.Module(body=[hook], type_ignores=[]), 'webapp_modern.py', 'exec'), namespace)
     client = app.test_client()
     assert client.get('/api/toolkit/catalog').status_code == 401
     assert client.post('/api/toolkit/jobs', json={'tool': 'interfaces'}).status_code == 401
+    assert client.get('/api/toolkit/payloads').status_code == 401
+    assert client.post('/api/toolkit/payloads', json={'name': 'x', 'source': 'print(1)'}).status_code == 401
     with client.session_transaction() as state:
         state['authenticated'] = True
     assert client.get('/api/toolkit/catalog').status_code == 200

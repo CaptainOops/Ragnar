@@ -92,7 +92,8 @@ from toolkit_api import create_blueprint as create_toolkit_blueprint, KEY as SHO
 from env_manager import EnvManager
 _toolkit_settings = EnvManager()
 toolkit_engine = Toolkit(lambda: shared_data.datastolendir,
-                         lambda: _toolkit_settings.get_env_key(SHODAN_KEY))
+                         lambda: _toolkit_settings.get_env_key(SHODAN_KEY),
+                         event_dir=(shared_data.config.get('watchtower_dirs') or ['/var/log/ragnar'])[0])
 app.register_blueprint(create_toolkit_blueprint(toolkit_engine, _toolkit_settings))
 # Cookie name must be unique per device: two Ragnar instances reached through
 # the same hostname (e.g. SSH tunnels on localhost:3000/3001) share one cookie

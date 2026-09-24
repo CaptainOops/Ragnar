@@ -5235,8 +5235,7 @@
   </style>
   <div class="tk-card">
     <h2>Toolkit</h2>
-    <p>Quick investigations, Shodan intelligence and Ethernet utilities. Every job saves its report and artifacts to this network’s loot.</p>
-    <button onclick="showTab('livecams')">Live cameras</button><button onclick="showTab('network')">Network &amp; switch tools</button><button onclick="showTab('traffic')">Traffic analysis</button><button onclick="showTab('files')">Browse loot</button>
+    <p>Shodan intelligence, LAN investigations, honeypot sessions and your payloads. Jobs and results follow the active network and appear in Files. Network scans and traffic analysis remain in their existing tabs.</p>
   </div>
   <div class="tk-grid">
     <form id="tk-run" class="tk-card">
@@ -5259,7 +5258,20 @@
       <p id="tk-key-message" role="status"></p>
     </form>
   </div>
-  <div class="tk-card"><h2>Saved jobs</h2><p>Latest 100 jobs for the active network. Captures include a downloadable PCAP. Copy a capture’s job ID into Capture summary to inspect it.</p><button id="tk-refresh">Refresh</button><div id="tk-jobs"></div></div>
+  <details class="tk-card" id="tk-payload-ide">
+    <summary style="cursor:pointer;font-size:20px;font-weight:600">Payload IDE</summary>
+    <p>Edit Python payloads for the active network. Runs use Ragnar’s service permissions; syntax checking does not sandbox code. Each run saves its source, context and output in the job’s loot folder.</p>
+    <label for="tk-payload-list">Saved payloads</label><select id="tk-payload-list"><option value="">Choose a saved payload</option></select>
+    <button type="button" id="tk-payload-new">New payload</button>
+    <label for="tk-payload-name">Name</label><input id="tk-payload-name" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off">
+    <label for="tk-payload-source">Python source</label>
+    <textarea id="tk-payload-source" spellcheck="false" aria-describedby="tk-payload-help" style="width:100%;min-height:320px;background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:14px;font-family:monospace;tab-size:4"></textarea>
+    <p id="tk-payload-help">Context: RAGNAR_CONTEXT points to job metadata; RAGNAR_JOB_DIR is this run’s output folder; RAGNAR_LOOT_DIR is the network’s loot folder. Standard output appears in output.txt.</p>
+    <label for="tk-payload-duration">Run timeout (5–120 seconds)</label><input id="tk-payload-duration" type="number" min="5" max="120" value="30">
+    <button type="button" id="tk-payload-check">Check syntax</button><button type="button" id="tk-payload-save">Save</button><button type="button" id="tk-payload-run">Save &amp; run</button><button type="button" id="tk-payload-delete">Delete saved payload</button>
+    <p id="tk-payload-message" role="status" aria-live="polite"></p>
+  </details>
+  <div class="tk-card"><h2>Saved jobs</h2><p>Latest 100 jobs for the active network. Running listeners and payloads can be stopped here. Each job keeps its original network context.</p><button id="tk-refresh">Refresh</button><div id="tk-jobs"></div></div>
   <div class="tk-card" id="tk-preview-wrap" hidden><h2>Result preview</h2><div id="tk-summary"></div><pre id="tk-preview" class="tk-result"></pre></div>
 </div>
 
@@ -9105,7 +9117,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/toolkit.js?v=2"></script>
+    <script src="/web/scripts/toolkit.js?v=3"></script>
     <script src="/web/scripts/ragnar_modern.js?v=20260924-smtp-watch-v2"></script>
 
 

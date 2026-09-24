@@ -24239,6 +24239,66 @@ def _to_int(v):
         return None
 
 
+def _pcap_ethernet(path):
+    """RaspyJack-inspired passive VLAN and TCP SYN observations.
+
+    Read only the first 20,000 packets of an existing capture. A switch access
+    port may expose no tags, and TCP settings are hints rather than OS proof.
+    """
+    base = ['tshark', '-r', path, '-c', '20000']
+    vlans = {}
+    vlan_frames = 0
+    result = _run(base + ['-Y', 'vlan', '-T', 'fields', '-e', 'vlan.id'], timeout=60)
+    result_vlan_rc = result['rc']
+    if result['rc'] == 0:
+        for line in result['out'].splitlines():
+            ids = {_to_int(part.strip()) for part in line.split(',')}
+            ids = {vid for vid in ids if vid is not None and 1 <= vid <= 4094}
+            if ids:
+                vlan_frames += 1
+                for vid in ids:
+                    vlans[vid] = vlans.get(vid, 0) + 1
+
+    syns = {}
+    fields = ['ip.src', 'ipv6.src', 'ip.ttl', 'ipv6.hlim',
+              'tcp.window_size_value', 'tcp.options.mss_val', 'ip.flags.df']
+    argv = base + ['-Y', 'tcp.flags.syn == 1 && tcp.flags.ack == 0', '-T', 'fields']
+    for field in fields:
+        argv += ['-e', field]
+    result = _run(argv, timeout=60)
+    if result['rc'] == 0:
+        for line in result['out'].splitlines():
+            cols = (line.split('\t') + [''] * len(fields))[:len(fields)]
+            source = cols[0] or cols[1]
+            try:
+                source = str(ipaddress.ip_address(source))
+            except ValueError:
+                continue
+            ttl = _to_int(cols[2] or cols[3])
+            if ttl is None or not 1 <= ttl <= 255:
+                continue
+            if source in syns:
+                syns[source]['syns'] += 1
+                continue
+            initial = next((value for value in (32, 64, 128, 255) if ttl <= value), 255)
+            hint = {32: 'Low-TTL device', 64: 'Unix-like or appliance',
+                    128: 'Windows-like', 255: 'Network device or appliance'}[initial]
+            syns[source] = {
+                'ip': source, 'hint': hint, 'syns': 1, 'ttl': ttl,
+                'initial_ttl': initial, 'window': _to_int(cols[4]),
+                'mss': _to_int(cols[5]),
+                'df': None if not cols[6] else cols[6].lower() in ('1', 'true'),
+            }
+    return {
+        'sample_packets': 20000, 'vlan_frames': vlan_frames,
+        'vlan_available': result_vlan_rc == 0,
+        'vlans': [{'id': vid, 'frames': count} for vid, count in
+                  sorted(vlans.items(), key=lambda item: (-item[1], item[0]))[:20]],
+        'syn_available': result['rc'] == 0,
+        'os_hints': sorted(syns.values(), key=lambda item: (-item['syns'], item['ip']))[:12],
+    }
+
+
 def _pcap_wifi(path, total_wlan_frames):
     """Extract the 802.11 events that explain client drops: deauth/disassoc
     reason codes (per client), auth/assoc failure status codes, EAPOL 4-way
@@ -24427,8 +24487,15 @@ def do_pcap_analyze(path):
         except Exception:  # pragma: no cover - WiFi extraction is best-effort
             wifi = None
 
+    ethernet = None
+    try:
+        ethernet = _pcap_ethernet(path)
+    except Exception:  # pragma: no cover - optional passive observations
+        pass
+
     return {'success': True, 'summary': summary, 'protocols': protocols,
-            'talkers': talkers, 'expert': expert, 'wifi': wifi}
+            'talkers': talkers, 'expert': expert, 'wifi': wifi,
+            'ethernet': ethernet}
 
 
 def do_pcap_from_upload(file_storage, max_bytes=100 * 1024 * 1024):

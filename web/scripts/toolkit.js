@@ -2,7 +2,21 @@
 (() => {
   'use strict';
   const el = id => document.getElementById('tk-' + id);
-  let catalog = null, busy = false, polling = false;
+  let catalog = null, busy = false, polling = false, lastTool = null;
+  const paceWrap = document.createElement('div'); paceWrap.id = 'tk-pace-wrap'; paceWrap.hidden = true;
+  const paceLabel = document.createElement('label'); paceLabel.htmlFor = 'tk-pace'; paceLabel.textContent = 'Scan pace';
+  const paceSelect = document.createElement('select'); paceSelect.id = 'tk-pace';
+  for (const [value, label] of [['normal', 'Normal'], ['quiet', 'Quiet (slower, fewer probes)']]) {
+    const option = document.createElement('option'); option.value = value; option.textContent = label; paceSelect.append(option);
+  }
+  paceWrap.append(paceLabel, paceSelect); el('port-wrap').after(paceWrap);
+  const modeWrap = document.createElement('div'); modeWrap.id = 'tk-mode-wrap'; modeWrap.hidden = true;
+  const modeLabel = document.createElement('label'); modeLabel.htmlFor = 'tk-mode'; modeLabel.textContent = 'Responder mode';
+  const modeSelect = document.createElement('select'); modeSelect.id = 'tk-mode';
+  for (const [value, label] of [['analyze', 'Analyze (listen only)'], ['active', 'Active (answer name queries)']]) {
+    const option = document.createElement('option'); option.value = value; option.textContent = label; modeSelect.append(option);
+  }
+  modeWrap.append(modeLabel, modeSelect); paceWrap.after(modeWrap);
   const visible = () => !document.getElementById('toolkit-tab').classList.contains('hidden');
   async function api(path, method = 'GET', data) {
     const response = await fetch('/api/toolkit' + path, {method, headers: {'Content-Type': 'application/json'},
@@ -22,20 +36,38 @@
     el('submit').disabled = busy || !tool.available;
     el('target-wrap').hidden = !tool.field;
     el('target').required = !!tool.field;
-    el('target-label').textContent = ({public_ip: 'Public IP address', host: 'Hostname or IP address', url: 'HTTP(S) URL', query: 'Shodan search query', capture_job: 'Capture job ID'})[tool.field] || 'Target';
+    el('target-label').textContent = ({public_ip: 'Public IP address', host: 'Hostname or IP address', url: 'HTTP(S) URL', query: 'Shodan search query', capture_job: 'Capture job ID', mac: 'MAC address'})[tool.field] || 'Target';
     el('target').maxLength = tool.field === 'url' ? 2048 : 500;
     el('port-wrap').hidden = !tool.port;
+    if (lastTool !== tool.id) { if (tool.port) el('port').value = tool.port; if (tool.id === 'responder') el('duration').value = 30; lastTool = tool.id; }
+    el('port-wrap').querySelector('label').textContent = tool.id === 'tls_certificate' ? 'TLS port' : tool.id === 'ldap_rootdse' ? 'LDAP port' : 'TCP port';
     el('interface-wrap').hidden = !tool.interface;
-    el('capture-wrap').hidden = tool.id !== 'capture';
+    el('capture-wrap').hidden = !['capture', 'usb_watch', 'responder', 'honeypot'].includes(tool.id);
+    const hasProfile = ['capture', 'honeypot'].includes(tool.id);
+    el('profile').parentElement.querySelector('label').hidden = !hasProfile;
+    el('profile').hidden = !hasProfile;
+    el('profile').parentElement.querySelector('label').textContent = tool.id === 'honeypot' ? 'Decoy service' : 'Capture profile';
+    const profileValues = tool.id === 'honeypot' ? Object.keys(catalog.honeypot_profiles || {http: 8088}) : catalog.capture_profiles;
+    if (el('profile').dataset.tool !== tool.id) {
+      options(el('profile'), profileValues.map(i => [i, i])); el('profile').dataset.tool = tool.id;
+      if (tool.id === 'honeypot') el('profile').value = 'http';
+    }
+    el('duration').max = tool.id === 'honeypot' ? 3600 : 120;
+    el('duration').previousElementSibling.textContent = tool.id === 'honeypot' ? 'Seconds (5–3600)' : 'Seconds (5–120)';
     el('page-wrap').hidden = tool.id !== 'shodan_search';
+    el('pace-wrap').hidden = tool.id !== 'services';
+    el('mode-wrap').hidden = tool.id !== 'responder';
   }
   async function configure() {
     const prior = el('tool').value;
     catalog = await api('/catalog');
-    options(el('tool'), catalog.tools.map(t => [t.id, t.name + (t.available ? '' : ' — setup needed')]));
+    options(el('tool'), catalog.tools.filter(t => !t.native_tab && t.id !== 'payload').map(t => [t.id, t.name + (t.available ? '' : ' — setup needed')]));
     if (prior) el('tool').value = prior;
+    else el('tool').value = 'internetdb';
+    const priorInterface = el('interface').value;
     options(el('interface'), catalog.interfaces.map(i => [i, i]));
-    options(el('profile'), catalog.capture_profiles.map(i => [i, i]));
+    if (catalog.interfaces.includes(priorInterface)) el('interface').value = priorInterface;
+    else if (catalog.interfaces.includes('eth0')) el('interface').value = 'eth0';
     el('key-status').textContent = catalog.shodan_configured ? 'API key configured. Run Shodan account to check your plan.' : 'Add your API key to enable Shodan.';
     fields();
   }
@@ -82,7 +114,7 @@
           catch (e) { message('message', e); }
         }; row.append(b);
       } else if (job.artifacts.length) {
-        const name = job.artifacts.includes('output.txt') ? 'output.txt' : 'result.json';
+        const name = job.artifacts.includes('output.txt') ? 'output.txt' : job.artifacts.includes('result.json') ? 'result.json' : 'events.jsonl';
         if (job.artifacts.includes(name)) {
           const b = document.createElement('button'); b.textContent = 'Preview'; b.onclick = async () => {
             try {
@@ -102,10 +134,61 @@
     if (!nodes.length) el('jobs').textContent = 'No Toolkit jobs saved for this network yet.';
   }
   el('tool').addEventListener('change', fields);
+  el('profile').addEventListener('change', () => {
+    if (selected()?.id === 'honeypot') el('port').value = catalog.honeypot_profiles[el('profile').value];
+  });
+
+  // One payload library and job runner, sharing this network's history and loot.
+  let payloadLibrary = [], payloadRevision = null, payloadName = null;
+  const starter = 'import json\nimport os\nfrom pathlib import Path\n\ncontext = json.loads(Path(os.environ["RAGNAR_CONTEXT"]).read_text())\nprint(json.dumps(context, indent=2))\n# Save results in RAGNAR_JOB_DIR; the run is listed in Ragnar Files.\n';
+  function loadPayload(payload) {
+    payloadName = payload?.name || null; payloadRevision = payload?.revision || null;
+    el('payload-name').value = payloadName || 'network-report';
+    el('payload-source').value = payload?.source || starter;
+    el('payload-message').textContent = payload ? 'Loaded ' + payload.name : 'New payload. Save before running.';
+  }
+  async function library() {
+    const result = await api('/payloads'); payloadLibrary = result.payloads;
+    options(el('payload-list'), [['', 'Choose a saved payload'], ...payloadLibrary.map(p => [p.name, p.name])]);
+    if (payloadName) el('payload-list').value = payloadName;
+  }
+  el('payload-list').onchange = () => {
+    const payload = payloadLibrary.find(p => p.name === el('payload-list').value);
+    if (payload && (el('payload-source').value === starter || confirm('Load this payload and replace the editor contents?'))) loadPayload(payload);
+  };
+  el('payload-new').onclick = () => { if (confirm('Start a new payload and replace the editor contents?')) loadPayload(null); };
+  el('payload-check').onclick = async () => {
+    try { await api('/payloads/check', 'POST', {source: el('payload-source').value}); message('payload-message', 'Python syntax is valid.'); }
+    catch (e) { message('payload-message', e); }
+  };
+  async function savePayload() {
+    const name = el('payload-name').value.trim();
+    const payload = await api('/payloads', 'POST', {name, source: el('payload-source').value, revision: name === payloadName ? payloadRevision : null});
+    payloadName = payload.name; payloadRevision = payload.revision; await library(); return payload;
+  }
+  el('payload-save').onclick = async () => {
+    try { await savePayload(); message('payload-message', 'Saved in this network’s payload library.'); }
+    catch (e) { message('payload-message', e); }
+  };
+  el('payload-run').onclick = async () => {
+    el('payload-run').disabled = true;
+    try {
+      const payload = await savePayload();
+      await api('/jobs', 'POST', {tool: 'payload', params: {target: payload.name, duration: el('payload-duration').value}});
+      message('payload-message', 'Started. Output and Stop are in Saved jobs.'); await jobs();
+    } catch (e) { message('payload-message', e); }
+    finally { el('payload-run').disabled = false; }
+  };
+  el('payload-delete').onclick = async () => {
+    if (!payloadName || !confirm('Delete saved payload ' + payloadName + '? Previous runs are kept.')) return;
+    try { await api('/payloads/' + encodeURIComponent(payloadName), 'DELETE', {revision: payloadRevision}); loadPayload(null); await library(); }
+    catch (e) { message('payload-message', e); }
+  };
+  loadPayload(null);
   el('run').addEventListener('submit', async event => {
     event.preventDefault(); busy = true; fields();
     try {
-      await api('/jobs', 'POST', {tool: el('tool').value, params: {target: el('target').value, interface: el('interface').value, profile: el('profile').value, duration: el('duration').value, page: el('page').value, port: el('port').value}});
+      await api('/jobs', 'POST', {tool: el('tool').value, params: {target: el('target').value, interface: el('interface').value, profile: el('profile').value, duration: el('duration').value, page: el('page').value, port: el('port').value, pace: el('pace').value, mode: el('mode').value}});
       message('message', 'Job started. Results will appear below and in loot.'); await jobs();
     } catch (e) { message('message', e); }
     finally { busy = false; fields(); }
@@ -123,7 +206,7 @@
   };
   async function refresh() {
     if (polling) return; polling = true;
-    try { await configure(); await jobs(); } catch (e) { message('message', e); }
+    try { await configure(); await jobs(); await library(); } catch (e) { message('message', e); }
     finally { polling = false; }
   }
   el('refresh').onclick = refresh;

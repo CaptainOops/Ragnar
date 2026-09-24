@@ -5,6 +5,7 @@ import threading
 from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify, request, send_file
+from payload_workspace import check_source
 
 KEY = 'RAGNAR_SHODAN_API_KEY'
 
@@ -22,7 +23,8 @@ def create_blueprint(engine, settings):
                 return jsonify(error='Cross-site changes are not allowed.'), 403
             if not request.is_json:
                 return jsonify(error='Send application/json.'), 415
-            if request.content_length and request.content_length > 4096:
+            limit = 400000 if request.path.startswith('/api/toolkit/payloads') else 4096
+            if request.content_length and request.content_length > limit:
                 return jsonify(error='Request too large.'), 413
 
     def body():
@@ -38,6 +40,28 @@ def create_blueprint(engine, settings):
     @bp.get('/catalog')
     def catalog():
         return jsonify(engine.catalog())
+
+    @bp.get('/payloads')
+    def payloads():
+        with engine.lock:
+            return jsonify(payloads=engine.payloads.list())
+
+    @bp.post('/payloads/check')
+    def payload_check():
+        check_source(body().get('source'))
+        return jsonify(valid=True)
+
+    @bp.post('/payloads')
+    def payload_save():
+        data = body()
+        with engine.lock:
+            return jsonify(engine.payloads.save(data.get('name'), data.get('source'), data.get('revision')))
+
+    @bp.delete('/payloads/<name>')
+    def payload_delete(name):
+        with engine.lock:
+            engine.payloads.delete(name, body().get('revision'))
+        return jsonify(deleted=True)
 
     @bp.post('/shodan-key')
     def save_key():

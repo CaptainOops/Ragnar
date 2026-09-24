@@ -6416,6 +6416,18 @@ function _pcapWifiHtml(w) {
         ${clients ? '<p class="text-xs text-gray-400 mt-2">Most-dropped clients: ' + clients + '</p>' : ''}</div>`;
 }
 
+function _pcapEthernetHtml(e) {
+    if (!e) return '';
+    const vlanRows = (e.vlans || []).map(v => `<tr class="border-t border-slate-800"><td class="px-3 py-1 font-mono">${escapeHtml(String(v.id))}</td><td class="px-3 py-1 text-right">${escapeHtml(String(v.frames))}</td></tr>`).join('');
+    const synRows = (e.os_hints || []).map(h => `<tr class="border-t border-slate-800"><td class="px-3 py-1 font-mono">${escapeHtml(h.ip)}</td><td class="px-3 py-1">${escapeHtml(h.hint)}</td><td class="px-3 py-1 font-mono text-xs">TTL ${escapeHtml(String(h.ttl))} · win ${h.window == null ? '—' : escapeHtml(String(h.window))} · MSS ${h.mss == null ? '—' : escapeHtml(String(h.mss))} · DF ${h.df == null ? '—' : h.df ? 'yes' : 'no'}</td><td class="px-3 py-1 text-right">${escapeHtml(String(h.syns))}</td></tr>`).join('');
+    return `<div class="mt-3 border-t border-slate-700 pt-3"><h4 class="text-sm font-semibold mb-1">Ethernet observations</h4>
+        <p class="text-xs text-gray-500 mb-2">Passive RaspyJack-style analysis of the first ${escapeHtml(String(e.sample_packets || 20000))} packets. A switch access port may show no VLAN tags; TTL and TCP settings are only OS hints.</p>
+        <div class="overflow-x-auto"><h5 class="text-xs uppercase text-gray-500">Observed 802.1Q VLANs (${escapeHtml(String(e.vlan_frames || 0))} tagged frames)</h5>
+        ${e.vlan_available === false ? '<p class="text-sm text-amber-300">VLAN fields could not be read from this capture.</p>' : vlanRows ? `<table class="min-w-full text-sm text-gray-300"><thead><tr class="text-left text-xs text-gray-600"><th class="px-3 py-1">VLAN ID</th><th class="px-3 py-1 text-right">Frames</th></tr></thead><tbody>${vlanRows}</tbody></table>` : '<p class="text-sm text-gray-500">No tagged frames observed in this capture.</p>'}
+        <h5 class="text-xs uppercase text-gray-500 mt-3">Passive TCP SYN OS hints</h5>
+        ${e.syn_available === false ? '<p class="text-sm text-amber-300">TCP SYN fields could not be read from this capture.</p>' : synRows ? `<table class="min-w-full text-sm text-gray-300"><thead><tr class="text-left text-xs text-gray-600"><th class="px-3 py-1">Source</th><th class="px-3 py-1">Hint</th><th class="px-3 py-1">Evidence</th><th class="px-3 py-1 text-right">SYNs</th></tr></thead><tbody>${synRows}</tbody></table>` : '<p class="text-sm text-gray-500">No TCP SYN fingerprints observed in this capture.</p>'}</div></div>`;
+}
+
 async function aiAnalyzePcap() {
     if (!_lastPcap) return;
     const out = document.getElementById('pcap-ai-results');
@@ -6500,7 +6512,7 @@ function renderPcapResults(d, out) {
     const aiBtn = `<div class="mt-3 flex flex-wrap gap-2"><button onclick="aiAnalyzePcap()" class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-3 py-1.5 rounded text-sm whitespace-nowrap">🧠 Explain with AI</button>
         <button onclick="pcapExportReport()" title="Open a printable capture report (Save as PDF)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm whitespace-nowrap">📄 Export as PDF</button>
         <div id="pcap-ai-results" class="hidden mt-2 w-full"></div></div>`;
-    out.innerHTML = srcNote + note + monWarn + stats + `<div class="overflow-x-auto">${protoTable}${talkTable}</div>` + _pcapWifiHtml(d.wifi) + expert + aiBtn;
+    out.innerHTML = srcNote + note + monWarn + stats + `<div class="overflow-x-auto">${protoTable}${talkTable}</div>` + _pcapEthernetHtml(d.ethernet) + _pcapWifiHtml(d.wifi) + expert + aiBtn;
     _lastPcap = d;
     _lastPcapAI = null;   // new capture — drop any AI summary from a previous one
 }
@@ -6565,6 +6577,18 @@ function pcapExportReport() {
             ${codeTbl('Auth / Assoc failures', w.auth_assoc_failures)}`;
     }
 
+    let ethernet = '';
+    const e = d.ethernet;
+    if (e) {
+        const vlanRows = (e.vlans || []).map(v => `<tr><td class="mono">${escapeHtml(String(v.id))}</td><td class="num">${escapeHtml(String(v.frames))}</td></tr>`).join('');
+        const synRows = (e.os_hints || []).map(h => `<tr><td class="mono">${escapeHtml(h.ip)}</td><td>${escapeHtml(h.hint)}</td><td class="mono">TTL ${escapeHtml(String(h.ttl))}, window ${h.window == null ? '—' : escapeHtml(String(h.window))}, MSS ${h.mss == null ? '—' : escapeHtml(String(h.mss))}</td><td class="num">${escapeHtml(String(h.syns))}</td></tr>`).join('');
+        ethernet = `<h2>Ethernet observations</h2><p class="sub">First ${escapeHtml(String(e.sample_packets || 20000))} packets; VLAN tags are visible only where the port receives them. OS hints are tentative.</p>
+            <h3>Observed 802.1Q VLANs (${escapeHtml(String(e.vlan_frames || 0))} tagged frames)</h3>
+            ${e.vlan_available === false ? '<p>VLAN fields could not be read.</p>' : vlanRows ? `<table><thead><tr><th>VLAN ID</th><th class="num">Frames</th></tr></thead><tbody>${vlanRows}</tbody></table>` : '<p>No tagged frames observed.</p>'}
+            <h3>Passive TCP SYN OS hints</h3>
+            ${e.syn_available === false ? '<p>TCP SYN fields could not be read.</p>' : synRows ? `<table><thead><tr><th>Source</th><th>Hint</th><th>Evidence</th><th class="num">SYNs</th></tr></thead><tbody>${synRows}</tbody></table>` : '<p>No TCP SYN fingerprints observed.</p>'}`;
+    }
+
     const srcLine = d.captured_name
         ? 'Captured ' + escapeHtml(d.captured_name) + ' on ' + escapeHtml(d.interface || '') + ' for ' + (d.seconds || '') + 's'
         : (d.source_name ? escapeHtml(d.source_name) : 'Uploaded capture');
@@ -6613,6 +6637,7 @@ function pcapExportReport() {
   ${ai}
   ${protoTable}
   ${talkTable}
+  ${ethernet}
   ${wifi}
   ${expert}
   <div class="foot">Generated by Ragnar PCAP Analyzer (tshark/capinfos). Passive triage — read-only.</div>

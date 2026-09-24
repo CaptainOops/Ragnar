@@ -3386,6 +3386,11 @@ Every source then shows:
   (`tshark -z io,phs`), so you see at a glance what the capture is made of.
 - **Top talkers** — the busiest IP conversations by exact byte count
   (aggregated from raw frame lengths, so the numbers are precise).
+- **Ethernet observations** — passively count observed 802.1Q VLAN IDs and
+  summarize TCP SYN settings (TTL, window, MSS, DF) as tentative OS hints.
+  Inspired by RaspyJack's VLAN Map and Passive OS Fingerprinting payloads.
+  Uses the first 20,000 packets of the same capture; it sends no probes and
+  does not create VLAN interfaces. A switch access port may expose no tags.
 - **Expert info** — tshark's analysis flags grouped by severity: TCP
   **retransmissions**, **resets**, **duplicate ACKs**, zero-window, **malformed**
   packets, etc. — the fastest way to spot loss and protocol trouble.

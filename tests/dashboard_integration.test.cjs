@@ -48,6 +48,7 @@ test('Toolkit loads free Shodan, submits a job, previews untrusted results as te
     w.fetch = async (url, init = {}) => {
       calls.push([url, init]);
       const value = url.endsWith('/catalog') ? {tools: [{id: 'internetdb', name: 'Shodan InternetDB', field: 'public_ip', description: 'Free', available: true, reason: ''}], interfaces: ['eth0'], capture_profiles: ['all'], shodan_configured: false}
+        : url.endsWith('/payloads') ? {payloads: []}
         : url.endsWith('/jobs') && init.method === 'POST' ? {id: 'a'.repeat(32)}
         : {jobs: [{id: 'a'.repeat(32), name: 'InternetDB', status: 'completed', created: new Date().toISOString(), params: {}, artifacts: ['result.json']}]};
       return {ok: true, json: async () => value, text: async () => '<img src=x onerror="alert(1)">'};
@@ -64,5 +65,40 @@ test('Toolkit loads free Shodan, submits a job, previews untrusted results as te
     assert.equal(w.document.querySelectorAll('#tk-preview img').length, 0);
     assert.equal(w.document.querySelectorAll('#toolkit-tab').length, 1);
     assert.equal(w.document.querySelectorAll('#livecams-tab').length, 1);
+  } finally { dom.window.close(); }
+});
+
+test('Payload IDE saves source before running and hides duplicate native launchers', async () => {
+  const {dom, w} = fixture();
+  try {
+    const calls = [];
+    w.fetch = async (url, init = {}) => {
+      calls.push([url, init]);
+      const data = init.body ? JSON.parse(init.body) : {};
+      const value = url.endsWith('/catalog') ? {
+        tools: [{id: 'internetdb', name: 'Shodan', available: true},
+          {id: 'honeypot', name: 'Honeypot', available: true, port: 8088, interface: true},
+          {id: 'ping', name: 'Ping', available: true, native_tab: 'network'},
+          {id: 'payload', name: 'Payload', available: true}],
+        interfaces: ['eth0'], capture_profiles: ['all'], honeypot_profiles: {'ftp-banner': 2121, http: 8088, 'ssh-banner': 2222}}
+        : url.endsWith('/payloads') ? (init.method === 'POST' ? {...data, revision: 'abc'} : {payloads: []})
+        : {jobs: [], id: 'b'.repeat(32)};
+      return {ok: true, json: async () => value};
+    };
+    w.eval(fs.readFileSync(path.join(root, 'web/scripts/toolkit.js'), 'utf8'));
+    w.document.getElementById('toolkit-tab').classList.remove('hidden'); await flush();
+    assert.deepEqual([...w.document.querySelectorAll('#tk-tool option')].map(x => x.value), ['internetdb', 'honeypot']);
+    w.document.getElementById('tk-tool').value = 'honeypot';
+    w.document.getElementById('tk-tool').dispatchEvent(new w.Event('change'));
+    assert.equal(w.document.getElementById('tk-profile').value, 'http');
+    assert.equal(w.document.getElementById('tk-port').value, '8088');
+    w.document.getElementById('tk-payload-name').value = 'hello';
+    w.document.getElementById('tk-payload-source').value = 'print("hello")';
+    w.document.getElementById('tk-payload-run').click(); await flush();
+    const mutations = calls.filter(([, init]) => init.method === 'POST');
+    assert.ok(mutations[0][0].endsWith('/payloads'));
+    assert.equal(JSON.parse(mutations[0][1].body).source, 'print("hello")');
+    assert.equal(JSON.parse(mutations[1][1].body).tool, 'payload');
+    assert.equal(JSON.parse(mutations[1][1].body).params.target, 'hello');
   } finally { dom.window.close(); }
 });
