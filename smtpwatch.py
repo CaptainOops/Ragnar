@@ -34,6 +34,12 @@ _LAST_SELFTEST = []      # [(check name, passed)] from the most recent self_test
 SMTP_PORTS = (25, 465, 587)
 IMPLICIT_TLS_PORTS = (465,)  # TLS from the first byte, no cleartext SMTP
 
+# RFC 5321 4.5.3.1.4 caps a command line at 512 octets incl CRLF; a compliant
+# EHLO is well under. CVE-2019-16928's PoC uses an extraordinarily long EHLO,
+# so any EHLO/HELO line past this bound is both non-conformant and the attack
+# shape (key on the CONDITION, not the CVE - LESSON AF).
+EHLO_MAX_LEN = 512
+
 # ---------------------------------------------------------------------------
 # finding-code registry
 # ---------------------------------------------------------------------------
@@ -52,6 +58,8 @@ CODES = {
                      name="TLS1.2 client certificate DN ends in backslash"),
     "SMTP-006": dict(cls="A", cve="CVE-2018-6789",  sev="high",     conf="high",
                      name="AUTH base64 length congruent to 3 mod 4 (b64decode overflow)"),
+    "SMTP-007": dict(cls="A", cve="CVE-2019-16928", sev="high",     conf="high",
+                     name="overlong EHLO/HELO command (string_vformat heap overflow)"),
     "SMTP-010": dict(cls="B", cve=None,             sev="info",     conf="high",
                      name="Exim version disclosed in banner"),
     "SMTP-011": dict(cls="B", cve="CVE-2019-10149", sev="notice",   conf="low",
@@ -62,6 +70,8 @@ CODES = {
                      name="banner version in CVE-2018-6789 range (<4.90.1)"),
     "SMTP-014": dict(cls="B", cve=None,             sev="info",     conf="high",
                      name="Exim banner suppressed - version gate closed"),
+    "SMTP-015": dict(cls="B", cve="CVE-2019-16928", sev="notice",   conf="low",
+                     name="banner version in CVE-2019-16928 range (4.92-4.92.2)"),
 }
 
 SEVERITIES = {"critical", "high", "warn", "notice", "info"}
@@ -120,6 +130,11 @@ def in_15846_range(v: tuple[int, ...]) -> bool:
 def in_6789_range(v: tuple[int, ...]) -> bool:
     # every version before 4.90.1
     return _lt(v, (4, 90, 1))
+
+
+def in_16928_range(v: tuple[int, ...]) -> bool:
+    # 4.92 through 4.92.2 inclusive; fixed 4.92.3
+    return (not _lt(v, (4, 92))) and _lt(v, (4, 92, 3))
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +491,14 @@ class SmtpSession:
             # AUTH LOGIN has two continuations; stay until a non-334 reply.
             return
 
+        if upper.startswith(b"EHLO") or upper.startswith(b"HELO"):
+            if len(line) > EHLO_MAX_LEN:
+                self._emit("SMTP-007",
+                           "EHLO/HELO command line of %d octets exceeds the RFC "
+                           "5321 512 limit (CVE-2019-16928 string_vformat "
+                           "overflow shape)" % len(line))
+            return
+
         if upper.startswith(b"MAIL FROM"):
             if b"${" in line:
                 self._emit("SMTP-001",
@@ -513,6 +536,10 @@ class SmtpSession:
         if in_6789_range(v):
             self._emit("SMTP-013",
                        f"Exim {vs} below 4.90.1 (CVE-2018-6789 range); "
+                       "backport caveat applies")
+        if in_16928_range(v):
+            self._emit("SMTP-015",
+                       f"Exim {vs} within CVE-2019-16928 range (4.92-4.92.2); "
                        "backport caveat applies")
         # 15846 requires TLS to be offered; defer until EHLO parsed. record it.
         self._pending_15846 = v
@@ -812,6 +839,42 @@ def self_test() -> int:
             ("c", b"MAIL FROM:<${run{id}}@x>\r\n"), ("s", b"250 ok\r\n"),
         ], af, 25, must=["SMTP-014", "SMTP-001"],
            mustnot=["SMTP-010", "SMTP-011"])
+
+        # --- 16928 overlong EHLO fires SMTP-007 ---
+        long_ehlo = b"EHLO " + b"A" * 600 + b"\r\n"
+        want("16928 overlong ehlo [%s]" % af, [
+            ("s", banner_patch), ("c", long_ehlo), ("s", b"500 line too long\r\n"),
+        ], af, 25, must=["SMTP-007"])
+
+        # --- normal EHLO must NOT fire SMTP-007 ---
+        want("normal ehlo silent [%s]" % af, [
+            ("s", banner_patch), ("c", b"EHLO mail.example.com\r\n"), ("s", ehlo_tls),
+        ], af, 25, must=[], mustnot=["SMTP-007"])
+
+        # --- 16928 banner range: 4.92.2 is covered ONLY by 16928 (not 15846) ---
+        want("16928 banner 4.92.2 [%s]" % af, [
+            ("s", b"220 mail ESMTP Exim 4.92.2 x\r\n"),
+            ("c", b"EHLO x\r\n"), ("s", ehlo_tls),
+        ], af, 25, must=["SMTP-010", "SMTP-015"],
+           mustnot=["SMTP-011", "SMTP-012", "SMTP-013"])
+
+        # --- 4.92 sits in BOTH 15846 and 16928 (overlap), with STARTTLS ---
+        want("16928+15846 overlap 4.92 [%s]" % af, [
+            ("s", b"220 mail ESMTP Exim 4.92 x\r\n"),
+            ("c", b"EHLO x\r\n"), ("s", ehlo_tls),
+        ], af, 25, must=["SMTP-012", "SMTP-015"], mustnot=["SMTP-011", "SMTP-013"])
+
+        # --- 4.92.3 is the fix: no 16928 range finding ---
+        want("16928 fix 4.92.3 [%s]" % af, [
+            ("s", b"220 mail ESMTP Exim 4.92.3 x\r\n"),
+            ("c", b"EHLO x\r\n"), ("s", ehlo_tls),
+        ], af, 25, must=["SMTP-010"], mustnot=["SMTP-015"])
+
+        # --- 4.89 is below the 16928 range: no SMTP-015 ---
+        want("4.89 below 16928 [%s]" % af, [
+            ("s", banner_vuln),
+            ("c", b"EHLO x\r\n"), ("s", ehlo_tls),
+        ], af, 25, must=["SMTP-011", "SMTP-013"], mustnot=["SMTP-015"])
 
         # --- comparator trap: 4.90.1 is THE fix for 6789, must NOT fire 013 ---
         want("4.90.1 is 6789 fix [%s]" % af, [
