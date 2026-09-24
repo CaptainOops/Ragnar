@@ -678,6 +678,26 @@ are marked *(not set up)*.
   decides later, so Ragnar follows each upload
   (`GET /v1/wardrive/uploads/{id}`) to *succeeded* or *failed* for up to
   45 minutes.
+- **Pushover summary.** With Pushover set up (Settings → Notifications),
+  each auto-uploaded drive sends one notification once every service has a
+  final result, including Wardrift's verdict. It gives the drive (start time,
+  duration, networks, GPS-pinned rows) and each service's response, e.g.:
+
+  ```
+  Ragnar — Wardrive uploaded
+  Drive 23 Sep 18:37 · 21 min · 3579 networks · 3244 GPS-pinned
+  ✓ WDGWars: new 2911, updated 333
+  ✓ Wardrift: 3033 readings saved, +1794 XP, 102 skipped
+  ```
+
+  The title says `upload: N failed` when a service rejected the drive, and
+  `not uploaded (no GPS)` when it had nothing to send. A service that is
+  offline is retried, and the summary waits until it gets through. A 4xx
+  rejection (bad key, unconfigured service) is final and reported right
+  away. The switch is *Pushover summary after each upload* in the
+  Auto-upload card, or *Wardrive Auto-upload* in Settings → Notifications
+  (`pushover_notify_wardrive_upload`, on by default). Manual ↑ uploads
+  don't notify.
 - **Recent uploads.** Every outcome, manual or automatic, is kept in
   `data/upload_history.json` and shown under **Recent uploads** in the card:
   ✓ uploaded (e.g. "431 readings saved, +285 XP"), ✕ failed with the reason,
