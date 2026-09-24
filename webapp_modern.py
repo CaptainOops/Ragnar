@@ -27,6 +27,7 @@ import base64
 import shutil
 import importlib
 import hashlib
+import uuid
 import ipaddress
 import socket
 import traceback
@@ -57,6 +58,7 @@ import cyd_node
 import cyd_serial_bridge
 import cyd_sensor
 import cyd_waterfall
+import meshtastic_node
 from safe_vault import SafeVault, SafeError, SafeLockedError
 from wifi_interfaces import gather_wifi_interfaces, gather_ethernet_interfaces, is_ethernet_available, get_active_ethernet_interface
 from utils import WebUtils
@@ -3644,6 +3646,11 @@ _cyd_bridge = cyd_serial_bridge.CydSerialBridge(
     # skip it instead of stealing its bytes.
     publish_port=lambda p: setattr(shared_data, 'cyd_serial_active_port', p),
 )
+try:
+    import serial_claims
+    serial_claims.register('cyd', lambda: getattr(shared_data, 'cyd_serial_active_port', None))
+except Exception as _claims_exc:  # pragma: no cover - never block startup
+    logger.debug(f"[cyd] serial claim registration failed: {_claims_exc}")
 try:
     _cyd_bridge.start()
 except Exception as _cyd_exc:  # pragma: no cover - never block startup
@@ -10564,6 +10571,12 @@ CONFIG_EXPORT_EXCLUDE = {
     'wdg_key',                 # WDGWars API key — per-operator secret, never share
     'wigle_api_token',         # WiGLE API token — per-operator secret, never share
     'wigle_api_name',          # WiGLE API name — per-operator credential
+    'wardrift_api_key',        # Wardrift character API key — per-operator secret
+    'wardrift_session_token',  # Wardrift signed-in session — per-operator secret
+    'wardrift_username',       # Wardrift account name — per-operator identity
+    'wardrift_mesh_key',       # Wardrift node API key — per-node secret
+    'wardrift_mesh_port',      # per-device serial port of the Meshtastic node
+    'wardrift_mesh_host',      # per-install WiFi address of the Meshtastic node
     'mac_scan_blacklist',      # per-device scan blacklist
     'rusense_node_positions',  # per-install physical node layout
     'rusense_node_names',      # per-install node naming
@@ -14154,17 +14167,10 @@ def wardriving_stop():
     """
     try:
         engine = _get_wardriving_engine()
-        finished_id = engine.session.session_id if getattr(engine, 'session', None) else None
         result = engine.stop()
 
-        # Auto-upload the just-finished wardrive if enabled (queued + retried
-        # until the box has connectivity).
-        if finished_id and shared_data.config.get('wardriving_auto_upload'):
-            try:
-                _auto_upload_enqueue(finished_id,
-                                     shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'))
-            except Exception as _e:
-                logger.error(f"auto-upload enqueue failed: {_e}")
+        # Auto-upload of the finished drive is queued by the engine's
+        # SESSION_FINISHED_HOOKS (covers every stop path, not just this route).
 
         ap_teardown = False
         if getattr(shared_data, 'wardrive_ap_active', False):
@@ -14297,9 +14303,9 @@ def _wardrive_session_csv(session_id):
 
 def _wardrive_located_count(csv_text):
     """Count rows that carry a GPS fix (WiGLE cols 7/8 = lat/lon)."""
+    import csv
     n = 0
-    for line in csv_text.splitlines()[2:]:          # skip WigleWifi banner + header
-        parts = line.split(',')
+    for parts in csv.reader(csv_text.splitlines()[2:]):   # skip WigleWifi banner + header
         if len(parts) > 8 and parts[6].strip() and parts[7].strip():
             n += 1
     return n
@@ -14345,45 +14351,462 @@ def _upload_wdgwars(csv_text):
 
 
 # ---------------------------------------------------------------------------
-# Auto-upload: when a wardrive finishes, queue it and push to WDGWars/WiGLE.
-# The queue is persisted to disk, so an offline box simply retries every 60 s
-# until it has connectivity again - "upload when Wi-Fi comes back".
+# Wardrift (wardrift.net) - faction/territory wardriving game.
+#
+# Wardrift has two auth paths and we support both:
+#   * Signed-in session (username/password -> bearer token; the password is
+#     never stored) -> POST /v1/wardrive/logs with the WiGLE CSV. This creates
+#     an archived route (distance, AP count, streak) and is preferred.
+#   * Character-bound API key (X-API-Key) -> POST /v1/ingest/signals, the
+#     firmware telemetry path. Rows are batched into signed-envelope batches
+#     with a monotonically increasing sequence_no and an idempotency_key
+#     derived from the batch content, so a retry (or re-upload of the same
+#     session) never double-counts awards.
+# The session token also unlocks the player dashboard shown in the UI.
+# ---------------------------------------------------------------------------
+WARDRIFT_DEFAULT_URL = 'https://wardrift.net'
+WARDRIFT_BATCH_SIZE = 250
+_WARDRIFT_STATE_LOCK = threading.Lock()
+
+
+def _wardrift_base():
+    return (shared_data.config.get('wardrift_base_url') or WARDRIFT_DEFAULT_URL).strip().rstrip('/')
+
+
+def _wardrift_state_path():
+    return os.path.join(_get_wardriving_engine().data_dir, 'wardrift_state.json')
+
+
+def _wardrift_state_load():
+    try:
+        with open(_wardrift_state_path()) as f:
+            st = json.load(f) or {}
+    except Exception:
+        st = {}
+    st.setdefault('sequence_no', 0)
+    st.setdefault('pending', {})
+    return st
+
+
+def _wardrift_state_save(st):
+    try:
+        with open(_wardrift_state_path(), 'w') as f:
+            json.dump(st, f)
+    except Exception as e:
+        logger.error(f"wardrift state save failed: {e}")
+
+
+def _wardrift_seq_for(idem_key, fresh=False):
+    """sequence_no for a batch: reuse the one assigned to this idempotency key
+    (a retry must resend the same pair), else allocate the next one. Seeded
+    from wall-clock seconds so a lost state file can never replay a lower
+    number than the server has already seen."""
+    with _WARDRIFT_STATE_LOCK:
+        st = _wardrift_state_load()
+        if not fresh and idem_key in st['pending']:
+            return st['pending'][idem_key]
+        seq = max(int(st['sequence_no']) + 1, int(time.time()))
+        st['sequence_no'] = seq
+        st['pending'][idem_key] = seq
+        _wardrift_state_save(st)
+        return seq
+
+
+def _wardrift_seq_done(idem_key):
+    with _WARDRIFT_STATE_LOCK:
+        st = _wardrift_state_load()
+        if st['pending'].pop(idem_key, None) is not None:
+            _wardrift_state_save(st)
+
+
+def _wardrift_iso(ts):
+    """CSV FirstSeen (WiGLE 'YYYY-MM-DD HH:MM:SS' UTC, or ISO) -> ISO 8601 UTC."""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(ts.strip().replace('Z', '+00:00'))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _wardrift_signal_items(csv_text):
+    """WiGLE CSV rows -> Wardrift signal items. SSID/BSSID travel as SHA-256
+    hashes only; rows without a GPS fix are dropped."""
+    from datetime import datetime, timezone
+    import csv
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    items = []
+    for parts in csv.reader(csv_text.splitlines()[2:]):   # skip WigleWifi banner + header
+        if len(parts) < 11:
+            continue
+        mac, ssid, _auth, first_seen, channel, rssi, lat, lon = parts[:8]
+        rtype = parts[10].strip().upper()
+        try:
+            lat, lon = float(lat), float(lon)
+        except ValueError:
+            continue
+        if lat == 0 and lon == 0:
+            continue
+        if rtype == 'WIFI':
+            kind = 'wifi'
+        elif rtype in ('BT', 'BLE'):
+            kind = 'bluetooth'
+        elif rtype in ('GSM', 'LTE', 'CDMA', 'WCDMA', 'NR', 'UMTS'):
+            kind = 'cellular'
+        else:
+            kind = 'other'
+        item = {'ts': _wardrift_iso(first_seen) or now, 'lat': lat, 'lon': lon, 'kind': kind,
+                'bssid_hash': hashlib.sha256(mac.strip().lower().encode()).hexdigest(),
+                'metadata': {'channel': channel.strip(), 'source': 'ragnar'}}
+        src_ts = _wardrift_iso(first_seen)
+        if src_ts:
+            item['source_ts'] = src_ts
+        try:
+            item['rssi'] = int(float(rssi))
+        except ValueError:
+            pass
+        if ssid.strip():
+            item['ssid_hash'] = hashlib.sha256(ssid.encode()).hexdigest()
+        items.append(item)
+    return items
+
+
+def _wardrift_body(r):
+    try:
+        return r.json()
+    except ValueError:
+        return {'raw': r.text[:300]}
+
+
+def _clean_credential(value):
+    """Validate a pasted API key/token -> (clean_value, error_or_None).
+
+    Keys travel in HTTP headers, which only carry plain ASCII. A masked key
+    copied from a dashboard ('\u25cf\u25cf\u25cf' / '\u2022\u2022\u2022') or a pasted block
+    of page text would otherwise be saved and then fail every request with a
+    cryptic 'latin-1' codec error."""
+    v = str(value or '').strip()
+    if not v:
+        return '', None
+    if any(ch in v for ch in '\u25cf\u2022\u2219\u00b7') or '****' in v:
+        return None, 'That looks like a hidden key - press Reveal on Wardrift and copy the revealed key'
+    if len(v) > 256 or any(c.isspace() for c in v):
+        return None, 'Paste only the key itself (no spaces or surrounding text)'
+    if not all(0x21 <= ord(c) <= 0x7e for c in v):
+        return None, 'The key contains characters an API key never has - copy it again'
+    return v, None
+
+
+def _upload_wardrift_route(csv_text, token):
+    import requests
+    public = bool(shared_data.config.get('wardrift_public_route', False))
+    r = requests.post(_wardrift_base() + '/v1/wardrive/logs',
+                      headers={'Authorization': f'Bearer {token}'},
+                      files={'file': ('ragnar.wiglecsv', csv_text, 'text/csv')},
+                      data={'public_route': 'true' if public else 'false'}, timeout=180)
+    body = _wardrift_body(r)
+    if r.status_code == 409 and body.get('error') == 'duplicate_route':
+        return {'ok': True, 'status': 409, 'mode': 'route', 'duplicate': True, 'response': body}
+    if r.status_code == 401:
+        return {'ok': False, 'status': 401, 'mode': 'route',
+                'error': 'Wardrift session expired - sign in again', 'response': body}
+    return {'ok': bool(r.ok and body.get('accepted', r.ok)), 'status': r.status_code,
+            'mode': 'route', 'response': body}
+
+
+def _upload_wardrift_signals(csv_text, key):
+    import requests
+    from datetime import datetime, timezone
+    items = _wardrift_signal_items(csv_text)
+    if not items:
+        return {'ok': False, 'mode': 'signals', 'error': 'No GPS-located rows to send'}
+    key_fp = hashlib.sha256(key.encode()).hexdigest()[:16]
+    totals = {'batches': 0, 'duplicates': 0, 'item_count': 0, 'awarded_exp': 0, 'awarded_currency': 0}
+    for i in range(0, len(items), WARDRIFT_BATCH_SIZE):
+        chunk = items[i:i + WARDRIFT_BATCH_SIZE]
+        digest = hashlib.sha256(json.dumps(chunk, sort_keys=True).encode()).hexdigest()
+        idem = str(uuid.uuid5(uuid.NAMESPACE_URL, f'ragnar-wardrift:{key_fp}:{digest}'))
+        seq = _wardrift_seq_for(idem)
+        for attempt in (0, 1):
+            env = {'idempotency_key': idem, 'sequence_no': seq,
+                   'device_ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                   'signature': '', 'items': chunk}
+            r = requests.post(_wardrift_base() + '/v1/ingest/signals', json=env,
+                              headers={'X-API-Key': key}, timeout=60)
+            body = _wardrift_body(r)
+            # Our sequence fell behind the server (key used elsewhere / state
+            # lost) -> take a fresh, higher sequence_no once and resend.
+            msg = f"{body.get('error', '')} {body.get('message', '')}".lower()
+            if attempt == 0 and not r.ok and ('replay' in msg or 'sequence' in msg):
+                seq = _wardrift_seq_for(idem, fresh=True)
+                continue
+            break
+        if not (r.ok and (body.get('accepted') or body.get('duplicate'))):
+            return {'ok': False, 'status': r.status_code, 'mode': 'signals', 'response': body,
+                    'error': body.get('message') or body.get('error') or f'HTTP {r.status_code}',
+                    'sent': totals['item_count']}
+        _wardrift_seq_done(idem)
+        totals['batches'] += 1
+        totals['duplicates'] += 1 if body.get('duplicate') else 0
+        totals['item_count'] += int(body.get('item_count') or len(chunk))
+        totals['awarded_exp'] += int(body.get('awarded_exp') or 0)
+        totals['awarded_currency'] += int(body.get('awarded_currency') or 0)
+    return {'ok': True, 'status': 200, 'mode': 'signals', 'response': totals}
+
+
+def _upload_wardrift(csv_text):
+    token = (shared_data.config.get('wardrift_session_token') or '').strip()
+    key, bad = _clean_credential(shared_data.config.get('wardrift_api_key'))
+    if bad:
+        if not token:
+            return {'ok': False, 'error': f'The saved Wardrift API key is invalid: {bad}'}
+        key = ''
+    if not (token or key):
+        return {'ok': False, 'error': 'Wardrift not configured (sign in or add an API key)'}
+    try:
+        if token:
+            res = _upload_wardrift_route(csv_text, token)
+            # Expired session but a device key is on file -> still get the data in.
+            if not res.get('ok') and res.get('status') == 401 and key:
+                return _upload_wardrift_signals(csv_text, key)
+            return res
+        return _upload_wardrift_signals(csv_text, key)
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+UPLOAD_TARGETS = ('wigle', 'wdgwars', 'wardrift')
+_UPLOADERS = {'wigle': _upload_wigle, 'wdgwars': _upload_wdgwars, 'wardrift': _upload_wardrift}
+
+
+def _upload_target_list(target):
+    """'both' (legacy = WiGLE+WDGWars), 'all', or a comma list -> [targets];
+    None if any name is unknown."""
+    t = (target or 'wdgwars').lower().strip()
+    if t == 'both':
+        return ['wigle', 'wdgwars']
+    if t == 'all':
+        return list(UPLOAD_TARGETS)
+    out = [x.strip() for x in t.split(',') if x.strip()]
+    if not out or any(x not in UPLOAD_TARGETS for x in out):
+        return None
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Auto-upload: when a wardrive finishes, queue it and push it to the services
+# ticked in the Auto-upload card (WiGLE / WDGWars / Wardrift).
+#
+# * Every stop path queues the drive: the engine calls SESSION_FINISHED_HOOKS
+#   from stop(), whoever stopped it (web UI, CYD, display keys, diagnostic
+#   mode) and whichever engine instance ran it (webapp or the boot engine).
+# * A drive cut off by power loss has no end_time; once the box is back up,
+#   unfinished sessions started after auto-upload was switched on are queued.
+# * The queue is persisted, so an offline box retries every 60 s until it has
+#   connectivity again, and only retries the services that failed.
+# * Wardrift processes route uploads asynchronously (202 "pending", decided
+#   seconds to minutes later), so its uploads are followed to the final
+#   succeeded/failed result. Every outcome lands in upload_history.json, which
+#   the Auto-upload card shows as "Recent uploads".
 # ---------------------------------------------------------------------------
 _AUTO_UPLOAD_SAVE_LOCK = threading.Lock()
 _AUTO_UPLOAD_PROC_LOCK = threading.Lock()
 _auto_upload_worker_started = False
+_AUTO_UPLOAD_RETRY_S = 60
+_AUTO_UPLOAD_TICK_S = 15
+_WARDRIFT_FOLLOW_MAX_S = 45 * 60
+_UPLOAD_HISTORY_MAX = 40
+_UPLOAD_NAMES = {'wigle': 'WiGLE', 'wdgwars': 'WDGWars', 'wardrift': 'Wardrift'}
+
+
+def _wd_data_dir():
+    # Same directory the engine uses, without constructing an engine.
+    return getattr(shared_data, 'data_dir', 'data')
 
 
 def _auto_upload_queue_path():
-    return os.path.join(_get_wardriving_engine().data_dir, 'pending_uploads.json')
+    return os.path.join(_wd_data_dir(), 'pending_uploads.json')
+
+
+def _upload_history_path():
+    return os.path.join(_wd_data_dir(), 'upload_history.json')
+
+
+def _json_load(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f) or default
+    except Exception:
+        return default
+
+
+def _json_save(path, obj):
+    with _AUTO_UPLOAD_SAVE_LOCK:
+        try:
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(obj, f)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.error(f"auto-upload save failed ({os.path.basename(path)}): {e}")
 
 
 def _auto_upload_load():
-    try:
-        with open(_auto_upload_queue_path()) as f:
-            return json.load(f) or []
-    except Exception:
-        return []
+    return _json_load(_auto_upload_queue_path(), [])
 
 
 def _auto_upload_save(items):
-    with _AUTO_UPLOAD_SAVE_LOCK:
+    _json_save(_auto_upload_queue_path(), items)
+
+
+def _upload_history_load():
+    return _json_load(_upload_history_path(), {})
+
+
+def _upload_record(session_id, target, **rec):
+    """Store the latest outcome of one service for one session."""
+    hist = _upload_history_load()
+    entry = hist.setdefault(session_id, {})
+    prev = entry.get(target) or {}
+    rec.setdefault('at', time.time())
+    entry[target] = dict(prev, **rec)
+    entry['_updated'] = time.time()
+    if len(hist) > _UPLOAD_HISTORY_MAX:          # keep the newest sessions
+        for sid in sorted(hist, key=lambda k: hist[k].get('_updated', 0))[:len(hist) - _UPLOAD_HISTORY_MAX]:
+            hist.pop(sid, None)
+    _json_save(_upload_history_path(), hist)
+
+
+def _upload_outcome(target, res):
+    """Uploader result -> history record."""
+    resp = res.get('response') or {}
+    if not res.get('ok'):
+        msg = res.get('error') or resp.get('message') or resp.get('error') or f"HTTP {res.get('status')}"
+        return {'state': 'failed', 'message': str(msg)[:300]}
+    if target == 'wardrift' and res.get('mode') == 'route' and resp.get('upload_id') \
+            and resp.get('status') in ('pending', 'processing'):
+        return {'state': 'processing', 'upload_id': resp['upload_id'], 'message': 'Wardrift is processing'}
+    if target == 'wardrift' and res.get('duplicate'):
+        return {'state': 'ok', 'message': 'Already on Wardrift'}
+    xp = resp.get('awarded_exp')
+    return {'state': 'ok', 'message': f'+{xp} XP' if xp else 'Uploaded'}
+
+
+def _upload_session(session_id, targets, csv_text=None):
+    """Upload one session to each target, record the outcomes -> {target: res}."""
+    csv_text = csv_text if csv_text is not None else _wardrive_session_csv(session_id)
+    results = {}
+    for t in targets:
+        res = _UPLOADERS[t](csv_text)
+        results[t] = res
+        _upload_record(session_id, t, **_upload_outcome(t, res))
+    return results
+
+
+def _wardrift_follow_uploads():
+    """Poll Wardrift for route uploads still processing; record the verdict."""
+    token = (shared_data.config.get('wardrift_session_token') or '').strip()
+    hist = _upload_history_load()
+    for sid, entry in hist.items():
+        rec = entry.get('wardrift') or {}
+        if rec.get('state') != 'processing' or not rec.get('upload_id'):
+            continue
+        if time.time() - rec.get('at', 0) > _WARDRIFT_FOLLOW_MAX_S:
+            _upload_record(sid, 'wardrift', state='unknown',
+                           message='Wardrift never reported a result - check wardrift.net')
+            continue
+        if not token:
+            continue
         try:
-            with open(_auto_upload_queue_path(), 'w') as f:
-                json.dump(items, f)
-        except Exception as e:
-            logger.error(f"auto-upload queue save failed: {e}")
+            import requests
+            r = requests.get(_wardrift_base() + '/v1/wardrive/uploads/' + rec['upload_id'],
+                             headers={'Authorization': f'Bearer {token}'}, timeout=20)
+            body = _wardrift_body(r)
+        except Exception:
+            continue                                  # offline - ask again next tick
+        status = body.get('status')
+        if status == 'succeeded':
+            result = body.get('result') or {}
+            parts = [f"{result.get('accepted_signals', 0)} readings saved"]
+            if result.get('awarded_exp'):
+                parts.append(f"+{result['awarded_exp']} XP")
+            skipped = sum(x.get('count', 0) for x in result.get('reasons', [])
+                          if x.get('stage') in ('parse_skipped', 'validation_excluded'))
+            if skipped:
+                parts.append(f'{skipped} skipped')
+            _upload_record(sid, 'wardrift', state='ok', message=', '.join(parts), at=rec.get('at'))
+            logger.info(f"auto-upload: Wardrift accepted session {sid}")
+        elif status == 'failed':
+            _upload_record(sid, 'wardrift', state='failed', at=rec.get('at'),
+                           message=str(body.get('error') or 'Wardrift rejected the upload')[:300])
+            logger.warning(f"auto-upload: Wardrift rejected session {sid}: {body.get('error')}")
+        elif r.status_code == 401:
+            _upload_record(sid, 'wardrift', message='Signed out of Wardrift - sign in to see the result')
 
 
 def _auto_upload_enqueue(session_id, target):
     items = _auto_upload_load()
     if not any(i.get('session_id') == session_id for i in items):
         items.append({'session_id': session_id, 'target': target,
-                      'added': time.time(), 'attempts': 0})
+                      'added': time.time(), 'attempts': 0, 'next_try': 0})
         _auto_upload_save(items)
         logger.info(f"auto-upload: queued session {session_id} -> {target}")
     _auto_upload_start_worker()
     threading.Thread(target=_auto_upload_process_once, daemon=True).start()
+
+
+def _auto_upload_on_finished(session_id):
+    """SESSION_FINISHED_HOOKS entry: queue a just-stopped drive if auto-upload is on."""
+    if shared_data.config.get('wardriving_auto_upload'):
+        _auto_upload_enqueue(session_id, shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'))
+
+
+def _auto_upload_recover_unfinished():
+    """Queue drives cut off by power loss: no end_time, started after auto-upload
+    was switched on, never uploaded or queued, and not the drive running now."""
+    if not shared_data.config.get('wardriving_auto_upload'):
+        return
+    since = _ts_epoch(shared_data.config.get('wardriving_auto_upload_since'))
+    if since is None:
+        # Switched on before this timestamp existed: start the clock now, so
+        # power-cut drives from here on are recovered but older ones aren't.
+        from datetime import datetime, timezone
+        shared_data.config['wardriving_auto_upload_since'] = datetime.now(timezone.utc).isoformat()
+        shared_data.save_config()
+        return
+    import types
+    from wardriving import WardrivingEngine
+    sessions = WardrivingEngine.get_session_list(types.SimpleNamespace(data_dir=_wd_data_dir()))
+    eng = _wardriving_engine
+    live = eng.session.session_id if (eng is not None and getattr(eng, '_running', False)
+                                      and getattr(eng, 'session', None)) else None
+    queued = {i.get('session_id') for i in _auto_upload_load()}
+    hist = _upload_history_load()
+    for s in sessions:
+        sid = s.get('session_id')
+        if not sid or s.get('end_time') or sid == live or sid in queued or sid in hist:
+            continue
+        started = _ts_epoch(s.get('start_time'))
+        if started is None or started < since:
+            continue
+        try:                                   # still being written -> a live drive
+            if time.time() - os.path.getmtime(s['db_path']) < 300:
+                continue
+        except Exception:
+            continue
+        logger.info(f"auto-upload: recovering unfinished drive {sid}")
+        _auto_upload_enqueue(sid, shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'))
+
+
+def _ts_epoch(v):
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(v).strip().replace('Z', '+00:00'))
+    except Exception:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def _auto_upload_process_once():
@@ -14394,28 +14817,35 @@ def _auto_upload_process_once():
         if not items:
             return
         remaining = []
+        now = time.time()
         for it in items:
+            if it.get('next_try', 0) > now:
+                remaining.append(it)
+                continue
             sid = it.get('session_id')
             target = (it.get('target') or 'wdgwars').lower()
+            todo = _upload_target_list(target)
+            if not todo:
+                continue                      # unknown target (hand-edited queue) - drop it
             it['attempts'] = it.get('attempts', 0) + 1
+            it['next_try'] = now + _AUTO_UPLOAD_RETRY_S
             try:
                 csv_text = _wardrive_session_csv(sid)
                 if _wardrive_located_count(csv_text) == 0:
-                    # No GPS-located rows yet; keep it a while in case a fix arrives.
+                    # No GPS-pinned rows (yet); keep it a while, then give up.
                     if it['attempts'] < 30:
                         remaining.append(it)
+                    else:
+                        for t in todo:
+                            _upload_record(sid, t, state='skipped', message='No GPS-pinned rows in this drive')
                     continue
-                todo = ['wigle', 'wdgwars'] if target == 'both' else [target]
-                failed = []
-                for tgt in todo:
-                    res = _upload_wigle(csv_text) if tgt == 'wigle' else _upload_wdgwars(csv_text)
-                    if not res.get('ok'):
-                        failed.append(tgt)
+                results = _upload_session(sid, todo, csv_text)
+                failed = [t for t, res in results.items() if not res.get('ok')]
                 if failed:
-                    it['target'] = 'both' if len(failed) == 2 else failed[0]
-                    remaining.append(it)      # retry later (probably offline)
+                    it['target'] = ','.join(failed)   # only retry what didn't land
+                    remaining.append(it)              # retry later (probably offline)
                 else:
-                    logger.info(f"auto-upload: session {sid} uploaded ({target})")
+                    logger.info(f"auto-upload: session {sid} sent ({target})")
             except Exception as e:
                 logger.debug(f"auto-upload retry {sid}: {e}")
                 remaining.append(it)
@@ -14425,12 +14855,20 @@ def _auto_upload_process_once():
 
 
 def _auto_upload_worker():
+    started = time.time()
+    recovered = False
     while True:
         try:
             _auto_upload_process_once()
+            _wardrift_follow_uploads()
+            # Give a boot-time drive a couple of minutes to register as live
+            # before looking for power-loss leftovers.
+            if not recovered and time.time() - started > 120:
+                recovered = True
+                _auto_upload_recover_unfinished()
         except Exception as e:
             logger.error(f"auto-upload worker error: {e}")
-        time.sleep(60)
+        time.sleep(_AUTO_UPLOAD_TICK_S)
 
 
 def _auto_upload_start_worker():
@@ -14441,37 +14879,85 @@ def _auto_upload_start_worker():
     threading.Thread(target=_auto_upload_worker, daemon=True, name='wdg-auto-upload').start()
 
 
+def _auto_upload_recent(limit=6):
+    hist = _upload_history_load()
+    out = []
+    for sid in sorted(hist, key=lambda k: hist[k].get('_updated', 0), reverse=True)[:limit]:
+        entry = hist[sid]
+        out.append({'session_id': sid, 'results': [
+            {'target': t, 'name': _UPLOAD_NAMES.get(t, t), 'state': v.get('state'),
+             'message': v.get('message', ''), 'at': v.get('at')}
+            for t, v in entry.items() if not t.startswith('_')]})
+    return out
+
+
+try:
+    import wardriving as _wardriving_mod
+    if _auto_upload_on_finished not in _wardriving_mod.SESSION_FINISHED_HOOKS:
+        _wardriving_mod.SESSION_FINISHED_HOOKS.append(_auto_upload_on_finished)
+except Exception as _hook_exc:  # pragma: no cover - never block startup
+    logger.error(f"auto-upload: could not register wardrive stop hook: {_hook_exc}")
+
+
 @app.route('/api/wardriving/upload-config', methods=['GET', 'POST'])
 def wardriving_upload_config():
-    """Report (never reveal) or set WiGLE / WDGWars upload creds + auto-upload.
+    """Report (never reveal) or set WiGLE / WDGWars / Wardrift upload creds + auto-upload.
 
-    GET  -> configured booleans (no secrets) + auto_upload settings + queue size.
+    GET  -> configured booleans (no secrets) + auto_upload settings + queue size
+            + recent upload outcomes.
     POST -> saves any of wigle_api_name / wigle_api_token / wdg_key /
-            auto_upload / auto_upload_target present.
+            wardrift_api_key / wardrift_base_url / wardrift_public_route /
+            auto_upload / auto_upload_targets (list) / auto_upload_target present.
     """
     try:
         if request.method == 'POST':
             data = request.get_json(silent=True) or {}
-            for k in ('wigle_api_name', 'wigle_api_token', 'wdg_key'):
+            for k in ('wigle_api_name', 'wigle_api_token', 'wdg_key', 'wardrift_api_key'):
                 if k in data:
-                    shared_data.config[k] = str(data[k]).strip()
-            if 'auto_upload' in data:
-                shared_data.config['wardriving_auto_upload'] = bool(data['auto_upload'])
-            if 'auto_upload_target' in data:
+                    val, err = _clean_credential(data[k])
+                    if err:
+                        return jsonify({'error': err}), 400
+                    shared_data.config[k] = val
+            if 'wardrift_base_url' in data:
+                u = str(data['wardrift_base_url']).strip().rstrip('/')
+                if u and not re.match(r'^https?://[A-Za-z0-9.-]+(:\d+)?(/[^\s]*)?$', u):
+                    return jsonify({'error': 'Wardrift URL must be http(s)://host'}), 400
+                shared_data.config['wardrift_base_url'] = u
+            if 'wardrift_public_route' in data:
+                shared_data.config['wardrift_public_route'] = bool(data['wardrift_public_route'])
+            if 'auto_upload_targets' in data:
+                picked = [t for t in UPLOAD_TARGETS if t in (data['auto_upload_targets'] or [])]
+                if picked:
+                    shared_data.config['wardriving_auto_upload_target'] = ','.join(picked)
+            elif 'auto_upload_target' in data:
                 t = str(data['auto_upload_target']).lower()
-                if t in ('wigle', 'wdgwars', 'both'):
+                if _upload_target_list(t):
                     shared_data.config['wardriving_auto_upload_target'] = t
+            if 'auto_upload' in data:
+                on = bool(data['auto_upload'])
+                if on and not shared_data.config.get('wardriving_auto_upload'):
+                    from datetime import datetime, timezone
+                    shared_data.config['wardriving_auto_upload_since'] = datetime.now(timezone.utc).isoformat()
+                shared_data.config['wardriving_auto_upload'] = on
             shared_data.save_config()
         # Resume the retry worker whenever auto-upload is on or items are pending.
         if shared_data.config.get('wardriving_auto_upload') or _auto_upload_load():
             _auto_upload_start_worker()
+        target = shared_data.config.get('wardriving_auto_upload_target', 'wdgwars')
         return jsonify({
             'wigle_configured': bool((shared_data.config.get('wigle_api_name') or '').strip()
                                      and (shared_data.config.get('wigle_api_token') or '').strip()),
             'wdgwars_configured': bool((shared_data.config.get('wdg_key') or '').strip()),
+            'wardrift_key_configured': bool((shared_data.config.get('wardrift_api_key') or '').strip()),
+            'wardrift_signed_in': bool((shared_data.config.get('wardrift_session_token') or '').strip()),
+            'wardrift_username': shared_data.config.get('wardrift_username', ''),
+            'wardrift_base_url': _wardrift_base(),
+            'wardrift_public_route': bool(shared_data.config.get('wardrift_public_route', False)),
             'auto_upload': bool(shared_data.config.get('wardriving_auto_upload', False)),
-            'auto_upload_target': shared_data.config.get('wardriving_auto_upload_target', 'wdgwars'),
+            'auto_upload_target': target,
+            'auto_upload_targets': _upload_target_list(target) or ['wdgwars'],
             'pending': len(_auto_upload_load()),
+            'recent': _auto_upload_recent(),
         })
     except Exception as e:
         logger.error(f"Wardriving upload-config error: {e}")
@@ -14480,19 +14966,20 @@ def wardriving_upload_config():
 
 @app.route('/api/wardriving/upload/<session_id>', methods=['POST'])
 def wardriving_upload(session_id):
-    """Upload a session's WiGLE CSV to WiGLE and/or WDGWars.
+    """Upload a session's WiGLE CSV to WiGLE, WDGWars and/or Wardrift.
 
-    Body: {"target": "wigle"|"wdgwars"|"both", "force": false}
+    Body: {"target": "wigle"|"wdgwars"|"wardrift"|"both"|"all"|"a,b", "force": false}
     Refuses a session with no GPS-located rows unless force=true, so we never
-    push location-less junk to the public databases.
+    push location-less junk to the public databases. Outcomes are recorded in
+    the upload history; a Wardrift route upload is followed to its verdict.
     """
     try:
         if not re.match(r'^[A-Za-z0-9_-]+$', session_id):
             return jsonify({'error': 'Invalid session ID'}), 400
         data = request.get_json(silent=True) or {}
-        target = (data.get('target') or 'wdgwars').lower()
-        if target not in ('wigle', 'wdgwars', 'both'):
-            return jsonify({'error': "target must be 'wigle', 'wdgwars' or 'both'"}), 400
+        targets = _upload_target_list(data.get('target'))
+        if not targets:
+            return jsonify({'error': "target must be wigle, wdgwars, wardrift, both, all or a comma list"}), 400
 
         csv_text = _wardrive_session_csv(session_id)
         located = _wardrive_located_count(csv_text)
@@ -14500,16 +14987,383 @@ def wardriving_upload(session_id):
             return jsonify({'success': False, 'located': 0,
                             'error': 'No GPS-located networks in this session yet - get a fix first'}), 422
 
-        results = {}
-        if target in ('wigle', 'both'):
-            results['wigle'] = _upload_wigle(csv_text)
-        if target in ('wdgwars', 'both'):
-            results['wdgwars'] = _upload_wdgwars(csv_text)
+        results = _upload_session(session_id, targets, csv_text)
+        if any(_upload_history_load().get(session_id, {}).get(t, {}).get('state') == 'processing'
+               for t in targets):
+            _auto_upload_start_worker()                # follows Wardrift to its verdict
         overall = all(v.get('ok') for v in results.values())
         return jsonify({'success': overall, 'located': located, 'results': results}), (200 if overall else 502)
     except Exception as e:
         logger.error(f"Wardriving upload error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+if shared_data.config.get('wardriving_auto_upload') or _auto_upload_load() or any(
+        (e.get('wardrift') or {}).get('state') == 'processing' for e in _upload_history_load().values()):
+    _auto_upload_start_worker()
+
+
+@app.route('/api/wardriving/wardrift/signin', methods=['POST'])
+def wardrift_signin():
+    """Sign in to Wardrift and keep only the session token (never the password).
+
+    Body: {"username": "...", "password": "..."}
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        username = str(data.get('username') or '').strip()
+        password = str(data.get('password') or '')
+        if not (username and password):
+            return jsonify({'error': 'username and password required'}), 400
+        import requests
+        r = requests.post(_wardrift_base() + '/v1/auth/sign-in/username',
+                          json={'username': username, 'password': password, 'remember_me': True},
+                          timeout=20)
+        body = _wardrift_body(r)
+        token = ((body.get('session') or {}).get('token') or body.get('token') or '').strip()
+        if not (r.ok and token):
+            return jsonify({'success': False,
+                            'error': body.get('message') or body.get('error') or f'HTTP {r.status_code}'}), 401
+        shared_data.config['wardrift_session_token'] = token
+        shared_data.config['wardrift_username'] = username
+        shared_data.save_config()
+        return jsonify({'success': True, 'username': username})
+    except Exception as e:
+        logger.error(f"Wardrift sign-in error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/wardriving/wardrift/signout', methods=['POST'])
+def wardrift_signout():
+    """Forget the stored Wardrift session token (the API key is kept)."""
+    shared_data.config['wardrift_session_token'] = ''
+    shared_data.config['wardrift_username'] = ''
+    shared_data.save_config()
+    return jsonify({'success': True})
+
+
+@app.route('/api/wardriving/wardrift/dashboard')
+def wardrift_dashboard():
+    """Proxy GET /v1/dashboard with the stored session token (player stats)."""
+    token = (shared_data.config.get('wardrift_session_token') or '').strip()
+    if not token:
+        return jsonify({'error': 'Not signed in to Wardrift'}), 401
+    try:
+        import requests
+        r = requests.get(_wardrift_base() + '/v1/dashboard',
+                         headers={'Authorization': f'Bearer {token}'}, timeout=20)
+        body = _wardrift_body(r)
+        if r.status_code == 401:
+            return jsonify({'error': 'Wardrift session expired - sign in again', 'expired': True}), 401
+        return jsonify(body), (200 if r.ok else 502)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
+# ---------------------------------------------------------------------------
+# Wardrift mesh reporter - Ragnar as the uplink for a Meshtastic node.
+#
+# Stock Meshtastic firmware can't call Wardrift itself, so Ragnar reads the
+# node (USB serial, or WiFi/TCP on port 4403) through the shared
+# meshtastic_node link and POSTs its health to /v1/ingest/mesh with the
+# node-bound API key every `wardrift_mesh_interval` seconds.
+#
+# LocalStats packet counters are cumulative since the node booted; Wardrift
+# treats them as per-window counts, so we send the delta since the previous
+# report (persisted in wardrift_state.json; a reboot resets the baseline).
+# The serial port is published via serial_claims, so the GPS, CYD bridge and
+# wardriving companion monitor never open it (and vice versa).
+# ---------------------------------------------------------------------------
+# Mesh reporting is not available yet: the reporter never sends and the UI
+# shows "Coming soon". Flip to True to enable it.
+WARDRIFT_MESH_LIVE = False
+_MESH_COUNTERS = ('num_packets_tx', 'num_packets_rx', 'num_packets_rx_bad',
+                  'num_tx_relay', 'num_tx_relay_canceled', 'num_rx_dupe')
+_wardrift_mesh = {'thread': None, 'pending': None, 'pending_tries': 0,
+                  'next_report': 0.0, 'next_connect': 0.0,
+                  'status': {'state': 'off', 'error': None, 'last_report_at': None,
+                             'last_ok': None, 'last_response': None,
+                             'totals': {'reports': 0, 'exp': 0, 'currency': 0}}}
+
+
+def _wardrift_mesh_cfg():
+    c = shared_data.config
+    try:
+        interval = min(max(int(c.get('wardrift_mesh_interval') or 300), 60), 3600)
+    except (TypeError, ValueError):
+        interval = 300
+    return {'enabled': bool(c.get('wardrift_mesh_enabled', False)),
+            'key': (c.get('wardrift_mesh_key') or '').strip(),
+            'conn': 'wifi' if c.get('wardrift_mesh_conn') == 'wifi' else 'usb',
+            'port': (c.get('wardrift_mesh_port') or '').strip(),
+            'host': (c.get('wardrift_mesh_host') or '').strip(),
+            'interval': interval}
+
+
+def _wardrift_mesh_counter_deltas(node_id, rep):
+    """Cumulative LocalStats counters -> per-window deltas (None if no baseline)."""
+    cur = {k: rep.get(k) for k in _MESH_COUNTERS}
+    if not node_id or all(v is None for v in cur.values()):
+        return {k: None for k in _MESH_COUNTERS}
+    with _WARDRIFT_STATE_LOCK:
+        st = _wardrift_state_load()
+        last = (st.setdefault('mesh_last', {})).get(node_id)
+        st['mesh_last'][node_id] = {'uptime': rep.get('uptime_seconds'), 'counters': cur}
+        _wardrift_state_save(st)
+    out = {}
+    rebooted = bool(last) and (rep.get('uptime_seconds') or 0) < (last.get('uptime') or 0)
+    for k, v in cur.items():
+        prev = (last or {}).get('counters', {}).get(k)
+        if v is None:
+            out[k] = None
+        elif rebooted:
+            out[k] = int(v)                 # counters restarted at boot
+        elif prev is None or v < prev:
+            out[k] = None                   # first sighting - no window yet
+        else:
+            out[k] = int(v - prev)
+    return out
+
+
+def _wardrift_mesh_item(rep):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    item = {'ts': now, 'source_ts': None}
+    for k in ('lat', 'lon', 'uptime_seconds', 'battery_level', 'voltage',
+              'channel_utilization', 'air_util_tx', 'num_online_nodes', 'num_total_nodes'):
+        if rep.get(k) is not None:
+            item[k] = rep[k]
+    for k, v in _wardrift_mesh_counter_deltas(rep.get('node_id'), rep).items():
+        if v is not None:
+            item[k] = v
+    if 'uptime_seconds' in item:
+        item['uptime_seconds'] = int(item['uptime_seconds'])
+    if 'battery_level' in item:
+        item['battery_level'] = int(item['battery_level'])
+    item['metadata'] = {k: rep[k] for k in ('node_id', 'long_name', 'hw_model', 'firmware') if rep.get(k)}
+    item['metadata']['source'] = 'ragnar'
+    return item
+
+
+def _wardrift_mesh_send(key):
+    """POST the pending envelope (a retry resends the same idempotency key +
+    sequence_no). Returns (ok, body_or_error)."""
+    import requests
+    env = _wardrift_mesh['pending']
+    key, bad = _clean_credential(key)
+    if bad:     # saved before keys were validated - needs re-pasting
+        return False, {'error': f'The saved node key is invalid: {bad}', 'permanent': True}
+    try:
+        r = requests.post(_wardrift_base() + '/v1/ingest/mesh', json=env,
+                          headers={'X-API-Key': key}, timeout=30)
+    except (requests.ConnectionError, requests.Timeout) as e:
+        return False, {'error': f'Wardrift unreachable (offline?): {e}', 'permanent': False}
+    except Exception as e:
+        return False, {'error': str(e), 'permanent': False}
+    body = _wardrift_body(r)
+    if r.ok and (body.get('accepted') or body.get('duplicate')):
+        return True, body
+    msg = body.get('message') or body.get('error') or f'HTTP {r.status_code}'
+    if r.status_code == 401:
+        msg = 'Wardrift rejected the key (unknown or revoked)'
+    elif 'node device' in str(msg).lower():
+        msg = ('This key is not bound to a mesh node (it is probably your character key). '
+               'Use a key whose device kind is a node - Wardrift lists them under API keys '
+               'on your dashboard; if there is none, ask Wardrift to register your node.')
+    # 4xx (bar timeout / rate-limit) will fail the same way on a resend.
+    permanent = 400 <= r.status_code < 500 and r.status_code not in (408, 429)
+    return False, {'error': msg, 'permanent': permanent}
+
+
+def _wardrift_mesh_desired(cfg):
+    if cfg['conn'] == 'wifi':
+        h, p = meshtastic_node.parse_host(cfg['host'])
+        return ('tcp', f'{h}:{p}') if h else None
+    return ('serial', os.path.realpath(cfg['port']) if cfg['port'] else None)
+
+
+def _wardrift_mesh_tick():
+    st = _wardrift_mesh['status']
+    cfg = _wardrift_mesh_cfg()
+    link = meshtastic_node.link()
+    lst = link.status()
+    ours = lst.get('owner') == 'wardrift'
+    if not WARDRIFT_MESH_LIVE:
+        if ours:
+            meshtastic_node.stop()          # release the node port we opened
+        st.update(state='coming soon', error=None)
+        return
+    if not (cfg['enabled'] and cfg['key']):
+        if ours:
+            meshtastic_node.stop()          # release the port we opened
+        st.update(state='off' if not cfg['enabled'] else 'no key', error=None)
+        return
+    want = _wardrift_mesh_desired(cfg)
+    if want is None:
+        st.update(state='error', error='Set the node\'s WiFi address (ip or ip:port)')
+        return
+    cur = link.target()
+    now = time.time()
+    if cur and ours and (cur[0] != want[0] or (want[1] and cur[1] != want[1])):
+        meshtastic_node.stop()              # settings changed - reconnect
+        cur = None
+    if cur is None:
+        if now < _wardrift_mesh['next_connect']:
+            return
+        st.update(state='connecting', error=None)
+        if want[0] == 'tcp':
+            res = meshtastic_node.start(host=want[1], owner='wardrift')
+        else:
+            res = meshtastic_node.start(port=cfg['port'] or None, owner='wardrift')
+        if not res.get('ok'):
+            _wardrift_mesh['next_connect'] = now + 30
+            st.update(state='error', error=res.get('error'))
+            return
+        link.request_local_stats()
+        _wardrift_mesh['next_report'] = now + 20   # let the stats reply land first
+    st['state'] = 'connected'
+    if now < _wardrift_mesh['next_report']:
+        return
+    _wardrift_mesh['next_report'] = now + cfg['interval']
+    if _wardrift_mesh['pending'] is None:
+        rep = link.local_report()
+        if not rep:
+            st.update(state='error', error='node not reporting yet')
+            return
+        from datetime import datetime, timezone
+        idem = str(uuid.uuid4())
+        _wardrift_mesh['pending'] = {
+            'idempotency_key': idem, 'sequence_no': _wardrift_seq_for(idem),
+            'device_ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'signature': '', 'items': [_wardrift_mesh_item(rep)]}
+        _wardrift_mesh['pending_tries'] = 0
+    ok, res = _wardrift_mesh_send(cfg['key'])
+    idem = _wardrift_mesh['pending']['idempotency_key']
+    st['last_report_at'] = time.time()
+    st['last_ok'] = ok
+    if ok:
+        _wardrift_seq_done(idem)
+        _wardrift_mesh['pending'] = None
+        st['error'] = None
+        st['last_response'] = {k: res.get(k) for k in ('awarded_exp', 'awarded_currency',
+                                                       'validation_score', 'flags', 'duplicate')}
+        st['totals']['reports'] += 1
+        st['totals']['exp'] += int(res.get('awarded_exp') or 0)
+        st['totals']['currency'] += int(res.get('awarded_currency') or 0)
+    else:
+        st['error'] = res['error']
+        _wardrift_mesh['pending_tries'] += 1
+        if res['permanent'] or _wardrift_mesh['pending_tries'] >= 5:
+            # Rejected (bad key, bad payload) or stale: resending the same
+            # envelope won't help - drop it and wait for the next interval.
+            _wardrift_seq_done(idem)
+            _wardrift_mesh['pending'] = None
+        else:
+            _wardrift_mesh['next_report'] = time.time() + 60   # offline - retry the same envelope soon
+    link.request_local_stats()                             # fresh counters for next time
+
+
+def _wardrift_mesh_worker():
+    while True:
+        try:
+            _wardrift_mesh_tick()
+        except Exception as e:
+            _wardrift_mesh['status'].update(state='error', error=str(e))
+            logger.debug(f"wardrift mesh tick: {e}")
+        time.sleep(5)
+
+
+def _wardrift_mesh_start_worker():
+    t = _wardrift_mesh['thread']
+    if t is None or not t.is_alive():
+        t = threading.Thread(target=_wardrift_mesh_worker, daemon=True, name='wardrift-mesh')
+        _wardrift_mesh['thread'] = t
+        t.start()
+
+
+def _wardrift_mesh_ports():
+    """USB serial ports for the picker, each tagged with why it is/isn't usable."""
+    try:
+        ports = meshtastic_node._list_usb_serial()
+        cands, skipped = meshtastic_node.classify_mesh_candidates(
+            ports, meshtastic_node._foreign_ports(allow_wardrive_companions=True))
+        held = meshtastic_node.claimed_port()
+        out = [{'port': p, 'usable': True, 'note': 'in use by this link' if held and os.path.realpath(p) == held else ''}
+               for p in cands]
+        out += [{'port': p, 'usable': False, 'note': why} for p, why in skipped]
+        return sorted(out, key=lambda x: (not x['usable'], x['port']))
+    except Exception:
+        return []
+
+
+@app.route('/api/wardriving/wardrift/mesh', methods=['GET', 'POST'])
+def wardrift_mesh():
+    """Wardrift mesh-node reporter: GET status (never the key) / POST settings.
+
+    POST keys: enabled, key, conn ('usb'|'wifi'), port ('' = auto), host, interval.
+    """
+    try:
+        if request.method == 'POST' and not WARDRIFT_MESH_LIVE:
+            return jsonify({'error': 'Wardrift mesh rewards are coming soon', 'available': False}), 409
+        if request.method == 'POST':
+            d = request.get_json(silent=True) or {}
+            c = shared_data.config
+            if 'key' in d:
+                val, err = _clean_credential(d['key'])
+                if err:
+                    return jsonify({'error': err}), 400
+                c['wardrift_mesh_key'] = val
+            if 'conn' in d:
+                c['wardrift_mesh_conn'] = 'wifi' if d['conn'] == 'wifi' else 'usb'
+            if 'port' in d:
+                port = str(d['port'] or '').strip()
+                if port and not re.match(r'^/dev/[A-Za-z0-9_./:-]+$', port):
+                    return jsonify({'error': 'port must be a /dev path'}), 400
+                c['wardrift_mesh_port'] = port
+            if 'host' in d:
+                host = str(d['host'] or '').strip()
+                if host and not meshtastic_node.parse_host(host)[0]:
+                    return jsonify({'error': 'host must be ip or ip:port'}), 400
+                c['wardrift_mesh_host'] = host
+            if 'interval' in d:
+                try:
+                    c['wardrift_mesh_interval'] = min(max(int(d['interval']), 60), 3600)
+                except (TypeError, ValueError):
+                    return jsonify({'error': 'interval must be seconds (60-3600)'}), 400
+            if 'enabled' in d:
+                c['wardrift_mesh_enabled'] = bool(d['enabled'])
+            shared_data.save_config()
+            _wardrift_mesh['next_connect'] = 0.0
+            if d.get('report_now'):
+                _wardrift_mesh['next_report'] = 0.0
+            _wardrift_mesh_start_worker()
+        cfg = _wardrift_mesh_cfg()
+        lst = meshtastic_node.link().status()
+        st = dict(_wardrift_mesh['status'])
+        if not WARDRIFT_MESH_LIVE:
+            return jsonify({'available': False, 'enabled': False,
+                            'key_configured': bool(cfg['key']), 'status': {'state': 'coming soon'}})
+        return jsonify({
+            'available': True,
+            'enabled': cfg['enabled'], 'key_configured': bool(cfg['key']),
+            'conn': cfg['conn'], 'port': cfg['port'], 'host': cfg['host'],
+            'interval': cfg['interval'],
+            'status': st,
+            'next_report_in': max(0, int(_wardrift_mesh['next_report'] - time.time()))
+                              if st.get('state') == 'connected' else None,
+            'link': {'connected': lst.get('running'), 'port': lst.get('port'),
+                     'host': lst.get('host'), 'owner': lst.get('owner'),
+                     'firmware': (lst.get('info') or {}).get('firmware')},
+            'node': meshtastic_node.link().local_report() if lst.get('running') else None,
+            'ports': _wardrift_mesh_ports() if cfg['conn'] == 'usb' else [],
+        })
+    except Exception as e:
+        logger.error(f"Wardrift mesh config error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+if WARDRIFT_MESH_LIVE and shared_data.config.get('wardrift_mesh_enabled'):
+    _wardrift_mesh_start_worker()
 
 
 @app.route('/api/wardriving/gps')
@@ -14805,16 +15659,11 @@ def wardriving_backfill_gps():
     session's gps_track table by interpolating each row's first_seen
     timestamp. Covers brief GPS dropouts and the warm-up window before TTFF.
 
-    Gated behind the `wardriving_allow_backfill` config flag (off by default):
-    backfilled positions are estimated, not measured, and are excluded from
-    WiGLE export once written so interpolated coordinates aren't submitted as
-    real observations."""
+    Gated behind the `wardriving_allow_backfill` config flag (off by default)."""
     try:
         if not shared_data.config.get('wardriving_allow_backfill', False):
             return jsonify({
-                'error': 'GPS backfill is disabled. Enable it in Config → Wardriving. '
-                         'Backfilled positions are estimated, not measured, and are excluded '
-                         'from WiGLE export to avoid submitting interpolated coordinates as real observations.'
+                'error': 'GPS backfill is disabled. Enable it in Config → Wardriving.'
             }), 403
         engine = _get_wardriving_engine()
         body = request.get_json(silent=True) or {}

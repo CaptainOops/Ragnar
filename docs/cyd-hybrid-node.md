@@ -60,6 +60,18 @@ The transport is chosen at compile time (`CYD_TRANSPORT_SERIAL` in `config.h`):
   sets `config['cyd_serial_port']` — `POST /api/cyd/serial/port`. SPI isn't
   usable: the board breaks out only 3 free pins (one input-only).
 
+  Auto-detect only claims the USB-UART bridges CYDs ship with (Silicon Labs
+  CP210x, QinHeng CH340/CH9102 — `/dev/serial/by-id` names containing `cp210`,
+  `1a86`, …). It never takes a port whose by-id name marks a GPS (u-blox,
+  `gps`/`gnss`, Prolific BU-353), and it only falls back to a bare
+  `ttyUSB*`/`ttyACM*` when that port has no by-id name. The bridge publishes
+  the port it holds and wardriving skips it, so claiming a GPS here would hide
+  the GPS from wardriving ("GPS: no"). It also skips any port another
+  component holds (`serial_claims.py`), e.g. a Meshtastic Heltec V3 on the
+  same CP2102 chip. If the Meshtastic link later pins an auto-detected port,
+  the bridge hands it back. If your CYD uses some other bridge chip, or shares
+  a chip type with another device, set the port explicitly.
+
 - **WiFi (`=0`) — legacy, limited.** The node joins WiFi and calls the REST API
   below, authenticated by a Bearer device token, provisioned via the on-device
   captive portal. This predates the cabled console and only carries **status +

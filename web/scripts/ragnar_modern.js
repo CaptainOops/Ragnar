@@ -30456,8 +30456,7 @@ async function setBleProvisioningAdapter(sel) {
 }
 
 // GPS backfill is gated: the map "Backfill GPS" button stays hidden until the
-// user opts in here. Backfilled positions are estimates (not WDGWARS-legal) and
-// are excluded from WiGLE export, so this defaults off.
+// user opts in here. Defaults off.
 function applyWardrivingBackfillVisibility(allow) {
     const btn = document.getElementById('wd-map-backfill-btn');
     if (btn) btn.classList.toggle('hidden', !allow);
@@ -30471,7 +30470,7 @@ async function toggleWardrivingBackfill() {
         await postAPI('/api/config', { wardriving_allow_backfill: enabled });
         applyWardrivingBackfillVisibility(enabled);
         addConsoleMessage(
-            'GPS backfill ' + (enabled ? 'enabled — backfilled data is excluded from WiGLE export' : 'disabled'),
+            'GPS backfill ' + (enabled ? 'enabled' : 'disabled'),
             enabled ? 'warning' : 'info'
         );
     } catch (e) {
@@ -31378,12 +31377,17 @@ function renderWardrivingSessions(sessions) {
                 <span class="text-xs text-gray-500">${s.total_networks || 0} networks</span>
                 ${isActive ? '<span class="text-xs text-cyan-400">● viewing</span>' : ''}
             </div>
-            <div class="flex gap-3 shrink-0">
-                <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=report" target="_blank" rel="noopener" class="text-xs text-emerald-400 hover:text-emerald-300 whitespace-nowrap font-semibold" onclick="event.stopPropagation()">Report</a>
-                <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=wigle" class="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap" onclick="event.stopPropagation()">WiGLE CSV</a>
-                <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=kml" class="text-xs text-purple-400 hover:text-purple-300 whitespace-nowrap" onclick="event.stopPropagation()">KML</a>
-                <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wdgwars')" class="text-xs text-fuchsia-400 hover:text-fuchsia-300 whitespace-nowrap font-semibold" title="Upload this session to WDGWars">↑ WDGWars</button>
-                <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wigle')" class="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap" title="Upload this session to WiGLE">↑ WiGLE</button>
+            <div class="flex flex-col md:flex-row md:items-center gap-y-1 gap-x-3 w-full md:w-auto">
+                <div class="flex flex-wrap gap-x-3 gap-y-1">
+                    <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=report" target="_blank" rel="noopener" class="text-xs py-1 text-emerald-400 hover:text-emerald-300 whitespace-nowrap font-semibold" onclick="event.stopPropagation()">Report</a>
+                    <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=wigle" class="text-xs py-1 text-cyan-400 hover:text-cyan-300 whitespace-nowrap" onclick="event.stopPropagation()">WiGLE CSV</a>
+                    <a href="/api/wardriving/export/${encodeURIComponent(s.session_id)}?format=kml" class="text-xs py-1 text-purple-400 hover:text-purple-300 whitespace-nowrap" onclick="event.stopPropagation()">KML</a>
+                </div>
+                <div class="flex flex-wrap gap-x-3 gap-y-1">
+                    <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wdgwars')" class="text-xs py-1 text-fuchsia-400 hover:text-fuchsia-300 whitespace-nowrap font-semibold" title="Upload this session to WDGWars">↑ WDGWars</button>
+                    <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wigle')" class="text-xs py-1 text-cyan-400 hover:text-cyan-300 whitespace-nowrap" title="Upload this session to WiGLE">↑ WiGLE</button>
+                    <button onclick="event.stopPropagation(); uploadWardriveSession('${s.session_id}','wardrift')" class="text-xs py-1 text-amber-400 whitespace-nowrap" title="Upload this session to Wardrift">↑ Wardrift</button>
+                </div>
             </div>
         </div>`;
     }).join('');
@@ -31413,12 +31417,240 @@ async function loadWardriveUploadConfig() {
         ws.textContent = d.wigle_configured ? '✓ configured' : 'Not set';
         ws.className = 'text-xs ' + (d.wigle_configured ? 'text-emerald-400' : 'text-gray-500');
     }
-    const cb = document.getElementById('wd-auto-upload');
-    if (cb) cb.checked = !!d.auto_upload;
-    const sel = document.getElementById('wd-auto-upload-target');
-    if (sel && d.auto_upload_target) sel.value = d.auto_upload_target;
-    const aus = document.getElementById('wd-auto-upload-status');
-    if (aus) aus.textContent = (d.auto_upload ? '✓ on' : '') + (d.pending ? ` · ${d.pending} queued` : '');
+    _renderAutoUpload(d);
+    _renderWardriftConfig(d);
+    loadWardriftMesh();
+}
+
+// ---- Wardrift mesh node: Ragnar reports a Meshtastic node (USB or WiFi) to /v1/ingest/mesh
+let _wdmFormFilled = false, _wdmTimer = null;
+
+function _wdmConnChanged() {
+    const wifi = document.getElementById('wd-wdm-conn')?.value === 'wifi';
+    document.getElementById('wd-wdm-port')?.classList.toggle('hidden', wifi);
+    document.getElementById('wd-wdm-host')?.classList.toggle('hidden', !wifi);
+}
+
+function _wdmAgo(ts) {
+    if (!ts) return 'never';
+    const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+async function loadWardriftMesh(fillForm) {
+    let d;
+    try {
+        const r = await fetch('/api/wardriving/wardrift/mesh');
+        d = await r.json();
+        if (!r.ok) return;
+    } catch (e) { return; }
+    // Not available yet: greyed out with a "Coming soon" badge.
+    const live = d.available !== false;
+    const body = document.getElementById('wd-wdm-body');
+    if (body) {
+        ['opacity-50', 'pointer-events-none', 'select-none'].forEach(c => body.classList.toggle(c, !live));
+        body.setAttribute('aria-disabled', String(!live));
+        body.querySelectorAll('input, select, button').forEach(el => { el.disabled = !live; });
+    }
+    if (!live) {
+        const b = document.getElementById('wd-wdm-badge');
+        if (b) { b.textContent = 'Coming soon'; b.className = 'text-xs px-2 py-0.5 rounded-full bg-sky-900/60 text-sky-300'; }
+        clearTimeout(_wdmTimer);
+        return;
+    }
+    const st = d.status || {};
+    const badge = document.getElementById('wd-wdm-badge');
+    if (badge) {
+        const map = {
+            connected: ['Reporting', 'bg-emerald-900/60 text-emerald-300'],
+            connecting: ['Connecting…', 'bg-amber-900/60 text-amber-300'],
+            error: ['Problem', 'bg-red-900/60 text-red-300'],
+            'no key': ['Key missing', 'bg-amber-900/60 text-amber-300'],
+        };
+        const [txt, cls] = d.enabled ? (map[st.state] || ['Starting…', 'bg-gray-700 text-gray-400']) : ['Off', 'bg-gray-700 text-gray-400'];
+        badge.textContent = txt;
+        badge.className = 'text-xs px-2 py-0.5 rounded-full ' + cls;
+    }
+    // Port list refreshes every time (plug/unplug), keeping the current choice.
+    const portSel = document.getElementById('wd-wdm-port');
+    if (portSel) {
+        const keep = _wdmFormFilled ? portSel.value : (d.port || '');
+        portSel.innerHTML = '<option value="">Auto-detect port</option>' + (d.ports || []).map(p =>
+            `<option value="${escapeHtml(p.port)}"${p.usable ? '' : ' disabled'}>${escapeHtml(p.port)}${p.note ? ' — ' + escapeHtml(p.note) : ''}</option>`).join('');
+        if (keep && ![...portSel.options].some(o => o.value === keep)) {
+            portSel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(keep)}">${escapeHtml(keep)} — not present</option>`);
+        }
+        portSel.value = keep;
+    }
+    // Only fill the form once (or after a save) so polling never clobbers typing.
+    if (!_wdmFormFilled || fillForm) {
+        _wdmFormFilled = true;
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+        set('wd-wdm-conn', d.conn || 'usb');
+        set('wd-wdm-host', d.host || '');
+        set('wd-wdm-interval', String(d.interval || 300));
+        const en = document.getElementById('wd-wdm-enabled'); if (en) en.checked = !!d.enabled;
+        const key = document.getElementById('wd-wdm-key');
+        if (key) key.placeholder = d.key_configured ? 'Node key saved — paste to replace' : 'Node API key (wdk_…)';
+        _wdmConnChanged();
+    }
+    const nodeEl = document.getElementById('wd-wdm-node');
+    if (nodeEl) {
+        const n = d.node, l = d.link || {}, tot = st.totals || {};
+        const parts = [];
+        if (l.connected) {
+            const via = l.host ? `WiFi ${l.host}` : `USB ${l.port || ''}`;
+            const name = n && (n.long_name || n.node_id) ? `${n.long_name || n.node_id}${n.hw_model ? ' (' + n.hw_model + ')' : ''}` : 'Meshtastic node';
+            parts.push(`<span class="text-emerald-400">●</span> ${escapeHtml(name)} via ${escapeHtml(via)}${l.owner && l.owner !== 'wardrift' ? ' · shared with RF Waterfall' : ''}`);
+            if (n) {
+                const bits = [];
+                if (n.battery_level != null) bits.push(`battery ${n.battery_level}%`);
+                if (n.channel_utilization != null) bits.push(`ch util ${Number(n.channel_utilization).toFixed(1)}%`);
+                if (n.num_online_nodes != null) bits.push(`${n.num_online_nodes} node${n.num_online_nodes === 1 ? '' : 's'} heard`);
+                if (bits.length) parts.push(escapeHtml(bits.join(' · ')));
+            }
+        }
+        if (d.enabled) {
+            parts.push(`Last report: ${_wdmAgo(st.last_report_at)}${st.last_ok === false ? ' (failed)' : ''}` +
+                (d.next_report_in != null ? ` · next in ${d.next_report_in}s` : '') +
+                (tot.reports ? ` · ${tot.reports} sent, +${tot.exp || 0} XP, +${tot.currency || 0} currency` : ''));
+        }
+        nodeEl.innerHTML = parts.join('<br>');
+    }
+    const msg = document.getElementById('wd-wdm-msg');
+    if (msg && !msg.dataset.sticky) {
+        msg.textContent = d.enabled && st.error ? st.error : '';
+        msg.className = 'text-xs mt-1 text-red-400';
+    }
+    // Keep the status live while the card is on screen.
+    clearTimeout(_wdmTimer);
+    if (document.getElementById('wd-wdm-badge')?.offsetParent) _wdmTimer = setTimeout(() => loadWardriftMesh(), 10000);
+}
+
+async function saveWardriftMesh(reportNow) {
+    const g = id => document.getElementById(id);
+    const body = {
+        conn: g('wd-wdm-conn')?.value || 'usb',
+        port: g('wd-wdm-port')?.value || '',
+        host: (g('wd-wdm-host')?.value || '').trim(),
+        interval: parseInt(g('wd-wdm-interval')?.value || '300', 10),
+        enabled: !!g('wd-wdm-enabled')?.checked,
+    };
+    const key = (g('wd-wdm-key')?.value || '').trim();
+    if (key) body.key = key;
+    if (reportNow) { body.report_now = true; body.enabled = true; }
+    const msg = g('wd-wdm-msg');
+    try {
+        const r = await fetch('/api/wardriving/wardrift/mesh', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+        if (g('wd-wdm-key')) g('wd-wdm-key').value = '';
+        if (msg) {
+            msg.textContent = reportNow ? 'Reporting now…' : 'Saved.';
+            msg.className = 'text-xs mt-1 text-emerald-400';
+            msg.dataset.sticky = '1';
+            setTimeout(() => { delete msg.dataset.sticky; }, 4000);
+        }
+        loadWardriftMesh(true);
+    } catch (e) {
+        if (msg) { msg.textContent = 'Save failed: ' + e.message; msg.className = 'text-xs mt-1 text-red-400'; }
+    }
+}
+
+// ---- Wardrift (wardrift.net): session sign-in -> route uploads + stats; API key -> signal ingest
+function _renderWardriftConfig(d) {
+    const badge = document.getElementById('wd-wardrift-status');
+    if (badge) {
+        let txt = 'Not set', cls = 'bg-gray-700 text-gray-400';
+        if (d.wardrift_signed_in) { txt = '✓ ' + (d.wardrift_username || 'signed in'); cls = 'bg-emerald-900/60 text-emerald-300'; }
+        else if (d.wardrift_key_configured) { txt = 'API key ready'; cls = 'bg-amber-900/60 text-amber-300'; }
+        badge.textContent = txt;
+        badge.className = 'text-xs px-2 py-0.5 rounded-full ' + cls;
+    }
+    document.getElementById('wd-wardrift-signin')?.classList.toggle('hidden', !!d.wardrift_signed_in);
+    document.getElementById('wd-wardrift-signin-btn')?.classList.toggle('hidden', !!d.wardrift_signed_in);
+    document.getElementById('wd-wardrift-signout-btn')?.classList.toggle('hidden', !d.wardrift_signed_in);
+    const pub = document.getElementById('wd-wardrift-public');
+    if (pub) pub.checked = !!d.wardrift_public_route;
+    const stats = document.getElementById('wd-wardrift-stats');
+    if (!d.wardrift_signed_in) { stats?.classList.add('hidden'); return; }
+    loadWardriftStats();
+}
+
+function _wardriftMsg(msg, ok) {
+    const out = document.getElementById('wd-wardrift-result');
+    if (!out) return;
+    out.textContent = msg;
+    out.className = 'text-xs mt-2 ' + (ok ? 'text-emerald-400' : 'text-red-400');
+}
+
+async function loadWardriftStats() {
+    const box = document.getElementById('wd-wardrift-stats');
+    if (!box) return;
+    try {
+        const r = await fetch('/api/wardriving/wardrift/dashboard');
+        const d = await r.json();
+        if (!r.ok) {
+            box.classList.add('hidden');
+            if (d.expired) _wardriftMsg('Wardrift session expired — sign in again.', false);
+            return;
+        }
+        const ch = (d.characters || [])[0] || {};
+        const life = (d.wardrive && d.wardrive.lifetime) || {};
+        const tile = (label, val) => `<div class="bg-slate-700/50 rounded px-2 py-1.5 min-w-0"><div class="text-gray-500 text-xs truncate">${escapeHtml(label)}</div><div class="text-white text-sm font-semibold truncate">${escapeHtml(String(val))}</div></div>`;
+        box.innerHTML = [
+            tile(ch.name ? `${ch.name} · Lv` : 'Level', ch.level ?? '—'),
+            tile('EXP to next', ch.exp_to_next_level ?? '—'),
+            tile('Currency', ch.currency ?? '—'),
+            tile('Routes · APs', `${life.routes_logged ?? 0} · ${life.access_points_discovered ?? 0}`),
+        ].join('');
+        box.classList.remove('hidden');
+    } catch (e) { box.classList.add('hidden'); }
+}
+
+async function wardriftSignIn() {
+    const u = document.getElementById('wd-wardrift-user')?.value.trim();
+    const pw = document.getElementById('wd-wardrift-pass');
+    if (!u || !pw?.value) { _wardriftMsg('Enter username and password.', false); return; }
+    try {
+        const r = await fetch('/api/wardriving/wardrift/signin', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: u, password: pw.value })
+        });
+        const d = await r.json().catch(() => ({}));
+        pw.value = '';
+        if (!r.ok || !d.success) { _wardriftMsg('Sign-in failed: ' + (d.error || ('HTTP ' + r.status)), false); return; }
+        _wardriftMsg('Signed in to Wardrift.', true);
+        loadWardriveUploadConfig();
+    } catch (e) { _wardriftMsg('Sign-in error: ' + e.message, false); }
+}
+
+async function wardriftSignOut() {
+    try {
+        await fetch('/api/wardriving/wardrift/signout', { method: 'POST' });
+        _wardriftMsg('Signed out.', true);
+        loadWardriveUploadConfig();
+    } catch (e) { _wardriftMsg('Sign-out error: ' + e.message, false); }
+}
+
+async function saveWardriftKey() {
+    const el = document.getElementById('wd-wardrift-key');
+    const key = el?.value.trim();
+    if (!key) { _wardriftMsg('Paste your Wardrift API key first.', false); return; }
+    try {
+        await _postUploadConfig({ wardrift_api_key: key });
+        el.value = '';
+        _wardriftMsg('Wardrift API key saved.', true);
+        loadWardriveUploadConfig();
+    } catch (e) { _wardriftMsg('Save failed: ' + e.message, false); }
+}
+
+async function saveWardriftPublic() {
+    const on = !!document.getElementById('wd-wardrift-public')?.checked;
+    try { await _postUploadConfig({ wardrift_public_route: on }); }
+    catch (e) { _wardriftMsg('Save failed: ' + e.message, false); }
 }
 
 function _wdUploadCfgMsg(msg, ok) {
@@ -31464,18 +31696,69 @@ async function saveWigleUploadCreds() {
     } catch (e) { if (ws) { ws.textContent = 'Save failed'; ws.className = 'text-xs text-red-400'; } }
 }
 
+// ---- Auto-upload card: one switch + a checkbox per service + recent outcomes
+const _AU_TARGETS = ['wigle', 'wdgwars', 'wardrift'];
+let _auTimer = null;
+
+function _renderAutoUpload(d) {
+    const cb = document.getElementById('wd-auto-upload');
+    if (cb) cb.checked = !!d.auto_upload;
+    const picked = d.auto_upload_targets || [];
+    const ready = {
+        wigle: d.wigle_configured,
+        wdgwars: d.wdgwars_configured,
+        wardrift: d.wardrift_signed_in || d.wardrift_key_configured,
+    };
+    _AU_TARGETS.forEach(t => {
+        const box = document.getElementById('wd-au-' + t);
+        if (box) box.checked = picked.includes(t);
+        const note = document.getElementById(`wd-au-${t}-note`);
+        if (note) note.textContent = ready[t] ? '' : '(not set up)';
+    });
+    const st = document.getElementById('wd-auto-upload-status');
+    if (st) {
+        const missing = picked.filter(t => !ready[t]).map(t => ({ wigle: 'WiGLE', wdgwars: 'WDGWars', wardrift: 'Wardrift' })[t]);
+        st.textContent = (d.auto_upload ? 'On' : 'Off') + (d.pending ? ` · ${d.pending} drive${d.pending === 1 ? '' : 's'} queued` : '') +
+            (d.auto_upload && missing.length ? ` · set up ${missing.join(', ')} below first` : '');
+        st.className = 'text-xs mt-2 ' + (d.auto_upload && missing.length ? 'text-amber-400' : 'text-gray-500');
+    }
+    const recent = d.recent || [];
+    const wrap = document.getElementById('wd-au-recent');
+    const list = document.getElementById('wd-au-recent-list');
+    if (wrap && list) {
+        wrap.classList.toggle('hidden', !recent.length);
+        const icon = { ok: ['✓', 'text-emerald-400'], failed: ['✕', 'text-red-400'], processing: ['…', 'text-amber-300'],
+                       skipped: ['–', 'text-gray-500'], unknown: ['?', 'text-gray-400'] };
+        list.innerHTML = recent.map(r => `<div class="min-w-0"><span class="font-mono text-gray-300">${escapeHtml(r.session_id)}</span> ` +
+            r.results.map(x => {
+                const [ic, cls] = icon[x.state] || ['·', 'text-gray-400'];
+                return `<span class="${cls} break-words">${ic} ${escapeHtml(x.name)}${x.message ? ': ' + escapeHtml(x.message) : ''}</span>`;
+            }).join('<span class="text-gray-600"> · </span>') + '</div>').join('');
+    }
+    // While Wardrift is still judging an upload, keep the list fresh.
+    clearTimeout(_auTimer);
+    const busy = recent.some(r => r.results.some(x => x.state === 'processing')) || d.pending;
+    if (busy && document.getElementById('wd-au-recent')?.offsetParent) _auTimer = setTimeout(loadWardriveUploadConfig, 15000);
+}
+
 async function saveAutoUpload() {
     const on = !!document.getElementById('wd-auto-upload')?.checked;
-    const tgt = document.getElementById('wd-auto-upload-target')?.value || 'wdgwars';
-    const aus = document.getElementById('wd-auto-upload-status');
+    const targets = _AU_TARGETS.filter(t => document.getElementById('wd-au-' + t)?.checked);
+    const st = document.getElementById('wd-auto-upload-status');
+    if (on && !targets.length) {
+        if (st) { st.textContent = 'Tick at least one service'; st.className = 'text-xs mt-2 text-red-400'; }
+        return;
+    }
     try {
-        await _postUploadConfig({ auto_upload: on, auto_upload_target: tgt });
+        const body = { auto_upload: on };
+        if (targets.length) body.auto_upload_targets = targets;
+        await _postUploadConfig(body);
         loadWardriveUploadConfig();
-    } catch (e) { if (aus) { aus.textContent = 'save failed'; aus.className = 'text-red-400'; } }
+    } catch (e) { if (st) { st.textContent = 'Save failed: ' + e.message; st.className = 'text-xs mt-2 text-red-400'; } }
 }
 
 async function uploadWardriveSession(sessionId, target) {
-    const name = target === 'wdgwars' ? 'WDGWars' : 'WiGLE';
+    const name = { wdgwars: 'WDGWars', wigle: 'WiGLE', wardrift: 'Wardrift' }[target] || target;
     if (!confirm(`Upload session "${sessionId}" to ${name}?`)) return;
     try {
         const r = await fetch('/api/wardriving/upload/' + encodeURIComponent(sessionId), {
@@ -31484,8 +31767,18 @@ async function uploadWardriveSession(sessionId, target) {
         const d = await r.json();
         if (r.ok && d.success) {
             const res = (d.results && d.results[target]) || {};
-            const tid = res.response && (res.response.transid || res.response.id);
-            alert(`✓ Sent ${d.located} located networks to ${name}.` + (tid ? `\nTransID: ${tid}` : '\nQueued for processing.'));
+            const resp = res.response || {};
+            let extra;
+            if (target === 'wardrift') {
+                extra = res.duplicate ? '\nAlready uploaded — no double awards.'
+                    : (res.mode === 'route' ? '\nWardrift is processing it — the result appears under Auto-upload → Recent uploads.'
+                       : `\n+${resp.awarded_exp || 0} EXP, +${resp.awarded_currency || 0} currency (${resp.batches} batches)`);
+            } else {
+                const tid = resp.transid || resp.id;
+                extra = tid ? `\nTransID: ${tid}` : '\nQueued for processing.';
+            }
+            alert(`✓ Sent ${d.located} located networks to ${name}.` + extra);
+            loadWardriveUploadConfig();
         } else if (r.status === 422) {
             alert('No GPS-located networks in this session yet — do a drive with a fix first (or the export has no coordinates).');
         } else {

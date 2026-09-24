@@ -111,6 +111,103 @@ def _freq_to_channel(freq_mhz):
     return 0
 
 
+# Callables run with the session id whenever any engine stops a session
+# (the webapp registers auto-upload here).
+SESSION_FINISHED_HOOKS = []
+
+# A row whose position is within this many metres of the GPS track (inside the
+# row's own first..last-seen window, plus slack) is re-timed to that moment.
+_ALIGN_MAX_M = 300
+_ALIGN_SLACK_S = 15
+
+
+def _ts_to_epoch(s):
+    """Session timestamp -> epoch seconds or None.
+
+    Live rows are UTC ISO-8601 ('2026-09-23T16:37:44.420181+00:00'); imported
+    CSVs carry WiGLE's naive 'YYYY-MM-DD HH:MM:SS' (read as UTC, per WiGLE)."""
+    from datetime import datetime, timezone
+    v = str(s or '').strip()
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(v.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _wigle_time(epoch):
+    """epoch -> WiGLE CSV FirstSeen ('YYYY-MM-DD HH:MM:SS', UTC)."""
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch))
+
+
+def _csv_field(v):
+    """RFC 4180 quoting: WiGLE / WDGWars / Wardrift parse standard CSV, so a
+    comma inside an SSID must be quoted - '\\,' made them split the row there."""
+    v = '' if v is None else str(v)
+    if any(c in v for c in ',"\r\n'):
+        return '"' + v.replace('"', '""') + '"'
+    return v
+
+
+def _align_rows_to_track(recs, track):
+    """Pure: keep GPS-pinned rows, re-time them to the track, sort by time.
+
+    `recs` are export dicts with first/last ('YYYY-MM-DD HH:MM:SS') and
+    lat/lon; `track` is [(epoch, lat, lon)] sorted by epoch. A row's position
+    is where its signal peaked, but its FirstSeen is when it was first heard,
+    so the two can be minutes and kilometres apart; route-building services
+    then see the trail jump back and forth. Each row gets the track moment,
+    inside its own seen window, that is closest to its position. Rows without
+    a usable position are dropped, and - when the session has a track - so are
+    rows the track can't confirm (seen while the GPS had no fix): Wardrift
+    rejects a drive whose trail it "couldn't piece together". With no track at
+    all (e.g. an imported CSV), located rows keep their FirstSeen.
+    FirstSeen is written in WiGLE's 'YYYY-MM-DD HH:MM:SS' (UTC) form."""
+    import bisect
+    import math
+    out = []
+    ts = [t[0] for t in track]
+    for r in recs:
+        try:
+            lat, lon = float(r['lat']), float(r['lon'])
+        except (TypeError, ValueError):
+            continue
+        if (lat == 0 and lon == 0) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        r = dict(r, lat=lat, lon=lon)
+        t0, t1 = _ts_to_epoch(r.get('first')), _ts_to_epoch(r.get('last'))
+        when = t0
+        if track and t0 is not None:
+            t1 = t1 if (t1 is not None and t1 >= t0) else t0
+            lo = bisect.bisect_left(ts, t0 - _ALIGN_SLACK_S)
+            hi = bisect.bisect_right(ts, t1 + _ALIGN_SLACK_S)
+            kx = math.cos(math.radians(lat)) * 111320.0
+            best = None
+            # Bound the scan on very long sightings (a network heard for hours).
+            step = max(1, (hi - lo) // 4000)
+            for i in range(lo, hi, step):
+                _, tlat, tlon = track[i]
+                d2 = ((tlat - lat) * 110540.0) ** 2 + ((tlon - lon) * kx) ** 2
+                if best is None or d2 < best[0]:
+                    best = (d2, track[i][0])
+            if best is not None and best[0] <= _ALIGN_MAX_M ** 2:
+                when = best[1]
+            else:
+                continue                    # not pinned to a GPS fix
+        if when is not None:
+            r['first'] = _wigle_time(when)
+        r['_t'] = when if when is not None else float('inf')
+        out.append(r)
+    out.sort(key=lambda x: x['_t'])
+    for r in out:
+        r.pop('_t', None)
+    return out
+
+
 class _CompanionState:
     """All mutable state for one USB-serial companion (Huginn / Piglet / Piglet Core / Piglet Coordinator)."""
 
@@ -1149,118 +1246,92 @@ class WardrivingSession:
     def export_wigle_csv(self, device_name='Ragnar', include_zigbee=False):
         """Export session to WiGLE CSV format string including WiFi, BT, and cell.
 
-        Rows whose position was estimated via backfill_gps_from_track
-        (gps_backfilled = 1) are excluded — they are interpolated coordinates,
-        not real observations, and must not be submitted to WiGLE.
+        Only GPS-pinned rows are written (measured with a fix; never an
+        estimated position), as ONE time-ordered list
+        across WiFi / BT / cell (not table after table), and each row's
+        FirstSeen is re-timed to when we were actually at its position (see
+        _align_rows_to_track). Services that rebuild the drive route from the
+        CSV (Wardrift) otherwise see the trail teleport: a row's position is
+        where its signal peaked, often minutes after it was first seen.
 
         Zigbee / 802.15.4 devices are excluded by default: WiGLE has no
         standard 802.15.4 record type, so those rows are only useful for the
         user's own tooling. Set `include_zigbee=True` (opt-in from the config
         tab) to append them with a `ZIGBEE` type token."""
         lines = []
+        bf = "WHERE COALESCE(gps_backfilled, 0) = 0 "
         dn = device_name or 'Ragnar'
         lines.append(f'WigleWifi-1.4,appRelease=Ragnar,model=RaspberryPi,release=1.0,device={dn},display=EPD,board=RPi,brand=Ragnar')
         lines.append(','.join(WIGLE_HEADER))
 
+        # Each entry: dict(mac, name, auth, first, last, channel, rssi, lat, lon, alt, acc, type)
+        recs = []
+        track = []
         with self._lock:
             try:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
-                    # WiFi networks (skip backfilled positions)
-                    rows = conn.execute(
-                        "SELECT * FROM networks WHERE COALESCE(gps_backfilled, 0) = 0 "
-                        "ORDER BY first_seen"
-                    ).fetchall()
-                    for row in rows:
+                    for row in conn.execute(f"SELECT * FROM networks {bf}"):
                         r = dict(row)
-                        lines.append(','.join([
-                            r.get('bssid', ''),
-                            r.get('ssid', '').replace(',', '\\,'),
-                            _map_security(r.get('security', '')),
-                            r.get('first_seen', ''),
-                            str(r.get('channel', 0)),
-                            str(r.get('best_rssi', -100)),
-                            str(r.get('best_lat', '') or ''),
-                            str(r.get('best_lon', '') or ''),
-                            str(r.get('altitude', '') or ''),
-                            str(r.get('hdop', '') or ''),
-                            'WIFI'
-                        ]))
-                    # Bluetooth devices
+                        recs.append(dict(
+                            mac=r.get('bssid', ''), name=r.get('ssid', '') or '',
+                            auth=_map_security(r.get('security', '')),
+                            first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                            channel=str(r.get('channel', 0)), rssi=str(r.get('best_rssi', -100)),
+                            lat=r.get('best_lat'), lon=r.get('best_lon'),
+                            alt=r.get('altitude'), acc=r.get('hdop'), type='WIFI'))
                     try:
-                        bt_rows = conn.execute(
-                            "SELECT * FROM bluetooth_devices WHERE COALESCE(gps_backfilled, 0) = 0 "
-                            "ORDER BY first_seen"
-                        ).fetchall()
-                        for row in bt_rows:
+                        for row in conn.execute(f"SELECT * FROM bluetooth_devices {bf}"):
                             r = dict(row)
-                            lines.append(','.join([
-                                r.get('mac', ''),
-                                r.get('name', '').replace(',', '\\,'),
-                                '[BT]',
-                                r.get('first_seen', ''),
-                                '0',
-                                str(r.get('rssi', -100)),
-                                str(r.get('latitude', '') or ''),
-                                str(r.get('longitude', '') or ''),
-                                str(r.get('altitude', '') or ''),
-                                '',
-                                'BT'
-                            ]))
+                            recs.append(dict(
+                                mac=r.get('mac', ''), name=r.get('name', '') or '', auth='[BT]',
+                                first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                                channel='0', rssi=str(r.get('rssi', -100)),
+                                lat=r.get('latitude'), lon=r.get('longitude'),
+                                alt=r.get('altitude'), acc=None, type='BT'))
                     except Exception:
                         pass
-                    # Cell towers
                     try:
-                        cell_rows = conn.execute(
-                            "SELECT * FROM cell_towers WHERE COALESCE(gps_backfilled, 0) = 0 "
-                            "ORDER BY first_seen"
-                        ).fetchall()
-                        for row in cell_rows:
+                        for row in conn.execute(f"SELECT * FROM cell_towers {bf}"):
                             r = dict(row)
-                            lines.append(','.join([
-                                r.get('cell_id', ''),
-                                f"{r.get('provider', '')} {r.get('tech', '')}".strip().replace(',', '\\,'),
-                                f"[{r.get('tech', 'GSM')}]",
-                                r.get('first_seen', ''),
-                                str(r.get('band_freq', '')),
-                                str(r.get('signal_dbm', -120)),
-                                str(r.get('latitude', '') or ''),
-                                str(r.get('longitude', '') or ''),
-                                '',
-                                '',
-                                'GSM'
-                            ]))
+                            recs.append(dict(
+                                mac=r.get('cell_id', ''),
+                                name=f"{r.get('provider', '')} {r.get('tech', '')}".strip(),
+                                auth=f"[{r.get('tech', 'GSM')}]",
+                                first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                                channel=str(r.get('band_freq', '')), rssi=str(r.get('signal_dbm', -120)),
+                                lat=r.get('latitude'), lon=r.get('longitude'),
+                                alt=None, acc=None, type='GSM'))
                     except Exception:
                         pass
                     # Zigbee / 802.15.4 devices — opt-in only (see docstring).
                     if include_zigbee:
                         try:
-                            zb_rows = conn.execute(
-                                "SELECT * FROM zigbee_devices WHERE COALESCE(gps_backfilled, 0) = 0 "
-                                "ORDER BY first_seen"
-                            ).fetchall()
-                            for row in zb_rows:
+                            for row in conn.execute(f"SELECT * FROM zigbee_devices {bf}"):
                                 r = dict(row)
                                 zlat = r.get('best_lat') if r.get('best_lat') is not None else r.get('latitude')
                                 zlon = r.get('best_lon') if r.get('best_lon') is not None else r.get('longitude')
-                                lines.append(','.join([
-                                    r.get('addr', ''),
-                                    (r.get('panid', '') or '').replace(',', '\\,'),
-                                    '[ZIGBEE]',
-                                    r.get('first_seen', ''),
-                                    str(r.get('channel', 0)),
-                                    str(r.get('best_rssi', -100)),
-                                    str(zlat if zlat is not None else ''),
-                                    str(zlon if zlon is not None else ''),
-                                    str(r.get('altitude', '') or ''),
-                                    '',
-                                    'ZIGBEE'
-                                ]))
+                                recs.append(dict(
+                                    mac=r.get('addr', ''), name=r.get('panid', '') or '', auth='[ZIGBEE]',
+                                    first=r.get('first_seen', ''), last=r.get('last_seen', ''),
+                                    channel=str(r.get('channel', 0)), rssi=str(r.get('best_rssi', -100)),
+                                    lat=zlat, lon=zlon, alt=r.get('altitude'), acc=None, type='ZIGBEE'))
                         except Exception:
                             pass
+                    try:
+                        track = conn.execute(
+                            "SELECT timestamp, latitude, longitude FROM gps_track ORDER BY timestamp"
+                        ).fetchall()
+                    except Exception:
+                        track = []
             except Exception as e:
                 logger.error(f"WiGLE export error: {e}")
 
+        recs = _align_rows_to_track(recs, [tuple(t) for t in track])
+        for r in recs:
+            lines.append(','.join(_csv_field(v) for v in (
+                r['mac'], r['name'], r['auth'], r['first'], r['channel'], r['rssi'],
+                r['lat'], r['lon'], r['alt'] or '', r['acc'] or '', r['type'])))
         return '\n'.join(lines)
 
     def export_kml(self):
@@ -1930,6 +2001,14 @@ class WardrivingEngine:
         # Multi-companion support: one _CompanionState per USB-serial port.
         # Keyed by port path (e.g. '/dev/ttyACM0').
         self._companions: dict[str, _CompanionState] = {}
+        # Publish the serial ports this engine holds so the CYD bridge and the
+        # Meshtastic link never open them (see serial_claims.py).
+        try:
+            import serial_claims
+            serial_claims.register('wardrive-companions', lambda: list(self._companions.keys()))
+            serial_claims.register('wardrive-gps', self._held_gps_ports)
+        except Exception:
+            pass
         self._esp_stations = []
 
     # ------------------------------------------------------------------
@@ -2006,6 +2085,27 @@ class WardrivingEngine:
         for c in self._companions.values():
             alerts.extend(c.esp_alerts)
         return sorted(alerts, key=lambda a: a.get('time', 0))
+
+    def _held_gps_ports(self):
+        """GPS ports this engine (or the gpsd it pins) holds - for serial_claims."""
+        ports = []
+        gps = getattr(self, '_gps', None)
+        port = getattr(gps, 'port', None) if gps is not None else None
+        if port and port != 'gpsd':
+            ports.append(port)
+        pinned = self._gpsd_configured_realpath()
+        if pinned and os.path.exists(pinned):
+            ports.append(pinned)
+        return ports
+
+    @staticmethod
+    def _foreign_ports():
+        """realpaths held by other components (CYD bridge, Meshtastic link, ...)."""
+        try:
+            import serial_claims
+            return serial_claims.claimed(exclude_owner='wardrive-*')
+        except Exception:
+            return set()
 
     def _gpsd_configured_realpath(self):
         """realpath of the device gpsd is currently pinned to, or None.
@@ -2131,6 +2231,7 @@ class WardrivingEngine:
         import glob as _glob
         _raw_candidates = sorted(_glob.glob('/dev/ttyACM*') + _glob.glob('/dev/ttyUSB*'))
         esp_exclude = {p for p in _raw_candidates if self._port_is_espressif(p)}
+        esp_exclude |= self._foreign_ports()
 
         # If gpsd is installed, make sure it's running and pinned to the current
         # USB GPS (any puck, hot-swap aware). gps_manager auto-detection then
@@ -2416,6 +2517,15 @@ class WardrivingEngine:
 
         stats = self.session.get_stats() if self.session else {}
         logger.info(f"Wardriving stopped. Networks: {stats.get('total_networks', 0)}")
+        # Every stop path (web UI, CYD, display keys, diagnostic mode) and every
+        # engine instance (webapp or the boot-time one in Ragnar.py) lands here,
+        # so this is where a finished drive is handed to auto-upload.
+        if self.session:
+            for cb in list(SESSION_FINISHED_HOOKS):
+                try:
+                    cb(self.session.session_id)
+                except Exception as e:
+                    logger.error(f"session-finished hook failed: {e}")
         return {'success': True, 'stats': stats}
 
     def _start_companion_thread(self, port: str) -> '_CompanionState | None':
@@ -2769,23 +2879,17 @@ class WardrivingEngine:
         while self._running:
             try:
                 present = self._enumerate_serial_devices()
-                # Never touch the CYD's own serial-bridge port. The CYD is an
-                # ESP32 on a CH340/CP2102 bridge, so it classifies as a
-                # 'companion' and this monitor would open /dev/ttyUSB0 in
-                # parallel with the CYD serial bridge — the two readers then
-                # split the CYD's byte stream, so status frames (wardrive
-                # running/stopped etc.) reach the screen garbled or not at all.
-                # Drop it here: if it was already attached, it drops out of
-                # `present` and the removal path below stops that listener,
-                # handing the port back to the bridge.
-                cyd_port = getattr(self.shared_data, 'cyd_serial_active_port', None)
-                if cyd_port:
-                    try:
-                        cyd_real = os.path.realpath(cyd_port)
-                        present = {k: v for k, v in present.items()
-                                   if os.path.realpath(v) != cyd_real}
-                    except Exception:
-                        pass
+                # Never touch a port another component holds. The CYD is an
+                # ESP32 on a CH340/CP2102 bridge and a Meshtastic Heltec is an
+                # ESP32-S3, so both classify as a 'companion' and this monitor
+                # would open them in parallel with their owner — the two readers
+                # then split the byte stream. Drop them here: if one was already
+                # attached, it drops out of `present` and the removal path below
+                # stops that listener, handing the port back to its owner.
+                foreign = self._foreign_ports()
+                if foreign:
+                    present = {k: v for k, v in present.items()
+                               if os.path.realpath(v) not in foreign}
                 managed = self._managed_devices
 
                 # Removals: a managed device id is no longer present.
@@ -2941,11 +3045,9 @@ class WardrivingEngine:
                     try:
                         from gps_manager import detect_gps_device
                         exclude = set(self._companions.keys())
-                        # Also skip the CYD's serial port (published by its bridge)
-                        # so the NMEA probe doesn't steal the console's bytes.
-                        cyd_port = getattr(self.shared_data, 'cyd_serial_active_port', None)
-                        if cyd_port:
-                            exclude.add(cyd_port)
+                        # Also skip ports other components hold (CYD bridge,
+                        # Meshtastic link) so the NMEA probe doesn't steal bytes.
+                        exclude |= self._foreign_ports()
                         det = detect_gps_device(exclude_ports=exclude or None)
                     except Exception:
                         det = None

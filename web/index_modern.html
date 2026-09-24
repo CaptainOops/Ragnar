@@ -7060,7 +7060,7 @@
                         <span id="wd-map-signal-val" class="text-xs text-gray-300">-100 dBm</span>
                         <div class="ml-auto flex items-center gap-2">
                             <!-- Hidden unless GPS backfill is enabled in Config → Wardriving -->
-                            <button onclick="backfillWardrivingGps()" id="wd-map-backfill-btn" title="Estimate positions for networks scanned during GPS dropouts by interpolating from the recorded GPS track. These are estimates, not measurements — backfilled rows are excluded from WiGLE export."
+                            <button onclick="backfillWardrivingGps()" id="wd-map-backfill-btn" title="Estimate positions for networks scanned during GPS dropouts by interpolating from the recorded GPS track."
                                 class="hidden bg-emerald-700 hover:bg-emerald-600 text-white text-xs rounded px-2 py-1 border border-emerald-800 flex items-center gap-1">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -7614,10 +7614,6 @@
                                 Reveals the “Backfill GPS” button on the wardriving map, which estimates positions for
                                 devices seen during GPS dropouts by interpolating from the recorded track.
                             </div>
-                            <div class="flex items-start gap-2 text-xs text-amber-400 bg-amber-900/20 rounded px-2 py-2">
-                                <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
-                                <span>Backfilled positions are <strong>estimated, not measured</strong>. This app excludes them from WiGLE export to avoid submitting interpolated coordinates as real observations.</span>
-                            </div>
                         </div>
 
                         <!-- Import WiGLE CSV Card -->
@@ -7649,6 +7645,30 @@
                             </div>
                         </div>
 
+                        <!-- Auto-upload Card -->
+                        <div class="glass rounded-lg p-4">
+                            <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                                <h4 class="font-medium">Auto-upload</h4>
+                                <label class="toggle-switch relative inline-flex items-center cursor-pointer" title="Upload every finished wardrive automatically">
+                                    <input type="checkbox" id="wd-auto-upload" class="sr-only peer" onchange="saveAutoUpload()">
+                                    <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                                </label>
+                            </div>
+                            <div class="text-sm text-gray-400 mb-3">
+                                Upload every finished wardrive, however it was stopped (web, CYD, display keys) and even after a power cut. Offline? It queues and uploads once the box is online again.
+                            </div>
+                            <div class="flex flex-wrap gap-x-3 gap-y-1 text-sm">
+                                <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="wd-au-wigle" class="accent-amber-500" onchange="saveAutoUpload()"><span>WiGLE</span><span id="wd-au-wigle-note" class="text-xs text-gray-500"></span></label>
+                                <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="wd-au-wdgwars" class="accent-amber-500" onchange="saveAutoUpload()"><span>WDGWars</span><span id="wd-au-wdgwars-note" class="text-xs text-gray-500"></span></label>
+                                <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="wd-au-wardrift" class="accent-amber-500" onchange="saveAutoUpload()"><span>Wardrift</span><span id="wd-au-wardrift-note" class="text-xs text-gray-500"></span></label>
+                            </div>
+                            <div id="wd-auto-upload-status" class="text-xs text-gray-500 mt-2"></div>
+                            <div id="wd-au-recent" class="mt-3 hidden">
+                                <div class="text-xs text-gray-400 mb-1">Recent uploads</div>
+                                <div id="wd-au-recent-list" class="space-y-1 text-xs"></div>
+                            </div>
+                        </div>
+
                         <!-- Upload to WDGWars Card -->
                         <div class="glass rounded-lg p-4">
                             <div class="flex items-center justify-between mb-3">
@@ -7668,18 +7688,83 @@
                                 <button onclick="saveWdgUploadKey()" class="bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Save key</button>
                             </div>
                             <div class="text-xs text-gray-500 mt-2">Then use the <span class="text-fuchsia-400">↑ WDGWars</span> button on each session below.</div>
-                            <label class="flex items-center gap-2 text-xs text-gray-400 mt-3 flex-wrap cursor-pointer">
-                                <input type="checkbox" id="wd-auto-upload" onchange="saveAutoUpload()" class="accent-fuchsia-500">
-                                <span>Auto-upload finished wardrives</span>
-                                <select id="wd-auto-upload-target" onchange="saveAutoUpload()" class="bg-slate-700 text-white text-xs rounded px-1.5 py-0.5 border border-slate-600">
-                                    <option value="wdgwars">to WDGWars</option>
-                                    <option value="wigle">to WiGLE</option>
-                                    <option value="both">to both</option>
-                                </select>
-                                <span id="wd-auto-upload-status" class="text-gray-500"></span>
-                            </label>
-                            <div class="text-xs text-gray-500 mt-1">Offline? It queues and uploads automatically once Wi-Fi is back.</div>
                             <div id="wd-upload-cfg-result" class="text-xs mt-2 hidden"></div>
+                        </div>
+
+                        <!-- Upload to Wardrift Card -->
+                        <div class="glass rounded-lg p-4">
+                            <div class="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                                <h4 class="font-medium flex items-center gap-2">
+                                    <a href="https://wardrift.net" target="_blank" rel="noopener noreferrer" title="Wardrift — wardrift.net">
+                                        <img src="/web/images/wardrift.svg" alt="Wardrift" class="h-9 w-9 rounded-md object-cover ring-1 ring-white/10 align-middle" onerror="this.style.display='none'">
+                                    </a>
+                                    Upload to Wardrift
+                                </h4>
+                                <span id="wd-wardrift-status" class="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400">Not set</span>
+                            </div>
+                            <div class="text-sm text-gray-400 mb-3">
+                                Push finished sessions to <a href="https://wardrift.net" target="_blank" rel="noopener" class="text-amber-400">Wardrift</a> for EXP, currency and faction hex influence. Sign in to upload sessions as archived routes and see your stats, or paste a character-bound API key. Credentials stay on this device; the password is never stored.
+                            </div>
+                            <div id="wd-wardrift-signin" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                                <input type="text" id="wd-wardrift-user" placeholder="Wardrift username" autocomplete="username" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                <input type="password" id="wd-wardrift-pass" placeholder="Password" autocomplete="current-password" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                            </div>
+                            <div class="flex gap-2 items-center flex-wrap mb-3">
+                                <button id="wd-wardrift-signin-btn" onclick="wardriftSignIn()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Sign in</button>
+                                <button id="wd-wardrift-signout-btn" onclick="wardriftSignOut()" class="hidden bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Sign out</button>
+                                <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                                    <input type="checkbox" id="wd-wardrift-public" onchange="saveWardriftPublic()" class="accent-amber-500">
+                                    <span>Public routes</span>
+                                </label>
+                            </div>
+                            <div id="wd-wardrift-stats" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3"></div>
+                            <div class="flex gap-2 items-center flex-wrap">
+                                <input type="password" id="wd-wardrift-key" placeholder="API key (wdk_…) — optional" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 flex-1 min-w-0">
+                                <button onclick="saveWardriftKey()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Save key</button>
+                            </div>
+                            <div class="text-xs text-gray-500 mt-2">Then use the <span class="text-amber-400">↑ Wardrift</span> button on each session below, or pick Wardrift in auto-upload above.</div>
+                            <div id="wd-wardrift-result" class="text-xs mt-2 hidden"></div>
+
+                            <!-- Wardrift mesh node: Ragnar is the uplink for a Meshtastic node -->
+                            <div class="border-t border-slate-700 mt-4 pt-3">
+                                <div class="flex items-center justify-between gap-2 flex-wrap mb-2">
+                                    <h5 class="text-sm font-medium">Mesh node (Meshtastic)</h5>
+                                    <span id="wd-wdm-badge" class="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400">Coming soon</span>
+                                </div>
+                                <div id="wd-wdm-body" class="opacity-50 pointer-events-none select-none" aria-disabled="true">
+                                <div class="text-xs text-gray-400 mb-3">
+                                    Meshtastic firmware can't reach Wardrift by itself, so Ragnar reads your node and reports its health (uptime, battery, airtime, packets relayed) for Mesh XP and influence. Plug it into the Pi over USB, or turn on the node's WiFi and enter its address. Needs a <span class="text-amber-400">node</span> key; character keys are rejected.
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                                    <select id="wd-wdm-conn" onchange="_wdmConnChanged()" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                        <option value="usb">USB cable (serial)</option>
+                                        <option value="wifi">WiFi (node's IP address)</option>
+                                    </select>
+                                    <select id="wd-wdm-port" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                        <option value="">Auto-detect port</option>
+                                    </select>
+                                    <input type="text" id="wd-wdm-host" placeholder="Node IP, e.g. 192.168.1.50 (port 4403)" class="hidden bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                    <input type="password" id="wd-wdm-key" placeholder="Node API key (wdk_…)" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                    <select id="wd-wdm-interval" class="bg-slate-700 text-white text-xs rounded px-2 py-1.5 border border-slate-600 min-w-0">
+                                        <option value="120">Report every 2 min</option>
+                                        <option value="300">Report every 5 min</option>
+                                        <option value="600">Report every 10 min</option>
+                                        <option value="900">Report every 15 min</option>
+                                        <option value="1800">Report every 30 min</option>
+                                    </select>
+                                </div>
+                                <div class="flex gap-2 items-center flex-wrap">
+                                    <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                                        <input type="checkbox" id="wd-wdm-enabled" class="accent-amber-500">
+                                        <span>Report this node</span>
+                                    </label>
+                                    <button onclick="saveWardriftMesh()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Save</button>
+                                    <button onclick="saveWardriftMesh(true)" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-xs transition-colors whitespace-nowrap">Report now</button>
+                                </div>
+                                <div id="wd-wdm-node" class="text-xs text-gray-400 mt-2"></div>
+                                <div id="wd-wdm-msg" class="text-xs mt-1"></div>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Serial ESP32 Listener Card -->
@@ -8689,7 +8774,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260921-upload-progress"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260924-sessions-mobile"></script>
 
 
 
