@@ -2432,7 +2432,7 @@ A **passive** SMTP monitor on **tcp/25, 587 and 465** — **detection-only**, it
 transmits; the parse path takes raw bytes and the capture is an ordinary tcpdump snapshot
 driven by the in-app adapter. Like [FTP Watch](#ftp-watch) it is a single-implementation
 detector under a protocol name: it is an **Exim** detector and claims **no** coverage of
-Postfix, Sendmail or any other MTA. IMAP and POP3 are out of scope. Two classes, 11 codes
+Postfix, Sendmail or any other MTA. IMAP and POP3 are out of scope. Two classes, 13 codes
 (`SMTP-nnn`):
 
 - **Class A — attack signatures** (`SMTP-001`…`SMTP-006`), ungated and near-zero
@@ -2447,6 +2447,10 @@ Postfix, Sendmail or any other MTA. IMAP and POP3 are out of scope. Two classes,
     `server_name`, or a TLS 1.2 client-certificate DN ending in a backslash
     (**CVE-2019-15846**, Exim 4.80–4.92.1, reported ransomware use). The DN rule is TLS 1.2
     only: in TLS 1.3 the client Certificate message is encrypted.
+  - **Overlong EHLO / HELO** (**CVE-2019-16928**, Exim 4.92–4.92.2) — the `string_vformat`
+    heap overflow. RFC 5321 §4.5.3.1.4 caps a command line at 512 octets including CRLF and a
+    compliant EHLO is far under it, so the rule keys on the **condition** (a non-conformant
+    line length) rather than on a proof-of-concept string.
   - **AUTH base64 of length 4n+3** (**CVE-2018-6789**, CISA KEV, Exim below 4.90.1) — the
     `b64decode` over-consume. Legitimate SMTP AUTH always sends padded base64 (a multiple of
     4), so 4n+0 and 4n+1 do not fire. Both payload positions are covered: inline after
@@ -2455,7 +2459,8 @@ Postfix, Sendmail or any other MTA. IMAP and POP3 are out of scope. Two classes,
   low confidence**: distro backports (Debian, Ubuntu, cPanel) keep old version strings in
   the banner after patching, so a Class B finding means "version in the vulnerable range",
   never "confirmed vulnerable". The ranges do not nest — CVE-2018-6789 (<4.90.1) sits inside
-  CVE-2019-15846 (≤4.92.1) and CVE-2019-10149 (4.87–4.91) overlaps both — so one banner such
+  CVE-2019-15846 (≤4.92.1) and CVE-2019-10149 (4.87–4.91) overlaps both, while
+  CVE-2019-16928 (4.92–4.92.2, `SMTP-015`) overlaps only the tail of CVE-2019-15846 — so one banner such
   as 4.89 legitimately raises `SMTP-011`, `SMTP-012` and `SMTP-013` at once. The comparator
   parses **every** version component: Exim ships three- and four-part versions (4.90.1,
   4.90.0.27) and a comparator that truncates to two reads 4.90.1 as 4.90 and false-positives
@@ -2465,7 +2470,7 @@ Postfix, Sendmail or any other MTA. IMAP and POP3 are out of scope. Two classes,
 form that admits IPv6 behind extension headers — which makes the module's **software port
 gate** the sole rejector of non-SMTP IPv6 traffic, a different code path from IPv4 where the
 kernel BPF drops it. Verdicts: `clean` < `posture` (banner range) < `attack-indicator`
-(expansion attempt, malformed SNI/DN, AUTH 4n+3) < `payload-queued` (the server accepted a
+(expansion attempt, overlong EHLO, malformed SNI/DN, AUTH 4n+3) < `payload-queued` (the server accepted a
 tainted recipient). Only **HIGH/CRITICAL** findings feed [Watchtower](watchtower.md); banner
 ranges stay out of the alert feed. **Documented blind spot:** AUTH offered only after
 STARTTLS is encrypted, so the `SMTP-006` rule covers cleartext AUTH only.

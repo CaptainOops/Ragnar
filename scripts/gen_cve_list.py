@@ -102,6 +102,7 @@ NAMES = {
     'CVE-2018-6789': 'Exim AUTH base64 overflow',
     'CVE-2019-10149': 'Exim ${...} expansion RCE',
     'CVE-2019-15846': 'Exim SNI/cert-DN RCE',
+    'CVE-2019-16928': 'Exim overlong EHLO overflow',
     'CVE-2015-3306': 'ProFTPD mod_copy pre-auth copy',
     'CVE-2019-12815': 'ProFTPD mod_copy Limit bypass',
     'CVE-2023-51713': 'ProFTPD make_ftp_cmd OOB read',
