@@ -1,0 +1,58 @@
+name: Sync with upstream (PierreGode/Ragnar)
+
+# Keeps this fork's `main` current with PierreGode/Ragnar WITHOUT losing the
+# features added on top of it. It MERGES upstream into main (never a
+# fast-forward/overwrite), so local additions are preserved. If upstream and a
+# local change touch the same lines, the merge conflicts and this run fails on
+# purpose — GitHub emails the repo owner so the conflict can be resolved by hand.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'   # daily at 05:17 UTC
+  workflow_dispatch: {}     # lets you run it on demand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Uses a personal access token if you add one as the SYNC_TOKEN secret
+          # (needed only so upstream changes to .github/workflows can be synced);
+          # otherwise falls back to the built-in token.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "ragnar-sync-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/PierreGode/Ragnar.git
+          git fetch --no-tags upstream main
+
+      - name: Merge upstream/main into main (keep fork features)
+        run: |
+          set +e
+          git merge --no-edit \
+            -m "Sync: merge PierreGode/Ragnar main ($(date -u +%Y-%m-%d)); keep fork features" \
+            upstream/main
+          if [ $? -ne 0 ]; then
+            git merge --abort || true
+            echo "::error::Merge conflict while syncing upstream. Resolve it manually, then push to main."
+            exit 1
+          fi
+
+      - name: Push updated main
+        run: git push origin HEAD:main
