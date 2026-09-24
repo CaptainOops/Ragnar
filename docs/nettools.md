@@ -76,6 +76,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 | [BFD Watch](#bfd-watch) | Switch & L2/L3 | `GET /api/net/bfd-watch` |
 | [PTP Watch](#ptp-watch) | Switch & L2/L3 | `GET /api/net/ptp-watch` |
 | [SR-MPLS Watch](#sr-mpls-watch) | Switch & L2/L3 | `GET /api/net/srmpls-watch` |
+| [FTP Watch](#ftp-watch) | Switch & L2/L3 | `GET /api/net/ftp-watch` |
 | [IPsec / IKE Watch](#ipsec--ike-watch) | Switch & L2/L3 | `GET /api/net/ipsec-watch` |
 | [LDAP Watch](#ldap-watch) | Switch & L2/L3 | `GET /api/net/ldap-watch` |
 | [SSH Watch](#ssh-watch) | Switch & L2/L3 | `GET /api/net/ssh-watch` |
@@ -2424,6 +2425,55 @@ reader are all hand-rolled (no Scapy; Scapy has no PTP dissector at any shipping
 > management WRITE, unicast-cancel forgery, gPTP peer-delay denial) are appended as
 > JSON-lines to `/var/log/ragnar/ptp_watch.jsonl`, so time-manipulation alerts fold into the
 > unified pane + single Pushover path.
+
+### FTP Watch
+A **passive** FTP control-channel monitor — **detection-only**, it never transmits (an AST
+guard in the module rejects any transmit-shaped call in its own source, which is why the
+tcpdump capture lives in the in-app adapter rather than in the module). FTP is cleartext, so
+the entire command dialogue is readable from a tap.
+
+It is deliberately a **ProFTPD detector under a protocol name**: it reports the ProFTPD CVEs
+that are genuinely observable on the wire and claims **no** coverage of vsftpd, Pure-FTPd or
+any other server — those were walked and produced nothing passively detectable. Three
+finding classes, 16 codes (`FTP-nnn`):
+
+- **Class A — mod_copy behaviour** (`FTP-001`…`FTP-008`). `SITE CPFR` / `SITE CPTO` is a
+  **server-side copy that needs no data connection**. Issued before any login it is
+  **CVE-2015-3306** (the classic pre-auth webshell drop); issued by an anonymous or ordinary
+  authenticated session it is **CVE-2019-12815** (mod_copy ignores `<Limit READ/WRITE>`).
+  The server's own replies are the oracle: a **350** to a pre-auth `CPFR` means the server
+  *accepted* it — the vulnerable behaviour observed directly, whatever the banner claims —
+  and a **250/226/200** to `CPTO` means the copy *completed*. Attempt and completion are
+  separate severities, and a **sensitive source path** or a **webroot / executable-extension
+  destination** is raised on its own. `SITE HELP` advertising CPFR/CPTO (`FTP-006`) is
+  exposure: mod_copy is loaded.
+- **Class B — banner / version** (`FTP-010`…`FTP-014`). The `220` banner is parsed for a
+  ProFTPD version and screened against the affected ranges (`CVE-2015-3306` `1.3.4rc1`–
+  `1.3.5a`; `CVE-2019-12815` `1.3.4rc1`–`1.3.6a`, **never fixed on the 1.3.5 branch**;
+  `CVE-2023-51713` everything below `1.3.8a`). Version ordering places a release candidate
+  below its release and a maintenance letter above it (`1.3.5rc3 < 1.3.5 < 1.3.5a`). Every
+  range finding is **capped at low confidence and says so** — distributions backport fixes
+  without changing the version, so this is "verify **this** server", never a vulnerable
+  verdict.
+- **Class C — quoted command verb** (`FTP-020`, `FTP-021`). A control line that *opens* with
+  a double quote is the input shape that drives `make_ftp_cmd` into a one-byte
+  out-of-bounds read (**CVE-2023-51713**). It is **not** version-gated: no FTP verb has that
+  form, so the match is zero-false-positive by construction, and quotes inside *arguments*
+  (`STOR my "file".txt`) never fire. A session torn down with no reply after such a line is
+  flagged separately as crash-consistent.
+
+**Dual-stack** with full parity: the module decodes frames itself (no dissector in the parse
+path), walks IPv6 extension-header chains, reassembles IPv4 and IPv6 fragments and
+reassembles TCP; every finding carries an `af` field and renders IPv6 endpoints in RFC 3986
+brackets. The capture keeps a bare `ip6` term (the only form that admits IPv6 behind
+extension headers) and a clause for IPv4 non-first fragments, at full snaplen so a command
+line or banner is never truncated. Verdicts: `clean` < `posture` (banner range) < `exposure`
+(mod_copy advertised) < `attack-indicator` (pre-auth/anonymous attempt, quoted verb) <
+`modcopy-exploited` (the server accepted or completed a copy). HIGH/CRITICAL findings feed
+[Watchtower](watchtower.md).
+
+- Endpoint: `GET /api/net/ftp-watch` `{interface, seconds, ports}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py ftp-watch [--iface I] [--seconds N] [--ports 21] [--json]`
 
 ### SR-MPLS Watch
 A **passive** MPLS / SR-MPLS / SRv6 **label & segment-manipulation** monitor —

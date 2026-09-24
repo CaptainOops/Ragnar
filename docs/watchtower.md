@@ -74,6 +74,14 @@ regression** that induces routing reconvergence lands as **critical**, and no-au
 GTSM violation / malformed-or-truncated header (**CVE-2018-0155**) / auth downgrade /
 session flap as **high**.
 
+[`ftp_watch`](nettools.md#ftp-watch) (FTP Watch) appends its **HIGH/CRITICAL** ProFTPD
+findings to `/var/log/ragnar/ftp_watch.jsonl` (deduplicated per code + server) — a
+pre-authentication or anonymous **mod_copy** copy the server accepted or completed
+(**CVE-2015-3306** / **CVE-2019-12815**), or a copy into a webroot / executable destination,
+lands as **critical**; a mod_copy *attempt* and a **quoted command verb**
+(**CVE-2023-51713**) as **high**. Banner version ranges stay out of the feed: they are
+low-confidence posture, not an event.
+
 [`ptp_watch`](nettools.md#ptp-watch) (PTP Watch) appends its **HIGH/CRITICAL**
 timing-plane-manipulation findings to `/var/log/ragnar/ptp_watch.jsonl` (deduplicated per
 code + port-identity) — a grandmaster **takeover** / two sources claiming one GM identity,

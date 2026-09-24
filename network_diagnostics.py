@@ -43,6 +43,7 @@ import lacpwatch
 import rpcwatch
 import bfdwatch
 import ptpwatch
+import ftpwatch
 import sr_mplswatch
 try:
     import icmpwatch as _icmpwatch   # transport-agnostic v2 redirect/ARP detector
@@ -23508,6 +23509,154 @@ def _dns_passive_selftest():
             'scenarios': scenarios}
 
 
+# ==========================================================================
+# FTP Watch — passive ProFTPD CVE detector (vendored ftpwatch.py)
+# ==========================================================================
+# Adapts the vendored ftpwatch module: a passive reader of the cleartext FTP
+# control channel (tcp/21 by default) that reports the ProFTPD CVEs which are
+# actually visible there — mod_copy SITE CPFR/CPTO issued before authentication
+# or by an anonymous login (CVE-2015-3306 / CVE-2019-12815, with the server's own
+# 350/250 replies confirming acceptance and completion) and the quoted command
+# verb that drives make_ftp_cmd into a one-byte out-of-bounds read
+# (CVE-2023-51713). Dual-stack: the module decodes frames itself, walks IPv6
+# extension headers and reassembles IPv4/IPv6 fragments plus TCP. Banner version
+# ranges are LOW-confidence posture only — distributions backport fixes without
+# changing the version — never a vulnerable verdict. ftpwatch.py itself contains
+# no transmit-shaped call (its own AST guard asserts this), so the capture lives
+# here, in the in-app tcpdump pattern.
+_FTP_SEV_TO_GUARD = {'critical': 'CRITICAL', 'high': 'HIGH', 'warn': 'MEDIUM',
+                     'notice': 'LOW', 'info': 'INFO'}
+_FTP_SEV_RANK = {'info': 0, 'notice': 1, 'warn': 2, 'high': 3, 'critical': 4}
+
+
+def _ftp_klass(f):
+    """Evidence class for the Watchtower record: class B is a banner posture note,
+    class A/C are observed attack primitives (advertised mod_copy is exposure)."""
+    if f.get('class') == 'B':
+        return 'POSTURE'
+    return 'ATTACK' if f.get('severity') in ('high', 'critical') else 'EXPOSURE'
+
+
+def _ftp_normalize(f):
+    """Vendored ftpwatch finding -> the guard finding shape _guard_emit_jsonl expects."""
+    return {'code': f.get('code'), 'name': f.get('name') or f.get('code'),
+            'severity': _FTP_SEV_TO_GUARD.get(f.get('severity'), 'MEDIUM'),
+            'klass': _ftp_klass(f), 'src': f.get('server'),
+            'cves': list(f.get('cves') or []),
+            'detail': {'client': f.get('client'), 'af': f.get('af'),
+                       'confidence': f.get('confidence'), 'text': f.get('message'),
+                       'evidence': f.get('detail')}}
+
+
+def _ftp_verdict(findings):
+    """clean < posture < exposure < attack-indicator < modcopy-exploited. A critical
+    is a server-side copy the server itself accepted or completed, or a copy of a
+    sensitive path — not merely an attempt."""
+    sev = {f.get('severity') for f in findings}
+    if 'critical' in sev:
+        return 'modcopy-exploited'
+    if 'high' in sev:
+        return 'attack-indicator'
+    if 'warn' in sev:
+        return 'exposure'
+    if sev:
+        return 'posture'
+    return 'clean'
+
+
+def do_ftp_watch(interface=None, seconds=20, ports=None, quick=False):
+    """Passive FTP control-channel scan (detection-only, never transmits). Flags
+    mod_copy abuse (CVE-2015-3306 pre-auth, CVE-2019-12815 anonymous/authenticated)
+    and the quoted-verb out-of-bounds read (CVE-2023-51713), plus affected ProFTPD
+    banner ranges as low-confidence posture. Dual-stack."""
+    iface = interface if _valid_iface(interface or '') else _capture_iface()
+    if not iface:
+        return {'success': False, 'error': 'no interface to capture on'}
+    seconds = _clamp_int(seconds, 20, 5, 60)
+    try:
+        plist = tuple(sorted({int(p) for p in (ports or (21,)) if 0 < int(p) < 65536})) or (21,)
+    except (TypeError, ValueError):
+        plist = (21,)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    import tempfile
+    fd, pcap = tempfile.mkstemp(suffix='.pcap')
+    os.close(fd)
+    # Full snaplen: the detectors read whole command lines and the 220 banner, and a
+    # truncated segment would both hide a quoted verb and corrupt TCP reassembly.
+    # The module's own BPF keeps the bare `ip6` term (IPv6 behind extension headers)
+    # and the IPv4 non-first-fragment clause.
+    res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-p',
+                '-s', '65535', '-c', '20000', '-w', pcap, ftpwatch.build_bpf(plist)],
+               timeout=seconds + 8)
+    if (os.path.getsize(pcap) <= 24 and res['err'] and any(
+            k in res['err'].lower() for k in ('permission', "couldn't",
+                                              'no such device', 'syntax error'))):
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+        return {'success': False, 'interface': iface, 'error': res['err'].strip()[:200]}
+    watch = ftpwatch.FtpWatch(ports=plist)
+    frames = 0
+    try:
+        for lt, frame, ts in ftpwatch.iter_pcap(pcap):
+            frames += 1
+            try:
+                watch.feed_frame(lt, frame, ts)
+            except Exception:
+                continue          # one malformed frame must never kill the scan
+    except Exception as e:
+        return {'success': False, 'interface': iface,
+                'error': 'ftp analysis failed: %s: %s' % (type(e).__name__, e)}
+    finally:
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+
+    findings = list(watch.findings)
+    verdict = _ftp_verdict(findings)
+    reasons, seen = [], set()
+    for f in sorted(findings, key=lambda x: _FTP_SEV_RANK.get(x.get('severity'), 0),
+                    reverse=True):
+        if f.get('severity') in ('info',) or f['code'] in seen:
+            continue
+        seen.add(f['code'])
+        reasons.append('%s: %s [%s]' % (f['code'], f.get('message', ''), f.get('server', '')))
+        if len(reasons) >= 8:
+            break
+    if not reasons:
+        reasons = ['FTP control sessions observed; no mod_copy abuse, quoted command '
+                   'verb or affected ProFTPD banner seen'] if watch.stats.get('sessions') \
+            else ['No FTP control traffic seen on this segment (tcp/%s)'
+                  % ','.join(str(p) for p in plist)]
+    by_sev = {}
+    for f in findings:
+        by_sev[f['severity']] = by_sev.get(f['severity'], 0) + 1
+    result = {'success': True, 'module': 'ftp_watch', 'interface': iface,
+              'seconds': seconds, 'ports': list(plist), 'verdict': verdict,
+              'reasons': reasons, 'findings': findings,
+              'servers': sorted({f.get('server') for f in findings if f.get('server')}),
+              'sessions': watch.stats.get('sessions', 0),
+              'by_severity': by_sev, 'packet_count': frames}
+    if not quick and findings:
+        _guard_emit_jsonl('ftp_watch', {'interface': iface,
+                                        'findings': [_ftp_normalize(f) for f in findings]})
+    return result
+
+
+def _ftp_selftest():
+    """Adapt ftpwatch.selftest() to the aggregator's scenarios shape. The decode +
+    detect path is pure-Python (own frame decoder, fragment and TCP reassembly), so
+    the suite runs offline with no root, no scapy and no live traffic."""
+    r = ftpwatch.selftest()
+    return {'success': r['success'],
+            'scenarios': [{'name': c['name'], 'pass': c['pass']} for c in r['scenarios']]}
+
+
 def do_routing_selftest():
     """Run the IGMP / OSPF / BGP detector self-tests and report a combined result
     plus whether Scapy is available for the end-to-end packet-crafting leg. Drives
@@ -23526,7 +23675,7 @@ def do_routing_selftest():
               'lacp': _lacp_selftest(), 'rpc': _rpc_selftest(),
               'bfd': _bfd_selftest(), 'ptp': _ptp_selftest(),
               'srmpls': _srmpls_selftest(), 'ipsec': _ipsec_selftest(),
-              'dns_passive': _dns_passive_selftest(),
+              'dns_passive': _dns_passive_selftest(), 'ftp': _ftp_selftest(),
               'ospf': _ospf_selftest(), 'bgp': _bgp_selftest(),
               'arp': _arp_selftest(), 'dns': _dns_selftest(),
               'mac': _mac_selftest(), 'dhcp': _dhcp_selftest(),
@@ -25356,6 +25505,18 @@ def register_network_diagnostics(app, logger=None):
         secs = _clamp_int(request.args.get('seconds'), 20, 8, 60)
         _log(f"net/ptp-watch iface={iface or 'default-route'} secs={secs}")
         return jsonify(do_ptp_watch(interface=iface, seconds=secs))
+
+    @app.route('/api/net/ftp-watch', methods=['GET'])
+    def net_ftp_watch():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        iface = iface or _capture_iface()
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 60)
+        ports = [p for p in re.split(r'[,\s]+', request.args.get('ports') or '')
+                 if p.isdigit()][:8]
+        _log(f"net/ftp-watch iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_ftp_watch(interface=iface, seconds=secs, ports=ports or None))
 
     @app.route('/api/net/srmpls-watch', methods=['GET'])
     def net_srmpls_watch():
@@ -27910,6 +28071,13 @@ def _cli(argv=None):
     dw_.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-60)')
     dw_.add_argument('--json', action='store_true', help='emit JSON')
 
+    fw_ = sub.add_parser('ftp-watch',
+                         help='passive FTP control-channel scan (ProFTPD mod_copy / quoted verb)')
+    fw_.add_argument('--iface', '-i', default=None, help='interface (default: route)')
+    fw_.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-60)')
+    fw_.add_argument('--ports', default='21', help='FTP control ports (default 21)')
+    fw_.add_argument('--json', action='store_true', help='emit JSON')
+
     dwst = sub.add_parser('dns-passive-selftest',
                           help='self-test the passive DNS detectors (no root)')
     dwst.add_argument('--json', action='store_true', help='emit JSON')
@@ -28558,6 +28726,21 @@ def _cli(argv=None):
             for f in r.get('findings', []):
                 print(f"  [{str(f.get('severity', '?')).upper()}] {f.get('code')} "
                       f"{f.get('name', '')} ({f.get('cve', '')}) zone={f.get('zone', '')}")
+        return 0 if r.get('success') else 1
+
+    if args.cmd == 'ftp-watch':
+        ports = [int(p) for p in re.split(r'[,\s]+', args.ports or '21') if p.isdigit()]
+        r = do_ftp_watch(interface=args.iface, seconds=args.seconds, ports=ports or None)
+        if args.json:
+            print(json.dumps(r, indent=2))
+        elif not r.get('success'):
+            print(f"error: {r.get('error')}")
+        else:
+            print(f"FTP Watch [{r['interface']}] {r['seconds']}s: {r['verdict'].upper()}  "
+                  f"({r['packet_count']} frames, {r['sessions']} session(s), "
+                  f"{len(r['findings'])} finding(s))")
+            for x in r.get('reasons', []):
+                print(f"  {x}")
         return 0 if r.get('success') else 1
 
     if args.cmd == 'dns-passive-selftest':

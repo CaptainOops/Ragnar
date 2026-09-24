@@ -10,8 +10,8 @@ detector works is in [nettools.md](nettools.md).
 
 ## Summary
 
-- **241** distinct CVE IDs
-- **202** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
+- **244** distinct CVE IDs
+- **205** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
 - **30** context only: posture advisories and reference tables for byte-level parser bugs the text-based watchers cannot reconstruct, plus related CVEs attached to a shared attack shape (named for patch guidance, not identified per-CVE)
 - **6** active check: probed by the BLE Pentest action, which transmits (not part of the passive suite)
 - **3** card text only: named in a detector card's description as related context, not detected
@@ -26,15 +26,15 @@ detector works is in [nettools.md](nettools.md).
 | 2008 | 2 |
 | 2013 | 3 |
 | 2014 | 6 |
-| 2015 | 8 |
+| 2015 | 9 |
 | 2016 | 5 |
 | 2017 | 6 |
 | 2018 | 7 |
-| 2019 | 4 |
+| 2019 | 5 |
 | 2020 | 15 |
 | 2021 | 12 |
 | 2022 | 18 |
-| 2023 | 35 |
+| 2023 | 36 |
 | 2024 | 47 |
 | 2025 | 33 |
 | 2026 | 34 |
@@ -57,6 +57,7 @@ detector works is in [nettools.md](nettools.md).
 | DNS Doctor (active) | 2 |
 | DNS Watch | 26 |
 | EIGRP Watch | 3 |
+| FTP Watch | 3 |
 | ICMP Watch | 3 |
 | IGMP / MLD Watch | 3 |
 | IPsec / IKE Watch | 5 |
@@ -101,6 +102,7 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2014-9750](https://nvd.nist.gov/vuln/detail/CVE-2014-9750) |  | detected | NTP Watch | — |
 | [CVE-2014-9751](https://nvd.nist.gov/vuln/detail/CVE-2014-9751) |  | detected | NTP Watch | — |
 | [CVE-2015-2808](https://nvd.nist.gov/vuln/detail/CVE-2015-2808) | Bar Mitzvah (RC4) | detected | TLS Watch | — |
+| [CVE-2015-3306](https://nvd.nist.gov/vuln/detail/CVE-2015-3306) | ProFTPD mod_copy pre-auth copy | detected | FTP Watch | — |
 | [CVE-2015-4000](https://nvd.nist.gov/vuln/detail/CVE-2015-4000) | Logjam | detected | IPsec / IKE Watch | — |
 | [CVE-2015-5434](https://nvd.nist.gov/vuln/detail/CVE-2015-5434) | MPLS VRF hopping (Comware) | detected | Comware Guard | SR-MPLS Watch, SSH Watch |
 | [CVE-2015-7704](https://nvd.nist.gov/vuln/detail/CVE-2015-7704) | NTP Kiss-o'-Death spoof | detected | NTP Watch | — |
@@ -130,6 +132,7 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2019-3977](https://nvd.nist.gov/vuln/detail/CVE-2019-3977) |  | detected | MikroTik Guard | — |
 | [CVE-2019-3979](https://nvd.nist.gov/vuln/detail/CVE-2019-3979) |  | detected | MikroTik Guard | — |
 | [CVE-2019-5608](https://nvd.nist.gov/vuln/detail/CVE-2019-5608) | Fragmented IGMP/MLD membership | detected | IGMP / MLD Watch | — |
+| [CVE-2019-12815](https://nvd.nist.gov/vuln/detail/CVE-2019-12815) | ProFTPD mod_copy Limit bypass | detected | FTP Watch | — |
 | [CVE-2020-0796](https://nvd.nist.gov/vuln/detail/CVE-2020-0796) | SMBGhost | detected | SMB / Kerberos Watch | — |
 | [CVE-2020-1472](https://nvd.nist.gov/vuln/detail/CVE-2020-1472) | Zerologon | detected | RPC / NetLogon Watch | — |
 | [CVE-2020-3110](https://nvd.nist.gov/vuln/detail/CVE-2020-3110) | CDPwn | detected | CDP Watch | — |
@@ -210,6 +213,7 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2023-48795](https://nvd.nist.gov/vuln/detail/CVE-2023-48795) | Terrapin | detected | SSH Watch | — |
 | [CVE-2023-50387](https://nvd.nist.gov/vuln/detail/CVE-2023-50387) | KeyTrap | detected | DNS Doctor (active), DNS Watch | — |
 | [CVE-2023-50868](https://nvd.nist.gov/vuln/detail/CVE-2023-50868) | NSEC3 CPU exhaustion | detected | DNS Doctor (active), DNS Watch | — |
+| [CVE-2023-51713](https://nvd.nist.gov/vuln/detail/CVE-2023-51713) | ProFTPD make_ftp_cmd OOB read | detected | FTP Watch | — |
 | [CVE-2024-3596](https://nvd.nist.gov/vuln/detail/CVE-2024-3596) | BlastRADIUS | detected | Arista Guard | — |
 | [CVE-2024-3661](https://nvd.nist.gov/vuln/detail/CVE-2024-3661) | TunnelVision | detected | DHCP Guardian | — |
 | [CVE-2024-5872](https://nvd.nist.gov/vuln/detail/CVE-2024-5872) |  | detected | Arista Guard | — |
