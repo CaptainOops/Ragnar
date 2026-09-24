@@ -77,6 +77,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 | [PTP Watch](#ptp-watch) | Switch & L2/L3 | `GET /api/net/ptp-watch` |
 | [SR-MPLS Watch](#sr-mpls-watch) | Switch & L2/L3 | `GET /api/net/srmpls-watch` |
 | [FTP Watch](#ftp-watch) | Switch & L2/L3 | `GET /api/net/ftp-watch` |
+| [SMTP Watch](#smtp-watch) | Switch & L2/L3 | `GET /api/net/smtp-watch` |
 | [IPsec / IKE Watch](#ipsec--ike-watch) | Switch & L2/L3 | `GET /api/net/ipsec-watch` |
 | [LDAP Watch](#ldap-watch) | Switch & L2/L3 | `GET /api/net/ldap-watch` |
 | [SSH Watch](#ssh-watch) | Switch & L2/L3 | `GET /api/net/ssh-watch` |
@@ -2425,6 +2426,52 @@ reader are all hand-rolled (no Scapy; Scapy has no PTP dissector at any shipping
 > management WRITE, unicast-cancel forgery, gPTP peer-delay denial) are appended as
 > JSON-lines to `/var/log/ragnar/ptp_watch.jsonl`, so time-manipulation alerts fold into the
 > unified pane + single Pushover path.
+
+### SMTP Watch
+A **passive** SMTP monitor on **tcp/25, 587 and 465** — **detection-only**, it never
+transmits; the parse path takes raw bytes and the capture is an ordinary tcpdump snapshot
+driven by the in-app adapter. Like [FTP Watch](#ftp-watch) it is a single-implementation
+detector under a protocol name: it is an **Exim** detector and claims **no** coverage of
+Postfix, Sendmail or any other MTA. IMAP and POP3 are out of scope. Two classes, 11 codes
+(`SMTP-nnn`):
+
+- **Class A — attack signatures** (`SMTP-001`…`SMTP-006`), ungated and near-zero
+  false-positive by construction:
+  - **`${...}` string expansion** in a `MAIL FROM` or `RCPT TO` address
+    (**CVE-2019-10149**, CISA KEV, Exim 4.87–4.91). No legitimate address contains those
+    two bytes. The server's reply gives the outcome for free: a **2xx to a tainted
+    recipient** raises `SMTP-003` — *payload queued*. That is the ceiling this module
+    claims, because the expansion runs later, at delivery, and is never observable on the
+    wire.
+  - **Malformed SNI or client-certificate DN** — a backslash or NUL byte in a ClientHello
+    `server_name`, or a TLS 1.2 client-certificate DN ending in a backslash
+    (**CVE-2019-15846**, Exim 4.80–4.92.1, reported ransomware use). The DN rule is TLS 1.2
+    only: in TLS 1.3 the client Certificate message is encrypted.
+  - **AUTH base64 of length 4n+3** (**CVE-2018-6789**, CISA KEV, Exim below 4.90.1) — the
+    `b64decode` over-consume. Legitimate SMTP AUTH always sends padded base64 (a multiple of
+    4), so 4n+0 and 4n+1 do not fire. Both payload positions are covered: inline after
+    `AUTH <mech>` and the continuation line after a `334` prompt.
+- **Class B — banner / version** (`SMTP-010`…`SMTP-014`), capped at **notice severity and
+  low confidence**: distro backports (Debian, Ubuntu, cPanel) keep old version strings in
+  the banner after patching, so a Class B finding means "version in the vulnerable range",
+  never "confirmed vulnerable". The ranges do not nest — CVE-2018-6789 (<4.90.1) sits inside
+  CVE-2019-15846 (≤4.92.1) and CVE-2019-10149 (4.87–4.91) overlaps both — so one banner such
+  as 4.89 legitimately raises `SMTP-011`, `SMTP-012` and `SMTP-013` at once. The comparator
+  parses **every** version component: Exim ships three- and four-part versions (4.90.1,
+  4.90.0.27) and a comparator that truncates to two reads 4.90.1 as 4.90 and false-positives
+  on a patched server.
+
+**Dual-stack** with enforced parity. The capture filter keeps a bare `ip6` term — the only
+form that admits IPv6 behind extension headers — which makes the module's **software port
+gate** the sole rejector of non-SMTP IPv6 traffic, a different code path from IPv4 where the
+kernel BPF drops it. Verdicts: `clean` < `posture` (banner range) < `attack-indicator`
+(expansion attempt, malformed SNI/DN, AUTH 4n+3) < `payload-queued` (the server accepted a
+tainted recipient). Only **HIGH/CRITICAL** findings feed [Watchtower](watchtower.md); banner
+ranges stay out of the alert feed. **Documented blind spot:** AUTH offered only after
+STARTTLS is encrypted, so the `SMTP-006` rule covers cleartext AUTH only.
+
+- Endpoint: `GET /api/net/smtp-watch` `{interface, seconds}` · binary: `tcpdump` · needs Scapy
+- CLI: `python3 network_diagnostics.py smtp-watch [--iface I] [--seconds N] [--json]`
 
 ### FTP Watch
 A **passive** FTP control-channel monitor — **detection-only**, it never transmits (an AST

@@ -2263,6 +2263,7 @@ def _net_integrity_check_once():
         ('ipsec', 'IPsec', lambda: watch(nd.do_ipsec_watch, interface=cap_iface)),
         ('dns_passive', 'DNS', lambda: watch(nd.do_dns_watch, interface=cap_iface)),
         ('ftp', 'FTP', lambda: watch(nd.do_ftp_watch, interface=cap_iface)),
+        ('smtp', 'SMTP', lambda: watch(nd.do_smtp_watch, interface=cap_iface)),
     ]
 
     # LAN-only vendor switch/router guards: only auto-run when a genuine wired

@@ -10,8 +10,8 @@ detector works is in [nettools.md](nettools.md).
 
 ## Summary
 
-- **244** distinct CVE IDs
-- **205** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
+- **247** distinct CVE IDs
+- **208** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
 - **30** context only: posture advisories and reference tables for byte-level parser bugs the text-based watchers cannot reconstruct, plus related CVEs attached to a shared attack shape (named for patch guidance, not identified per-CVE)
 - **6** active check: probed by the BLE Pentest action, which transmits (not part of the passive suite)
 - **3** card text only: named in a detector card's description as related context, not detected
@@ -29,8 +29,8 @@ detector works is in [nettools.md](nettools.md).
 | 2015 | 9 |
 | 2016 | 5 |
 | 2017 | 6 |
-| 2018 | 7 |
-| 2019 | 5 |
+| 2018 | 8 |
+| 2019 | 7 |
 | 2020 | 15 |
 | 2021 | 12 |
 | 2022 | 18 |
@@ -71,6 +71,7 @@ detector works is in [nettools.md](nettools.md).
 | PTP Watch | 4 |
 | RPC / NetLogon Watch | 8 |
 | SMB / Kerberos Watch | 5 |
+| SMTP Watch | 3 |
 | SNMP Watch | 5 |
 | SR-MPLS Watch | 17 |
 | SSH Watch | 11 |
@@ -126,13 +127,16 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2018-0732](https://nvd.nist.gov/vuln/detail/CVE-2018-0732) | Oversized DH prime (client DoS) | detected | TLS Watch | — |
 | [CVE-2018-1111](https://nvd.nist.gov/vuln/detail/CVE-2018-1111) | DynoRoot | detected | DHCP Guardian | — |
 | [CVE-2018-5389](https://nvd.nist.gov/vuln/detail/CVE-2018-5389) |  | detected | IPsec / IKE Watch | — |
+| [CVE-2018-6789](https://nvd.nist.gov/vuln/detail/CVE-2018-6789) | Exim AUTH base64 overflow | detected | SMTP Watch | — |
 | [CVE-2018-7445](https://nvd.nist.gov/vuln/detail/CVE-2018-7445) |  | detected | MikroTik Guard | — |
 | [CVE-2018-14847](https://nvd.nist.gov/vuln/detail/CVE-2018-14847) | Winbox arbitrary file read | detected | MikroTik Guard | — |
 | [CVE-2019-0033](https://nvd.nist.gov/vuln/detail/CVE-2019-0033) |  | context only | ARP Watch | — |
 | [CVE-2019-3977](https://nvd.nist.gov/vuln/detail/CVE-2019-3977) |  | detected | MikroTik Guard | — |
 | [CVE-2019-3979](https://nvd.nist.gov/vuln/detail/CVE-2019-3979) |  | detected | MikroTik Guard | — |
 | [CVE-2019-5608](https://nvd.nist.gov/vuln/detail/CVE-2019-5608) | Fragmented IGMP/MLD membership | detected | IGMP / MLD Watch | — |
+| [CVE-2019-10149](https://nvd.nist.gov/vuln/detail/CVE-2019-10149) | Exim ${...} expansion RCE | detected | SMTP Watch | — |
 | [CVE-2019-12815](https://nvd.nist.gov/vuln/detail/CVE-2019-12815) | ProFTPD mod_copy Limit bypass | detected | FTP Watch | — |
+| [CVE-2019-15846](https://nvd.nist.gov/vuln/detail/CVE-2019-15846) | Exim SNI/cert-DN RCE | detected | SMTP Watch | — |
 | [CVE-2020-0796](https://nvd.nist.gov/vuln/detail/CVE-2020-0796) | SMBGhost | detected | SMB / Kerberos Watch | — |
 | [CVE-2020-1472](https://nvd.nist.gov/vuln/detail/CVE-2020-1472) | Zerologon | detected | RPC / NetLogon Watch | — |
 | [CVE-2020-3110](https://nvd.nist.gov/vuln/detail/CVE-2020-3110) | CDPwn | detected | CDP Watch | — |
