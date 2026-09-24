@@ -250,6 +250,17 @@ class PushoverService:
         msg = f"🗝️ {new_count} new credential(s) captured! (total: {total})"
         threading.Thread(target=self.send, args=(msg, "Ragnar — Credentials"), daemon=True).start()
 
+    def notify_wardrive_upload(self, message, title="Ragnar — Wardrive upload", priority=0):
+        """Summary of a finished wardrive's auto-upload (one per drive, sent once
+        every service has a final result). Gated by pushover_enabled +
+        pushover_notify_wardrive_upload."""
+        if not self.is_enabled():
+            return False
+        if not self.shared_data.config.get("pushover_notify_wardrive_upload", True):
+            return False
+        threading.Thread(target=self.send, args=(message[:1024], title, priority), daemon=True).start()
+        return True
+
     # ------------------------------------------------------------------
     # RuSense (WiFi-CSI camera-free surveillance) alerts
     # ------------------------------------------------------------------

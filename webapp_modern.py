@@ -14315,7 +14315,7 @@ def _upload_wigle(csv_text):
     name = (shared_data.config.get('wigle_api_name') or '').strip()
     token = (shared_data.config.get('wigle_api_token') or '').strip()
     if not (name and token):
-        return {'ok': False, 'error': 'WiGLE API name/token not configured'}
+        return {'ok': False, 'error': 'WiGLE API name/token not configured', 'rejected': True}
     try:
         import requests
         r = requests.post(WIGLE_UPLOAD_URL, auth=(name, token),
@@ -14334,7 +14334,7 @@ def _upload_wigle(csv_text):
 def _upload_wdgwars(csv_text):
     key = (shared_data.config.get('wdg_key') or '').strip()
     if not key:
-        return {'ok': False, 'error': 'WDGWars API key not configured'}
+        return {'ok': False, 'error': 'WDGWars API key not configured', 'rejected': True}
     try:
         import requests
         r = requests.post(WDGWARS_UPLOAD_URL, headers={'X-API-Key': key},
@@ -14561,10 +14561,10 @@ def _upload_wardrift(csv_text):
     key, bad = _clean_credential(shared_data.config.get('wardrift_api_key'))
     if bad:
         if not token:
-            return {'ok': False, 'error': f'The saved Wardrift API key is invalid: {bad}'}
+            return {'ok': False, 'error': f'The saved Wardrift API key is invalid: {bad}', 'rejected': True}
         key = ''
     if not (token or key):
-        return {'ok': False, 'error': 'Wardrift not configured (sign in or add an API key)'}
+        return {'ok': False, 'error': 'Wardrift not configured (sign in or add an API key)', 'rejected': True}
     try:
         if token:
             res = _upload_wardrift_route(csv_text, token)
@@ -14690,8 +14690,49 @@ def _upload_outcome(target, res):
         return {'state': 'processing', 'upload_id': resp['upload_id'], 'message': 'Wardrift is processing'}
     if target == 'wardrift' and res.get('duplicate'):
         return {'state': 'ok', 'message': 'Already on Wardrift'}
-    xp = resp.get('awarded_exp')
-    return {'state': 'ok', 'message': f'+{xp} XP' if xp else 'Uploaded'}
+    return {'state': 'ok', 'message': _upload_resp_summary(target, resp)}
+
+
+def _upload_resp_summary(target, resp):
+    """Short human text from a service's success response."""
+    if not isinstance(resp, dict):
+        return 'Uploaded'
+    if target == 'wigle':
+        results = resp.get('results') if isinstance(resp.get('results'), dict) else resp
+        tid = results.get('transid') or resp.get('transid')
+        return f'queued at WiGLE (transid {tid})' if tid else (resp.get('message') or 'Uploaded')
+    if resp.get('awarded_exp') is not None:          # Wardrift signals (API key)
+        parts = [f"{resp.get('item_count', 0)} signals", f"+{resp.get('awarded_exp') or 0} XP"]
+        if resp.get('awarded_currency'):
+            parts.append(f"+{resp['awarded_currency']} currency")
+        return ', '.join(parts)
+    # WDGWars and anything else: its message, else its counters
+    msg = resp.get('message') or resp.get('msg')
+    nums = [f"{k.replace('_', ' ')} {v}" for k, v in resp.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and k not in ('status', 'ok', 'success')][:4]
+    text = ' · '.join(filter(None, [str(msg) if msg else '', ', '.join(nums)]))
+    return text[:200] or 'Uploaded'
+
+
+def _upload_rejected(res):
+    """True when a failed upload was refused outright (4xx, not timeout /
+    rate-limit), so retrying the same file can't succeed."""
+    if res.get('rejected'):
+        return True
+    try:
+        code = int(res.get('status') or 0)
+    except (TypeError, ValueError):
+        return False
+    return 400 <= code < 500 and code not in (408, 429)
+
+
+def _upload_mark(session_id, **meta):
+    """Set session-level bookkeeping (underscore keys) in the upload history."""
+    hist = _upload_history_load()
+    entry = hist.setdefault(session_id, {})
+    entry.update({f'_{k}': v for k, v in meta.items()})
+    entry['_updated'] = time.time()
+    _json_save(_upload_history_path(), hist)
 
 
 def _upload_session(session_id, targets, csv_text=None):
@@ -14752,6 +14793,8 @@ def _auto_upload_enqueue(session_id, target):
         items.append({'session_id': session_id, 'target': target,
                       'added': time.time(), 'attempts': 0, 'next_try': 0})
         _auto_upload_save(items)
+        # A Pushover summary goes out once every service has a final result.
+        _upload_mark(session_id, auto=True, notified=False, targets=_upload_target_list(target) or [])
         logger.info(f"auto-upload: queued session {session_id} -> {target}")
     _auto_upload_start_worker()
     threading.Thread(target=_auto_upload_process_once, daemon=True).start()
@@ -14836,11 +14879,16 @@ def _auto_upload_process_once():
                     if it['attempts'] < 30:
                         remaining.append(it)
                     else:
+                        _upload_mark(sid, located=0)
                         for t in todo:
                             _upload_record(sid, t, state='skipped', message='No GPS-pinned rows in this drive')
                     continue
+                _upload_mark(sid, located=_wardrive_located_count(csv_text))
                 results = _upload_session(sid, todo, csv_text)
-                failed = [t for t, res in results.items() if not res.get('ok')]
+                # A 4xx rejection (bad key, bad file) fails the same way every
+                # time: record it and stop. Offline / 5xx / timeouts retry.
+                failed = [t for t, res in results.items()
+                          if not res.get('ok') and not _upload_rejected(res)]
                 if failed:
                     it['target'] = ','.join(failed)   # only retry what didn't land
                     remaining.append(it)              # retry later (probably offline)
@@ -14854,6 +14902,65 @@ def _auto_upload_process_once():
         _AUTO_UPLOAD_PROC_LOCK.release()
 
 
+def _auto_upload_notify_finished():
+    """One Pushover summary per auto-uploaded drive, once no service is still
+    queued (retrying) or processing (Wardrift judging the route)."""
+    hist = _upload_history_load()
+    queued = {}
+    for it in _auto_upload_load():
+        queued[it.get('session_id')] = set(_upload_target_list(it.get('target')) or [])
+    for sid, entry in hist.items():
+        if not entry.get('_auto') or entry.get('_notified'):
+            continue
+        targets = entry.get('_targets') or [t for t in entry if not t.startswith('_')]
+        busy = queued.get(sid, set()) | {t for t in targets
+                                         if (entry.get(t) or {}).get('state') in (None, 'processing')}
+        if busy:
+            continue
+        _upload_mark(sid, notified=True)
+        try:
+            title, message = _auto_upload_summary(sid, entry, targets)
+            po = _rusense_pushover()
+            if po is not None:
+                po.notify_wardrive_upload(message, title=title)
+        except Exception as e:
+            logger.error(f"auto-upload: summary notification failed for {sid}: {e}")
+
+
+def _auto_upload_summary(sid, entry, targets):
+    """(title, message) for a finished auto-upload: drive summary + each result."""
+    import types
+    from datetime import datetime
+    from wardriving import WardrivingEngine
+    info = next((x for x in WardrivingEngine.get_session_list(types.SimpleNamespace(data_dir=_wd_data_dir()))
+                 if x.get('session_id') == sid), {})
+    start, end = _ts_epoch(info.get('start_time')), _ts_epoch(info.get('end_time'))
+    when = datetime.fromtimestamp(start).strftime('%d %b %H:%M') if start else sid
+    head = [f'Drive {when}']
+    if start and end and end > start:
+        head.append(f'{round((end - start) / 60)} min')
+    if info.get('total_networks') is not None:
+        head.append(f"{info['total_networks']} networks")
+    if entry.get('_located') is not None:
+        head.append(f"{entry['_located']} GPS-pinned")
+    icon = {'ok': '✓', 'failed': '✕', 'skipped': '–', 'unknown': '?'}
+    lines = [' · '.join(head)]
+    bad = 0
+    for t in targets:
+        rec = entry.get(t) or {}
+        state = rec.get('state', 'unknown')
+        bad += state in ('failed', 'unknown')
+        lines.append(f"{icon.get(state, '·')} {_UPLOAD_NAMES.get(t, t)}: {rec.get('message') or state}")
+    states = [(entry.get(t) or {}).get('state') for t in targets]
+    if states and all(st == 'skipped' for st in states):
+        title = 'Ragnar — Wardrive not uploaded (no GPS)'
+    elif bad:
+        title = f'Ragnar — Wardrive upload: {bad} failed'
+    else:
+        title = 'Ragnar — Wardrive uploaded'
+    return title, '\n'.join(lines)
+
+
 def _auto_upload_worker():
     started = time.time()
     recovered = False
@@ -14861,6 +14968,7 @@ def _auto_upload_worker():
         try:
             _auto_upload_process_once()
             _wardrift_follow_uploads()
+            _auto_upload_notify_finished()
             # Give a boot-time drive a couple of minutes to register as live
             # before looking for power-loss leftovers.
             if not recovered and time.time() - started > 120:
@@ -14877,6 +14985,14 @@ def _auto_upload_start_worker():
         return
     _auto_upload_worker_started = True
     threading.Thread(target=_auto_upload_worker, daemon=True, name='wdg-auto-upload').start()
+
+
+def _pushover_ready():
+    """'ok' | 'off' (keys set, Pushover disabled) | 'missing' (no keys)."""
+    po = _rusense_pushover()
+    if po is None or not po.is_configured():
+        return 'missing'
+    return 'ok' if po.is_enabled() else 'off'
 
 
 def _auto_upload_recent(limit=6):
@@ -14933,6 +15049,8 @@ def wardriving_upload_config():
                 t = str(data['auto_upload_target']).lower()
                 if _upload_target_list(t):
                     shared_data.config['wardriving_auto_upload_target'] = t
+            if 'notify_pushover' in data:
+                shared_data.config['pushover_notify_wardrive_upload'] = bool(data['notify_pushover'])
             if 'auto_upload' in data:
                 on = bool(data['auto_upload'])
                 if on and not shared_data.config.get('wardriving_auto_upload'):
@@ -14958,6 +15076,8 @@ def wardriving_upload_config():
             'auto_upload_targets': _upload_target_list(target) or ['wdgwars'],
             'pending': len(_auto_upload_load()),
             'recent': _auto_upload_recent(),
+            'notify_pushover': bool(shared_data.config.get('pushover_notify_wardrive_upload', True)),
+            'pushover_ready': _pushover_ready(),
         })
     except Exception as e:
         logger.error(f"Wardriving upload-config error: {e}")

@@ -885,6 +885,7 @@ class SharedData:
             "pushover_notify_new_credential": True,
             "pushover_notify_device_lost": False,
             "pushover_notify_device_back_online": False,
+            "pushover_notify_wardrive_upload": True,  # summary after each auto-uploaded wardrive
 
             "__title_rusense_pushover__": "RuSense Sensing Alerts",
             # Master switch for camera-free (WiFi-CSI) surveillance alerts. Sent

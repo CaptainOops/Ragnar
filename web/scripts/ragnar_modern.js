@@ -22821,7 +22821,8 @@ async function loadPushoverConfiguration(config) {
         'pushover-notify-new-vuln': 'pushover_notify_new_vulnerability',
         'pushover-notify-new-cred': 'pushover_notify_new_credential',
         'pushover-notify-device-lost': 'pushover_notify_device_lost',
-        'pushover-notify-device-back-online': 'pushover_notify_device_back_online'
+        'pushover-notify-device-back-online': 'pushover_notify_device_back_online',
+        'pushover-notify-wardrive-upload': 'pushover_notify_wardrive_upload'
     };
     for (const [elemId, key] of Object.entries(evtMap)) {
         const cb = document.getElementById(elemId);
@@ -22894,7 +22895,8 @@ async function savePushoverTriggers() {
         'pushover-notify-new-vuln': 'pushover_notify_new_vulnerability',
         'pushover-notify-new-cred': 'pushover_notify_new_credential',
         'pushover-notify-device-lost': 'pushover_notify_device_lost',
-        'pushover-notify-device-back-online': 'pushover_notify_device_back_online'
+        'pushover-notify-device-back-online': 'pushover_notify_device_back_online',
+        'pushover-notify-wardrive-upload': 'pushover_notify_wardrive_upload'
     };
     const payload = {};
     for (const [elemId, key] of Object.entries(evtMap)) {
@@ -31715,6 +31717,11 @@ function _renderAutoUpload(d) {
         const note = document.getElementById(`wd-au-${t}-note`);
         if (note) note.textContent = ready[t] ? '' : '(not set up)';
     });
+    const po = document.getElementById('wd-au-pushover');
+    if (po) po.checked = !!d.notify_pushover;
+    const poNote = document.getElementById('wd-au-pushover-note');
+    if (poNote) poNote.textContent = { missing: '(set up Pushover in Settings → Notifications)',
+                                       off: '(Pushover is switched off in Settings → Notifications)' }[d.pushover_ready] || '';
     const st = document.getElementById('wd-auto-upload-status');
     if (st) {
         const missing = picked.filter(t => !ready[t]).map(t => ({ wigle: 'WiGLE', wdgwars: 'WDGWars', wardrift: 'Wardrift' })[t]);
@@ -31750,7 +31757,7 @@ async function saveAutoUpload() {
         return;
     }
     try {
-        const body = { auto_upload: on };
+        const body = { auto_upload: on, notify_pushover: !!document.getElementById('wd-au-pushover')?.checked };
         if (targets.length) body.auto_upload_targets = targets;
         await _postUploadConfig(body);
         loadWardriveUploadConfig();
