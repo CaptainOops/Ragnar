@@ -7154,7 +7154,7 @@ const _NETINT_STYLE = {
 // else non-clean — a suspicious finding (amber). Mirrors the server's _ni_rank so the
 // chips colour every scanner's verdicts without enumerating them all.
 const _NETINT_CLEAN = new Set(['clean', 'unknown', 'ok', 'none', 'hardened', 'learned', 'n/a', 'no-traffic', 'disabled', 'not-applicable', 'randomization', 'fhrp', 'observed']);
-const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'eternalblue-probe', 'krb-rc4md4', 'smbghost-exploit', 'smb-reflection', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'modcopy-exploited', 'exploit', 'attack']);
+const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'eternalblue-probe', 'krb-rc4md4', 'smbghost-exploit', 'smb-reflection', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'modcopy-exploited', 'payload-queued', 'exploit', 'attack']);
 function _netintRank(verdict) {
     const v = verdict || 'unknown';
     if (_NETINT_CLEAN.has(v)) return 0;
@@ -9511,6 +9511,67 @@ async function runPtpWatch() {
     }
 }
 
+// ---- SMTP Watch (Exim ${...} expansion / SNI / AUTH base64) ----------------
+const _SMTP_VERDICT_STYLE = {
+    clean:              ['bg-green-950/40 border-green-900 text-green-400', '\u2713 No Exim CVE signature or affected banner seen'],
+    observed:           ['bg-green-950/40 border-green-900 text-green-400', '\u2713 SMTP observed \u2014 nothing CVE-relevant'],
+    posture:            ['bg-amber-950/50 border-amber-800 text-amber-300', '\u26a0 Posture \u2014 an Exim banner inside an affected version range (low confidence: distro backports patch without a version bump, so verify this server)'],
+    'attack-indicator': ['bg-red-950/60 border-red-800 text-red-300', '\ud83d\uded1 Attack indicator \u2014 a ${...} expansion attempt, malformed SNI / client-cert DN, or an AUTH 4n+3 base64 token'],
+    'payload-queued':   ['bg-red-950/60 border-red-800 text-red-300', '\ud83d\uded1 PAYLOAD QUEUED \u2014 the server accepted a recipient carrying a ${...} expansion (CVE-2019-10149): it expands at delivery, so treat this host as compromised until checked'],
+    unknown:            ['bg-slate-800 border-slate-700 text-slate-400', '\u2014 Could not determine'],
+};
+async function runSmtpWatch() {
+    const out = document.getElementById('smtpwatch-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('smtpwatch-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('smtpwatch-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '20';
+    _ndBusy(btn, true, 'Listening\u2026');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing SMTP (tcp/25 \u00b7 587 \u00b7 465)\u2026</p>';
+    try {
+        _fillIfaceSel('smtpwatch-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '');
+        const d = await fetchAPI('/api/net/smtp-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runSmtpWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const [cls, label] = _SMTP_VERDICT_STYLE[d.verdict] || _SMTP_VERDICT_STYLE.unknown;
+        const servers = (d.servers || []).join(', ') || '\u2014';
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '\u2014')} \u00b7 ${d.seconds}s \u00b7 tcp/${escapeHtml((d.ports || []).join(','))} \u00b7 servers: ${escapeHtml(servers)}</p>`;
+        const findings = (d.findings || []).filter(f => ['critical', 'high', 'warn', 'notice'].includes((f.severity || '').toLowerCase()));
+        if (findings.length) {
+            html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Sev</th><th class="px-2 py-1">Code</th><th class="px-2 py-1">CVE</th><th class="px-2 py-1">What</th><th class="px-2 py-1">Server</th></tr>' +
+                '</thead><tbody>' +
+                findings.slice(0, 40).map(f => `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 ${_FTP_SEV_STYLE[(f.severity || '').toLowerCase()] || 'text-gray-400'}">${escapeHtml((f.severity || '').toLowerCase())}</td>
+                    <td class="px-2 py-1 font-mono ${_FTP_SEV_STYLE[(f.severity || '').toLowerCase()] || 'text-gray-300'}">${escapeHtml((f.code || '').replace(/^SMTP-/, ''))}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400 whitespace-normal">${escapeHtml(f.cve || '')}</td>
+                    <td class="px-2 py-1 text-gray-300 whitespace-normal">${escapeHtml(f.detail || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.srv_ep || '-')}</td>
+                </tr>`).join('') +
+                '</tbody></table>';
+        }
+        if (d.reasons && d.reasons.length) {
+            html += '<ul class="text-xs text-gray-400 mt-2 list-disc pl-5">' +
+                d.reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+
 // ---- FTP Watch (ProFTPD mod_copy / quoted command verb) --------------------
 const _FTP_VERDICT_STYLE = {
     clean:               ['bg-green-950/40 border-green-900 text-green-400', '\u2713 No mod_copy abuse, quoted command verb or affected ProFTPD banner seen'],
@@ -10901,7 +10962,7 @@ async function runRoutingSelftest() {
             : 'Scapy: <span class="text-amber-300">not installed</span> — end-to-end leg skipped';
         if (instBtn) instBtn.classList.toggle('hidden', !!d.scapy_available);
 
-        const names = { igmp: 'IGMP Watch', ipv6: 'IPv6 First-Hop Watch', ndp: 'NDP Watch (IPv6 neighbor spoofing)', raguard: 'IPv6 RA Guard', ntp: 'NTP Watch', icmp: 'ICMP Watch', snmp: 'SNMP Watch', cert: 'Cert Watch', tls: 'TLS Watch (passive JA4/QUIC)', stp: 'STP/BPDU Watch (spanning tree)', smb: 'SMB Watch (SMBv1 + poisoning + Kerberos downgrade)', relay: 'Relay/Coercion Watch (NTLM relay)', ldap: 'LDAP Watch (Active Directory)', ssh: 'SSH Watch (regreSSHion / Terrapin)', telnet: 'Telnet Watch (CVE-2026-24061 / 32746)', ftp: 'FTP Watch (ProFTPD mod_copy / quoted verb)', dtp: 'DTP Watch (VLAN hopping)', cdp: 'CDP Watch (Cisco Discovery leak/flood)', vtp: 'VTP Watch (VTP bomb / VLAN-DB wipe)', eigrp: 'EIGRP Watch (Cisco IGP)', isis: 'IS-IS Watch (IGP)', fhrp: 'FHRP Watch (HSRP/VRRP/GLBP/CARP)', ospf: 'OSPF Scanner', bgp: 'BGP Path Watch',
+        const names = { igmp: 'IGMP Watch', ipv6: 'IPv6 First-Hop Watch', ndp: 'NDP Watch (IPv6 neighbor spoofing)', raguard: 'IPv6 RA Guard', ntp: 'NTP Watch', icmp: 'ICMP Watch', snmp: 'SNMP Watch', cert: 'Cert Watch', tls: 'TLS Watch (passive JA4/QUIC)', stp: 'STP/BPDU Watch (spanning tree)', smb: 'SMB Watch (SMBv1 + poisoning + Kerberos downgrade)', relay: 'Relay/Coercion Watch (NTLM relay)', ldap: 'LDAP Watch (Active Directory)', ssh: 'SSH Watch (regreSSHion / Terrapin)', telnet: 'Telnet Watch (CVE-2026-24061 / 32746)', ftp: 'FTP Watch (ProFTPD mod_copy / quoted verb)', smtp: 'SMTP Watch (Exim expansion / SNI / AUTH b64)', dtp: 'DTP Watch (VLAN hopping)', cdp: 'CDP Watch (Cisco Discovery leak/flood)', vtp: 'VTP Watch (VTP bomb / VLAN-DB wipe)', eigrp: 'EIGRP Watch (Cisco IGP)', isis: 'IS-IS Watch (IGP)', fhrp: 'FHRP Watch (HSRP/VRRP/GLBP/CARP)', ospf: 'OSPF Scanner', bgp: 'BGP Path Watch',
                         arp: 'ARP Poisoning (incl. HSRP/VRRP virtual-MAC awareness)', dns: 'DNS Doctor (poison parser / anchors / ASN)',
                         mac: 'MAC Watch (spoof / vendor-OUI / randomization / HSRP-VRRP virtual-MAC)', dhcp: 'DHCP Guardian (rogue server / starvation)',
                         lacp: 'LACP Watch (802.1AX LAG-hijack / flapping)', rpc: 'RPC/NetLogon Watch (Zerologon / DCSync / WinRM)',
@@ -10917,7 +10978,7 @@ async function runRoutingSelftest() {
             '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
             '<tr class="text-left text-gray-500"><th class="px-2 py-1">Scanner</th><th class="px-2 py-1">Scenarios</th><th class="px-2 py-1">End-to-end</th><th class="px-2 py-1">Result</th></tr>' +
             '</thead><tbody>';
-        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
+        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
         // Append any suite the backend returned that isn't in the preferred order,
         // so a newly-wired detector can never again be counted toward pass/fail yet
         // stay invisible in the table.

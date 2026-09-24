@@ -74,6 +74,13 @@ regression** that induces routing reconvergence lands as **critical**, and no-au
 GTSM violation / malformed-or-truncated header (**CVE-2018-0155**) / auth downgrade /
 session flap as **high**.
 
+[`smtp_watch`](nettools.md#smtp-watch) (SMTP Watch) appends its **HIGH/CRITICAL** Exim
+findings to `/var/log/ragnar/smtp_watch.jsonl` (deduplicated per code + server) — a
+recipient carrying a `${...}` expansion that the server **accepted** (**CVE-2019-10149**,
+KEV) lands as **critical**; the expansion *attempt*, a malformed SNI / client-certificate DN
+(**CVE-2019-15846**) and an AUTH base64 token of length 4n+3 (**CVE-2018-6789**, KEV) as
+**high**. Banner version ranges are low-confidence posture and stay out of the feed.
+
 [`ftp_watch`](nettools.md#ftp-watch) (FTP Watch) appends its **HIGH/CRITICAL** ProFTPD
 findings to `/var/log/ragnar/ftp_watch.jsonl` (deduplicated per code + server) — a
 pre-authentication or anonymous **mod_copy** copy the server accepted or completed

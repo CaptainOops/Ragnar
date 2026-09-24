@@ -156,6 +156,11 @@ DEFAULT_SOURCES = {
     # command verb that drives make_ftp_cmd out of bounds (do_ftp_watch).
     'ftp_watch':     {'label': 'FTP Watch (ProFTPD mod_copy / quoted verb)',
                       'paths': ['/var/log/ragnar/ftp_watch.jsonl']},
+    # Exim ${...} expansion in MAIL/RCPT (CVE-2019-10149, KEV), malformed SNI /
+    # client-cert DN (CVE-2019-15846) and the AUTH 4n+3 base64 over-consume
+    # (CVE-2018-6789, KEV) — do_smtp_watch.
+    'smtp_watch':    {'label': 'SMTP Watch (Exim expansion / SNI / AUTH b64)',
+                      'paths': ['/var/log/ragnar/smtp_watch.jsonl']},
     # MPLS / SR-MPLS / SRv6 label & segment manipulation (do_sr_mpls_watch): a label
     # or SRH on a customer-facing port (label-injection / VRF-hopping), reserved /
     # implicit-null labels forwarded, TTL-expired frames forwarded, SRv6 path

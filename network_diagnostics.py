@@ -44,6 +44,7 @@ import rpcwatch
 import bfdwatch
 import ptpwatch
 import ftpwatch
+import smtpwatch
 import sr_mplswatch
 try:
     import icmpwatch as _icmpwatch   # transport-agnostic v2 redirect/ARP detector
@@ -23642,9 +23643,12 @@ def do_ftp_watch(interface=None, seconds=20, ports=None, quick=False):
               'servers': sorted({f.get('server') for f in findings if f.get('server')}),
               'sessions': watch.stats.get('sessions', 0),
               'by_severity': by_sev, 'packet_count': frames}
-    if not quick and findings:
-        _guard_emit_jsonl('ftp_watch', {'interface': iface,
-                                        'findings': [_ftp_normalize(f) for f in findings]})
+    # Only HIGH/CRITICAL reach Watchtower: a banner version range is low-confidence
+    # posture ("verify this server"), not an event worth paging on.
+    alerts = [_ftp_normalize(f) for f in findings
+              if f.get('severity') in ('high', 'critical')]
+    if not quick and alerts:
+        _guard_emit_jsonl('ftp_watch', {'interface': iface, 'findings': alerts})
     return result
 
 
@@ -23653,6 +23657,143 @@ def _ftp_selftest():
     detect path is pure-Python (own frame decoder, fragment and TCP reassembly), so
     the suite runs offline with no root, no scapy and no live traffic."""
     r = ftpwatch.selftest()
+    return {'success': r['success'],
+            'scenarios': [{'name': c['name'], 'pass': c['pass']} for c in r['scenarios']]}
+
+
+# ==========================================================================
+# SMTP Watch — passive Exim CVE detector (vendored smtpwatch.py)
+# ==========================================================================
+# Adapts the vendored smtpwatch module: a passive reader of the SMTP conversation
+# on tcp/25, 587 and 465. Like FTP Watch it is a single-implementation detector
+# under a protocol name — it reports Exim CVEs and claims nothing about Postfix,
+# Sendmail or any other MTA (IMAP/POP3 are out of scope). Detects the
+# `${...}` expansion string in a MAIL FROM / RCPT TO address (CVE-2019-10149,
+# CISA KEV — with the server's own 2xx reply raising it to "payload queued"), a
+# backslash or NUL in a ClientHello SNI or a TLS 1.2 client-certificate DN
+# (CVE-2019-15846), and an AUTH base64 token of length 4n+3, the b64decode
+# over-consume (CVE-2018-6789, CISA KEV). Banner version ranges are notice-level
+# posture at low confidence — distro backports keep old version strings after
+# patching — never a vulnerable verdict. Dual-stack: the capture BPF carries a
+# bare `ip6` term (the only form that admits IPv6 behind extension headers) and
+# the module's own software port gate is what rejects non-SMTP IPv6.
+_SMTP_SEV_TO_GUARD = {'critical': 'CRITICAL', 'high': 'HIGH', 'warn': 'MEDIUM',
+                      'notice': 'LOW', 'info': 'INFO'}
+_SMTP_SEV_RANK = {'info': 0, 'notice': 1, 'warn': 2, 'high': 3, 'critical': 4}
+
+
+def _smtp_normalize(f):
+    """Vendored smtpwatch finding -> the guard finding shape _guard_emit_jsonl expects."""
+    return {'code': f.get('code'),
+            'name': (smtpwatch.CODES.get(f.get('code')) or {}).get('name') or f.get('code'),
+            'severity': _SMTP_SEV_TO_GUARD.get(f.get('severity'), 'MEDIUM'),
+            'klass': 'POSTURE' if f.get('cls') == 'B' else (
+                'ATTACK' if f.get('severity') in ('high', 'critical') else 'EXPOSURE'),
+            'src': f.get('srv_ep'),
+            'cves': [f['cve']] if f.get('cve') else [],
+            'detail': {'client': f.get('cli_ep'), 'af': f.get('af'),
+                       'confidence': f.get('confidence'), 'text': f.get('detail')}}
+
+
+def _smtp_verdict(findings):
+    """clean < posture < attack-indicator < payload-queued. A critical means the
+    server ANSWERED 2xx to a tainted recipient — the payload is queued and will be
+    expanded at delivery; execution itself is never observable on the wire."""
+    sev = {f.get('severity') for f in findings}
+    if 'critical' in sev:
+        return 'payload-queued'
+    if 'high' in sev:
+        return 'attack-indicator'
+    if 'warn' in sev or 'notice' in sev:
+        return 'posture'
+    return 'observed' if findings else 'clean'
+
+
+def do_smtp_watch(interface=None, seconds=20, quick=False):
+    """Passive SMTP scan (detection-only, never transmits) for the Exim CVEs visible
+    in the conversation: `${...}` expansion in MAIL FROM / RCPT TO (CVE-2019-10149,
+    KEV), malformed SNI / client-cert DN (CVE-2019-15846) and an AUTH base64 token
+    of length 4n+3 (CVE-2018-6789, KEV). Banner ranges are low-confidence posture.
+    Dual-stack (tcp/25, 587, 465)."""
+    iface = interface if _valid_iface(interface or '') else _capture_iface()
+    if not iface:
+        return {'success': False, 'error': 'no interface to capture on'}
+    seconds = _clamp_int(seconds, 20, 5, 60)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    if not _have_scapy():
+        return {'success': False, 'interface': iface,
+                'error': ('python3-scapy is required to parse SMTP traffic — install '
+                          'Scapy (Detector Self-Test -> Install Scapy).')}
+    import tempfile
+    fd, pcap = tempfile.mkstemp(suffix='.pcap')
+    os.close(fd)
+    # Full snaplen: the detectors read whole command lines, the banner and a TLS
+    # ClientHello, and a truncated segment would hide exactly the bytes they key on.
+    res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-p',
+                '-s', '65535', '-c', '20000', '-w', pcap, smtpwatch.bpf_filter()],
+               timeout=seconds + 8)
+    if (os.path.getsize(pcap) <= 24 and res['err'] and any(
+            k in res['err'].lower() for k in ('permission', "couldn't",
+                                              'no such device', 'syntax error'))):
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+        return {'success': False, 'interface': iface, 'error': res['err'].strip()[:200]}
+    frames = [0]
+
+    def _count(_pkt):
+        frames[0] += 1
+
+    try:
+        findings = [f.to_dict() for f in smtpwatch.run_pcap(pcap, on_frame=_count)]
+    except Exception as e:
+        return {'success': False, 'interface': iface,
+                'error': 'smtp analysis failed: %s: %s' % (type(e).__name__, e)}
+    finally:
+        try:
+            os.remove(pcap)
+        except OSError:
+            pass
+
+    verdict = _smtp_verdict(findings)
+    reasons, seen = [], set()
+    for f in sorted(findings, key=lambda x: _SMTP_SEV_RANK.get(x.get('severity'), 0),
+                    reverse=True):
+        if f.get('severity') == 'info' or f['code'] in seen:
+            continue
+        seen.add(f['code'])
+        reasons.append('%s: %s [%s]' % (f['code'], f.get('detail', ''), f.get('srv_ep', '')))
+        if len(reasons) >= 8:
+            break
+    if not reasons:
+        reasons = ['No Exim CVE signature or affected banner seen on tcp/%s'
+                   % ','.join(str(p) for p in smtpwatch.SMTP_PORTS)]
+    by_sev = {}
+    for f in findings:
+        by_sev[f['severity']] = by_sev.get(f['severity'], 0) + 1
+    result = {'success': True, 'module': 'smtp_watch', 'interface': iface,
+              'seconds': seconds, 'ports': list(smtpwatch.SMTP_PORTS),
+              'verdict': verdict, 'reasons': reasons, 'findings': findings,
+              'servers': sorted({f.get('srv_ep') for f in findings if f.get('srv_ep')}),
+              'by_severity': by_sev, 'packet_count': frames[0]}
+    # Only HIGH/CRITICAL reach Watchtower: banner ranges are low-confidence posture
+    # (distro backports), not an event.
+    alerts = [_smtp_normalize(f) for f in findings
+              if f.get('severity') in ('high', 'critical')]
+    if not quick and alerts:
+        _guard_emit_jsonl('smtp_watch', {'interface': iface, 'findings': alerts})
+    return result
+
+
+def _smtp_selftest():
+    """Adapt smtpwatch.selftest() to the aggregator's scenarios shape. The detectors
+    run over byte segments (analyze_segments), so the suite is offline: no root, no
+    capture, and scapy only for the TLS fixture builders."""
+    r = smtpwatch.selftest()
     return {'success': r['success'],
             'scenarios': [{'name': c['name'], 'pass': c['pass']} for c in r['scenarios']]}
 
@@ -23676,6 +23817,7 @@ def do_routing_selftest():
               'bfd': _bfd_selftest(), 'ptp': _ptp_selftest(),
               'srmpls': _srmpls_selftest(), 'ipsec': _ipsec_selftest(),
               'dns_passive': _dns_passive_selftest(), 'ftp': _ftp_selftest(),
+              'smtp': _smtp_selftest(),
               'ospf': _ospf_selftest(), 'bgp': _bgp_selftest(),
               'arp': _arp_selftest(), 'dns': _dns_selftest(),
               'mac': _mac_selftest(), 'dhcp': _dhcp_selftest(),
@@ -25505,6 +25647,16 @@ def register_network_diagnostics(app, logger=None):
         secs = _clamp_int(request.args.get('seconds'), 20, 8, 60)
         _log(f"net/ptp-watch iface={iface or 'default-route'} secs={secs}")
         return jsonify(do_ptp_watch(interface=iface, seconds=secs))
+
+    @app.route('/api/net/smtp-watch', methods=['GET'])
+    def net_smtp_watch():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        iface = iface or _capture_iface()
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 60)
+        _log(f"net/smtp-watch iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_smtp_watch(interface=iface, seconds=secs))
 
     @app.route('/api/net/ftp-watch', methods=['GET'])
     def net_ftp_watch():
@@ -28071,6 +28223,12 @@ def _cli(argv=None):
     dw_.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-60)')
     dw_.add_argument('--json', action='store_true', help='emit JSON')
 
+    sw_ = sub.add_parser('smtp-watch',
+                         help='passive SMTP scan (Exim ${...} expansion / SNI / AUTH b64)')
+    sw_.add_argument('--iface', '-i', default=None, help='interface (default: route)')
+    sw_.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-60)')
+    sw_.add_argument('--json', action='store_true', help='emit JSON')
+
     fw_ = sub.add_parser('ftp-watch',
                          help='passive FTP control-channel scan (ProFTPD mod_copy / quoted verb)')
     fw_.add_argument('--iface', '-i', default=None, help='interface (default: route)')
@@ -28726,6 +28884,19 @@ def _cli(argv=None):
             for f in r.get('findings', []):
                 print(f"  [{str(f.get('severity', '?')).upper()}] {f.get('code')} "
                       f"{f.get('name', '')} ({f.get('cve', '')}) zone={f.get('zone', '')}")
+        return 0 if r.get('success') else 1
+
+    if args.cmd == 'smtp-watch':
+        r = do_smtp_watch(interface=args.iface, seconds=args.seconds)
+        if args.json:
+            print(json.dumps(r, indent=2))
+        elif not r.get('success'):
+            print(f"error: {r.get('error')}")
+        else:
+            print(f"SMTP Watch [{r['interface']}] {r['seconds']}s: {r['verdict'].upper()}  "
+                  f"({r['packet_count']} frames, {len(r['findings'])} finding(s))")
+            for x in r.get('reasons', []):
+                print(f"  {x}")
         return 0 if r.get('success') else 1
 
     if args.cmd == 'ftp-watch':

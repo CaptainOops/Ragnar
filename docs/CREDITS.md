@@ -14,8 +14,8 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **205 CVEs detected from the wire.** 244 distinct CVE IDs are named across Ragnar's
-  code; 205 of them a passive detector actually identifies. The rest are named, not detected:
+- **208 CVEs detected from the wire.** 247 distinct CVE IDs are named across Ragnar's
+  code; 208 of them a passive detector actually identifies. The rest are named, not detected:
   30 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
   shape, the SR-MPLS `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture
   advisories** — byte-level parser CVEs the passive text watchers name for patch guidance but
@@ -23,6 +23,7 @@ behind them is Solarflere's work.
   checks in the BLE Pentest action. Every one is listed, with its detector and status, in the
   generated **[CVE Index](CVE.md)**.
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-81736**.
+- **Two CISA KEV entries** join the corpus with SMTP Watch (CVE-2019-10149, CVE-2018-6789).
 - Weighted to the current threat wave (all named IDs): **36 CVEs from 2023, 47 from 2024, 33 from 2025, and
   34 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
@@ -133,7 +134,14 @@ behind them is Solarflere's work.
   ungated because no legitimate FTP verb opens with a quote. Banner version ranges are
   capped at low confidence and reported as "verify this server", never as a vulnerable
   verdict; vsftpd and Pure-FTPd are explicitly out of scope because nothing in them is
-  passively detectable at the bar this suite sets.
+  passively detectable at the bar this suite sets. **SMTP Watch** is the same idea for
+  **Exim**: the `${...}` string expansion in a `MAIL FROM` / `RCPT TO` address
+  (**CVE-2019-10149**, CISA KEV — raised to *payload queued* when the server itself answers
+  2xx to the tainted recipient), a backslash or NUL in a TLS SNI or a TLS 1.2
+  client-certificate DN (**CVE-2019-15846**), and an AUTH base64 token of length 4n+3 — the
+  `b64decode` over-consume (**CVE-2018-6789**, CISA KEV). All three rules are ungated and
+  near-zero false-positive by construction, and Exim's three- and four-component version
+  numbers are compared in full so a patched 4.90.1 is never read as 4.90.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
