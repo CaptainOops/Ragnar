@@ -2383,6 +2383,21 @@
                     </div>
                     <div id="ptpwatch-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                 </div>
+                <!-- FTP Watch (ProFTPD mod_copy / quoted command verb) -->
+                <div class="glass rounded-xl p-4 sm:p-6 mt-6">
+                    <h3 class="text-lg font-semibold mb-1">FTP Watch <span class="text-xs font-normal text-gray-500">(passive · tcp/21 · ProFTPD mod_copy / quoted verb)</span></h3>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive FTP control-channel monitor — <strong>detection-only</strong>, it has no transmit primitives (the module's own AST guard greps its source to prove it). FTP is cleartext, so the whole command dialogue is readable on a tap. It is a <strong>ProFTPD detector under a protocol name</strong>: it reports the ProFTPD CVEs that are genuinely visible on the wire and claims nothing about vsftpd, Pure-FTPd or any other server. Flags <strong>mod_copy abuse</strong> — <span class="font-mono">SITE CPFR</span>/<span class="font-mono">CPTO</span> issued before any login (<code>CVE-2015-3306</code>) or by an anonymous session (<code>CVE-2019-12815</code>), a server-side file copy that needs no data connection and is the classic pre-auth webshell-drop primitive — and the <strong>quoted command verb</strong> that drives <span class="font-mono">make_ftp_cmd</span> into a one-byte out-of-bounds read (<code>CVE-2023-51713</code>). <strong>Dual-stack</strong>: the module decodes frames itself, walks IPv6 extension headers and reassembles IPv4/IPv6 fragments and TCP.</p>
+                    <p class="text-sm text-gray-400 mb-3">The server's own replies are the oracle: a <span class="font-mono">350</span> to a pre-auth <span class="font-mono">CPFR</span> means the server <em>accepted</em> it (vulnerable behaviour observed directly, whatever the banner says) and a <span class="font-mono">250</span> to <span class="font-mono">CPTO</span> means the copy <em>completed</em> — attempted and completed are separate severities, and a copy whose source is a sensitive path or whose destination is a webroot / executable extension is raised on its own. <strong>Banner version ranges are posture only</strong>, capped at low confidence and labelled as such, because distributions backport fixes without changing the version — a version match is "verify this server", never a vulnerable verdict. The quoted-verb rule is not version-gated: no legitimate FTP verb opens with a quote, so quotes inside arguments (<span class="font-mono">STOR my "file".txt</span>) never fire.</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <select id="ftpwatch-iface" title="Interface for the capture — a segment carrying FTP, or a SPAN/mirror of one" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                            <option value="">Auto (wired first)</option>
+                        </select>
+                        <input id="ftpwatch-secs" type="number" min="5" max="60" value="20" title="capture seconds" class="w-20 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+                        <input id="ftpwatch-ports" type="text" value="21" title="FTP control ports (comma-separated)" class="w-24 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+                        <button onclick="runFtpWatch()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan FTP</button>
+                    </div>
+                    <div id="ftpwatch-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
+                </div>
                 <!-- SR-MPLS Watch (MPLS / SR-MPLS / SRv6 / OSPFv3-SR label & segment manipulation) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">SR-MPLS Watch <span class="text-xs font-normal text-gray-500">(MPLS · SR-MPLS · SRv6 · OSPFv3-SR · label / segment injection)</span></h3>
@@ -8786,7 +8801,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260924-upload-pushover"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260924-ftp-watch"></script>
 
 
 

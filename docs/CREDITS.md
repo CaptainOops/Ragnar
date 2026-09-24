@@ -14,8 +14,8 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **202 CVEs detected from the wire.** 241 distinct CVE IDs are named across Ragnar's
-  code; 202 of them a passive detector actually identifies. The rest are named, not detected:
+- **205 CVEs detected from the wire.** 244 distinct CVE IDs are named across Ragnar's
+  code; 205 of them a passive detector actually identifies. The rest are named, not detected:
   30 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
   shape, the SR-MPLS `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture
   advisories** — byte-level parser CVEs the passive text watchers name for patch guidance but
@@ -23,7 +23,7 @@ behind them is Solarflere's work.
   checks in the BLE Pentest action. Every one is listed, with its detector and status, in the
   generated **[CVE Index](CVE.md)**.
 - **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-81736**.
-- Weighted to the current threat wave (all named IDs): **35 CVEs from 2023, 47 from 2024, 33 from 2025, and
+- Weighted to the current threat wave (all named IDs): **36 CVEs from 2023, 47 from 2024, 33 from 2025, and
   34 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
@@ -123,6 +123,17 @@ behind them is Solarflere's work.
   reference-only, their receiver-side `debug` precondition being unobservable passively).
   Separately, the in-app **OSPF Watch** adds an OSPFv3 **Instance-ID anomaly** detection
   (a rogue parallel-instance / spoofing tell, read from the tcpdump `Instance N` token).
+
+- **Cleartext application protocols** — **FTP Watch** reads the FTP control channel for the
+  ProFTPD CVEs that are actually visible there: **mod_copy** `SITE CPFR`/`CPTO` issued before
+  authentication (**CVE-2015-3306**) or by an anonymous/ordinary session
+  (**CVE-2019-12815**) — a server-side copy needing no data connection, with the server's own
+  `350`/`250` replies confirming acceptance and completion — and the **quoted command verb**
+  that drives `make_ftp_cmd` into a one-byte out-of-bounds read (**CVE-2023-51713**),
+  ungated because no legitimate FTP verb opens with a quote. Banner version ranges are
+  capped at low confidence and reported as "verify this server", never as a vulnerable
+  verdict; vsftpd and Pure-FTPd are explicitly out of scope because nothing in them is
+  passively detectable at the bar this suite sets.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 

@@ -152,6 +152,10 @@ DEFAULT_SOURCES = {
     # forgery, and gPTP multi-peer-delay-responder denial-of-timing.
     'ptp_watch':     {'label': 'PTP Watch (grandmaster takeover / time injection)',
                       'paths': ['/var/log/ragnar/ptp_watch.jsonl']},
+    # ProFTPD mod_copy abuse (pre-auth / anonymous SITE CPFR-CPTO) and the quoted
+    # command verb that drives make_ftp_cmd out of bounds (do_ftp_watch).
+    'ftp_watch':     {'label': 'FTP Watch (ProFTPD mod_copy / quoted verb)',
+                      'paths': ['/var/log/ragnar/ftp_watch.jsonl']},
     # MPLS / SR-MPLS / SRv6 label & segment manipulation (do_sr_mpls_watch): a label
     # or SRH on a customer-facing port (label-injection / VRF-hopping), reserved /
     # implicit-null labels forwarded, TTL-expired frames forwarded, SRv6 path
