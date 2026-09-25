@@ -17177,6 +17177,12 @@ def _execute_pwn_git_update(repo_path: str) -> dict:
 
             logger.info("Pwn auto-recovery applied, retrying git pull...")
 
+    # This is opt-in per device and does not restart any service.
+    try:
+        from scripts.apply_pwn_tft_layout import apply_layout
+        apply_layout()
+    except Exception as exc:
+        result['warnings'].append(f'Could not restore TFT layout: {exc}')
     result['success'] = True
     return result
 

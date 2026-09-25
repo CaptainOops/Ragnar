@@ -851,6 +851,7 @@ if [[ ${#verify_errors[@]} -gt 0 ]]; then
     exit 1
 fi
 echo "[INFO] Runtime verification passed (binary: ${pwn_binary})"
+python3 "$REPO_ROOT/scripts/apply_pwn_tft_layout.py" || echo "[WARN] Could not restore TFT layout"
 
 write_status "installed" "Pwnagotchi installed successfully. Use Ragnar dashboard to launch." "complete"
 echo "[INFO] =========================================="

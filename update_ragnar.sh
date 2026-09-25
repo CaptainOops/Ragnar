@@ -710,6 +710,8 @@ else
     echo -e "${GREEN}No Pwnagotchi installation found or migration script missing. Skipping.${NC}"
 fi
 
+python3 "$ragnar_PATH/scripts/apply_pwn_tft_layout.py" || echo "[WARN] Could not restore TFT layout"
+
 echo -e "${BLUE}Step 6.8: Provisioning radios + network tools (background)...${NC}"
 # rfkill unblock, network diagnostic tools, and lldpd switch decoding now
 # live in one shared script so the in-app Update button provisions the same
