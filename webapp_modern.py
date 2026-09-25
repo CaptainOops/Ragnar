@@ -14156,6 +14156,42 @@ def api_power():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/power/usb-current', methods=['POST'])
+def api_power_usb_current():
+    """Set usb_max_current_enable in config.txt (Pi 5 family only).
+
+    Raises the firmware's 600 mA cap on all USB ports together to 1.6 A.
+    Takes effect after a reboot; the response says so via pending_reboot.
+    """
+    try:
+        import power_tools
+        import power_budget
+        body = request.get_json(silent=True) or {}
+        result = power_tools.set_usb_max_current(bool(body.get('enable', True)))
+        power_budget.assess(force=True)
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"USB current config error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/power/test', methods=['GET', 'POST'])
+def api_power_test():
+    """Idle-vs-load power test. POST {duration, loads:[cpu,sdr,wifi]} starts
+    it in the background; GET returns progress and the last result."""
+    try:
+        import power_tools
+        if request.method == 'POST':
+            body = request.get_json(silent=True) or {}
+            result = power_tools.start_test(body.get('duration', 40),
+                                            body.get('loads') or [])
+            return jsonify(result), (200 if result.get('success') else 409)
+        return jsonify(power_tools.test_status())
+    except Exception as e:
+        logger.error(f"Power test error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/wardriving/stop', methods=['POST'])
 def wardriving_stop():
     """Stop the current wardriving session.

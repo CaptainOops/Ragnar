@@ -378,6 +378,45 @@
             border-color: #0ea5e9;
             box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.5);
         }
+        /* System tab: stat cards + power panel */
+        .sys-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        @media (min-width: 640px) { .sys-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
+        .sys-stat { padding: 12px 14px; min-width: 0; }
+        .sys-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; }
+        .sys-stat-value { font-size: 1.5rem; font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sys-stat-sub { font-size: 12px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sys-bar { height: 5px; background: #334155; border-radius: 999px; margin-top: 8px; overflow: hidden; }
+        .sys-bar-fill { height: 100%; background: #3b82f6; border-radius: 999px; transition: width .3s ease; }
+        .pw-muted { font-size: 12px; color: #94a3b8; }
+        .pw-ok { color: #6ee7b7; } .pw-warn { color: #fcd34d; } .pw-bad { color: #fca5a5; }
+        .pw-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 12px; }
+        .pw-status-title { font-size: 1.05rem; font-weight: 600; }
+        .pw-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+        @media (min-width: 768px) { .pw-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+        .pw-tile { background: rgba(15, 23, 42, .6); border: 1px solid #1e293b; border-radius: 8px; padding: 8px 10px; min-width: 0; }
+        .pw-tile-label { font-size: 11px; color: #94a3b8; }
+        .pw-tile-value { font-size: 1.05rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .pw-section { border-top: 1px solid #1e293b; padding-top: 10px; margin-top: 10px; }
+        .pw-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; margin-bottom: 6px; }
+        .pw-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; padding: 3px 0; }
+        .pw-row > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .pw-row > :last-child { white-space: nowrap; font-family: ui-monospace, monospace; }
+        .pw-fix { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; background: rgba(15, 23, 42, .6); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; margin-top: 6px; }
+        .pw-fix-text { font-size: 13px; min-width: 0; flex: 1 1 220px; }
+        .pw-btn { font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; cursor: pointer; white-space: nowrap; min-height: 36px; }
+        .pw-btn:hover { background: #334155; }
+        .pw-btn:disabled { opacity: .5; cursor: default; }
+        .pw-btn-primary { background: #0284c7; border-color: #0284c7; color: #fff; }
+        .pw-btn-primary:hover { background: #0369a1; }
+        .pw-btn-warn { background: #b45309; border-color: #b45309; color: #fff; }
+        .pw-test-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+        .pw-loads { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+        .pw-loads label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+        .pw-test-run { display: flex; gap: 8px; align-items: center; }
+        .pw-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+        .pw-table th { text-align: left; font-weight: 500; color: #94a3b8; font-size: 12px; padding: 4px 6px; }
+        .pw-table td { padding: 4px 6px; border-top: 1px solid #1e293b; font-family: ui-monospace, monospace; }
+        .pw-table td:first-child { font-family: inherit; color: #cbd5e1; }
         .wifi-hm-btn {
             display: inline-flex;
             align-items: center;
@@ -5432,7 +5471,7 @@
         <div id="system-tab" class="tab-content hidden">
             <div class="glass rounded-xl p-6">
                 <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-2xl font-bold">System Monitoring</h2>
+                    <h2 class="text-2xl font-bold">System</h2>
                     <button onclick="refreshSystemStatus()" class="refresh-btn bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded-lg transition-colors">
                         <svg class="w-4 h-4 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
@@ -5440,216 +5479,125 @@
                         Refresh
                     </button>
                 </div>
-                
-                <!-- Temperature Monitoring (if available) -->
-                <div id="temperature-section" class="glass-card p-4 mb-6 hidden">
-                    <h3 class="font-semibold mb-4">Temperature Sensors</h3>
-                    <div id="temperature-display" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                        <!-- Temperature data will be populated here -->
+
+                <!-- Overview: one compact stat per card -->
+                <div class="sys-stats mb-6">
+                    <div class="glass-card sys-stat">
+                        <div class="sys-stat-label">CPU</div>
+                        <div class="sys-stat-value" id="cpu-usage">--</div>
+                        <div class="sys-stat-sub" id="cpu-details">&nbsp;</div>
+                        <div class="sys-bar"><div id="cpu-progress" class="sys-bar-fill" style="width:0%"></div></div>
                     </div>
-                </div>
-
-                <!-- System Overview -->
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-                    <!-- CPU Card -->
-                    <div class="glass-card p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">CPU Usage</h3>
-                            <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path>
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="cpu-usage">--</div>
-                        <div class="text-xs text-gray-400" id="cpu-details">-- cores</div>
-                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
-                            <div id="cpu-progress" class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
+                    <div class="glass-card sys-stat">
+                        <div class="sys-stat-label">Memory</div>
+                        <div class="sys-stat-value" id="memory-usage">--</div>
+                        <div class="sys-stat-sub" id="memory-details">&nbsp;</div>
+                        <div class="sys-bar"><div id="memory-progress" class="sys-bar-fill" style="width:0%"></div></div>
                     </div>
-                    
-                    <!-- Memory Card -->
-                    <div class="glass-card p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">Memory</h3>
-                            <svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path>
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="memory-usage">--</div>
-                        <div class="text-xs text-gray-400" id="memory-details">-- / --</div>
-                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
-                            <div id="memory-progress" class="bg-green-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
+                    <div class="glass-card sys-stat">
+                        <div class="sys-stat-label">Swap</div>
+                        <div class="sys-stat-value" id="swap-usage">--</div>
+                        <div class="sys-stat-sub" id="swap-details">&nbsp;</div>
+                        <div class="sys-bar"><div id="swap-progress" class="sys-bar-fill" style="width:0%"></div></div>
                     </div>
-
-                    <!-- Swap Card -->
-                    <div class="glass-card p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">Swap</h3>
-                            <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4h7v7H4V4zm9 9h7v7h-7v-7zM4 13h3m10-2h3m-6 0h3M4 17h3" />
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="swap-usage">--</div>
-                        <div class="text-xs text-gray-400" id="swap-details">-- / --</div>
-                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
-                            <div id="swap-progress" class="bg-cyan-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
+                    <div class="glass-card sys-stat">
+                        <div class="sys-stat-label">Disk</div>
+                        <div class="sys-stat-value" id="disk-usage">--</div>
+                        <div class="sys-stat-sub" id="disk-details">&nbsp;</div>
+                        <div class="sys-bar"><div id="disk-progress" class="sys-bar-fill" style="width:0%"></div></div>
                     </div>
-                    
-                    <!-- Disk Card -->
-                    <div class="glass-card p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">Disk Usage</h3>
-                            <svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="disk-usage">--</div>
-                        <div class="text-xs text-gray-400" id="disk-details">-- / --</div>
-                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
-                            <div id="disk-progress" class="bg-yellow-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
+                    <div class="glass-card sys-stat">
+                        <div class="sys-stat-label">Temperature</div>
+                        <div class="sys-stat-value" id="temp-usage">--</div>
+                        <div class="sys-stat-sub" id="temp-details">&nbsp;</div>
                     </div>
-
-<!-- Final Power & UPS Card with Address Selector -->
-<div class="glass-card p-4 flex flex-col justify-between">
-    <div class="flex items-center justify-between mb-2">
-        <h3 class="font-semibold text-sm text-gray-200">Power & UPS</h3>
-        <!-- Fixed Battery Icon Container -->
-        <div class="relative w-10 h-6 border-2 border-gray-500 rounded p-0.5 flex items-center bg-gray-950/40">
-            <div class="absolute -right-[5px] top-[5px] w-[3px] h-[10px] bg-gray-400 rounded-r-sm"></div>
-            <!-- Inner bar for battery level -->
-            <div id="mini-bat-fill" class="h-full bg-emerald-500 rounded-sm transition-all duration-500" style="width: 0%;"></div>
-        </div>
-    </div>
-    
-    <div class="flex items-baseline justify-between mt-2">
-        <div id="mini-bat-pct" class="text-2xl font-bold text-white">--%</div>
-        <div id="mini-bat-volt" class="text-xs text-gray-400 font-mono">-- V</div>
-    </div>
-
-    <!-- Active I2C Device Address Settings Dropdown Selector -->
-    <div class="flex items-center justify-between pt-2 mt-3 border-t border-gray-700/40">
-        <label for="i2c-select" class="text-[10px] font-medium text-gray-400 uppercase tracking-wider">I2C Address:</label>
-        <select id="i2c-select" class="bg-gray-900 border border-gray-700 text-white text-xs rounded p-1 focus:ring-1 focus:ring-indigo-500 font-mono cursor-pointer" onchange="changeI2CAddress(this.value)">
-            <option value="auto">Auto-Detect</option>
-            <option value="0x32">0x32 (Clone)</option>
-            <option value="0x36">0x36 (Original)</option>
-            <option value="0x62">0x62 (Alternative)</option>
-        </select>
-    </div>
-</div>
-
-
-                    <!-- Battery Card (PiSugar - shown only when detected) -->
-                    <div id="battery-card" class="glass-card p-4 hidden">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">Battery</h3>
-                            <svg id="battery-icon" class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6h16a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V7a1 1 0 011-1zm18 4v4" />
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="battery-usage">--</div>
-                        <div class="text-xs text-gray-400" id="battery-details">PiSugar</div>
-                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
-                            <div id="battery-progress" class="bg-emerald-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
+                    <div class="glass-card sys-stat">
+                        <div class="sys-stat-label">Uptime</div>
+                        <div class="sys-stat-value" id="uptime-display">--</div>
+                        <div class="sys-stat-sub" id="uptime-details">&nbsp;</div>
                     </div>
-
-                    <!-- Uptime Card -->
-                    <div class="glass-card p-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">Uptime</h3>
-                            <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="uptime-display">--</div>
-                        <div class="text-xs text-gray-400">System running</div>
+                    <div id="power-card" class="glass-card sys-stat hidden">
+                        <div class="sys-stat-label">Power</div>
+                        <div class="sys-stat-value" id="power-card-status">--</div>
+                        <div class="sys-stat-sub" id="power-card-details">&nbsp;</div>
                     </div>
-
-                    <!-- Power / Supply Card (from the SoC throttle register) -->
-                    <div id="power-card" class="glass-card p-4 hidden">
-                        <div class="flex items-center justify-between mb-2">
-                            <h3 class="font-semibold text-sm">Power</h3>
-                            <svg id="power-card-icon" class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                            </svg>
-                        </div>
-                        <div class="text-2xl font-bold" id="power-card-status">--</div>
-                        <div class="text-xs text-gray-400" id="power-card-details">Supply health</div>
+                    <!-- PiSugar (only when detected) -->
+                    <div id="battery-card" class="glass-card sys-stat hidden">
+                        <div class="sys-stat-label">Battery</div>
+                        <div class="sys-stat-value" id="battery-usage">--</div>
+                        <div class="sys-stat-sub" id="battery-details">&nbsp;</div>
+                        <div class="sys-bar"><div id="battery-progress" class="sys-bar-fill" style="width:0%"></div></div>
                     </div>
-
-                    <!-- UPS Lite Management Card -->
-                    <div class="glass-card p-4 flex flex-col justify-between">
-                        <div class="flex items-center justify-between mb-4">
-                            <div class="flex items-center gap-3">
-                                <!-- Graphical Miniature Battery Vector Component -->
-                                <div class="relative w-10 h-6 border-2 border-gray-400 rounded-md p-0.5 flex items-center">
-                                    <div class="absolute -right-[5px] top-[4px] w-[3px] h-[10px] bg-gray-400 rounded-r-sm"></div>
-                                    <div id="mini-bat-fill" class="h-full bg-green-500 rounded-sm transition-all duration-500" style="width: 0%;"></div>
-                                </div>
-                                <div>
-                                    <div class="text-xs font-semibold text-gray-200">UPS Power</div>
-                                    <div id="mini-bat-volt" class="text-[10px] text-gray-400 font-mono">-- V</div>
-                                </div>
-                            </div>
-                            <!-- Absolute Numeric Percentage Output -->
-                            <div id="mini-bat-pct" class="text-2xl font-bold text-white font-sans">--%</div>
-                        </div>
-
-                        <!-- Interface I2C Device Address Settings Dropdown Selector -->
-                        <div class="flex items-center justify-between pt-2 border-t border-gray-700/40">
-                            <label for="i2c-select" class="text-xs font-medium text-gray-400">I2C Device Address:</label>
-                            <select id="i2c-select" class="bg-gray-900 border border-gray-700 text-white text-xs rounded-md p-1 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 font-mono cursor-pointer" onchange="changeI2CAddress(this.value)">
-                                <option value="auto" class="bg-gray-900 text-white">Auto-Detect</option>
-                                <option value="0x32" class="bg-gray-900 text-white">0x32 (Clone v1.2)</option>
-                                <option value="0x36" class="bg-gray-900 text-white">0x36 (Original)</option>
-                                <option value="0x62" class="bg-gray-900 text-white">0x62 (Alternative)</option>
+                    <!-- UPS Lite (ups_api.py, only when it reports) -->
+                    <div id="ups-card" class="glass-card sys-stat hidden">
+                        <div class="sys-stat-label">UPS</div>
+                        <div class="sys-stat-value" id="mini-bat-pct">--</div>
+                        <div class="sys-stat-sub" id="mini-bat-volt">&nbsp;</div>
+                        <div class="sys-bar"><div id="mini-bat-fill" class="sys-bar-fill" style="width:0%"></div></div>
+                        <label class="sys-stat-sub" style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:8px">I2C
+                            <select id="i2c-select" class="wifi-hm-select" onchange="changeI2CAddress(this.value)">
+                                <option value="auto">Auto</option>
+                                <option value="0x32">0x32 (clone)</option>
+                                <option value="0x36">0x36 (original)</option>
+                                <option value="0x62">0x62 (alt)</option>
                             </select>
-                        </div>
+                        </label>
                     </div>
                 </div>
 
-                <!-- Power & Supply detail — throttle flags + estimated draw budget -->
+                <!-- Power & Supply -->
                 <div id="power-detail-panel" class="glass-card p-4 mb-6 hidden">
-                    <div class="flex items-center justify-between mb-4">
-                        <h3 class="font-semibold flex items-center gap-2"><span>⚡</span> Power &amp; Supply</h3>
-                        <span class="text-[11px] text-gray-500">measured throttle register + estimated draw</span>
-                    </div>
+                    <h3 class="font-semibold mb-3">Power &amp; Supply</h3>
                     <div id="power-detail-body" class="text-sm text-gray-300">Loading…</div>
                 </div>
-                
-                <!-- Detailed Sections -->
+
+                <!-- Power test -->
+                <div id="power-test-panel" class="glass-card p-4 mb-6 hidden">
+                    <div class="flex items-center justify-between gap-3 mb-3">
+                        <h3 class="font-semibold">Power test</h3>
+                        <span class="pw-muted">idle phase, then load phase</span>
+                    </div>
+                    <div class="pw-test-controls">
+                        <div id="power-test-loads" class="pw-loads"></div>
+                        <div class="pw-test-run">
+                            <select id="power-test-duration" class="wifi-hm-select">
+                                <option value="20">20 s</option>
+                                <option value="40" selected>40 s</option>
+                                <option value="60">60 s</option>
+                                <option value="120">120 s</option>
+                            </select>
+                            <button id="power-test-btn" onclick="startPowerTest()" class="pw-btn pw-btn-primary">Run test</button>
+                        </div>
+                    </div>
+                    <div id="power-test-body" class="mt-3"></div>
+                </div>
+
+                <!-- Processes + interfaces -->
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <!-- Process Monitor -->
                     <div class="glass-card p-4">
                         <div class="flex items-center justify-between mb-4">
-                            <h3 class="font-semibold">Top Processes</h3>
-                            <div class="flex space-x-2">
+                            <h3 class="font-semibold">Top processes</h3>
+                            <div class="flex gap-2">
                                 <button onclick="sortProcesses('cpu')" class="process-sort-btn text-xs px-2 py-1 rounded bg-Ragnar-600 text-white" data-sort="cpu">CPU</button>
                                 <button onclick="sortProcesses('memory')" class="process-sort-btn text-xs px-2 py-1 rounded bg-gray-600 text-white" data-sort="memory">Memory</button>
                             </div>
                         </div>
                         <div id="process-list" class="space-y-2 max-h-64 overflow-y-auto scrollbar-thin">
-                            <p class="text-gray-400 text-center py-4">Loading processes...</p>
+                            <p class="text-gray-400 text-center py-4">Loading…</p>
                         </div>
                     </div>
-                    
-                    <!-- Network Interfaces -->
                     <div class="glass-card p-4">
-                        <h3 class="font-semibold mb-4">Network Interfaces</h3>
+                        <h3 class="font-semibold mb-4">Network interfaces</h3>
                         <div id="network-interfaces" class="space-y-3 max-h-64 overflow-y-auto scrollbar-thin">
-                            <p class="text-gray-400 text-center py-4">Loading network interfaces...</p>
+                            <p class="text-gray-400 text-center py-4">Loading…</p>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Network Statistics -->
+
                 <div class="glass-card p-4 mt-6">
-                    <h3 class="font-semibold mb-4">Network Statistics</h3>
+                    <h3 class="font-semibold mb-4">Network traffic</h3>
                     <div id="network-stats" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <p class="text-gray-400 col-span-full text-center py-4">Loading network statistics...</p>
+                        <p class="text-gray-400 col-span-full text-center py-4">Loading…</p>
                     </div>
                 </div>
             </div>
@@ -8815,99 +8763,57 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260924-smtp-watch-v2"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260925-system-power"></script>
 
 
 
 <script>
+// UPS Lite telemetry, written by ups_api.py to /battery.json. The card stays
+// hidden unless that service is running, so boards without a UPS show nothing.
 function runBatteryTelemetry() {
-    fetch('/battery.json')
-        .then(response => response.json())
+    fetch('/battery.json', { cache: 'no-store' })
+        .then(response => response.ok ? response.json() : null)
         .then(data => {
+            const card = document.getElementById('ups-card');
+            if (!card) return;
+            if (!data) { card.classList.add('hidden'); return; }
+            card.classList.remove('hidden');
             const pctTxt = document.getElementById('mini-bat-pct');
             const voltTxt = document.getElementById('mini-bat-volt');
             const fill = document.getElementById('mini-bat-fill');
             const selectEl = document.getElementById('i2c-select');
-            
-            // Sync selection dropdown configuration with persisted database address
-            if (data.saved_address && selectEl) {
-                if (selectEl.value !== data.saved_address) {
-                    selectEl.value = data.saved_address;
-                }
+            if (data.saved_address && selectEl && selectEl.value !== data.saved_address) {
+                selectEl.value = data.saved_address;
             }
-
-            // Process active hardware UPS module telemetry metrics
             if (data.status === 'ok') {
                 const pct = data.capacity;
-                const volt = data.voltage;
-                const isCharging = data.charging;
-                
-                // Update typography metrics and dynamic layout visibility utility states
-                if (pctTxt) {
-                    pctTxt.innerText = isCharging ? '⚡ ' + pct + '%' : pct + '%';
-                    if (isCharging) {
-                        pctTxt.className = "text-2xl font-bold text-emerald-400 font-sans animate-pulse";
-                    } else if (pct <= 15) {
-                        pctTxt.className = "text-2xl font-bold text-red-500 font-sans animate-pulse";
-                    } else if (pct <= 40) {
-                        pctTxt.className = "text-2xl font-bold text-amber-500 font-sans";
-                    } else {
-                        pctTxt.className = "text-2xl font-bold text-white font-sans";
-                    }
-                }
-                
-                if (voltTxt) {
-                    voltTxt.innerText = volt.toFixed(2) + (isCharging ? ' V (Charging)' : ' V');
-                }
-                
-                // Render battery filling bar elements via raw DOM style property overrides
-                if (fill) {
-                    fill.style.display = 'block';
-                    fill.style.height = '100%';
-                    fill.style.width = pct + '%';
-                    fill.style.transition = 'width 0.5s ease';
-                    fill.className = "rounded-sm";
-
-                    if (isCharging) {
-                        fill.style.backgroundColor = '#34d399'; // Tailwind emerald-400
-                    } else {
-                        if (pct <= 15) {
-                            fill.style.backgroundColor = '#ef4444'; // Tailwind red-500
-                        } else if (pct <= 40) {
-                            fill.style.backgroundColor = '#f59e0b'; // Tailwind amber-500
-                        } else {
-                            fill.style.backgroundColor = '#10b981'; // Tailwind emerald-500
-                        }
-                    }
-                }
+                const charging = data.charging;
+                const tone = charging ? '#34d399' : pct <= 15 ? '#ef4444' : pct <= 40 ? '#f59e0b' : '#10b981';
+                pctTxt.textContent = (charging ? '⚡ ' : '') + pct + '%';
+                pctTxt.style.color = pct <= 40 && !charging ? tone : '';
+                voltTxt.textContent = Number(data.voltage).toFixed(2) + ' V' + (charging ? ' · charging' : '');
+                fill.style.width = pct + '%';
+                fill.style.background = tone;
             } else {
-                // Standby / Fallback layout state if the JSON reports error
-                if (pctTxt) {
-                    pctTxt.innerText = "--%";
-                    pctTxt.className = "text-2xl font-bold text-gray-500 font-sans";
-                }
-                if (voltTxt) {
-                    voltTxt.innerText = "-- V";
-                }
-                if (fill) {
-                    fill.style.width = '0%';
-                    fill.style.backgroundColor = 'transparent';
-                    fill.className = "rounded-sm";
-                }
+                pctTxt.textContent = '--';
+                pctTxt.style.color = '';
+                voltTxt.textContent = 'Not detected at this address';
+                fill.style.width = '0%';
             }
         })
-        .catch(err => console.log('UPS Telemetry Sync Error:', err));
+        .catch(() => {
+            const card = document.getElementById('ups-card');
+            if (card) card.classList.add('hidden');
+        });
 }
 
 function changeI2CAddress(val) {
-    // Execute a standard cross-origin fetch to the Python API webhook endpoint on port 8080
-    fetch('http://' + window.location.hostname + ':8080/api/set_address?addr=' + val)
-        .then(response => response.json())
-        .then(data => console.log('I2C device address updated successfully:', data))
-        .catch(err => console.log('I2C address push webhook failed:', err));
+    // ups_api.py listens on its own port (8080).
+    fetch('http://' + window.location.hostname + ':8080/api/set_address?addr=' + encodeURIComponent(val))
+        .then(() => setTimeout(runBatteryTelemetry, 1500))
+        .catch(err => console.log('UPS address change failed:', err));
 }
 
-// Instantiate routine daemon triggers locked to exactly 60 seconds
 runBatteryTelemetry();
 setInterval(runBatteryTelemetry, 60000);
 </script>

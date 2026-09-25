@@ -936,6 +936,21 @@ EOF
         echo 'dtparam=watchdog=on' >> "$boot_cfg"
         log "INFO" "Enabled hardware watchdog in $boot_cfg (applies after reboot)"
     fi
+    # --- Pi 5 USB current limit -------------------------------------------
+    # The Pi 5 firmware caps all USB ports together at 600 mA unless it sees a
+    # 5 V/5 A USB-PD supply, which almost no charger or power bank offers. A USB
+    # Wi-Fi adapter plus an SDR or GPS exceeds that and the adapter drops off
+    # USB in a reconnect loop. Raise it to 1.6 A. An existing setting (=0 or =1)
+    # is the operator's choice and is left alone. Opt out: RAGNAR_USB_MAX_CURRENT=0.
+    if [ -n "$boot_cfg" ] && grep -qaE 'Raspberry Pi 5|Raspberry Pi 500' /proc/device-tree/model 2>/dev/null; then
+        if grep -qE '^[[:space:]]*usb_max_current_enable[[:space:]]*=' "$boot_cfg"; then
+            log "INFO" "usb_max_current_enable already set in $boot_cfg; leaving it"
+        elif [ "${RAGNAR_USB_MAX_CURRENT:-1}" != "0" ]; then
+            cp "$boot_cfg" "${boot_cfg}.ragnar-$(date +%Y%m%d-%H%M%S)"
+            printf '\n[all]\n# Ragnar: Pi 5 USB current limit (600 mA default, 1.6 A when =1)\nusb_max_current_enable=1\n' >> "$boot_cfg"
+            log "INFO" "Pi 5: raised USB current limit to 1.6 A in $boot_cfg (applies after reboot)"
+        fi
+    fi
     # systemd opens /dev/watchdog and resets the box if it (or the kernel) hangs.
     sed -i '/^#\?RuntimeWatchdogSec=/d;/^#\?RebootWatchdogSec=/d' /etc/systemd/system.conf
     printf 'RuntimeWatchdogSec=15\nRebootWatchdogSec=2min\n' >> /etc/systemd/system.conf
