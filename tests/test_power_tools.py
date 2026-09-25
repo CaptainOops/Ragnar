@@ -89,3 +89,68 @@ def test_rtl_sdr_not_counted_as_wifi():
         'vendor_id': '0bda', 'product_id': '2838', 'product': 'RTL2838UHIDIR',
         'manufacturer': 'Realtek', 'class': '00'})
     assert role == 'RTL-SDR receiver' and peak == 300
+
+
+def _gps_samples(n, age=0.5, fix=True, snr=40, used=8, view=12):
+    return [{'gps': {'age_s': age, 'fix': fix, 'sats_used': used,
+                     'sats_view': view, 'snr_max': snr}} for _ in range(n)]
+
+
+def test_gps_summary_counts_silence_and_signal():
+    g = pt._summarise_gps(_gps_samples(5) + _gps_samples(3, age=9.0))
+    assert g['samples'] == 8 and g['silent_s'] == 3 and g['max_age_s'] == 9.0
+    assert g['fix_pct'] == 100 and g['snr_max_avg'] == 40
+    assert pt._summarise_gps([{}]) is None       # GPS not watched
+
+
+def test_gps_verdicts():
+    usb = {'applies': False}
+    base = pt._summarise([], 0)
+    idle = dict(base, gps=pt._summarise_gps(_gps_samples(10)))
+    # RF desense: SNR drops, data keeps flowing
+    load = dict(base, gps=pt._summarise_gps(_gps_samples(10, snr=30, fix=False)))
+    v = pt._verdict(idle, load, {}, usb)
+    assert not v['ok']
+    assert any('RF interference' in t for t in v['issues'])
+    assert any('lost its fix' in t for t in v['issues'])
+    # Receiver goes silent under load
+    load = dict(base, gps=pt._summarise_gps(_gps_samples(4) + _gps_samples(6, age=None)))
+    v = pt._verdict(idle, load, {}, usb)
+    assert any('went silent for 6 s' in t for t in v['issues'])
+    # Healthy GPS through both phases
+    v = pt._verdict(idle, dict(base, gps=idle['gps']), {}, usb)
+    assert v['ok']
+    # Requested but no receiver
+    v = pt._verdict(base, base, {'gps_error': 'no GPS receiver found'}, usb)
+    assert v['issues'] == ['GPS not monitored: no GPS receiver found.']
+
+
+def test_gps_ports_skip_espressif(monkeypatch):
+    monkeypatch.setattr(pt.glob, 'glob', lambda pat: {
+        '/dev/ttyACM*': ['/dev/ttyACM0', '/dev/ttyACM1'], '/dev/ttyUSB*': []}[pat])
+    monkeypatch.setattr(pt.os.path, 'realpath', lambda p: '/sys/dev/' + p.split('/')[-2])
+    monkeypatch.setattr(pt, '_read', lambda p, binary=False:
+                        {'/sys/dev/ttyACM0/idVendor': '1546',
+                         '/sys/dev/ttyACM1/idVendor': '303a'}.get(p))
+    assert pt._gps_ports() == ['/dev/ttyACM0']
+
+
+def test_run_with_fake_gps(monkeypatch):
+    class FakeGPS:
+        def get_status(self):
+            import time
+            return {'last_sentence': time.time(), 'has_fix': True, 'satellites': 9,
+                    'satellites_in_view': 14, 'snr_max': 42, 'connected': True}
+    monkeypatch.setattr(pt, 'gps_provider', lambda start=False: FakeGPS())
+    monkeypatch.setattr(pt, '_sample', lambda: {'t': pt.time.time(), 'input_v': 5.2,
+                        'board_w': 3.0, 'temp_c': 50.0, 'throttled': 0})
+    monkeypatch.setattr(pt, '_disconnect_count', lambda: 0)
+    monkeypatch.setattr(pt, 'usb_current_status', lambda: {'applies': False})
+    monkeypatch.setattr(pt.time, 'sleep', lambda s: None)
+    t = [1000.0]
+    monkeypatch.setattr(pt.time, 'time', lambda: t.__setitem__(0, t[0] + 0.5) or t[0])
+    pt._state['running'] = True
+    pt._run_test(10, ['gps'])
+    r = pt._state['result']
+    assert r['phase'] == 'done' and r['verdict']['ok']
+    assert r['load']['gps']['sats_used_avg'] == 9 and r['load_info']['gps_error'] is None

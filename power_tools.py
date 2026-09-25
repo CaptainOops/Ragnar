@@ -18,7 +18,8 @@ Three things power_budget.py deliberately does not do, because they are either
 
 3. **Power test.** An idle phase then a load phase (CPU / SDR streaming / Wi-Fi
    scanning), sampling the input rail, throttle register and temperature every
-   second and counting USB dropouts. It turns "is my supply good enough for this
+   second and counting USB dropouts; a USB GPS can be watched for data gaps,
+   signal loss and a lost fix at the same time. It turns "is my supply good enough for this
    rig?" into a measured answer.
 
 Stdlib only; never raises into the caller. Every privileged step assumes the
@@ -245,6 +246,11 @@ _THROTTLE = ((0, 'under-voltage'), (1, 'ARM frequency capped'),
              (2, 'throttled'), (3, 'soft temperature limit'))
 _lock = threading.Lock()
 _state = {'running': False, 'result': None}
+_GPS_GAP_S = 3          # no NMEA for this long = the receiver stopped talking
+# Set by the webapp: gps_provider(start=bool) returns Ragnar's GPSManager
+# (starting it when start=True and a receiver is present) or None. The test
+# reads that manager rather than opening a serial port Ragnar or gpsd owns.
+gps_provider = None
 
 
 def _sample():
@@ -279,7 +285,47 @@ def _usb_wifi_ifaces():
     return sorted(out)
 
 
+def _gps_ports():
+    """USB serial ports that could be a GPS (ESP32 companions excluded)."""
+    out = []
+    for p in sorted(glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*')):
+        dev = os.path.realpath(f'/sys/class/tty/{os.path.basename(p)}/device')
+        vid = None
+        for _ in range(4):                      # walk up to the USB device
+            vid = (_read(f'{dev}/idVendor') or '').strip()
+            if vid:
+                break
+            dev = os.path.dirname(dev)
+        if vid != '303a':                       # Espressif
+            out.append(p)
+    return out
+
+
+def _gps_sample(gps):
+    if gps is None:
+        return None
+    try:
+        st = gps.get_status()
+    except Exception:
+        return None
+    last = st.get('last_sentence') or 0
+    return {'age_s': round(time.time() - last, 1) if last else None,
+            'fix': bool(st.get('has_fix')),
+            'sats_used': st.get('satellites') or 0,
+            'sats_view': st.get('satellites_in_view') or 0,
+            'snr_max': st.get('snr_max')}
+
+
+def _gps_connected():
+    try:
+        gps = gps_provider(start=False) if gps_provider else None
+        return bool(gps and gps.get_status().get('connected'))
+    except Exception:
+        return False
+
+
 def available_loads():
+    gps_ports = _gps_ports()
     return {
         'cpu': {'available': True, 'label': f'CPU ({os.cpu_count() or 1} cores)'},
         'sdr': {'available': bool(shutil.which('rtl_sdr')),
@@ -287,6 +333,12 @@ def available_loads():
         'wifi': {'available': bool(_usb_wifi_ifaces()),
                  'label': 'USB Wi-Fi scanning ('
                           + (', '.join(_usb_wifi_ifaces()) or 'none') + ')'},
+        # Not a load generator: the receiver is watched through both phases
+        # so a GPS that goes silent or loses signal under load shows up.
+        'gps': {'available': bool(gps_ports) or _gps_connected(),
+                'label': 'USB GPS ('
+                         + (', '.join(os.path.basename(p) for p in gps_ports)
+                            or 'none') + ')'},
     }
 
 
@@ -369,6 +421,25 @@ class _Loads:
             _run(['ip', 'link', 'set', iface, 'down'])
 
 
+def _summarise_gps(samples):
+    g = [s['gps'] for s in samples if s.get('gps')]
+    if not g:
+        return None
+    ages = [x['age_s'] for x in g if x['age_s'] is not None]
+    snr = [x['snr_max'] for x in g if x['snr_max'] is not None]
+    return {
+        'samples': len(g),
+        # seconds in which the receiver had sent nothing for > _GPS_GAP_S
+        'silent_s': sum(1 for x in g
+                        if x['age_s'] is None or x['age_s'] > _GPS_GAP_S),
+        'max_age_s': max(ages) if ages else None,
+        'fix_pct': round(100 * sum(1 for x in g if x['fix']) / len(g)),
+        'sats_used_avg': round(sum(x['sats_used'] for x in g) / len(g), 1),
+        'sats_view_avg': round(sum(x['sats_view'] for x in g) / len(g), 1),
+        'snr_max_avg': round(sum(snr) / len(snr), 1) if snr else None,
+    }
+
+
 def _summarise(samples, disc):
     v = [s['input_v'] for s in samples if s['input_v'] is not None]
     w = [s['board_w'] for s in samples if s['board_w'] is not None]
@@ -385,6 +456,7 @@ def _summarise(samples, disc):
         'temp_max': max(t) if t else None,
         'flags': [label for bit, label in _THROTTLE if now_bits & (1 << bit)],
         'usb_disconnects': disc,
+        'gps': _summarise_gps(samples),
     }
 
 
@@ -403,6 +475,24 @@ def _verdict(idle, load, loads_info, usb):
     if 'soft temperature limit' in load['flags']:
         issues.append('Heat throttling under load.')
         advice.append('Add a fan or heatsink; this is heat, not power.')
+    gi, gl = idle.get('gps'), load.get('gps')
+    if loads_info.get('gps_error'):
+        issues.append(f"GPS not monitored: {loads_info['gps_error']}.")
+    elif gi and gl:
+        if gi['silent_s'] >= gi['samples'] and gl['silent_s'] >= gl['samples']:
+            issues.append('GPS is not sending any data.')
+        elif gl['silent_s'] > gi['silent_s'] + 1:
+            issues.append(f"GPS went silent for {gl['silent_s']} s under load.")
+            advice.append('A GPS that goes silent together with USB dropouts '
+                          'is losing power; otherwise check its cable.')
+        if (gi['snr_max_avg'] is not None and gl['snr_max_avg'] is not None
+                and gi['snr_max_avg'] - gl['snr_max_avg'] >= 4):
+            issues.append(f"GPS signal fell {gi['snr_max_avg'] - gl['snr_max_avg']:.0f} dB "
+                          'under load (RF interference).')
+            advice.append('Move the GPS away from the Wi-Fi adapter and SDR, '
+                          'e.g. on a USB extension cable.')
+        if gi['fix_pct'] >= 90 and gl['fix_pct'] < 50:
+            issues.append('GPS lost its fix under load.')
     if loads_info.get('sdr_error'):
         issues.append(f"SDR load not applied: {loads_info['sdr_error']}.")
     lv, iv = load['input_v_min'], idle['input_v_avg']
@@ -423,6 +513,14 @@ def _run_test(duration, loads):
     _state['result'] = result
     usb = usb_current_status()
     load_gen = None
+    gps, gps_error = None, None
+    if 'gps' in loads:
+        try:
+            gps = gps_provider(start=True) if gps_provider else None
+            if gps is None:
+                gps_error = 'no GPS receiver found'
+        except Exception as e:
+            gps_error = str(e)
     try:
         phases = {}
         for phase in ('idle', 'load'):
@@ -435,12 +533,16 @@ def _run_test(duration, loads):
             end = time.time() + half
             while time.time() < end:
                 samples.append(_sample())
+                if gps is not None:
+                    samples[-1]['gps'] = _gps_sample(gps)
                 done = (len(samples) + (half if phase == 'load' else 0))
                 result['progress'] = min(99, int(100 * done / (half * 2)))
                 result['live'] = samples[-1]
                 time.sleep(max(0, 1 - (time.time() - samples[-1]['t'])))
             phases[phase] = _summarise(samples, _disconnect_count() - d0)
         info = {}
+        if 'gps' in loads:
+            info['gps_error'] = gps_error
         if load_gen:
             load_gen.close()
             if 'sdr' in loads:
@@ -467,7 +569,7 @@ def _run_test(duration, loads):
 
 
 def start_test(duration=40, loads=None):
-    loads = [x for x in (loads or []) if x in ('cpu', 'sdr', 'wifi')]
+    loads = [x for x in (loads or []) if x in ('cpu', 'sdr', 'wifi', 'gps')]
     duration = max(10, min(int(duration or 40), 120))
     with _lock:
         if _state['running']:
