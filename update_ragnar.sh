@@ -574,6 +574,21 @@ if [ -f /etc/systemd/system.conf ]; then
     echo -e "  ${GREEN}✓${NC} systemd watchdog set (RuntimeWatchdogSec=15)"
 fi
 
+echo -e "${BLUE}Step 6.65: Pi 5 USB current limit...${NC}"
+# Pi 5 firmware caps all USB ports together at 600 mA unless a 5 V/5 A PD
+# supply is detected; a Wi-Fi adapter + SDR/GPS exceeds it and drops off USB.
+# Raise to 1.6 A unless the operator already set it (=0 is respected) or
+# opted out with RAGNAR_USB_MAX_CURRENT=0. Applies on the next reboot.
+if [ -n "$BOOT_CFG" ] && grep -qaE 'Raspberry Pi 5|Raspberry Pi 500' /proc/device-tree/model 2>/dev/null; then
+    if grep -qE '^[[:space:]]*usb_max_current_enable[[:space:]]*=' "$BOOT_CFG"; then
+        echo -e "  ${GREEN}✓${NC} usb_max_current_enable already set; leaving it"
+    elif [ "${RAGNAR_USB_MAX_CURRENT:-1}" != "0" ]; then
+        cp "$BOOT_CFG" "${BOOT_CFG}.ragnar-$(date +%Y%m%d-%H%M%S)"
+        printf '\n[all]\n# Ragnar: Pi 5 USB current limit (600 mA default, 1.6 A when =1)\nusb_max_current_enable=1\n' >> "$BOOT_CFG"
+        echo -e "  ${GREEN}✓${NC} Raised Pi 5 USB current limit to 1.6 A (reboot to apply)"
+    fi
+fi
+
 echo -e "${BLUE}Step 6.7: Refreshing kiosk wrapper (if installed)...${NC}"
 # Existing kiosk installs keep a COPY of the wrapper at /usr/local/bin; the
 # active copy only updates when kiosk is re-installed. Refresh it here so the

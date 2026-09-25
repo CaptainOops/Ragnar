@@ -54,6 +54,14 @@ _KNOWN_VENDORS = {
     '0424': ('USB Ethernet/hub (onboard on Pi 3B)', 150, 250),  # Microchip/SMSC
 }
 
+# vendor:product -> (role, typ_ma, peak_ma) for SDR receivers.
+_SDR_IDS = {
+    '0bda:2838': ('RTL-SDR receiver', 280, 300),
+    '0bda:2832': ('RTL-SDR receiver', 280, 300),
+    '1d50:6089': ('HackRF One SDR', 400, 550),
+    '1d50:60a1': ('Airspy SDR', 300, 400),
+}
+
 # Peak draw for the named reference configs, so the two "max power" profiles
 # the operator asked about are computed from the same figures as the live view.
 _ALFA_PEAK = 900
@@ -72,6 +80,14 @@ def _classify(dev):
     vid = (dev.get('vendor_id') or '').lower()
     product = ' '.join(str(dev.get(k) or '') for k in ('product', 'manufacturer'))
     cls = dev.get('class')
+
+    # SDR dongles first: RTL-SDRs share Realtek's 0bda vendor id with Wi-Fi
+    # and Ethernet adapters, and would otherwise be counted as a 600 mA radio.
+    usb_id = f"{vid}:{(dev.get('product_id') or '').lower()}"
+    if usb_id in _SDR_IDS:
+        return _SDR_IDS[usb_id]
+    if re.search(r'rtl28[23]\d|dvb-t|sdr', product, re.I):
+        return ('RTL-SDR receiver', 280, 300)
 
     # Product-string overrides first — most specific signal we have.
     if _ETH_HINT.search(product):
@@ -150,37 +166,26 @@ def _severity(thr):
 
 
 def _effects(thr, sev):
-    """Plain-language 'what this does to Ragnar' — the honest mechanism, so the
-    operator knows a warning is real and what it costs, not just that a light
-    is on."""
+    """Short plain-language lines: what the throttle flags mean for Ragnar."""
     if not thr:
         return []
     now = set(thr.get('now') or [])
     occurred = set(thr.get('occurred') or [])
     out = []
     if 'under-voltage' in now:
-        out.append('Under-voltage right now: the 5 V rail is below spec. The '
-                   'firmware caps the ARM clock to cut current draw, so the CPU '
-                   'is running slower until the supply recovers.')
-        out.append('A deeper dip browns out and resets the whole board. The OS '
-                   'never gets to write a log line, so it looks like an '
-                   'unexplained crash — this is that cause, made visible.')
+        out.append('Input is below 4.63 V right now; the CPU is slowed and a '
+                   'deeper dip resets the board.')
     elif 'under-voltage' in occurred:
-        out.append('Under-voltage has occurred since boot: the supply had no '
-                   'headroom at some point. Expect resets under load — adding a '
-                   'USB Wi-Fi adapter (an Alfa pulls ~0.5–0.9 A) can push it '
-                   'over the edge.')
-    if 'ARM frequency capped' in now and 'under-voltage' not in now:
-        out.append('The ARM clock is capped right now (power or thermal), so '
-                   'scans and analysis run slower than normal.')
-    if 'currently throttled' in now and 'under-voltage' not in now:
-        out.append('The SoC is actively throttling right now.')
-    if ('soft temperature limit' in now or 'soft temperature limit' in occurred):
-        out.append('A soft temperature limit was hit — that is heat, not power; '
-                   'improve airflow rather than the PSU.')
+        out.append('Input dropped below 4.63 V since boot; expect resets '
+                   'under load.')
+    if 'soft temperature limit' in now or 'soft temperature limit' in occurred:
+        out.append('Heat, not power, capped the CPU clock; add a fan or '
+                   'heatsink.')
+    elif ('ARM frequency capped' in now or 'currently throttled' in now) \
+            and 'under-voltage' not in now:
+        out.append('The CPU clock is capped right now.')
     if sev == 'ok':
-        out.append('Supply is healthy: no under-voltage or throttling recorded '
-                   'since boot.')
+        out.append('No under-voltage or throttling since boot.')
     return out
 
 
@@ -243,10 +248,22 @@ def _build():
         peripherals_typ += typ_ma or 0
         peripherals_peak += peak_ma or 0
 
+    try:
+        import power_tools
+        usb_power = power_tools.usb_current_status()
+        dropouts = power_tools.usb_dropouts()
+    except Exception:
+        usb_power, dropouts = {'applies': False}, None
+    usb_limit = usb_power.get('usb_limit_ma') if usb_power.get('applies') else None
+
     est_typ = board['base_ma'] + peripherals_typ
     est_peak = board['load_ma'] + peripherals_peak
-    headroom = board['psu_ma'] - est_peak
-    tight = headroom < board['psu_ma'] * 0.15   # <15% margin at peak
+    # A Pi 5 reports what the supply actually negotiated; judge headroom
+    # against that rather than the recommended rating when we have it.
+    psu_detected = usb_power.get('psu_max_ma') if usb_power.get('applies') else None
+    psu_ma = psu_detected or board['psu_ma']
+    headroom = psu_ma - est_peak
+    tight = headroom < psu_ma * 0.15   # <15% margin at peak
 
     # Reference maxima for the two named field configs, on this board.
     profiles = {
@@ -262,10 +279,23 @@ def _build():
         },
     }
     for p in profiles.values():
-        p['fits'] = p['peak_ma'] <= board['psu_ma']
+        p['fits'] = p['peak_ma'] <= psu_ma
+
+    # Heat and power both set the throttle bits; only under-voltage is a
+    # supply problem. Say which, so a hot board isn't reported as a bad PSU.
+    all_flags = set((thr or {}).get('now') or []) | set((thr or {}).get('occurred') or [])
+    cause = None
+    if 'under-voltage' in all_flags:
+        cause = 'power'
+    elif 'soft temperature limit' in all_flags:
+        cause = 'thermal'
+    elif all_flags:
+        cause = 'throttle'
 
     headline = None
-    if sev == 'critical':
+    if sev != 'ok' and cause == 'thermal':
+        headline = 'Heat throttling now' if sev == 'critical' else 'Heat throttled since boot'
+    elif sev == 'critical':
         headline = ('Under-voltage now' if thr and 'under-voltage' in
                     (thr.get('now') or []) else 'Throttled now')
     elif sev == 'warning':
@@ -280,12 +310,15 @@ def _build():
     return {
         'supported': supported,
         'level': sev,
+        'cause': cause,
         'model': model,
         'throttle': thr,
         'temp_c': raw.get('temp_c'),
         'core_volts': raw.get('core_volts'),
         'pmic': raw.get('pmic'),
         'usb_max_current_enabled': raw.get('usb_max_current_enabled'),
+        'usb_power': usb_power,
+        'usb_dropouts': dropouts,
         'board': board,
         'devices': devices,
         'estimate': {
@@ -295,9 +328,14 @@ def _build():
             'peripherals_peak_ma': peripherals_peak,
             'total_typ_ma': est_typ,
             'total_peak_ma': est_peak,
-            'psu_ma': board['psu_ma'],
+            'psu_ma': psu_ma,
+            'psu_detected': bool(psu_detected),
             'headroom_ma': headroom,
             'tight': tight,
+            # Pi 5 only: the firmware's cap on all USB ports together. The
+            # peripherals' peak draw over this drops devices even on a good PSU.
+            'usb_limit_ma': usb_limit,
+            'usb_over': bool(usb_limit and peripherals_peak > usb_limit),
         },
         'profiles': profiles,
         'effects': _effects(thr, sev),
@@ -314,6 +352,7 @@ def _build():
                 'currently throttled' in (thr.get('now') or [])
                 or 'ARM frequency capped' in (thr.get('now') or []))),
             'headline': headline,
+            'cause': cause,
         },
     }
 

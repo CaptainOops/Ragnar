@@ -50,7 +50,7 @@ browse than search.
 - [Gen 2 Hardware](hardware-gen2.md) — reference-build BOM & assembly
 - [Flipper One](flipper-one.md) — feasibility / porting notes
 - [Pwnagotchi Bridge](PWNAGOTCHI.md) — side-by-side install & mode switching
-- [BLE provisioning](ble_provisioning.md) · [Power badge](power.md) · [UPS integration](UPS_INTEGRATION.md)
+- [BLE provisioning](ble_provisioning.md) · [Power (badge, Pi 5 USB limit, power test)](power.md) · [UPS integration](UPS_INTEGRATION.md)
 
 ## Platform & safety
 - [Security & Authentication](SECURITY.md) — hardware-bound login, encryption at rest
