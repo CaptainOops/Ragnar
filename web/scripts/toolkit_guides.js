@@ -54,7 +54,7 @@
       what: 'Finds services that nearby devices advertise through mDNS/Bonjour, such as printers or media players.',
       steps: ['Select the interface connected to the network you want to inspect: usually eth0 or wlan0.', 'Run the discovery.', 'Preview output.txt for service names, resolved addresses and ports.'],
       result: 'A resolved service tells you what a device advertises, rather than every service it runs.',
-      tip: 'Empty output may mean devices are quiet or multicast is filtered. It is not a complete device inventory.'
+      tip: 'Avahi browses all active interfaces; results are filtered to your selection. No results may mean devices are quiet or multicast is filtered.'
     },
     smb_shares: {
       mode: 'Queries one file server',

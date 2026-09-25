@@ -6,7 +6,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-FILES = ['toolkit.py', 'toolkit_api.py', 'payload_workspace.py', 'toolkit_honeypot.py',
+FILES = ['display.py', 'toolkit_activity.py', 'toolkit.py', 'toolkit_api.py', 'payload_workspace.py', 'toolkit_honeypot.py',
          'camera_recon.py', 'webapp_modern.py', 'network_diagnostics.py',
          'web/index_modern.html', 'web/scripts/ragnar_modern.js', 'web/scripts/toolkit.js', 'web/scripts/toolkit_guides.js',
          'docs/TOOLKIT.md', 'docs/RASPYJACK_PORT_AUDIT.md', 'docs/nettools.md']

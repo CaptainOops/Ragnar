@@ -158,6 +158,7 @@ def test_http_rejects_invalid_urls(engine, target):
 
 def test_extra_tool_arguments(engine, tmp_path, monkeypatch):
     calls = []
+    (tmp_path / 'output.txt').write_text('')
     monkeypatch.setattr(engine, 'command', lambda argv, *a, **kw: calls.append(argv))
     for tool, params in [('tls_certificate', {'target': '::1', 'port': 8443}),
                          ('http_headers', {'target': 'https://example.com/?a=1&b=2'}),
@@ -165,7 +166,8 @@ def test_extra_tool_arguments(engine, tmp_path, monkeypatch):
         engine.execute(tool, engine.validate(tool, params), tmp_path, threading.Event())
     assert '[::1]:8443' in calls[0]
     assert calls[1][-2:] == ['--', 'https://example.com/?a=1&b=2']
-    assert '--interface=eth0' in calls[2]
+    assert '--parsable' in calls[2]
+    assert not any(arg.startswith('--interface') for arg in calls[2])
     assert '-N' in calls[3]
 
 

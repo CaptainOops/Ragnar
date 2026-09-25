@@ -26,6 +26,7 @@ import math
 from PIL import Image, ImageDraw, ImageFont
 from init_shared import shared_data  
 from comment import Commentaireia
+from toolkit_activity import draw_activity
 from logger import Logger
 import subprocess  
 from shared import detect_wifi_interface
@@ -1815,6 +1816,7 @@ class Display:
 
     def _commit_netdiag_frame(self, image):
         """Push a rendered netdiag frame to the panel and the web mirror."""
+        draw_activity(image, self.shared_data.font_arial9)
         epd_img = _apply_epd_rotation(image, self.screen_reversed)
         self.epd_helper.display_partial(epd_img)
         self.epd_helper.display_partial(epd_img)
@@ -4586,6 +4588,7 @@ class Display:
 
                 if current_page != PAGE_MAIN or _wd_override:
                     # Non-main pages are fully rendered above, skip to display
+                    draw_activity(image, self.shared_data.font_arial9)
                     epd_img = _apply_epd_rotation(image, self.screen_reversed)
                     self.epd_helper.display_partial(epd_img)
                     self.epd_helper.display_partial(epd_img)
@@ -4611,6 +4614,7 @@ class Display:
                         self._render_main_compact(image, draw, W, H)
                     except Exception as e:
                         logger.debug(f"compact main render error: {e}")
+                    draw_activity(image, self.shared_data.font_arial9)
                     epd_img = _apply_epd_rotation(image, self.screen_reversed)
                     self.epd_helper.display_partial(epd_img)
                     self.epd_helper.display_partial(epd_img)
@@ -4631,6 +4635,7 @@ class Display:
                         self._render_main_horizontal(image, draw, W, H)
                     except Exception as e:
                         logger.debug(f"horizontal main render error: {e}")
+                    draw_activity(image, self.shared_data.font_arial9)
                     epd_img = _apply_epd_rotation(image, self.screen_reversed)
                     self.epd_helper.display_partial(epd_img)
                     self.epd_helper.display_partial(epd_img)
@@ -4746,6 +4751,7 @@ class Display:
                     draw.text((int(4 * sx), y_text), line, font=self.shared_data.font_arialbold, fill=0)
                     y_text += (self.shared_data.font_arialbold.getbbox(line)[3] - self.shared_data.font_arialbold.getbbox(line)[1]) + 3
 
+                draw_activity(image, self.shared_data.font_arial9)
                 if self.screen_reversed and self.screen_reversed in _ROTATION_TRANSPOSE:
                     epd_img = _apply_epd_rotation(image, self.screen_reversed)
                 else:

@@ -3,6 +3,7 @@
   'use strict';
   const el = id => document.getElementById('tk-' + id);
   let catalog = null, busy = false, polling = false, lastTool = null;
+  let previewRequest = 0;
   const paceWrap = document.createElement('div'); paceWrap.id = 'tk-pace-wrap'; paceWrap.hidden = true;
   const paceLabel = document.createElement('label'); paceLabel.htmlFor = 'tk-pace'; paceLabel.textContent = 'Scan pace';
   const paceSelect = document.createElement('select'); paceSelect.id = 'tk-pace';
@@ -39,6 +40,11 @@
     el('description').textContent = tool.description;
     el('dependency').textContent = tool.reason;
     el('submit').disabled = busy || !tool.available;
+    if (['responder', 'packet_replay'].includes(tool.id) &&
+        !(catalog.wired_interfaces || []).includes(el('interface').value)) {
+      el('dependency').textContent = 'Connect Ethernet and select its interface, then refresh the tool list.';
+      el('submit').disabled = true;
+    }
     el('target-wrap').hidden = !tool.field;
     el('target').required = !!tool.field;
     el('target-label').textContent = ({public_ip: 'Public IP address', host: 'Hostname or IP address', url: 'HTTP(S) URL', query: 'Shodan search query', capture_job: 'Capture job ID', mac: 'MAC address'})[tool.field] || 'Target';
@@ -123,14 +129,26 @@
         const name = structured ? 'result.json' : job.artifacts.includes('output.txt') ? 'output.txt' : job.artifacts.includes('result.json') ? 'result.json' : 'events.jsonl';
         if (job.artifacts.includes(name)) {
           const b = document.createElement('button'); b.textContent = 'Preview'; b.title = 'Preview ' + name; b.onclick = async () => {
+            const request = ++previewRequest;
+            const panel = el('preview-wrap');
+            panel.hidden = false;
+            panel.tabIndex = -1;
+            panel.style.scrollMarginTop = '110px';
+            panel.querySelector('h2').textContent = job.name + ' · ' + name;
+            el('summary').replaceChildren();
+            el('preview').textContent = 'Loading result…';
+            panel.focus({preventScroll: true});
+            panel.scrollIntoView({behavior: 'instant', block: 'start'});
             try {
               const response = await fetch('/api/toolkit/jobs/' + encodeURIComponent(job.id) + '/files/' + name);
               if (!response.ok) throw new Error('Could not load artifact.');
               const text = await response.text();
+              if (request !== previewRequest) return;
               summarize(job, text);
               el('preview').textContent = text.slice(0, 150000) + (text.length > 150000 ? '\n… Download the file for the full result.' : '');
               el('preview-wrap').hidden = false;
-            } catch (e) { message('message', e); }
+              panel.scrollIntoView({behavior: 'instant', block: 'start'});
+            } catch (e) { if (request === previewRequest) message('preview', e); }
           }; row.append(b);
         }
       }
@@ -140,6 +158,7 @@
     if (!nodes.length) el('jobs').textContent = 'No Toolkit jobs saved for this network yet.';
   }
   el('tool').addEventListener('change', fields);
+  el('interface').addEventListener('change', fields);
   el('profile').addEventListener('change', () => {
     if (selected()?.id === 'honeypot') el('port').value = catalog.honeypot_profiles[el('profile').value];
   });

@@ -15,6 +15,7 @@ function fixture() {
   const html = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
   const dom = new JSDOM(html, {url: 'http://ragnar.local/', runScripts: 'dangerously'});
   const w = dom.window;
+  w.HTMLElement.prototype.scrollIntoView = function () { w.scrolledTo = this; };
   const intervals = [];
   w.setInterval = (fn, ms) => { intervals.push([fn, ms]); return intervals.length; };
   w.fetch = async () => ({ok: true, json: async () => ({success: true, cams: []})});
@@ -159,5 +160,8 @@ test('port-change and MAC previews show the interpreted result described by thei
     for (const button of w.document.querySelectorAll('#tk-jobs button')) { button.click(); await flush(); }
     assert.equal(requested.filter(url => url.endsWith('/files/result.json')).length, 2);
     assert.equal(requested.filter(url => url.endsWith('/files/output.txt')).length, 0);
+    assert.equal(w.document.getElementById('tk-preview-wrap').hidden, false);
+    assert.equal(w.document.activeElement.id, 'tk-preview-wrap');
+    assert.equal(w.scrolledTo.id, 'tk-preview-wrap');
   } finally { dom.window.close(); }
 });

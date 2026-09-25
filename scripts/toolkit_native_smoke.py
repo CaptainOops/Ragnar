@@ -60,5 +60,28 @@ with tempfile.TemporaryDirectory(prefix='ragnar-toolkit-check-') as temp:
     assert not worker.is_alive()
     assert results[0]['connections'] == 1
     assert kit.interface_address('lo') == '127.0.0.1'
+    for profile, prefix in [('ssh-banner', b'SSH-2.0-'), ('ftp-banner', b'220 ')]:
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            banner_port = probe.getsockname()[1]
+        stop = threading.Event()
+        worker = threading.Thread(target=listen, args=('127.0.0.1', banner_port, profile, 5, root, stop))
+        worker.start()
+        try:
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    client = socket.create_connection(('127.0.0.1', banner_port), timeout=.5)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.05)
+            with client:
+                assert client.recv(4096).startswith(prefix), profile
+        finally:
+            stop.set()
+            worker.join(3)
+        assert not worker.is_alive()
 print(json.dumps({'payload_execution': 'passed', 'honeypot_loopback': 'passed',
-                  'port_conflict': 'passed', 'listener_shutdown': 'passed'}))
+                  'ssh_ftp_banners': 'passed', 'port_conflict': 'passed', 'listener_shutdown': 'passed'}))

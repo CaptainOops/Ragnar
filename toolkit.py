@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 import requests
 from payload_workspace import PayloadWorkspace, check_source
 from toolkit_honeypot import PROFILES, listen as run_honeypot
+from toolkit_activity import activity
 
 
 TOOLS = [
@@ -52,7 +53,7 @@ TOOLS = [
     dict(id='tls_certificate', name='TLS certificate', field='host', binary='openssl', port=443,
          description='Inspect the certificate chain and TLS handshake on one host and port.'),
     dict(id='mdns', name='mDNS service discovery', field=None, binary='avahi-browse', interface=True,
-         description='Resolve advertised local services on the selected interface.'),
+         description='Browse Avahi services and show records from the selected interface.'),
     dict(id='smb_shares', name='SMB share listing', field='host', binary='smbclient',
          description='List shares offered to an anonymous session; no passwords or file retrieval.'),
     dict(id='dns', name='DNS records', field='host', binary='dig',
@@ -198,6 +199,7 @@ class Toolkit:
         except (OSError, AttributeError):
             interfaces = []
         return dict(tools=tools, interfaces=interfaces, shodan_configured=keyed,
+                    wired_interfaces=[i for i in interfaces if self.wired_carrier(i)],
                     capture_profiles=list(FILTERS), max_jobs=self.max_jobs,
                     honeypot_profiles=PROFILES)
 
@@ -268,6 +270,8 @@ class Toolkit:
             if interface not in self.catalog()['interfaces'] or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,32}', interface):
                 raise ValueError('Select an existing network interface.')
             result['interface'] = interface
+            if tool_id in ('responder', 'packet_replay') and not self.wired_carrier(interface):
+                raise ValueError('Select a connected wired interface. This tool cannot run over Wi-Fi.')
         if tool_id == 'capture':
             profile = params.get('profile', 'all')
             if not isinstance(profile, str) or profile not in FILTERS:
@@ -339,6 +343,7 @@ class Toolkit:
                     job_id=job_id, network_loot=str(root.parent), job_dir=str(folder)), indent=2), encoding='utf-8')
             self._write(folder, report)
             self.running[job_id] = (cancel, report, folder)
+            activity.update(report)
         submitted = copy.deepcopy(report)
         threading.Thread(target=self._run, args=(report, folder, cancel), daemon=True).start()
         return submitted
@@ -364,6 +369,7 @@ class Toolkit:
             finally:
                 with self.lock:
                     self.running.pop(report['id'], None)
+                    activity.update(report)
 
     def cancel(self, job_id):
         with self.lock:
@@ -520,8 +526,15 @@ class Toolkit:
             return self.command(['openssl', 's_client', '-connect', address + ':' + str(p['port']),
                                  '-servername', target, '-showcerts'], folder, cancel, timeout=25)
         if tool == 'mdns':
-            return self.command(['avahi-browse', '--all', '--resolve', '--terminate', '--parsable',
-                                 '--interface=' + p['interface']], folder, cancel, timeout=30)
+            self.command(['avahi-browse', '--all', '--resolve', '--terminate', '--parsable',
+                          '--no-db-lookup'], folder, cancel, timeout=30)
+            path = folder / 'output.txt'
+            lines = [line for line in path.read_text(encoding='utf-8', errors='replace').splitlines()
+                     if len(line.split(';')) > 2 and line.split(';')[1] == p['interface']]
+            path.write_text('\n'.join(lines) + ('\n' if lines else 'No advertised services found on this interface.\n'), encoding='utf-8')
+            return dict(interface=p['interface'], records=lines,
+                        resolved=sum(line.startswith('=;') for line in lines),
+                        note='Avahi browses active interfaces; displayed records are filtered by interface.')
         if tool == 'smb_shares':
             return self.command(['smbclient', '-L', target, '-N', '-U', '%', '-g', '-t', '10'], folder, cancel, timeout=25)
         if tool == 'ms17_check':

@@ -106,6 +106,8 @@ def test_responder_is_wired_bounded_and_analyze_by_default(tmp_path, monkeypatch
     monkeypatch.setattr(kit, 'wired_carrier', lambda interface: interface == 'eth0')
     clean = kit.validate('responder', {'interface': 'eth0', 'duration': 10})
     assert clean['mode'] == 'analyze'
+    with pytest.raises(ValueError, match='connected wired interface'):
+        kit.validate('responder', {'interface': 'wlan0', 'duration': 10})
     with pytest.raises(ValueError):
         kit.validate('responder', {'interface': 'eth0', 'mode': 'bogus'})
     seen = {}
