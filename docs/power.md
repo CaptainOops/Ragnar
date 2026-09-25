@@ -17,7 +17,7 @@ or the Mesh tab. Click it for a full breakdown of what is drawing the power.
 - **Endpoints:** compact summary rides along on `GET /api/status`
   (`power` key); full detail is `GET /api/power`; `POST /api/power/usb-current`
   `{"enable": true|false}`; `GET|POST /api/power/test`
-  `{"duration": 40, "loads": ["cpu","sdr","wifi"]}`.
+  `{"duration": 40, "loads": ["cpu","sdr","wifi","gps"]}`.
 
 ## Pi 5 USB current limit (600 mA → 1.6 A)
 
@@ -72,9 +72,17 @@ phase. Loads you can select (greyed out when not present):
   says so if another program has the SDR open
 - **USB Wi-Fi:** repeated `iw scan` on each USB Wi-Fi adapter; a downed adapter
   is brought up for the test and put back down afterwards
+- **USB GPS:** not a load. The receiver is watched through **both** phases via
+  Ragnar's own GPS reader (started if it isn't running, so the test never fights
+  gpsd or wardriving for the serial port). Per phase it reports seconds with no
+  NMEA data, % of time with a fix, satellites used / in view and the best SNR.
+  A GPS that goes silent under load is losing power; one whose best SNR drops
+  ≥ 4 dB under load while data keeps flowing is being desensed by RF from the
+  Wi-Fi adapter or SDR (move it away, e.g. on a USB extension). ESP32
+  companions (Espressif USB id) are not offered as a GPS.
 
 The result compares idle and load, gives a verdict (stable, under-voltage, USB
-dropouts, heat) and the next step, e.g. *raise the Pi 5 USB limit* or *use a
+dropouts, GPS silence / signal loss / lost fix, heat) and the next step, e.g. *raise the Pi 5 USB limit* or *use a
 powered hub*. One test runs at a time.
 
 ---

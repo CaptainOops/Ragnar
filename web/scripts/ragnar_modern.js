@@ -21547,6 +21547,20 @@ async function startPowerTest() {
     }
 }
 
+// GPS rows for the power-test table (only when the GPS was watched).
+function _pwGpsRows(gi, gl) {
+    if (!gi && !gl) return '';
+    gi = gi || {}; gl = gl || {};
+    const cell = (x, fmt, bad) => `<td class="${bad ? 'pw-bad' : ''}">${x == null ? '—' : fmt(x)}</td>`;
+    const row = (label, key, fmt, badFn) =>
+        `<tr><td>${label}</td>${cell(gi[key], fmt, badFn && badFn(gi[key]))}${cell(gl[key], fmt, badFn && badFn(gl[key]))}</tr>`;
+    return row('GPS silent', 'silent_s', x => `${x} s`, x => x > 0)
+        + row('GPS fix', 'fix_pct', x => `${x}%`)
+        + `<tr><td>GPS satellites</td>${[gi, gl].map(g =>
+            `<td>${g.sats_used_avg == null ? '—' : `${g.sats_used_avg} / ${g.sats_view_avg}`}</td>`).join('')}</tr>`
+        + row('GPS best SNR', 'snr_max_avg', x => `${x} dB-Hz`);
+}
+
 function renderPowerTest(st) {
     const loadsEl = document.getElementById('power-test-loads');
     const btn = document.getElementById('power-test-btn');
@@ -21567,7 +21581,7 @@ function renderPowerTest(st) {
     if (st.running) {
         const live = r.live || {};
         body.innerHTML = `<div class="pw-row"><span>${r.phase === 'load' ? 'Load phase' : 'Idle phase'}</span>
-                <span>${live.input_v != null ? live.input_v.toFixed(2) + ' V' : ''}${live.temp_c != null ? ' · ' + live.temp_c + ' °C' : ''}</span></div>
+                <span>${live.input_v != null ? live.input_v.toFixed(2) + ' V' : ''}${live.temp_c != null ? ' · ' + live.temp_c + ' °C' : ''}${live.gps ? ' · GPS ' + (live.gps.age_s != null && live.gps.age_s <= 3 ? live.gps.sats_used + '/' + live.gps.sats_view + ' sats' : 'silent') : ''}</span></div>
             <div class="sys-bar"><div class="sys-bar-fill" style="width:${r.progress || 0}%"></div></div>`;
         return;
     }
@@ -21583,6 +21597,7 @@ function renderPowerTest(st) {
     const extras = [];
     if (info.sdr_rate_pct != null) extras.push(`SDR ${info.sdr_rate_pct}% of full rate`);
     if (info.scans_ok != null) extras.push(`${info.scans_ok} Wi-Fi scans ok, ${info.scans_failed} failed`);
+    if (i.gps || l.gps) extras.push('GPS satellites = used / in view');
     const when = r.finished ? new Date(r.finished * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
     body.innerHTML = `
         <div class="pw-status"><span class="pw-status-title ${vd.ok ? 'pw-ok' : 'pw-bad'}">${escapeHtml(vd.headline || '')}</span>
@@ -21595,6 +21610,7 @@ function renderPowerTest(st) {
             <tr><td>Temp max</td><td>${fmt(i.temp_max, ' °C', 1)}</td><td>${fmt(l.temp_max, ' °C', 1)}</td></tr>
             <tr><td>Throttle flags</td><td>${flags(i.flags)}</td><td>${flags(l.flags)}</td></tr>
             <tr><td>USB dropouts</td><td class="${i.usb_disconnects ? 'pw-bad' : ''}">${i.usb_disconnects ?? '—'}</td><td class="${l.usb_disconnects ? 'pw-bad' : ''}">${l.usb_disconnects ?? '—'}</td></tr>
+            ${_pwGpsRows(i.gps, l.gps)}
         </table></div>
         ${extras.length ? `<div class="pw-muted" style="margin-top:6px">${escapeHtml(extras.join(' · '))}</div>` : ''}
         ${(vd.issues || []).slice(1).map(t => `<div class="pw-warn" style="font-size:13px;margin-top:4px">${escapeHtml(t)}</div>`).join('')}

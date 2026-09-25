@@ -14181,6 +14181,7 @@ def api_power_test():
     it in the background; GET returns progress and the last result."""
     try:
         import power_tools
+        power_tools.gps_provider = _power_test_gps
         if request.method == 'POST':
             body = request.get_json(silent=True) or {}
             result = power_tools.start_test(body.get('duration', 40),
@@ -15540,36 +15541,53 @@ def wardriving_gps():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def _start_gps_manager(engine):
+    """Create and start the wardriving engine's GPSManager (without starting
+    wardriving). Returns start()'s result; the manager is left on engine._gps."""
+    import glob as _glob
+    import os
+    from gps_manager import GPSManager
+
+    raw_candidates = sorted(_glob.glob('/dev/ttyACM*') + _glob.glob('/dev/ttyUSB*'))
+    esp_exclude = {p for p in raw_candidates if engine._port_is_espressif(p)}
+    try:
+        engine._ensure_gpsd(esp_exclude)
+    except Exception:
+        pass
+
+    gps_port = shared_data.config.get('wardriving_gps_port', None)
+    if gps_port and str(gps_port).lower() == 'auto':
+        gps_port = None
+    engine._gps = GPSManager(
+        port=gps_port,
+        baudrate=shared_data.config.get('wardriving_gps_baudrate', 9600),
+        exclude_ports=esp_exclude,
+        state_file=os.path.join(engine.data_dir, 'last_gps.json'))
+    return engine._gps.start()
+
+
+def _power_test_gps(start=False):
+    """power_tools.gps_provider: Ragnar's GPSManager, started on demand."""
+    engine = _get_wardriving_engine()
+    gps = getattr(engine, '_gps', None)
+    # A manager whose start() found no receiver never runs; retry detection so
+    # a GPS plugged in since then is picked up.
+    if not start or (gps is not None and getattr(gps, '_running', True)):
+        return gps
+    return engine._gps if _start_gps_manager(engine) else None
+
+
 @app.route('/api/wardriving/gps/enable', methods=['POST'])
 def wardriving_gps_enable():
     """Initialize GPS without enabling or starting wardriving."""
     try:
-        import glob as _glob
-        import os
-        from gps_manager import GPSManager
-
         engine = _get_wardriving_engine()
         if getattr(engine, '_gps', None):
             status = engine._gps.get_status()
             status['sky'] = engine._gps.get_sky_view()
             return jsonify({'success': True, 'already_running': True, 'gps': status})
 
-        raw_candidates = sorted(_glob.glob('/dev/ttyACM*') + _glob.glob('/dev/ttyUSB*'))
-        esp_exclude = {p for p in raw_candidates if engine._port_is_espressif(p)}
-        try:
-            engine._ensure_gpsd(esp_exclude)
-        except Exception:
-            pass
-
-        gps_port = shared_data.config.get('wardriving_gps_port', None)
-        if gps_port and str(gps_port).lower() == 'auto':
-            gps_port = None
-        engine._gps = GPSManager(
-            port=gps_port,
-            baudrate=shared_data.config.get('wardriving_gps_baudrate', 9600),
-            exclude_ports=esp_exclude,
-            state_file=os.path.join(engine.data_dir, 'last_gps.json'))
-        gps_ok = engine._gps.start()
+        gps_ok = _start_gps_manager(engine)
         status = engine._gps.get_status()
         status['sky'] = engine._gps.get_sky_view()
         return jsonify({'success': bool(gps_ok), 'gps': status, 'error': None if gps_ok else engine._gps.error})
