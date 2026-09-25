@@ -42,6 +42,15 @@ operator action. Nothing in Toolkit starts automatically.
 
 ## Integrated workspace (2026-09-24)
 
+Every visible tool has a local quick guide alongside its controls: what it does,
+three steps, an example when useful, result interpretation and a practical caveat.
+The Payload IDE has its own expandable getting-started guide. Shodan key settings
+are collapsible below the tool form. Guides never fill or submit targets; their
+examples appear only as hints, and switching tools preserves typed input.
+Content lives in `web/scripts/toolkit_guides.js`; the dashboard test checks guide
+coverage against the backend catalog. Shodan entries link to its official API
+reference. The guide UI makes no additional API requests.
+
 Live Cameras retains existing saved feeds, categories, video wall and snapshot
 storage. Shodan uses Ragnar's EnvManager for its key. No separate dashboard,
 authentication system, network database or task queue is introduced.

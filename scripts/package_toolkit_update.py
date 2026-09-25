@@ -8,7 +8,7 @@ from pathlib import Path
 
 FILES = ['toolkit.py', 'toolkit_api.py', 'payload_workspace.py', 'toolkit_honeypot.py',
          'camera_recon.py', 'webapp_modern.py', 'network_diagnostics.py',
-         'web/index_modern.html', 'web/scripts/ragnar_modern.js', 'web/scripts/toolkit.js',
+         'web/index_modern.html', 'web/scripts/ragnar_modern.js', 'web/scripts/toolkit.js', 'web/scripts/toolkit_guides.js',
          'docs/TOOLKIT.md', 'docs/RASPYJACK_PORT_AUDIT.md', 'docs/nettools.md']
 
 
@@ -18,6 +18,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--previous-bundle', type=Path,
                         help='Use a previously deployed bundle as the baseline for an incremental update.')
+    parser.add_argument('--files', nargs='+', choices=FILES,
+                        help='Package only the selected feature files; defaults to the full integration.')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manifest = {}
@@ -26,7 +28,7 @@ def main():
         with zipfile.ZipFile(args.previous_bundle) as old:
             previous = json.loads(old.read('manifest.json'))
     with zipfile.ZipFile(args.output, 'w', zipfile.ZIP_DEFLATED) as bundle:
-        for name in FILES:
+        for name in args.files or FILES:
             before = subprocess.run(['git', 'show', args.base + ':' + name], cwd=root, capture_output=True)
             data = (root / name).read_bytes().replace(b'\r\n', b'\n')
             manifest[name] = dict(before=hashlib.sha256(before.stdout).hexdigest() if before.returncode == 0 else None,

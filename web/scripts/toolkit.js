@@ -31,6 +31,11 @@
   function selected() { return catalog && catalog.tools.find(t => t.id === el('tool').value); }
   function fields() {
     const tool = selected(); if (!tool) return;
+    if (window.RagnarToolkitGuides && el('guide-body')) {
+      el('guide-title').textContent = tool.name + ' · Quick guide';
+      window.RagnarToolkitGuides.render(el('guide-body'), tool.id, tool);
+      el('target').placeholder = window.RagnarToolkitGuides.guides[tool.id]?.example || '';
+    }
     el('description').textContent = tool.description;
     el('dependency').textContent = tool.reason;
     el('submit').disabled = busy || !tool.available;
@@ -114,9 +119,10 @@
           catch (e) { message('message', e); }
         }; row.append(b);
       } else if (job.artifacts.length) {
-        const name = job.artifacts.includes('output.txt') ? 'output.txt' : job.artifacts.includes('result.json') ? 'result.json' : 'events.jsonl';
+        const structured = ['port_watch', 'mac_presence'].includes(job.tool) && job.artifacts.includes('result.json');
+        const name = structured ? 'result.json' : job.artifacts.includes('output.txt') ? 'output.txt' : job.artifacts.includes('result.json') ? 'result.json' : 'events.jsonl';
         if (job.artifacts.includes(name)) {
-          const b = document.createElement('button'); b.textContent = 'Preview'; b.onclick = async () => {
+          const b = document.createElement('button'); b.textContent = 'Preview'; b.title = 'Preview ' + name; b.onclick = async () => {
             try {
               const response = await fetch('/api/toolkit/jobs/' + encodeURIComponent(job.id) + '/files/' + name);
               if (!response.ok) throw new Error('Could not load artifact.');
@@ -185,6 +191,7 @@
     catch (e) { message('payload-message', e); }
   };
   loadPayload(null);
+  if (window.RagnarToolkitGuides && el('payload-guide')) window.RagnarToolkitGuides.render(el('payload-guide'), 'payload');
   el('run').addEventListener('submit', async event => {
     event.preventDefault(); busy = true; fields();
     try {

@@ -19,6 +19,7 @@ function fixture() {
   w.setInterval = (fn, ms) => { intervals.push([fn, ms]); return intervals.length; };
   w.fetch = async () => ({ok: true, json: async () => ({success: true, cams: []})});
   w.eval(cameraCode);
+  w.eval(fs.readFileSync(path.join(root, 'web/scripts/toolkit_guides.js'), 'utf8'));
   return {dom, w, intervals};
 }
 
@@ -100,5 +101,63 @@ test('Payload IDE saves source before running and hides duplicate native launche
     assert.equal(JSON.parse(mutations[0][1].body).source, 'print("hello")');
     assert.equal(JSON.parse(mutations[1][1].body).tool, 'payload');
     assert.equal(JSON.parse(mutations[1][1].body).params.target, 'hello');
+  } finally { dom.window.close(); }
+});
+
+test('every visible Toolkit tool has a guide; switching help preserves inputs and never runs jobs', async () => {
+  const {dom, w} = fixture();
+  try {
+    const backend = fs.readFileSync(path.join(root, 'toolkit.py'), 'utf8');
+    const nativeBlock = backend.split('NATIVE_TOOLS = ')[1].split('ARTIFACTS = ')[0];
+    const native = [...nativeBlock.matchAll(/'([a-z0-9_]+)':/g)].map(m => m[1]);
+    const ids = [...backend.matchAll(/dict\(id='([a-z0-9_]+)'/g)].map(m => m[1]);
+    for (const id of ids.filter(id => !native.includes(id))) {
+      const guide = w.RagnarToolkitGuides.guides[id];
+      assert.ok(guide, 'Missing guide for ' + id);
+      assert.equal(guide.steps.length, 3);
+    }
+    const calls = [];
+    w.fetch = async (url, init = {}) => {
+      calls.push([url, init]);
+      const value = url.endsWith('/catalog') ? {
+        tools: ['internetdb', 'http_headers'].map(id => ({id, name: id, field: 'url', available: true})),
+        interfaces: ['eth0'], capture_profiles: ['all'], shodan_configured: false}
+        : url.endsWith('/payloads') ? {payloads: []} : {jobs: []};
+      return {ok: true, json: async () => value};
+    };
+    w.eval(fs.readFileSync(path.join(root, 'web/scripts/toolkit.js'), 'utf8'));
+    w.document.getElementById('toolkit-tab').classList.remove('hidden'); await flush();
+    assert.match(w.document.getElementById('tk-guide-body').textContent, /public IPv4/);
+    w.document.getElementById('tk-target').value = 'https://my-device.example';
+    w.document.getElementById('tk-tool').value = 'http_headers';
+    w.document.getElementById('tk-tool').dispatchEvent(new w.Event('change'));
+    assert.match(w.document.getElementById('tk-guide-body').textContent, /HEAD requests/);
+    assert.equal(w.document.getElementById('tk-target').value, 'https://my-device.example');
+    assert.equal(w.document.getElementById('tk-target').placeholder, 'https://example.com');
+    assert.equal(calls.filter(([, init]) => init.method === 'POST').length, 0);
+    assert.match(w.document.getElementById('tk-payload-guide').textContent, /Check syntax/);
+    assert.equal(w.document.getElementById('tk-key-settings').open, false);
+    w.RagnarToolkitGuides.render(w.document.getElementById('tk-guide-body'), 'future_tool', {description: '<img src=x>'});
+    assert.equal(w.document.querySelectorAll('#tk-guide-body img').length, 0);
+  } finally { dom.window.close(); }
+});
+
+test('port-change and MAC previews show the interpreted result described by their guides', async () => {
+  const {dom, w} = fixture();
+  try {
+    const requested = [];
+    w.fetch = async (url) => {
+      requested.push(url);
+      const value = url.endsWith('/catalog') ? {tools: [{id:'internetdb', name:'Shodan', available:true}], interfaces:[], capture_profiles:[]}
+        : url.endsWith('/payloads') ? {payloads:[]}
+        : {jobs: ['port_watch', 'mac_presence'].map((tool, i) => ({id:String(i).repeat(32), tool, name:tool,
+          created:new Date().toISOString(), status:'completed', params:{}, artifacts:['output.txt','result.json']}))};
+      return {ok:true, json:async()=>value, text:async()=>'{"new_ports":[8080]}'};
+    };
+    w.eval(fs.readFileSync(path.join(root, 'web/scripts/toolkit.js'), 'utf8'));
+    w.document.getElementById('toolkit-tab').classList.remove('hidden'); await flush();
+    for (const button of w.document.querySelectorAll('#tk-jobs button')) { button.click(); await flush(); }
+    assert.equal(requested.filter(url => url.endsWith('/files/result.json')).length, 2);
+    assert.equal(requested.filter(url => url.endsWith('/files/output.txt')).length, 0);
   } finally { dom.window.close(); }
 });

@@ -5231,6 +5231,7 @@
 
         <div id="toolkit-tab" class="tab-content hidden">
   <style>
+    .tk-guide h3{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#cbd5e1;font-weight:600;margin:16px 0 5px}.tk-guide p,.tk-guide li{font-size:14px;line-height:1.55;color:#cbd5e1}.tk-guide ol{list-style:decimal;padding-left:21px}.tk-guide li{padding-left:3px;margin:7px 0}.tk-guide a{display:inline-block;color:#7dd3fc;font-size:13px;margin-top:12px}.tk-guide-mode{display:inline-block;background:#0f172a;color:#7dd3fc;border:1px solid #334155;border-radius:99px;padding:5px 10px;font-size:12px}.tk-settings-summary{cursor:pointer;font-size:18px;font-weight:600}.tk-settings-summary span{display:block;font-size:13px;font-weight:400;color:#94a3b8;margin-top:6px}.tk-payload-guide{margin:16px 0;padding:14px;background:#0f172a;border-radius:8px}.tk-payload-guide summary{cursor:pointer;color:#7dd3fc}.tk-grid{align-items:start}
     .tk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.tk-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px;margin-bottom:18px}.tk-card h2{font-size:20px;font-weight:600;margin-bottom:12px}.tk-card p,.tk-muted{color:#94a3b8;margin:8px 0}.tk-card label{display:block;margin:12px 0 6px}.tk-card input,.tk-card select{width:100%;background:#0f172a;color:#f1f5f9;border:1px solid #475569;border-radius:6px;padding:10px}.tk-card button,.tk-link{display:inline-block;background:#334155;border-radius:6px;padding:8px 12px;margin:8px 8px 0 0}.tk-card button:disabled{opacity:.45;cursor:not-allowed}.tk-card button[type=submit]{background:#0369a1}.tk-job{border-top:1px solid #475569;padding:14px 0;overflow-wrap:anywhere}.tk-job a{color:#7dd3fc;margin-right:16px}.tk-error{color:#fda4af!important}.tk-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#0f172a;padding:14px}.tk-card [hidden]{display:none}
   </style>
   <div class="tk-card">
@@ -5250,17 +5251,24 @@
       <button type="submit" id="tk-submit">Run &amp; save to loot</button>
       <p id="tk-message" role="status" aria-live="polite"></p>
     </form>
-    <form id="tk-key-form" class="tk-card">
-      <h2>Shodan</h2><p id="tk-key-status">Loading configuration…</p>
+    <aside class="tk-card tk-guide" aria-labelledby="tk-guide-title">
+      <h2 id="tk-guide-title">Quick guide</h2>
+      <div id="tk-guide-body"><p>Choose a tool to see what it does and how to use it.</p></div>
+    </aside>
+  </div>
+  <details class="tk-card" id="tk-key-settings">
+    <summary class="tk-settings-summary">Shodan API key<span id="tk-key-status">Loading configuration…</span></summary>
+    <form id="tk-key-form">
       <p>Start with Shodan InternetDB for free IPv4 lookups—no key needed. Add a key for richer host details, search and account information. Search filters and additional pages may use query credits.</p>
       <label for="tk-key">API key</label><input id="tk-key" type="password" autocomplete="new-password" placeholder="Stored only on the Ragnar server">
       <button type="submit" id="tk-save-key">Verify &amp; save key</button><button type="button" id="tk-remove-key">Remove key</button>
       <p id="tk-key-message" role="status"></p>
     </form>
-  </div>
+  </details>
   <details class="tk-card" id="tk-payload-ide">
     <summary style="cursor:pointer;font-size:20px;font-weight:600">Payload IDE</summary>
     <p>Edit Python payloads for the active network. Runs use Ragnar’s service permissions; syntax checking does not sandbox code. Each run saves its source, context and output in the job’s loot folder.</p>
+    <details class="tk-payload-guide tk-guide"><summary>First payload? Read the quick guide</summary><div id="tk-payload-guide"></div></details>
     <label for="tk-payload-list">Saved payloads</label><select id="tk-payload-list"><option value="">Choose a saved payload</option></select>
     <button type="button" id="tk-payload-new">New payload</button>
     <label for="tk-payload-name">Name</label><input id="tk-payload-name" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" autocomplete="off">
@@ -9117,7 +9125,8 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/toolkit.js?v=3"></script>
+    <script src="/web/scripts/toolkit_guides.js?v=1"></script>
+    <script src="/web/scripts/toolkit.js?v=4"></script>
     <script src="/web/scripts/ragnar_modern.js?v=20260924-smtp-watch-v2"></script>
 
 
