@@ -21395,109 +21395,251 @@ function renderPowerModalBody(d) {
     if (body) body.innerHTML = buildPowerDetailHtml(d);
 }
 
-// Shared by the dashboard badge modal and the System tab's Power panel, so both
-// show the same measured throttle state + estimated budget from one builder.
-function buildPowerDetailHtml(d) {
-    if (!d || d.supported === false) {
-        return `<div class="text-gray-400">Power monitoring is not available on this device
-            (no <code class="font-mono">vcgencmd</code> — not a Raspberry Pi, or the tool is missing).</div>`;
-    }
+// Shared by the dashboard badge modal and the System tab's Power panel.
+// opts.actions adds the Pi 5 USB-limit buttons (System tab only).
+function _pwInputVolts(d) {
+    const r = d && d.pmic && (d.pmic.rails || []).find(x => x.rail === 'EXT5V');
+    return r && r.volts != null ? r.volts : null;
+}
+
+function _powerVerdict(d) {
     const level = d.level;
-    const tone = level === 'critical' ? 'text-red-300'
-        : level === 'warning' ? 'text-amber-300' : 'text-green-300';
+    if (level === 'critical') {
+        return d.cause === 'thermal'
+            ? { short: 'Too hot', title: 'Heat throttling now', cls: 'pw-bad' }
+            : { short: 'Under-voltage', title: d.summary && d.summary.headline || 'Under-voltage now', cls: 'pw-bad' };
+    }
+    if (level === 'warning') {
+        if (d.cause === 'thermal') return { short: 'Heat', title: 'Heat throttled since boot', cls: 'pw-warn' };
+        return { short: 'Warning', title: (d.summary && d.summary.headline) || 'Power warning', cls: 'pw-warn' };
+    }
+    if (d.usb_dropouts && d.usb_dropouts.looping) {
+        return { short: 'Dropouts', title: 'USB device keeps dropping out', cls: 'pw-warn' };
+    }
+    return { short: 'Healthy', title: 'Supply healthy', cls: 'pw-ok' };
+}
+
+function buildPowerDetailHtml(d, opts = {}) {
+    if (!d || d.supported === false) {
+        return `<div class="pw-muted">Power monitoring needs <code>vcgencmd</code> (Raspberry Pi only).</div>`;
+    }
     const thr = d.throttle || {};
     const est = d.estimate || {};
+    const usb = d.usb_power || {};
+    const drops = d.usb_dropouts || null;
+    const v = _powerVerdict(d);
 
-    // 1) Live supply state + what it costs, straight from the throttle register.
-    let html = `<div class="mb-4">
-        <div class="flex items-center gap-2 mb-1">
-            <span class="text-xs px-2 py-0.5 rounded border ${
-                level === 'critical' ? 'bg-red-600/20 text-red-300 border-red-800'
-                : level === 'warning' ? 'bg-amber-600/20 text-amber-300 border-amber-800'
-                : 'bg-green-700/20 text-green-300 border-green-800'}">${escapeHtml((level || 'unknown').toUpperCase())}</span>
-            <span class="text-gray-400 text-xs font-mono">${escapeHtml(d.model || '')}</span>
-        </div>`;
-    (d.effects || []).forEach(t => { html += `<p class="${tone} mt-1">${escapeHtml(t)}</p>`; });
-    html += `</div>`;
+    // Status line
+    let html = `<div class="pw-status">
+        <span class="pw-status-title ${v.cls}">${escapeHtml(v.title)}</span>
+        <span class="pw-muted">${escapeHtml(d.model || '')}</span>
+    </div>`;
+    const effects = (d.effects || []).filter(t => d.level !== 'ok' || !/^No under-voltage/.test(t));
+    effects.forEach(t => { html += `<p class="${v.cls}" style="font-size:13px;margin:-6px 0 10px">${escapeHtml(t)}</p>`; });
 
-    // 2) Throttle register decode — the measured truth.
-    if (thr && thr.raw) {
-        const rowsNow = (thr.now || []).map(escapeHtml).join(', ') || 'none';
-        const rowsOcc = (thr.occurred || []).map(escapeHtml).join(', ') || 'none';
-        html += `<div class="bg-slate-900/60 border border-slate-800 rounded-lg p-3 mb-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">Supply health (measured — vcgencmd get_throttled)</div>
-            <div class="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-xs">
-                <div class="text-gray-400">Right now</div><div class="${(thr.now||[]).length ? 'text-red-300' : 'text-green-300'}">${rowsNow}</div>
-                <div class="text-gray-400">Since boot</div><div class="${(thr.occurred||[]).length ? 'text-amber-300' : 'text-green-300'}">${rowsOcc}</div>
-                <div class="text-gray-400">Raw flags</div><div class="font-mono text-gray-400">${escapeHtml(thr.raw)}</div>
-                ${d.core_volts != null ? `<div class="text-gray-400">Core voltage</div><div>${escapeHtml(String(d.core_volts))} V</div>` : ''}
-                ${d.temp_c != null ? `<div class="text-gray-400">Temperature</div><div>${escapeHtml(String(d.temp_c))} °C</div>` : ''}
-                ${d.pmic && d.pmic.total_watts != null ? `<div class="text-gray-400">Board power (PMIC)</div><div>${escapeHtml(String(d.pmic.total_watts))} W</div>` : ''}
-            </div>
-        </div>`;
+    // Measured values
+    const inV = _pwInputVolts(d);
+    const tiles = [];
+    if (inV != null) tiles.push(['Input', `${inV.toFixed(2)} V`, inV < 4.8 ? 'pw-bad' : inV < 5.0 ? 'pw-warn' : '']);
+    if (d.pmic && d.pmic.total_watts != null) tiles.push(['Board power', `${d.pmic.total_watts} W`, '']);
+    if (d.temp_c != null) tiles.push(['SoC temp', `${d.temp_c} °C`, d.temp_c >= 80 ? 'pw-bad' : d.temp_c >= 70 ? 'pw-warn' : '']);
+    if (d.core_volts != null) tiles.push(['Core', `${d.core_volts} V`, '']);
+    if (thr.raw) tiles.push(['Throttle flags', thr.raw, thr.healthy ? 'pw-ok' : 'pw-warn']);
+    html += `<div class="pw-tiles">${tiles.map(([l, val, c]) =>
+        `<div class="pw-tile"><div class="pw-tile-label">${l}</div><div class="pw-tile-value ${c}">${escapeHtml(val)}</div></div>`).join('')}</div>`;
+    if (thr.raw && !thr.healthy) {
+        const now = (thr.now || []).join(', ') || 'none';
+        const occ = (thr.occurred || []).join(', ') || 'none';
+        html += `<div class="pw-row"><span class="pw-muted">Right now</span><span>${escapeHtml(now)}</span></div>
+            <div class="pw-row"><span class="pw-muted">Since boot</span><span>${escapeHtml(occ)}</span></div>`;
     }
 
-    // 3) Estimated power budget — what is drawing it, with the honest caveat.
-    html += `<div class="mb-4">
-        <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">Estimated draw — what's using the power</div>
-        <p class="text-[11px] text-gray-500 mb-2">Estimated, not measured: a Pi has no per-port current meter, and the HAT is a single USB hub — the board only sees one total draw. Figures below are realistic per-device currents, not the (unreliable) USB descriptor values.</p>
-        <div class="space-y-1">`;
+    // Pi 5: supply + USB current limit
+    if (usb.applies) {
+        const supply = usb.psu_max_ma ? `${(usb.psu_max_ma / 1000).toFixed(1)} A at 5 V` : 'unknown';
+        html += `<div class="pw-section"><div class="pw-section-title">USB power (Pi 5)</div>
+            <div class="pw-row"><span>Supply negotiated</span><span>${escapeHtml(supply)}</span></div>
+            <div class="pw-row"><span>USB limit, all ports</span><span class="${usb.usb_limit_ma >= 1600 ? 'pw-ok' : 'pw-warn'}">${_pwMa(usb.usb_limit_ma)}</span></div>
+            <div class="pw-row"><span>USB devices at peak (est.)</span><span class="${est.usb_over ? 'pw-bad' : ''}">${_pwMa(est.peripherals_peak_ma)}</span></div>`;
+        let fix = '';
+        if (usb.pd_5a_supply) {
+            fix = `<div class="pw-fix-text pw-ok">5 A USB-PD supply detected — the 1.6 A USB limit is already on.</div>`;
+        } else if (usb.pending_reboot) {
+            fix = `<div class="pw-fix-text pw-warn">Setting saved (${usb.configured ? '1.6 A' : '600 mA'}). Reboot to apply.</div>
+                ${opts.actions ? `<button class="pw-btn pw-btn-warn" onclick="rebootSystem()">Reboot now</button>` : ''}`;
+        } else if (usb.usb_limit_ma < 1600) {
+            fix = `<div class="pw-fix-text">USB devices share 600 mA. A Wi-Fi adapter plus an SDR or GPS exceeds it and drops off USB. Raising the limit to 1.6 A fixes that on a ≥3 A supply.</div>
+                ${opts.actions ? `<button class="pw-btn pw-btn-primary" onclick="setUsbMaxCurrent(true)">Raise to 1.6 A</button>` : ''}`;
+        } else {
+            fix = `<div class="pw-fix-text pw-ok">1.6 A USB limit active (usb_max_current_enable=1).</div>
+                ${opts.actions ? `<button class="pw-btn" onclick="setUsbMaxCurrent(false)">Revert to 600 mA</button>` : ''}`;
+        }
+        html += `<div class="pw-fix">${fix}</div></div>`;
+    }
+
+    // USB dropouts from the kernel log
+    if (drops) {
+        html += `<div class="pw-section"><div class="pw-section-title">USB dropouts since boot</div>`;
+        if (!drops.total) {
+            html += `<div class="pw-row"><span class="pw-ok">None</span><span></span></div>`;
+        } else {
+            drops.ports.forEach(p => {
+                html += `<div class="pw-row"><span>Port ${escapeHtml(p.port)}${p.device ? ' · ' + escapeHtml(p.device) : ''}${p.loop ? ' <span class="pw-bad">— reconnect loop</span>' : ''}</span>
+                    <span class="${p.loop ? 'pw-bad' : ''}">${p.count}×</span></div>`;
+            });
+            if (drops.looping) {
+                html += `<div class="pw-muted" style="margin-top:4px">A device reconnecting several times a minute is losing power.</div>`;
+            }
+        }
+        html += `</div>`;
+    }
+
+    // Estimated draw per device
+    html += `<div class="pw-section"><div class="pw-section-title">Estimated draw (peak)</div>`;
     (d.devices || []).forEach(dev => {
-        const ifaces = (dev.interfaces || []).length ? ` · ${dev.interfaces.map(escapeHtml).join(', ')}` : '';
-        const declared = (dev.declared_ma != null) ? ` · declares ${dev.declared_ma} mA` : '';
-        html += `<div class="flex items-center justify-between gap-2 text-xs bg-slate-800/40 rounded px-2 py-1">
-            <div><span class="text-gray-200">${escapeHtml(dev.role || 'USB device')}</span>
-                <span class="text-gray-500">${escapeHtml(dev.label ? '· ' + dev.label : '')}${escapeHtml(ifaces)}</span>
-                ${dev.matched ? '' : '<span class="text-amber-400/70"> (declared value — device not recognised)</span>'}</div>
-            <div class="font-mono text-gray-300 whitespace-nowrap">${_pwMa(dev.est_peak_ma)} peak</div>
-        </div>`;
+        const ifaces = (dev.interfaces || []).length ? ` · ${dev.interfaces.join(', ')}` : '';
+        html += `<div class="pw-row"><span title="${escapeHtml(dev.label || '')}">${escapeHtml(dev.role || 'USB device')}<span class="pw-muted">${escapeHtml(ifaces)}${dev.matched ? '' : ' · declared'}</span></span>
+            <span>${_pwMa(dev.est_peak_ma)}</span></div>`;
     });
-    html += `</div>
-        <div class="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-xs mt-3 border-t border-slate-800 pt-2">
-            <div class="text-gray-400">Board itself (${escapeHtml(d.board ? d.board.name : '')})</div><div class="font-mono">${_pwMa(est.base_ma)}–${_pwMa(est.load_ma)}</div>
-            <div class="text-gray-400">Peripherals (peak)</div><div class="font-mono">${_pwMa(est.peripherals_peak_ma)}</div>
-            <div class="text-gray-200 font-semibold">Estimated total at peak</div><div class="font-mono font-semibold ${est.tight ? 'text-amber-300' : 'text-gray-100'}">${_pwMa(est.total_peak_ma)}</div>
-            <div class="text-gray-400">Recommended supply</div><div class="font-mono">${_pwMa(est.psu_ma)}</div>
-            <div class="text-gray-400">Headroom at peak</div><div class="font-mono ${est.headroom_ma < 0 ? 'text-red-300' : est.tight ? 'text-amber-300' : 'text-green-300'}">${_pwMa(est.headroom_ma)}</div>
-        </div>`;
-    if (d.board && d.board.supply_note) {
-        html += `<p class="text-[11px] text-gray-500 mt-2">${escapeHtml(d.board.supply_note)}</p>`;
-    }
-    if (d.usb_max_current_enabled === false) {
-        html += `<p class="text-[11px] text-amber-400/80 mt-1">usb_max_current_enable is not set — USB peripheral current is capped to 600 mA total on this board.</p>`;
-    }
-    // Reconcile the confusing case this panel can otherwise show: the SoC
-    // reports under-voltage while the estimated budget still has plenty of
-    // headroom. That is not a contradiction — the loss is between the PSU and
-    // the board (cable/connector), not too much current — and saying so stops
-    // the numbers reading like a bug.
-    const uv = d.summary && d.summary.undervoltage;
-    if (uv && est.headroom_ma > 0 && !est.tight) {
-        html += `<p class="text-[12px] text-amber-300 mt-2 border-l-2 border-amber-700 pl-2">
-            Under-voltage <em>despite</em> headroom on paper? That points at a <strong>cable/connector voltage drop</strong>, not too much current: the draw is well under the supply's rating, but the 5&nbsp;V rail still sags below spec between the PSU and the board — a thin/long micro-USB cable, a tired connector, or a flat 5.0&nbsp;V supply with no margin. Try a short thick cable and a 5.1&nbsp;V supply before reaching for a bigger PSU.</p>`;
+    html += `<div class="pw-row"><span>Board (${escapeHtml(d.board ? d.board.name : '')})</span><span>${_pwMa(est.load_ma)}</span></div>
+        <div class="pw-row" style="font-weight:600"><span>Total</span><span class="${est.tight ? 'pw-warn' : ''}">${_pwMa(est.total_peak_ma)} / ${_pwMa(est.psu_ma)}${est.psu_detected ? '' : ' rec.'}</span></div>`;
+    if (d.summary && d.summary.undervoltage && est.headroom_ma > 0 && !est.tight) {
+        html += `<div class="pw-muted pw-warn" style="margin-top:4px">Under-voltage with headroom to spare points at the cable or connector, not the load. Try a short, thick cable.</div>`;
     }
     html += `</div>`;
-
-    // 4) Reference maxima for the two named field configs.
-    const prof = d.profiles || {};
-    if (prof.stationary || prof.roaming) {
-        html += `<div>
-            <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">Reference: your two field configs (peak, on this board)</div>
-            <div class="space-y-1">`;
-        [['stationary', prof.stationary], ['roaming', prof.roaming]].forEach(([, p]) => {
-            if (!p) return;
-            html += `<div class="flex items-center justify-between gap-2 text-xs bg-slate-800/40 rounded px-2 py-1">
-                <div><span class="text-gray-200">${escapeHtml(p.label)}</span>
-                    <span class="text-gray-500">· ${(p.devices || []).map(escapeHtml).join(' + ')}</span></div>
-                <div class="font-mono whitespace-nowrap ${p.fits ? 'text-green-300' : 'text-red-300'}">${_pwMa(p.peak_ma)}${p.fits ? '' : ' ⚠'}</div>
-            </div>`;
-        });
-        html += `</div>
-            <p class="text-[11px] text-gray-500 mt-2">On a Pi Zero / Pi 3 the Alfa is not hot-pluggable — it only enumerates if it is connected when power is applied. If a config under-volts, a powered USB hub for the dongles fixes it without a bigger PSU.</p>
-        </div>`;
-    }
-
     return html;
+}
+
+async function setUsbMaxCurrent(enable) {
+    const msg = enable
+        ? 'Raise the Pi 5 USB current limit from 600 mA to 1.6 A?\n\nThis writes usb_max_current_enable=1 to config.txt (a backup is kept). It takes effect after a reboot. Use a supply rated 3 A or more.'
+        : 'Revert the USB current limit to 600 mA?\n\nTakes effect after a reboot.';
+    if (!confirm(msg)) return;
+    try {
+        const res = await postAPI('/api/power/usb-current', { enable });
+        if (res && res.success) {
+            showNotification(enable ? 'Saved — reboot to apply the 1.6 A limit' : 'Saved — reboot to apply', 'success');
+        } else {
+            showNotification('Could not change the setting: ' + ((res && res.error) || 'unknown error'), 'error');
+        }
+    } catch (e) {
+        showNotification('Could not change the setting: ' + e, 'error');
+    }
+    fetchPowerDetail();
+}
+
+// ---- Power test (System tab) ----------------------------------------------
+const _powerTest = { loaded: false, timer: null };
+
+async function fetchPowerTestStatus() {
+    try {
+        const st = await fetchAPI('/api/power/test');
+        _powerTest.loaded = true;
+        renderPowerTest(st);
+        if (st.running && !_powerTest.timer) {
+            _powerTest.timer = setInterval(pollPowerTest, 1500);
+        }
+    } catch (e) {
+        console.error('Power test status failed:', e);
+    }
+}
+
+async function pollPowerTest() {
+    try {
+        const st = await fetchAPI('/api/power/test');
+        renderPowerTest(st);
+        if (!st.running) {
+            clearInterval(_powerTest.timer);
+            _powerTest.timer = null;
+            fetchPowerDetail();
+        }
+    } catch (e) { /* keep polling; the next tick retries */ }
+}
+
+async function startPowerTest() {
+    const loads = Array.from(document.querySelectorAll('#power-test-loads input:checked')).map(el => el.value);
+    const duration = Number((document.getElementById('power-test-duration') || {}).value || 40);
+    try {
+        const res = await postAPI('/api/power/test', { duration, loads });
+        if (!res || !res.success) {
+            showNotification((res && res.error) || 'Could not start the power test', 'error');
+            return;
+        }
+        if (!_powerTest.timer) _powerTest.timer = setInterval(pollPowerTest, 1500);
+        pollPowerTest();
+    } catch (e) {
+        showNotification('Could not start the power test: ' + e, 'error');
+    }
+}
+
+// GPS rows for the power-test table (only when the GPS was watched).
+function _pwGpsRows(gi, gl) {
+    if (!gi && !gl) return '';
+    gi = gi || {}; gl = gl || {};
+    const cell = (x, fmt, bad) => `<td class="${bad ? 'pw-bad' : ''}">${x == null ? '—' : fmt(x)}</td>`;
+    const row = (label, key, fmt, badFn) =>
+        `<tr><td>${label}</td>${cell(gi[key], fmt, badFn && badFn(gi[key]))}${cell(gl[key], fmt, badFn && badFn(gl[key]))}</tr>`;
+    return row('GPS silent', 'silent_s', x => `${x} s`, x => x > 0)
+        + row('GPS fix', 'fix_pct', x => `${x}%`)
+        + `<tr><td>GPS satellites</td>${[gi, gl].map(g =>
+            `<td>${g.sats_used_avg == null ? '—' : `${g.sats_used_avg} / ${g.sats_view_avg}`}</td>`).join('')}</tr>`
+        + row('GPS best SNR', 'snr_max_avg', x => `${x} dB-Hz`);
+}
+
+function renderPowerTest(st) {
+    const loadsEl = document.getElementById('power-test-loads');
+    const btn = document.getElementById('power-test-btn');
+    const body = document.getElementById('power-test-body');
+    if (loadsEl && st.loads && !loadsEl.dataset.built) {
+        loadsEl.dataset.built = '1';
+        loadsEl.innerHTML = Object.entries(st.loads).map(([key, l]) =>
+            `<label class="${l.available ? '' : 'pw-muted'}"><input type="checkbox" value="${key}" ${l.available ? 'checked' : 'disabled'}> ${escapeHtml(l.label)}</label>`
+        ).join('');
+    }
+    if (btn) { btn.disabled = !!st.running; btn.textContent = st.running ? 'Running…' : 'Run test'; }
+    if (!body) return;
+    const r = st.result;
+    if (!r) {
+        body.innerHTML = `<div class="pw-muted">Measures the input voltage, throttling and USB dropouts at idle and under the selected load.</div>`;
+        return;
+    }
+    if (st.running) {
+        const live = r.live || {};
+        body.innerHTML = `<div class="pw-row"><span>${r.phase === 'load' ? 'Load phase' : 'Idle phase'}</span>
+                <span>${live.input_v != null ? live.input_v.toFixed(2) + ' V' : ''}${live.temp_c != null ? ' · ' + live.temp_c + ' °C' : ''}${live.gps ? ' · GPS ' + (live.gps.age_s != null && live.gps.age_s <= 3 ? live.gps.sats_used + '/' + live.gps.sats_view + ' sats' : 'silent') : ''}</span></div>
+            <div class="sys-bar"><div class="sys-bar-fill" style="width:${r.progress || 0}%"></div></div>`;
+        return;
+    }
+    if (r.phase === 'error') {
+        body.innerHTML = `<div class="pw-bad">Test failed: ${escapeHtml(r.error || 'unknown error')}</div>`;
+        return;
+    }
+    const vd = r.verdict || {};
+    const i = r.idle || {}, l = r.load || {};
+    const fmt = (x, u, dp = 2) => x == null ? '—' : `${Number(x).toFixed(dp)}${u}`;
+    const flags = f => (f && f.length) ? escapeHtml(f.join(', ')) : 'none';
+    const info = r.load_info || {};
+    const extras = [];
+    if (info.sdr_rate_pct != null) extras.push(`SDR ${info.sdr_rate_pct}% of full rate`);
+    if (info.scans_ok != null) extras.push(`${info.scans_ok} Wi-Fi scans ok, ${info.scans_failed} failed`);
+    if (i.gps || l.gps) extras.push('GPS satellites = used / in view');
+    const when = r.finished ? new Date(r.finished * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    body.innerHTML = `
+        <div class="pw-status"><span class="pw-status-title ${vd.ok ? 'pw-ok' : 'pw-bad'}">${escapeHtml(vd.headline || '')}</span>
+            <span class="pw-muted">${escapeHtml((r.loads || []).join(' + ') || 'no load')} · ${r.duration} s · ${when}${r.usb_limit_ma ? ' · USB limit ' + _pwMa(r.usb_limit_ma) : ''}</span></div>
+        <div class="overflow-x-auto"><table class="pw-table">
+            <tr><th></th><th>Idle</th><th>Load</th></tr>
+            <tr><td>Input avg</td><td>${fmt(i.input_v_avg, ' V')}</td><td>${fmt(l.input_v_avg, ' V')}</td></tr>
+            <tr><td>Input min</td><td>${fmt(i.input_v_min, ' V')}</td><td>${fmt(l.input_v_min, ' V')}</td></tr>
+            <tr><td>Board power max</td><td>${fmt(i.board_w_max, ' W', 1)}</td><td>${fmt(l.board_w_max, ' W', 1)}</td></tr>
+            <tr><td>Temp max</td><td>${fmt(i.temp_max, ' °C', 1)}</td><td>${fmt(l.temp_max, ' °C', 1)}</td></tr>
+            <tr><td>Throttle flags</td><td>${flags(i.flags)}</td><td>${flags(l.flags)}</td></tr>
+            <tr><td>USB dropouts</td><td class="${i.usb_disconnects ? 'pw-bad' : ''}">${i.usb_disconnects ?? '—'}</td><td class="${l.usb_disconnects ? 'pw-bad' : ''}">${l.usb_disconnects ?? '—'}</td></tr>
+            ${_pwGpsRows(i.gps, l.gps)}
+        </table></div>
+        ${extras.length ? `<div class="pw-muted" style="margin-top:6px">${escapeHtml(extras.join(' · '))}</div>` : ''}
+        ${(vd.issues || []).slice(1).map(t => `<div class="pw-warn" style="font-size:13px;margin-top:4px">${escapeHtml(t)}</div>`).join('')}
+        ${(vd.advice || []).map(t => `<div style="font-size:13px;margin-top:4px">→ ${escapeHtml(t)}</div>`).join('')}`;
 }
 
 function updateAutomationToggleButton(automationEnabled, options = {}) {
@@ -25637,32 +25779,32 @@ function fetchPowerDetail() {
 function updatePowerSystemView(d) {
     const card = document.getElementById('power-card');
     const panel = document.getElementById('power-detail-panel');
+    const testPanel = document.getElementById('power-test-panel');
     if (!d || d.supported === false) {
-        // Off-Pi (no vcgencmd): nothing meaningful to show, keep both hidden.
-        if (card) card.classList.add('hidden');
-        if (panel) panel.classList.add('hidden');
+        // Off-Pi (no vcgencmd): nothing meaningful to show.
+        [card, panel, testPanel].forEach(el => el && el.classList.add('hidden'));
         return;
     }
-    const level = d.level;
+    const v = _powerVerdict(d);
     const statusEl = document.getElementById('power-card-status');
     const detailEl = document.getElementById('power-card-details');
-    const iconEl = document.getElementById('power-card-icon');
     if (card) card.classList.remove('hidden');
-    const label = level === 'critical' ? 'Under-voltage' : level === 'warning' ? 'Warning' : 'Healthy';
-    const tone = level === 'critical' ? 'text-red-400' : level === 'warning' ? 'text-amber-400' : 'text-emerald-400';
-    if (statusEl) { statusEl.textContent = label; statusEl.className = 'text-2xl font-bold ' + tone; }
-    if (iconEl) iconEl.className = 'w-5 h-5 ' + tone;
+    if (statusEl) { statusEl.textContent = v.short; statusEl.className = 'sys-stat-value ' + v.cls; }
     if (detailEl) {
+        const inV = _pwInputVolts(d);
         const bits = [];
-        if (d.summary && d.summary.headline) bits.push(d.summary.headline);
-        if (d.estimate && d.estimate.total_peak_ma != null) bits.push('~' + _pwMa(d.estimate.total_peak_ma) + ' peak');
-        if (d.temp_c != null) bits.push(d.temp_c + ' °C');
-        detailEl.textContent = bits.join(' · ') || 'Supply health';
+        if (inV != null) bits.push(inV.toFixed(2) + ' V in');
+        if (d.pmic && d.pmic.total_watts != null) bits.push(d.pmic.total_watts + ' W');
+        detailEl.textContent = bits.join(' · ') || ' ';
     }
     if (panel) {
         panel.classList.remove('hidden');
         const body = document.getElementById('power-detail-body');
-        if (body) body.innerHTML = buildPowerDetailHtml(d);
+        if (body) body.innerHTML = buildPowerDetailHtml(d, { actions: true });
+    }
+    if (testPanel) {
+        testPanel.classList.remove('hidden');
+        if (!_powerTest.loaded) fetchPowerTestStatus();
     }
 }
 
@@ -25707,8 +25849,11 @@ function updateSystemOverview(data) {
     const cpuProgress = document.getElementById('cpu-progress');
     
     if (cpuUsage) cpuUsage.textContent = `${data.cpu.percent}%`;
-    if (cpuDetails) cpuDetails.textContent = `${data.cpu.count} cores`;
-    if (cpuProgress) cpuProgress.style.width = `${data.cpu.percent}%`;
+    if (cpuDetails) {
+        const mhz = data.cpu.frequency && data.cpu.frequency.current;
+        cpuDetails.textContent = `${data.cpu.count} cores` + (mhz ? ` · ${(mhz / 1000).toFixed(1)} GHz` : '');
+    }
+    _sysBar(cpuProgress, data.cpu.percent);
     
     // Memory
     const memoryUsage = document.getElementById('memory-usage');
@@ -25717,7 +25862,7 @@ function updateSystemOverview(data) {
     
     if (memoryUsage) memoryUsage.textContent = `${data.memory.percent}%`;
     if (memoryDetails) memoryDetails.textContent = `${data.memory.used_formatted} / ${data.memory.total_formatted}`;
-    if (memoryProgress) memoryProgress.style.width = `${data.memory.percent}%`;
+    _sysBar(memoryProgress, data.memory.percent);
 
     // Swap (if reported)
     if (data.swap) {
@@ -25728,7 +25873,7 @@ function updateSystemOverview(data) {
 
         if (swapUsage) swapUsage.textContent = `${swapPercent}%`;
         if (swapDetails) swapDetails.textContent = `${data.swap.used_formatted} / ${data.swap.total_formatted}`;
-        if (swapProgress) swapProgress.style.width = `${swapPercent}%`;
+        _sysBar(swapProgress, swapPercent);
     }
     
     // Disk
@@ -25738,7 +25883,7 @@ function updateSystemOverview(data) {
     
     if (diskUsage) diskUsage.textContent = `${data.disk.percent}%`;
     if (diskDetails) diskDetails.textContent = `${data.disk.used_formatted} / ${data.disk.total_formatted}`;
-    if (diskProgress) diskProgress.style.width = `${data.disk.percent}%`;
+    _sysBar(diskProgress, data.disk.percent);
     
     // Battery (PiSugar - only shown when connected)
     const batteryCard = document.getElementById('battery-card');
@@ -25750,7 +25895,6 @@ function updateSystemOverview(data) {
             const batteryUsage = document.getElementById('battery-usage');
             const batteryDetails = document.getElementById('battery-details');
             const batteryProgress = document.getElementById('battery-progress');
-            const batteryIcon = document.getElementById('battery-icon');
 
             if (batteryUsage) batteryUsage.textContent = `${lvl}%`;
             if (batteryDetails) {
@@ -25760,12 +25904,7 @@ function updateSystemOverview(data) {
             }
             if (batteryProgress) {
                 batteryProgress.style.width = `${lvl}%`;
-                batteryProgress.className = 'h-2 rounded-full transition-all duration-300 ' +
-                    (lvl <= 20 ? 'bg-red-500' : lvl <= 50 ? 'bg-yellow-500' : 'bg-emerald-500');
-            }
-            if (batteryIcon) {
-                batteryIcon.className = 'w-5 h-5 ' +
-                    (lvl <= 20 ? 'text-red-400' : lvl <= 50 ? 'text-yellow-400' : 'text-emerald-400');
+                batteryProgress.style.background = lvl <= 20 ? '#ef4444' : lvl <= 50 ? '#eab308' : '#10b981';
             }
         } else {
             batteryCard.classList.add('hidden');
@@ -25775,6 +25914,19 @@ function updateSystemOverview(data) {
     // Uptime
     const uptimeDisplay = document.getElementById('uptime-display');
     if (uptimeDisplay) uptimeDisplay.textContent = data.uptime.formatted;
+    const uptimeDetails = document.getElementById('uptime-details');
+    if (uptimeDetails && data.uptime.seconds != null) {
+        const since = new Date(Date.now() - data.uptime.seconds * 1000);
+        uptimeDetails.textContent = 'since ' + since.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    }
+}
+
+// Stat-card bar: blue normally, amber past 75 %, red past 90 %.
+function _sysBar(el, pct) {
+    if (!el) return;
+    const p = Math.max(0, Math.min(100, Number(pct) || 0));
+    el.style.width = p + '%';
+    el.style.background = p >= 90 ? '#ef4444' : p >= 75 ? '#f59e0b' : '#3b82f6';
 }
 
 function updateProcessList(processes) {
@@ -25794,8 +25946,8 @@ function updateProcessList(processes) {
         html += `
             <div class="flex items-center justify-between p-2 bg-slate-800 rounded text-sm">
                 <div class="flex-1 truncate">
-                    <span class="font-medium">${proc.name}</span>
-                    <span class="text-gray-400 ml-2">PID: ${proc.pid}</span>
+                    <span class="font-medium">${escapeHtml(String(proc.name || ''))}</span>
+                    <span class="text-gray-400 ml-2">${escapeHtml(String(proc.pid))}</span>
                 </div>
                 <div class="flex space-x-3 text-xs">
                     <span class="text-blue-400">${cpuPercent}% CPU</span>
@@ -25825,14 +25977,16 @@ function updateNetworkInterfaces(interfaces) {
         html += `
             <div class="border border-gray-700 rounded p-3">
                 <div class="flex items-center justify-between mb-2">
-                    <span class="font-medium">${iface.name}</span>
+                    <span class="font-medium">${escapeHtml(iface.name)}</span>
                     <span class="${statusColor} text-xs">${statusText}</span>
                 </div>
                 <div class="text-xs text-gray-400 space-y-1">
                     ${iface.speed > 0 ? `<div>Speed: ${iface.speed} Mbps</div>` : ''}
-                    ${iface.addresses.map(addr => 
-                        `<div>${addr.address} (${addr.family})</div>`
-                    ).join('')}
+                    ${iface.addresses.map(addr => {
+                        // psutil family numbers: 2 = IPv4, 10 = IPv6, 17 = MAC (AF_PACKET)
+                        const fam = { 2: 'IPv4', 10: 'IPv6', 17: 'MAC' }[addr.family] || String(addr.family);
+                        return `<div class="break-all"><span class="text-gray-500">${fam}</span> ${escapeHtml(addr.address)}</div>`;
+                    }).join('')}
                 </div>
             </div>
         `;
@@ -25852,7 +26006,6 @@ function updateNetworkStats(data) {
         <div class="bg-slate-800 rounded p-3">
             <h4 class="font-medium mb-2">Connections</h4>
             <div class="text-2xl font-bold text-blue-400">${data.total_connections}</div>
-            <div class="text-xs text-gray-400">Total active</div>
         </div>
     `;
     
@@ -25860,7 +26013,7 @@ function updateNetworkStats(data) {
     Object.entries(data.interfaces).slice(0, 4).forEach(([name, stats]) => {
         html += `
             <div class="bg-slate-800 rounded p-3">
-                <h4 class="font-medium mb-2">${name}</h4>
+                <h4 class="font-medium mb-2">${escapeHtml(name)}</h4>
                 <div class="text-xs space-y-1">
                     <div class="flex justify-between">
                         <span class="text-gray-400">Sent:</span>
@@ -25899,6 +26052,9 @@ function formatSensorName(sensor) {
         'wifi': 'Wi-Fi',
         'pch': 'Chipset',
         'bat': 'Battery',
+        'rp1_adc': 'RP1',
+        'mt7921': 'USB Wi-Fi',
+        'mt7925': 'USB Wi-Fi',
     };
 
     const lower = sensor.toLowerCase().replace(/[_\-\s]+\d*$/, '').replace(/[_\-\s]+/g, '_');
@@ -25915,31 +26071,22 @@ function formatSensorName(sensor) {
 }
 
 function updateTemperatureDisplay(temperatures) {
-    const tempSection = document.getElementById('temperature-section');
-    const tempDisplay = document.getElementById('temperature-display');
-    
-    if (!tempSection || !tempDisplay) return;
-    
-    if (Object.keys(temperatures).length === 0) {
-        tempSection.classList.add('hidden');
-        return;
+    const valEl = document.getElementById('temp-usage');
+    const subEl = document.getElementById('temp-details');
+    if (!valEl) return;
+    const entries = Object.entries(temperatures || {});
+    if (!entries.length) { valEl.textContent = '--'; if (subEl) subEl.textContent = 'No sensors'; return; }
+    // Lead with the CPU sensor; list the rest underneath.
+    const cpuIdx = Math.max(0, entries.findIndex(([n]) => formatSensorName(n) === 'CPU'));
+    const [, cpuT] = entries[cpuIdx];
+    valEl.textContent = `${cpuT.toFixed(1)} °C`;
+    valEl.className = 'sys-stat-value ' + (cpuT >= 80 ? 'pw-bad' : cpuT >= 70 ? 'pw-warn' : '');
+    if (subEl) {
+        const rest = entries.filter((_, i) => i !== cpuIdx)
+            .map(([n, t]) => `${formatSensorName(n)} ${Math.round(t)}°`);
+        subEl.textContent = rest.length ? rest.join(' · ') : formatSensorName(entries[cpuIdx][0]);
+        subEl.title = subEl.textContent;
     }
-    
-    tempSection.classList.remove('hidden');
-    
-    let html = '';
-    Object.entries(temperatures).forEach(([sensor, temp]) => {
-        const tempColor = temp > 70 ? 'text-red-400' : temp > 50 ? 'text-yellow-400' : 'text-green-400';
-        
-        html += `
-            <div class="bg-slate-800 rounded p-3">
-                <h4 class="font-medium mb-1 text-sm">${formatSensorName(sensor)}</h4>
-                <div class="text-xl font-bold ${tempColor}">${temp.toFixed(1)}°C</div>
-            </div>
-        `;
-    });
-    
-    tempDisplay.innerHTML = html;
 }
 
 function sortProcesses(sortBy) {
@@ -25970,6 +26117,7 @@ function sortProcesses(sortBy) {
 function refreshSystemStatus() {
     fetchSystemStatus();
     fetchNetworkStats();
+    fetchPowerDetail();
     showSystemSuccess('System status refreshed');
 }
 
