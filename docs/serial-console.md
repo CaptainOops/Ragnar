@@ -1,13 +1,15 @@
-# Device Console (read-only serial console)
+# Device Console
 
-Watch a switch, router or firewall's **serial console** from the Ragnar dashboard.
-Plug a USB console cable into a Ragnar and the RJ45 end into the device's console
-port; the **Device Console** card (Dashboard tab, below the Activity Log) streams
-whatever the device prints. It works for **any unit in the mesh**: pick another
-Ragnar in the card and you see the console cabled to that unit, wherever it is.
+Watch — and optionally command — a switch, router or firewall's **serial console**
+from the Ragnar dashboard. Plug a USB console cable into a Ragnar and the RJ45 end
+into the device's console port; the **Device Console** card (Dashboard tab, below the
+Activity Log) streams whatever the device prints. It works for **any unit in the
+mesh**: pick another Ragnar in the card and you see the console cabled to that unit,
+wherever it is.
 
-> **Read-only, always.** Ragnar never sends a byte to the device. You get what the
-> device *prints*; you cannot type into the console from Ragnar.
+> **Read-only by default.** The port opens `O_RDONLY` until you tick **Allow write**
+> in the card. With the write gate enabled, a command input bar appears and you can
+> send commands (`show version`, etc.) to the device.
 
 ## What you will see
 
@@ -43,19 +45,29 @@ bytes arriving are mostly unprintable framing garbage, re-reads at the next one
 device to be printing something (a reboot, a log line) and **never sends anything
 to provoke output**. If you know the rate, pick it.
 
-For belt-and-braces safety on a critical device, use a cable with the **TX
-conductor cut** (RJ45 pin 6 in a rollover pinout — the device's RxD): then
-transmission is impossible physically as well as in software.
+For belt-and-braces safety on a critical device **with write disabled**, use a cable
+with the **TX conductor cut** (RJ45 pin 6 in a rollover pinout — the device's RxD):
+then transmission is impossible physically as well as in software.
 
-## How "read-only" is guaranteed
+## Read-only vs read-write
 
-- The tty is opened **`O_RDONLY | O_NOCTTY`** — a write is impossible at the file
-  descriptor level (the self-test proves a write attempt is refused).
+By default the port is opened **`O_RDONLY | O_NOCTTY`** — a write is impossible at
+the file descriptor level. The self-test proves a write attempt is refused.
+
+Tick **Allow write** to enable the gated write path:
+
+- The port is reopened `O_RDWR | O_NOCTTY` (an automatic restart happens).
+- A **command input bar** (`cmd>`) appears below the output pane. Type a command and
+  press Enter (or click Send); a `\r` is appended automatically.
+- The badge changes from **READ-ONLY** to **READ-WRITE**.
+- The setting is persisted in the config and remembered across restarts.
+- Untick **Allow write** to return to read-only at any time.
+
+In both modes:
+
 - Raw termios with **`HUPCL` cleared** (no DTR drop when the port closes), hardware
   flow control off and `CLOCAL` set (modem-control lines ignored). No **BREAK** is
   ever generated — a BREAK during boot drops a Cisco into ROMMON.
-- `serial_console.py` contains **no write call at all**; an AST guard in its
-  self-test fails if one is ever added.
 - **The port stays reserved** (in `serial_claims`) from the moment you assign it,
   even while the viewer is stopped, and across reboots. GPS, CYD, RoomScan and
   wardriving auto-detection skip it — several of those write probe bytes to the
@@ -101,12 +113,20 @@ never any output). There are two ways to view a remote console:
    unit itself). This works on tag trust — no mesh secret needed — and is **off by
    default**, per unit, so nothing leaves a unit until its operator switches it on.
    The choice is remembered across restarts and survives *Release port*.
-2. **Mesh secret — full view and control.** With a
+2. **Share write with mesh** — on the unit with the cable, tick **Share write
+   with mesh** (visible only when both **Allow write** and **Share with mesh** are
+   on). Any mesh peer can then type commands into the device from the remote
+   dashboard. The badge on the remote side changes to **REMOTE WRITE** and the
+   `cmd>` input bar appears. The remote peer sends the command via
+   `POST /api/serial-console/peer-write`, which relays it to the target unit's
+   `POST /api/mesh/serial-console/write`. This is a triple opt-in: allow_write +
+   share_mesh + share_mesh_write must all be on.
+3. **Mesh secret — full view and control.** With a
    [mesh secret](mesh.md#hardening-a-shared-tailnet-the-mesh-secret) armed on both
    units, the card talks to the remote unit through the
    [mesh gateway](mesh.md#mesh-gateway-reach-the-fleet-through-one-unit)
-   (`X-Ragnar-Target`): you can pick its port, set the baud and start/stop it as if
-   it were local.
+   (`X-Ragnar-Target`): you can pick its port, set the baud, start/stop and write
+   commands as if it were local.
 
 If neither applies, picking the unit tells you it has not shared its console.
 Console output can contain sensitive material (a `show running-config` someone
@@ -122,8 +142,9 @@ the unit on your desk.
 - **You occupy the console.** A technician who needs the port has to unplug the
   cable. Plan for one Ragnar (or one USB hub of adapters) per device.
 - **A logged-in console is attack surface.** If a session is left logged in on the
-  console, anyone with that Ragnar has the device. Ragnar never types, but log out
-  of consoles you leave cabled.
+  console, anyone with that Ragnar has the device — especially with **Allow write**
+  enabled. Log out of consoles you leave cabled, and disable the write gate when
+  you are done sending commands.
 - The viewer keeps the last 5,000 lines per unit in memory; **Download log** saves
   what the page has received (up to 20,000 lines) as a timestamped text file.
 - If the cable is unplugged, the viewer shows *disconnected* and resumes by itself
@@ -142,12 +163,19 @@ the unit on your desk.
 | GET | `/api/serial-console/units` | this unit + mesh peers with their console summary |
 | GET | `/api/mesh/serial-console/status` | peer-readable, content-free console summary |
 | POST | `/api/serial-console/share` | `{share}` — opt this unit's console in/out of view-only mesh sharing |
+| POST | `/api/serial-console/allow-write` | `{allow_write}` — enable/disable the write gate (restarts the reader) |
+| POST | `/api/serial-console/write` | `{data}` — send data to the device (refuses unless allow_write is enabled) |
+| POST | `/api/serial-console/share-write` | `{share_write}` — opt this unit's console write in/out of mesh sharing |
 | GET | `/api/mesh/serial-console/output/<since>` | peer-readable output — **only** while sharing is on (cursor in the path: the mesh proof covers the path, not the query) |
+| POST | `/api/mesh/serial-console/write` | `{data}` — peer-writable: send a command (requires share_mesh + share_mesh_write + allow_write) |
 | GET | `/api/serial-console/peer-output?unit=ID&since=N` | this unit fetches a peer's *shared* output over the mesh |
+| POST | `/api/serial-console/peer-write` | `{unit, data}` — relay a write command to a peer's shared-write console |
 
 Any of the `/api/serial-console/*` calls can be sent to another unit with the
 `X-Ragnar-Target` header (mesh secret required). Self-test:
 `python3 serial_console.py --selftest` (a pseudo-terminal stands in for the
-USB-UART; it checks the termios flags, that a write is refused, ANSI stripping,
-prompt surfacing, passive auto-baud, the port reservation, and that the CYD bridge
-stays silent on — and releases — a port that never identifies as a CYD).
+USB-UART; it checks the termios flags, that a write is refused when the gate is
+closed, that a write succeeds and reaches the device side when the gate is open,
+ANSI stripping, prompt surfacing, passive auto-baud, the port reservation, and that
+the CYD bridge stays silent on — and releases — a port that never identifies as a
+CYD).
