@@ -137,7 +137,7 @@ The [Flipper One](https://docs.flipper.net/one/how-to-join) is an ARM64 Linux mu
 
 ## 🔨 Installation Details
 
-The installer auto-detects your platform and configures everything — distro detection (apt/dnf/pacman/zypper), architecture support (AMD64/ARM64/ARMv7/ARMv8), install profiles (Pi + e-Paper, Server/Headless, Pineapple Pager, Docker), automatic advanced tools on 8GB+ boards, and smart resource management that skips heavy tools on a Pi Zero 2W. Full walkthrough: [Install Guide](docs/INSTALL.md); updating an existing box: [Updating Ragnar](docs/updates.md).
+The installer auto-detects your platform and configures everything — distro detection (apt/dnf/pacman/zypper), architecture support (AMD64/ARM64/ARMv7/ARMv8), install profiles (Pi + e-Paper, Server/Headless, Pineapple Pager, Docker), automatic advanced tools on 8GB+ boards, and smart resource management that skips heavy tools on a Pi Zero 2W. Full walkthrough: [Install Guide](docs/INSTALL.md); updating an existing box: [Updating Ragnar](docs/updates.md). Installed headless and added a screen later (e.g. the 1.44" LCD HAT)? Run `sudo ./installhead.sh` to pick and enable it — see [Adding a screen to a headless install](docs/INSTALL.md#adding-a-screen-to-a-headless-install-installheadsh).
 
 ---
 
