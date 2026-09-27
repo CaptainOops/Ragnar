@@ -666,9 +666,11 @@ GPS breadcrumb trail — one row every 5 s during a session, only while GPS has 
 Standard format for uploading to wigle.net. Contains MAC, SSID, AuthMode, channel, RSSI, GPS coordinates.
 
 The export (and every upload, which uses the same file) contains only
-**GPS-pinned** rows: sightings whose position matches a real GPS fix on the
-session's track. All row types are written as one time-ordered list, each
-row's `FirstSeen` is the moment the drive was at that position (UTC,
+**GPS-pinned** rows: sightings whose position lies within 50 m of the
+session's GPS track. All row types are written as one time-ordered list, each
+row's `FirstSeen` is the moment the drive was at that position, interpolated
+between the track's fixes (logged every ~9 s), so rows heard between two fixes
+don't share one timestamp while sitting 100 m apart (UTC,
 `YYYY-MM-DD HH:MM:SS`), and fields are standard CSV-quoted (an SSID with a
 comma is `"name,with,comma"`). Services that rebuild the drive route from the
 file, such as Wardrift, otherwise reject it ("The GPS trail has a few jumps").
@@ -735,7 +737,7 @@ has two auth paths and Ragnar supports both:
 
 | Mode | How to set it up | What an upload does |
 |------|------------------|---------------------|
-| **Signed in** (preferred) | Enter your Wardrift username + password and hit *Sign in*. Ragnar keeps only the session token; the password is never stored. | `POST /v1/wardrive/logs` with the WiGLE CSV. The session becomes an archived route (distance, AP count, streak), public if *Public routes* is ticked. A re-upload returns `409 duplicate_route`, which Ragnar treats as success. The card shows your character level, EXP to next level, currency and lifetime routes/APs. |
+| **Signed in** (preferred) | Enter your Wardrift username + password and hit *Sign in*. Ragnar keeps only the session token; the password is never stored. | `POST /v1/wardrive/logs` with the WiGLE CSV. The session becomes an archived route (distance, AP count, streak), public if *Public routes* is ticked. A re-upload returns `409 duplicate_route`. Wardrift also answers that while an identical earlier upload is still pending (processing a large drive can take ~10 minutes), and that one can still be rejected, so Ragnar shows it as *already has this file — check wardrift.net* rather than a success. The card shows your character level, EXP to next level, currency and lifetime routes/APs. |
 | **API key** | Paste a **character-bound** Wardrift key (`wdk_…`). | `POST /v1/ingest/signals` in batches of 250. Each row becomes a signal item (`wifi` / `bluetooth` / `cellular` / `other`) with SSID and BSSID sent **only as SHA-256 hashes**, timestamps converted to UTC. |
 
 If both are set, the signed-in route upload is used, and it falls back to the API
