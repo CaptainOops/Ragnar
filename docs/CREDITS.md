@@ -14,8 +14,8 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **218 CVEs detected from the wire.** 258 distinct CVE IDs are named across Ragnar's
-  code; 218 of them a passive detector actually identifies. The rest are named, not detected:
+- **220 CVEs detected from the wire.** 260 distinct CVE IDs are named across Ragnar's
+  code; 220 of them a passive detector actually identifies. The rest are named, not detected:
   30 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
   shape, the SR-MPLS `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture
   advisories** — byte-level parser CVEs the passive text watchers name for patch guidance but
@@ -23,7 +23,7 @@ behind them is Solarflere's work.
   checks in the BLE Pentest action. Every one is listed, with its detector and status, in the
   generated **[CVE Index](CVE.md)**.
 - **28 years of coverage** — from **CVE-1999-0113** (the rlogin `-froot` bypass) to
-  **CVE-2026-81736**.
+  **CVE-2026-86060**.
 - **Two CISA KEV entries** join the corpus with SMTP Watch (CVE-2019-10149, CVE-2018-6789).
 - Weighted to the current threat wave (all named IDs): **36 CVEs from 2023, 47 from 2024, 33 from 2025, and
   34 from 2026.**
@@ -158,6 +158,14 @@ behind them is Solarflere's work.
   source-port trust bounce** (CVE-1999-0185) and netkit **rcp** abuse by a malicious server
   (CVE-2019-7282 / CVE-2019-7283), plus rexec cleartext credentials and `.rhosts` trust —
   the same `login -f` auth-bypass shape traced across twenty-seven years of Unix remote login.
+
+- **Actively exploited, honestly scoped** — **MikroTik Guard v2** adds the **MikroTrick**
+  chain (CVE-2026-67276 forged-exponent SSH key + CVE-2026-86060 crafted-username
+  escalation, exploited in the wild since 2 September 2026) as an *exposure* finding: the
+  attack runs inside encrypted SSH authentication and can never be seen on a tap, so the
+  guard flags RouterOS devices inside the fix train (read from MNDP or the cleartext
+  `ROSSSH` banner) that have SSH on the wire — and says plainly that silence is not
+  evidence of safety.
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
