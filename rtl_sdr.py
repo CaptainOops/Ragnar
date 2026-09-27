@@ -1909,23 +1909,23 @@ class PowerSweep:
                 self._error = str(exc)
         finally:
             serr.join(timeout=1)
-            # Only surface a device error if the process died on its own — a
-            # deliberate stop/restart (stop set) is not an error to report.
             if (not stop.is_set() and proc.poll() not in (None, 0)
                     and not self._error and self._stderr_tail):
                 self._error = self._stderr_tail
-        # A managed-gain change restarts this capture, so the old rtl_sdr has to
-        # be closed here: leaving it running would hold the device and the
-        # relaunch would fail (and a device left half-open is how one gets
-        # wedged). The stop path does its own termination.
+            _terminate(proc)
+            if self._proc is proc:
+                self._proc = None
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
         if self._agc_pending is not None:
-            _terminate(proc)
-            self._proc = None
             return True
-        # Nothing produced and we didn't ask it to stop -> let rtl_power try.
         if produced == 0 and not stop.is_set():
-            _terminate(proc)
-            self._proc = None
             self._error = None
             return False
         return True
@@ -2010,6 +2010,17 @@ class PowerSweep:
             if (not stop.is_set() and proc.poll() not in (None, 0)
                     and not self._error and self._stderr_tail):
                 self._error = self._stderr_tail
+            _terminate(proc)
+            if self._proc is proc:
+                self._proc = None
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
 
     def begin_external(self, lo_hz, hi_hz, engine="iq-capture"):
         """Hand the waterfall over to another capture (e.g. a raw-IQ recording).
