@@ -21249,18 +21249,41 @@ function scSetControls(mode) {
     if (ww) ww.classList.toggle('hidden', mode !== 'local');
 }
 
-function scUpdateWriteUI(st) {
-    const aw = !!(st && st.allow_write);
-    const badge = document.getElementById('sc-badge');
-    if (badge) {
-        badge.textContent = aw ? 'READ-WRITE' : 'READ-ONLY';
-        badge.className = 'text-xs font-semibold px-2 py-0.5 rounded border '
-            + (aw ? 'bg-amber-900/60 text-amber-300 border-amber-800' : 'bg-emerald-900/60 text-emerald-300 border-emerald-800');
+function scUpdateWriteUI(st, mode) {
+    mode = mode || scMode();
+    if (mode === 'local') {
+        const aw = !!(st && st.allow_write);
+        const badge = document.getElementById('sc-badge');
+        if (badge) {
+            badge.textContent = aw ? 'READ-WRITE' : 'READ-ONLY';
+            badge.className = 'text-xs font-semibold px-2 py-0.5 rounded border '
+                + (aw ? 'bg-amber-900/60 text-amber-300 border-amber-800' : 'bg-emerald-900/60 text-emerald-300 border-emerald-800');
+        }
+        const box = document.getElementById('sc-write');
+        if (box) box.checked = aw;
+        const bar = document.getElementById('sc-cmd-bar');
+        if (bar) bar.classList.toggle('hidden', !aw);
+        // show share-write checkbox when both share_mesh and allow_write are on
+        const sm = !!(st && st.share_mesh);
+        const sww = document.getElementById('sc-share-write-wrap');
+        if (sww) sww.classList.toggle('hidden', !(aw && sm));
+        const swb = document.getElementById('sc-share-write');
+        if (swb && st) swb.checked = !!st.share_mesh_write;
+    } else {
+        // remote unit: show cmd bar if the peer advertises share_mesh_write
+        const remoteWrite = !!(st && st.share_mesh_write);
+        const badge = document.getElementById('sc-badge');
+        if (badge) {
+            badge.textContent = remoteWrite ? 'REMOTE WRITE' : 'VIEW-ONLY';
+            badge.className = 'text-xs font-semibold px-2 py-0.5 rounded border '
+                + (remoteWrite ? 'bg-amber-900/60 text-amber-300 border-amber-800' : 'bg-sky-900/60 text-sky-300 border-sky-800');
+        }
+        const bar = document.getElementById('sc-cmd-bar');
+        if (bar) bar.classList.toggle('hidden', !remoteWrite);
+        // hide local-only checkboxes
+        const sww = document.getElementById('sc-share-write-wrap');
+        if (sww) sww.classList.toggle('hidden', true);
     }
-    const box = document.getElementById('sc-write');
-    if (box) box.checked = aw;
-    const bar = document.getElementById('sc-cmd-bar');
-    if (bar) bar.classList.toggle('hidden', !aw);
 }
 
 async function scShareChanged() {
@@ -21296,15 +21319,41 @@ async function scWriteChanged() {
     }
 }
 
+async function scShareWriteChanged() {
+    const box = document.getElementById('sc-share-write');
+    if (!box) return;
+    if (box.checked && !confirm('Allow mesh peers to send commands to the device through this console? Only peers in your mesh can reach this endpoint.')) {
+        box.checked = false;
+        return;
+    }
+    try {
+        const r = await fetchAPI('/api/serial-console/share-write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ share_write: box.checked }) });
+        box.checked = !!r.share_mesh_write;
+    } catch (e) {
+        box.checked = !box.checked;
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
 async function scSendCmd() {
     const inp = document.getElementById('sc-cmd-input');
     if (!inp) return;
     const cmd = inp.value;
     if (!cmd) return;
+    const mode = scMode();
     try {
-        const r = await fetchAPI('/api/serial-console/write', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ data: cmd + '\r' }) });
+        let r;
+        if (mode === 'local' || mode === 'gateway') {
+            r = await fetchAPI('/api/serial-console/write', scOpts({
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ data: cmd + '\r' }) }));
+        } else {
+            r = await fetchAPI('/api/serial-console/peer-write', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ unit: scState.unit, data: cmd + '\r' }) });
+        }
         if (r.success) {
             inp.value = '';
         } else {
@@ -21375,12 +21424,15 @@ async function scRefresh() {
     scSetControls(mode);
     if (mode === 'blocked') {
         const u = scUnit();
+        scUpdateWriteUI({}, 'blocked');
         scSetStatus(`<span class="text-amber-300">${escapeHtml(u.name || 'That unit')} has not shared its console. On that unit, tick <strong>Share with mesh (view-only)</strong> in this card — or arm the mesh secret on both units for full view + control.</span>`);
         return;
     }
     if (mode === 'shared') {
         const u = scUnit();
-        scSetStatus(`<span class="text-emerald-300">View-only:</span> ${escapeHtml(u.name || 'this unit')} shares its console with the mesh${u.port_label ? ' · ' + escapeHtml(u.port_label) : ''}. Start/stop happen on that unit.`);
+        const writeNote = u.share_mesh_write ? ' · <span class="text-amber-300">write enabled</span>' : '';
+        scSetStatus(`<span class="text-emerald-300">${u.share_mesh_write ? 'Shared' : 'View-only'}:</span> ${escapeHtml(u.name || 'this unit')} shares its console with the mesh${u.port_label ? ' · ' + escapeHtml(u.port_label) : ''}${writeNote}. Start/stop happen on that unit.`);
+        scUpdateWriteUI({ share_mesh_write: u.share_mesh_write }, 'shared');
         return;
     }
     // Ports on the selected unit
@@ -21405,7 +21457,7 @@ async function scRefresh() {
         if (b && st.baud_setting) b.value = String(st.baud_setting);
         const sh = document.getElementById('sc-share');
         if (sh && mode === 'local') sh.checked = !!st.share_mesh;
-        if (mode === 'local') scUpdateWriteUI(st);
+        scUpdateWriteUI(st, mode);
         scSetStatus(scDescribe(st));
     } catch (e) {
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
@@ -21493,10 +21545,12 @@ async function scPoll() {
             scAppend(lines);
         }
         if (d.status) {
+            const smw = d.share_mesh_write || (d.status && d.status.share_mesh_write);
             const prefix = mode === 'shared'
-                ? `<span class="text-emerald-300">View-only</span> · ${escapeHtml(scUnit().name || '')} · ` : '';
+                ? `<span class="text-emerald-300">${smw ? 'Shared' : 'View-only'}</span> · ${escapeHtml(scUnit().name || '')} · ` : '';
             scSetStatus(prefix + scDescribe(Object.assign({ reserved_port: d.status.port }, d.status)));
-            if (mode === 'local') scUpdateWriteUI(d.status);
+            const stForUI = Object.assign({}, d.status, { share_mesh_write: smw });
+            scUpdateWriteUI(stForUI, mode);
         }
     } catch (e) {
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);

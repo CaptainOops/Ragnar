@@ -461,8 +461,10 @@ def stop(release=False):
 def status():
     st = _reader.status()
     st['reserved_port'] = reserved_port()
-    st['share_mesh'] = shared_with_mesh()
-    st['allow_write'] = bool(load_config().get('allow_write'))
+    cfg = load_config()
+    st['share_mesh'] = bool(cfg.get('share_mesh'))
+    st['allow_write'] = bool(cfg.get('allow_write'))
+    st['share_mesh_write'] = shared_write_with_mesh()
     return st
 
 def shared_with_mesh():
@@ -489,6 +491,20 @@ def set_allow_write(on):
         _reader.stop()
         _reader.start(port, baud, allow_write=bool(on))
     return {'success': True, 'allow_write': bool(on), 'status': _reader.status()}
+
+def shared_write_with_mesh():
+    """Per-unit opt-in: may mesh peers SEND commands through this console?
+    Requires both share_mesh and allow_write to be on."""
+    cfg = load_config()
+    return bool(cfg.get('share_mesh_write') and cfg.get('share_mesh')
+                and cfg.get('allow_write'))
+
+def set_share_write(on):
+    cfg = load_config()
+    cfg['share_mesh_write'] = bool(on)
+    save_config(cfg)
+    return {'success': True, 'share_mesh_write': bool(on),
+            'effective': shared_write_with_mesh()}
 
 def write(data):
     """Send data to the device console.  Refuses unless allow_write is enabled

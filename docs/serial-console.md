@@ -113,12 +113,20 @@ never any output). There are two ways to view a remote console:
    unit itself). This works on tag trust — no mesh secret needed — and is **off by
    default**, per unit, so nothing leaves a unit until its operator switches it on.
    The choice is remembered across restarts and survives *Release port*.
-2. **Mesh secret — full view and control.** With a
+2. **Share write with mesh** — on the unit with the cable, tick **Share write
+   with mesh** (visible only when both **Allow write** and **Share with mesh** are
+   on). Any mesh peer can then type commands into the device from the remote
+   dashboard. The badge on the remote side changes to **REMOTE WRITE** and the
+   `cmd>` input bar appears. The remote peer sends the command via
+   `POST /api/serial-console/peer-write`, which relays it to the target unit's
+   `POST /api/mesh/serial-console/write`. This is a triple opt-in: allow_write +
+   share_mesh + share_mesh_write must all be on.
+3. **Mesh secret — full view and control.** With a
    [mesh secret](mesh.md#hardening-a-shared-tailnet-the-mesh-secret) armed on both
    units, the card talks to the remote unit through the
    [mesh gateway](mesh.md#mesh-gateway-reach-the-fleet-through-one-unit)
-   (`X-Ragnar-Target`): you can pick its port, set the baud and start/stop it as if
-   it were local.
+   (`X-Ragnar-Target`): you can pick its port, set the baud, start/stop and write
+   commands as if it were local.
 
 If neither applies, picking the unit tells you it has not shared its console.
 Console output can contain sensitive material (a `show running-config` someone
@@ -157,8 +165,11 @@ the unit on your desk.
 | POST | `/api/serial-console/share` | `{share}` — opt this unit's console in/out of view-only mesh sharing |
 | POST | `/api/serial-console/allow-write` | `{allow_write}` — enable/disable the write gate (restarts the reader) |
 | POST | `/api/serial-console/write` | `{data}` — send data to the device (refuses unless allow_write is enabled) |
+| POST | `/api/serial-console/share-write` | `{share_write}` — opt this unit's console write in/out of mesh sharing |
 | GET | `/api/mesh/serial-console/output/<since>` | peer-readable output — **only** while sharing is on (cursor in the path: the mesh proof covers the path, not the query) |
+| POST | `/api/mesh/serial-console/write` | `{data}` — peer-writable: send a command (requires share_mesh + share_mesh_write + allow_write) |
 | GET | `/api/serial-console/peer-output?unit=ID&since=N` | this unit fetches a peer's *shared* output over the mesh |
+| POST | `/api/serial-console/peer-write` | `{unit, data}` — relay a write command to a peer's shared-write console |
 
 Any of the `/api/serial-console/*` calls can be sent to another unit with the
 `X-Ragnar-Target` header (mesh secret required). Self-test:
