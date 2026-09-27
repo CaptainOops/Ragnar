@@ -21340,7 +21340,17 @@ _MIKROTIK_NPK_ORIGINS = ('mikrotik.com',)
 _MIKROTIK_GUARD_BPF = (
     'tcp port 80 or tcp port 8080 or tcp port 139 or tcp port 445 or '
     'tcp port 8291 or tcp port 21 or udp port 53 or udp port 5678 or '
-    'udp portrange 33434-33534 or icmp6 or ' + _GUARD_IP6_EXTHDR_BPF)
+    'udp portrange 33434-33534 or icmp6 or '
+    # MTK-021: SSH SYN + the cleartext SSH banner only, so a bulk SSH/scp session
+    # cannot eat the packet budget. libpcap's tcp[] accessor is IPv4-ONLY (it
+    # compiles, but returns 0 for every IPv6 packet), so IPv6 gets an explicit
+    # fixed-offset ip6[] form; IPv6 behind extension headers is admitted by the
+    # shared _GUARD_IP6_EXTHDR_BPF clause.
+    '(tcp port 22 and (tcp[tcpflags] & tcp-syn != 0 or '
+    'tcp[((tcp[12:1] & 0xf0) >> 2):4] = 0x5353482d)) or '
+    '(ip6 and ip6[6] = 6 and (ip6[40:2] = 22 or ip6[42:2] = 22) and '
+    '((ip6[53] & 0x02) != 0 or ip6[(40 + ((ip6[52] & 0xf0) >> 2)):4] = 0x5353482d)) or '
+    + _GUARD_IP6_EXTHDR_BPF)
 
 _MIKROTIK_WINBOX_TRAVERSAL = (b'../', b'..\\', b'%2e%2e%2f', b'%2e%2e/')      # MTK-003
 _MIKROTIK_WINBOX_CRED_PATHS = (b'user.dat', b'/rw/store/', b'/flash/rw/store')
@@ -21376,12 +21386,45 @@ _MIKROTIK_REGISTRY = {
     'MTK-017': ('HOTSPOT_OOB_READ', 'CVE-2022-45313'),
     'MTK-019': ('DNS_UNRELATED_DATA_CACHE_POISON', 'CVE-2019-3979'),
     'MTK-020': ('AUTOUPGRADE_ORIGIN_BYPASS', 'CVE-2019-3977'),
+    # One code for both halves of MikroTrick: they share one encrypted exchange.
+    'MTK-021': ('MIKROTRICK_SSH_EXPOSURE', 'CVE-2026-67276'),
 }
+_MIKROTIK_MTK021_CVES = ['CVE-2026-67276', 'CVE-2026-86060']
+_MIKROTIK_SSH_PORT = 22
+_MIKROTIK_ROSSSH_RE = re.compile(rb'^SSH-\d+\.\d+-[^\r\n]*?ROSSSH[-_]?([0-9][0-9.]*(?:beta\d+|rc\d+)?)',
+                                 re.IGNORECASE)
 
 
 def _mikrotik_version_tuple(ver):
     m = re.match(r'^(\d+)\.(\d+)(?:\.(\d+))?', (ver or '').strip())
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+def _mikrotik_sept2026_affected(version):
+    """The September 2026 CERT Polska fix train: 6.49.21 / 7.23.4 / 7.24.2 /
+    7.25beta3 — MikroTrick (CVE-2026-67276 + CVE-2026-86060, MTK-021). Upstream
+    shares it with the btest code MTK-004, which this in-app guard does not port
+    (it needs control-channel flow state). Tighter than upstream on one point: the
+    upstream parser reads '7.25beta3' as plain 7.25, which would call 7.25beta1 /
+    beta2 fixed although they predate the fix; here a 7.25 beta below 3 stays
+    affected (rc and release builds come after beta3 and are fixed)."""
+    t = _mikrotik_version_tuple(version)
+    if t is None:
+        return None
+    if t[0] == 6:
+        return t < (6, 49, 21)
+    if t[0] == 7:
+        if t[1] < 23:
+            return True
+        if t[1] == 23:
+            return t < (7, 23, 4)
+        if t[1] == 24:
+            return t < (7, 24, 2)
+        if t[1] == 25:
+            m = re.match(r'^7\.25(?:\.0)?beta(\d+)', (version or '').strip())
+            return bool(m) and int(m.group(1)) < 3
+        return False
+    return None
 
 
 def _mikrotik_chimay_red_affected(version):
@@ -21417,6 +21460,16 @@ def _mikrotik_parse_mndp(payload):
         val = payload[off:off + tlen]
         off += tlen
         name = _MIKROTIK_MNDP_TLV.get(ttype)
+        if name == 'ipv4' and tlen == 4:
+            out['ipv4'] = '.'.join(str(b) for b in val)
+            continue
+        if name == 'ipv6' and tlen == 16:
+            try:
+                import ipaddress as _ipa
+                out['ipv6'] = str(_ipa.IPv6Address(bytes(val)))
+            except Exception:
+                pass
+            continue
         if name in ('identity', 'version', 'platform', 'board', 'software_id',
                     'interface'):
             try:
@@ -21593,6 +21646,8 @@ def _mikrotik_analyze(records):
     seen_codes = set()
     cleartext_mgmt = set()      # server addrs seen serving cleartext mgmt (MTK-001)
     gated_hits = []             # (server, code) for the MTK-C01 correlation
+    dev_version = {}            # device addr -> (version, source)   (MTK-021)
+    ssh_seen = set()            # device addrs with SSH on the wire   (MTK-021)
 
     def add(code, name, sev, klass, src, cves, detail):
         key = (code, src)
@@ -21608,9 +21663,29 @@ def _mikrotik_analyze(records):
         src, dst = r.get('src'), r.get('dst')
         sport, dport = r.get('sport'), r.get('dport')
 
+        # --- SSH (TCP/22): MTK-021 substrate. The capture admits only SYNs and the
+        # cleartext identification string; RouterOS puts its version in it
+        # (SSH-2.0-ROSSSH-7.23.3). Nothing after the banner is readable.
+        if proto == 'TCP' and _MIKROTIK_SSH_PORT in (sport, dport):
+            if dport == _MIKROTIK_SSH_PORT and re.search(r'Flags \[S\]', r.get('dissect') or ''):
+                ssh_seen.add(dst)
+            if sport == _MIKROTIK_SSH_PORT and pl.startswith(b'SSH-'):
+                ssh_seen.add(src)
+                m = _MIKROTIK_ROSSSH_RE.match(pl)
+                if m and src not in dev_version:
+                    dev_version[src] = (m.group(1).decode('latin-1'), 'ssh-banner')
+            continue
+
         # --- MNDP (UDP/5678): device/version substrate -> MTK-011 Chimay-Red posture
         if proto == 'UDP' and (dport == _MIKROTIK_MNDP_PORT or sport == _MIKROTIK_MNDP_PORT):
-            ver = _mikrotik_parse_mndp(pl).get('version', '')
+            mndp = _mikrotik_parse_mndp(pl)
+            ver = mndp.get('version', '')
+            if ver:
+                # MNDP is authoritative for version; key it on the sender and on
+                # every address the device announces, so SSH seen on either
+                # family attributes to the same box.
+                for a in {src, mndp.get('ipv4'), mndp.get('ipv6')} - {None, ''}:
+                    dev_version[a] = (ver, 'mndp')
             if ver and _mikrotik_chimay_red_affected(ver) is True:
                 name, cve = _MIKROTIK_REGISTRY['MTK-011']
                 add('MTK-011', name, 'HIGH', 'POSTURE', src, [cve],
@@ -21827,6 +21902,30 @@ def _mikrotik_analyze(records):
                                   'firmware image.' % host)})
             continue
 
+    # --- MTK-021: MikroTrick EXPOSURE — affected RouterOS version AND SSH on the wire.
+    # Both halves (CVE-2026-67276 forged-exponent key, CVE-2026-86060 crafted
+    # username) sit inside SSH_MSG_USERAUTH_REQUEST, which is encrypted, so the
+    # attack itself can never be seen passively; silence is NOT evidence of safety.
+    for addr in sorted(ssh_seen):
+        ver, vsrc = dev_version.get(addr, (None, None))
+        if not ver or _mikrotik_sept2026_affected(ver) is not True:
+            continue
+        name, _cve = _MIKROTIK_REGISTRY['MTK-021']
+        add('MTK-021', name, 'HIGH', 'EXPOSURE', addr, list(_MIKROTIK_MTK021_CVES),
+            {'version': ver, 'version_source': vsrc, 'posture_only': True,
+             'exploitation_observable': False, 'actively_exploited': True,
+             'note': ('RouterOS %s with SSH observed on the wire: the MikroTrick '
+                      'exposure. CVE-2026-67276 lets an attacker who knows a username '
+                      'and the public MODULUS of that user\'s key forge a working key '
+                      'without the private half; CVE-2026-86060 turns the session into '
+                      'a full administrative one via a crafted username. Exploited in '
+                      'the wild since 2026-09-02; fixed in 7.25beta3 / 7.24.2 / 7.23.4 '
+                      '/ 6.49.21. THE ATTACK ITSELF IS NOT PASSIVELY OBSERVABLE — both '
+                      'halves sit in the encrypted SSH userauth exchange — so no further '
+                      'finding is NOT evidence of safety. Check the device: logs for '
+                      '"user -2", an unexpected "ops" account, and the Flagged marker in '
+                      '/system/device-mode/print.' % ver)})
+
     # --- MTK-C01: a gated exploit code fired on a device already serving cleartext mgmt
     for (dev, code) in gated_hits:
         if dev in cleartext_mgmt:
@@ -21986,6 +22085,55 @@ def _mikrotik_selftest():
            _guard_rec(proto='TCP', dport=80, dst='10.0.0.7',
                       payload=b'POST /rest/x HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{}')],
           'attack', ['MTK-001', 'MTK-005', 'MTK-C01'])
+
+    # --- MTK-021 MikroTrick exposure (CVE-2026-67276 + CVE-2026-86060) ---------------
+    def ssh_banner(src_ip, ver_str, ipver=4):
+        return _guard_rec(proto='TCP', src=src_ip, sport=22, dst='10.0.0.9', dport=51000,
+                          ipver=ipver, payload=('SSH-2.0-%s\r\n' % ver_str).encode())
+
+    def ssh_syn(dst_ip, ipver=4):
+        return _guard_rec(proto='TCP', src='10.0.0.9', sport=51000, dst=dst_ip, dport=22,
+                          ipver=ipver, dissect='Flags [S], seq 1, win 64240, length 0')
+
+    def mndp_addr(ver, ipv4=None):
+        body = b'\x00\x07' + len(ver.encode()).to_bytes(2, 'big') + ver.encode()
+        if ipv4:
+            body += b'\x00\x11\x00\x04' + bytes(int(x) for x in ipv4.split('.'))
+        return b'\x00\x00\x00\x00' + body
+
+    # Version from the cleartext SSH banner alone (the banner proves SSH on the wire).
+    r = check('mikrotik-mtk021-banner', [ssh_banner('10.0.0.30', 'ROSSSH-7.23.3')],
+              'exposure', ['MTK-021'])
+    f21 = [f for f in r['findings'] if f['code'] == 'MTK-021']
+    scenarios.append({'name': 'mikrotik-mtk021-names-both-cves-and-unobservability',
+                      'expect': 'both CVEs, exploitation_observable False',
+                      'got': str(f21[0]['cves'] if f21 else None),
+                      'pass': bool(f21) and f21[0]['cves'] == _MIKROTIK_MTK021_CVES
+                      and (f21[0]['detail'] or {}).get('exploitation_observable') is False})
+    # Fixed train stays silent (7.23.4, 7.24.2, 7.25beta3, 6.49.21).
+    check('mikrotik-mtk021-patched',
+          [ssh_banner('10.0.0.31', 'ROSSSH-7.23.4'), ssh_banner('10.0.0.32', 'ROSSSH-7.24.2'),
+           ssh_banner('10.0.0.33', 'ROSSSH-7.25beta3'), ssh_banner('10.0.0.34', 'ROSSSH-6.49.21')],
+          'clean')
+    # Stricter than upstream: 7.25beta2 predates the fix and is still affected.
+    check('mikrotik-mtk021-beta-before-fix', [ssh_banner('10.0.0.35', 'ROSSSH-7.25beta2')],
+          'exposure', ['MTK-021'])
+    # MNDP version + an SSH SYN to the device's announced address (not the MNDP source).
+    check('mikrotik-mtk021-mndp-plus-syn',
+          [_guard_rec(proto='UDP', src='10.0.0.40', sport=5678, dport=5678,
+                      payload=mndp_addr('7.22.1', ipv4='10.0.0.41')),
+           ssh_syn('10.0.0.41')],
+          'exposure', ['MTK-021'])
+    # Affected version but NO SSH seen: nothing (the exposure needs SSH on the wire).
+    r = check('mikrotik-mtk021-needs-ssh',
+              [_guard_rec(proto='UDP', src='10.0.0.50', sport=5678, dport=5678,
+                          payload=mndp('7.22.1'))], 'clean')
+    # A non-MikroTik SSH server contributes nothing, even on an affected-looking network.
+    check('mikrotik-mtk021-openssh-ignored',
+          [ssh_banner('10.0.0.60', 'OpenSSH_9.6p1 Debian-4'), ssh_syn('10.0.0.60')], 'clean')
+    # IPv6 parity: the banner over IPv6 raises the same finding.
+    check('mikrotik-mtk021-ipv6', [ssh_banner('2001:db8::30', 'ROSSSH-7.20.8', ipver=6)],
+          'exposure', ['MTK-021'])
 
     failed = sum(1 for s in scenarios if not s['pass'])
     return {'success': failed == 0, 'passed': len(scenarios) - failed,

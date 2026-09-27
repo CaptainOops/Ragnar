@@ -109,6 +109,7 @@ NAMES = {
     'CVE-2013-5211': 'NTP monlist amplification', 'CVE-2014-0160': 'Heartbleed',
     'CVE-2014-9295': 'NTP Autokey crypto_recv overflow', 'CVE-2015-2808': 'Bar Mitzvah (RC4)',
     'CVE-2018-6789': 'Exim AUTH base64 overflow',
+    'CVE-2026-67276': 'MikroTrick SSH key forgery (RouterOS)', 'CVE-2026-86060': 'MikroTrick username escalation (RouterOS)',
     'CVE-2019-10149': 'Exim ${...} expansion RCE',
     'CVE-2019-15846': 'Exim SNI/cert-DN RCE',
     'CVE-2019-16928': 'Exim overlong EHLO overflow',

@@ -3261,8 +3261,30 @@ response's own CNAME/DNAME/NS chain), and the IPv6-only **`MTK-007`** RDNSS RA o
 reads the RouterOS version from **MNDP** (UDP 5678) to raise **`MTK-011`** Chimay-Red
 posture (CVE-2017-20149) — version is *dispositive* because RouterOS ships one monolithic
 image with no downstream backporting — and **`MTK-C01`** correlates a gated exploit on a
-device already seen running management in the clear. **Dual-stack** (bare `port` clauses
-match v4 and v6; a narrow `ip6[6]` clause admits v6 behind an extension header).
+device already seen running management in the clear.
+
+**v2 — MikroTrick (`MTK-021`, CVE-2026-67276 + CVE-2026-86060, exploited in the wild since
+2 September 2026).** CVE-2026-67276 lets an attacker who knows a username and the public
+*modulus* of that user's authorized key forge a working key without the private half
+(RouterOS compared type and modulus but not the exponent); CVE-2026-86060 then turns the
+session administrative via a crafted username. **Neither half is passively detectable**:
+both sit in `SSH_MSG_USERAUTH_REQUEST`, after `NEWKEYS`, i.e. encrypted — and CERT Polska's
+indicators are on-device log artifacts. So `MTK-021` is an honest **exposure** finding, one
+code for both CVEs (they share one encrypted exchange): a RouterOS version inside the
+September 2026 fix train (below **6.49.21 / 7.23.4 / 7.24.2 / 7.25beta3**) *and* SSH seen on
+the wire. The version comes from **MNDP** — keyed on the sender and on the IPv4/IPv6
+addresses the device announces — or from the cleartext SSH identification string
+(`SSH-2.0-ROSSSH-7.23.3`); a non-RouterOS SSH server contributes nothing. The finding says
+outright that the attack cannot be seen and that silence is not evidence of safety, and
+tells you what to check on the device (`user -2` log lines, an unexpected `ops` account,
+the Flagged marker). One deliberate difference from the upstream module: a **7.25beta1 /
+beta2** build (which predates the beta3 fix) is treated as affected — upstream's version
+parser reads `7.25beta3` as plain `7.25` and would call every 7.25 pre-release fixed.
+
+**Dual-stack** (bare `port` clauses match v4 and v6; a narrow `ip6[6]` clause admits v6
+behind an extension header). SSH is captured as **SYNs and the banner only**: libpcap's
+`tcp[]` payload accessor is IPv4-only (it compiles but matches no IPv6 packet), so IPv6
+gets an explicit fixed-offset `ip6[]` twin — verified on both families.
 **Signature-based on the per-packet capture model**, so the standalone's codes that need
 state, config or raw L2 are deliberately **not** ported, each with a reason: the www/jsproxy
 **crash** codes (server teardown with no response — flow-close behaviour), the
