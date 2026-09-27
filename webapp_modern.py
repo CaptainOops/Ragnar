@@ -14969,7 +14969,10 @@ def _upload_outcome(target, res):
             and resp.get('status') in ('pending', 'processing'):
         return {'state': 'processing', 'upload_id': resp['upload_id'], 'message': 'Wardrift is processing'}
     if target == 'wardrift' and res.get('duplicate'):
-        return {'state': 'ok', 'message': 'Already on Wardrift'}
+        # Wardrift also answers duplicate_route while an identical earlier
+        # upload is still pending - and that one can still be rejected.
+        return {'state': 'unknown', 'message': 'Wardrift already has this file (an earlier upload may '
+                                               'still be processing) - check your routes on wardrift.net'}
     return {'state': 'ok', 'message': _upload_resp_summary(target, resp)}
 
 

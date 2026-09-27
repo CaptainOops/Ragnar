@@ -32503,7 +32503,7 @@ async function uploadWardriveSession(sessionId, target) {
             const resp = res.response || {};
             let extra;
             if (target === 'wardrift') {
-                extra = res.duplicate ? '\nAlready uploaded — no double awards.'
+                extra = res.duplicate ? '\nWardrift already has this file — an earlier upload may still be processing. Check your routes on wardrift.net.'
                     : (res.mode === 'route' ? '\nWardrift is processing it — the result appears under Auto-upload → Recent uploads.'
                        : `\n+${resp.awarded_exp || 0} EXP, +${resp.awarded_currency || 0} currency (${resp.batches} batches)`);
             } else {
