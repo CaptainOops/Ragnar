@@ -14176,10 +14176,9 @@ def api_power_usb_current():
 
 
 # ---------------------------------------------------------------------------
-# Serial Console — READ-ONLY viewer for a switch/router/firewall console port
-# reached through a USB console cable (see serial_console.py). Nothing is ever
-# sent to the device: the tty is opened O_RDONLY and the port stays reserved in
-# serial_claims so GPS/CYD/RoomScan auto-detection never touches it.
+# Serial Console — viewer for a switch/router/firewall console port reached
+# through a USB console cable (see serial_console.py). Read-only by default;
+# an explicit allow_write gate enables sending commands to the device.
 # ---------------------------------------------------------------------------
 @app.route('/api/serial-console/ports')
 def api_serial_console_ports():
@@ -14237,7 +14236,9 @@ def _serial_console_summary():
     return {'has_console': bool(port), 'running': bool(st.get('running')),
             'state': st.get('state'), 'baud': st.get('baud'),
             'port_label': label or (os.path.basename(port) if port else None),
-            'shared': bool(st.get('share_mesh')), 'read_only': True}
+            'shared': bool(st.get('share_mesh')),
+            'read_only': not st.get('allow_write'),
+            'allow_write': bool(st.get('allow_write'))}
 
 
 @app.route('/api/mesh/serial-console/status', methods=['GET'])
@@ -14276,6 +14277,23 @@ def api_serial_console_share():
     import serial_console
     data = request.get_json(silent=True) or {}
     return jsonify(serial_console.set_share(bool(data.get('share'))))
+
+
+@app.route('/api/serial-console/allow-write', methods=['POST'])
+def api_serial_console_allow_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.set_allow_write(bool(data.get('allow_write'))))
+
+
+@app.route('/api/serial-console/write', methods=['POST'])
+def api_serial_console_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    return jsonify(serial_console.write(cmd))
 
 
 @app.route('/api/serial-console/peer-output')

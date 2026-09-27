@@ -21244,7 +21244,23 @@ function scSetControls(mode) {
         el.classList.toggle('opacity-50', lock);
     });
     const wrap = document.getElementById('sc-share-wrap');
-    if (wrap) wrap.classList.toggle('hidden', mode !== 'local');   // .flex beats the hidden attribute
+    if (wrap) wrap.classList.toggle('hidden', mode !== 'local');
+    const ww = document.getElementById('sc-write-wrap');
+    if (ww) ww.classList.toggle('hidden', mode !== 'local');
+}
+
+function scUpdateWriteUI(st) {
+    const aw = !!(st && st.allow_write);
+    const badge = document.getElementById('sc-badge');
+    if (badge) {
+        badge.textContent = aw ? 'READ-WRITE' : 'READ-ONLY';
+        badge.className = 'text-xs font-semibold px-2 py-0.5 rounded border '
+            + (aw ? 'bg-amber-900/60 text-amber-300 border-amber-800' : 'bg-emerald-900/60 text-emerald-300 border-emerald-800');
+    }
+    const box = document.getElementById('sc-write');
+    if (box) box.checked = aw;
+    const bar = document.getElementById('sc-cmd-bar');
+    if (bar) bar.classList.toggle('hidden', !aw);
 }
 
 async function scShareChanged() {
@@ -21257,6 +21273,44 @@ async function scShareChanged() {
         box.checked = !!r.share_mesh;
     } catch (e) {
         box.checked = !box.checked;
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scWriteChanged() {
+    const box = document.getElementById('sc-write');
+    if (!box) return;
+    if (box.checked && !confirm('Enable writing to the device console? Commands you type will be sent to the device through the console cable.')) {
+        box.checked = false;
+        return;
+    }
+    try {
+        const r = await fetchAPI('/api/serial-console/allow-write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ allow_write: box.checked }) });
+        scUpdateWriteUI(r);
+        if (r.status) scSetStatus(scDescribe(Object.assign({ reserved_port: (r.status || {}).port }, r.status)));
+    } catch (e) {
+        box.checked = !box.checked;
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scSendCmd() {
+    const inp = document.getElementById('sc-cmd-input');
+    if (!inp) return;
+    const cmd = inp.value;
+    if (!cmd) return;
+    try {
+        const r = await fetchAPI('/api/serial-console/write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: cmd + '\r' }) });
+        if (r.success) {
+            inp.value = '';
+        } else {
+            scSetStatus(`<span class="text-red-400">Write failed: ${escapeHtml(r.error || 'unknown')}</span>`);
+        }
+    } catch (e) {
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
     }
 }
@@ -21278,13 +21332,14 @@ function scDescribe(st) {
     const baud = st.baud_setting === 'auto'
         ? `${st.baud} baud (auto${st.auto_settled ? ', locked' : ', detecting'})`
         : `${st.baud} baud`;
+    const rw = st.allow_write ? ' · <span class="text-amber-300">read-write</span>' : '';
     if (!st.running) {
         return st.reserved_port
-            ? `Stopped · port <span class="font-mono">${escapeHtml(st.reserved_port)}</span> stays reserved (read-only) — Start to view, or Release port.`
+            ? `Stopped · port <span class="font-mono">${escapeHtml(st.reserved_port)}</span> stays reserved — Start to view, or Release port.` + rw
             : 'Stopped. Pick the USB serial port wired to the device console and press Start.';
     }
     const colour = st.state === 'reading' ? 'text-emerald-300' : 'text-amber-300';
-    let line = `<span class="${colour}">● ${escapeHtml(st.state)}</span> · <span class="font-mono">${escapeHtml(st.port || '')}</span> · ${baud} · ${st.bytes || 0} bytes`;
+    let line = `<span class="${colour}">● ${escapeHtml(st.state)}</span> · <span class="font-mono">${escapeHtml(st.port || '')}</span> · ${baud} · ${st.bytes || 0} bytes` + rw;
     line += ago === null ? ' · nothing received yet (a quiet console is normal — boot output and console logging appear here)' : ` · last data ${ago}s ago`;
     if (st.error) line += ` · <span class="text-amber-300">${escapeHtml(st.error)}</span>`;
     return line;
@@ -21350,6 +21405,7 @@ async function scRefresh() {
         if (b && st.baud_setting) b.value = String(st.baud_setting);
         const sh = document.getElementById('sc-share');
         if (sh && mode === 'local') sh.checked = !!st.share_mesh;
+        if (mode === 'local') scUpdateWriteUI(st);
         scSetStatus(scDescribe(st));
     } catch (e) {
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
@@ -21440,6 +21496,7 @@ async function scPoll() {
             const prefix = mode === 'shared'
                 ? `<span class="text-emerald-300">View-only</span> · ${escapeHtml(scUnit().name || '')} · ` : '';
             scSetStatus(prefix + scDescribe(Object.assign({ reserved_port: d.status.port }, d.status)));
+            if (mode === 'local') scUpdateWriteUI(d.status);
         }
     } catch (e) {
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);

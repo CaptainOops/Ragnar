@@ -1,12 +1,3 @@
-Here’s the full updated serial_console.py with a gated write path.
-What changed
-	•	New config key allow_write (default false)
-	•	set_allow_write(on) API (same style as set_share)
-	•	Conditional open: O_RDONLY (default) or O_RDWR when the gate is open
-	•	ConsoleReader.write() + public write() that refuse if the gate is closed or the port isn’t open
-	•	Status now reports allow_write / writable
-	•	Self-test updated so the new write path is allowed while the rest of the module stays write-free
-	•	Top docstring updated
 #!/usr/bin/env python3
 """serial_console.py — viewer for a network device's serial console.
 
@@ -700,21 +691,3 @@ if __name__ == '__main__':
                                                     len(r['scenarios'])))
         sys.exit(0 if r['success'] else 1)
     print(__doc__)
-How to use the new gate
-# Turn the write gate on (persisted in config, restarts reader if already running)
-set_allow_write(True)
-
-# Start (or restart) the console — it will open O_RDWR
-start('/dev/serial/by-id/...', baud='auto')
-
-# Send keystrokes / commands
-write('show version\r')
-write(b'configure terminal\r')
-
-# Turn it back off
-set_allow_write(False)
-Status now includes:
-	•	allow_write – the config flag
-	•	writable – true only when the gate is open and the port is currently connected
-	•	read_only – the inverse of allow_write (kept for backward compatibility)
-The default remains fully read-only. The write path only becomes available after an explicit set_allow_write(True).

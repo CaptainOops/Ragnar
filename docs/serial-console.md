@@ -1,13 +1,15 @@
-# Device Console (read-only serial console)
+# Device Console
 
-Watch a switch, router or firewall's **serial console** from the Ragnar dashboard.
-Plug a USB console cable into a Ragnar and the RJ45 end into the device's console
-port; the **Device Console** card (Dashboard tab, below the Activity Log) streams
-whatever the device prints. It works for **any unit in the mesh**: pick another
-Ragnar in the card and you see the console cabled to that unit, wherever it is.
+Watch — and optionally command — a switch, router or firewall's **serial console**
+from the Ragnar dashboard. Plug a USB console cable into a Ragnar and the RJ45 end
+into the device's console port; the **Device Console** card (Dashboard tab, below the
+Activity Log) streams whatever the device prints. It works for **any unit in the
+mesh**: pick another Ragnar in the card and you see the console cabled to that unit,
+wherever it is.
 
-> **Read-only, always.** Ragnar never sends a byte to the device. You get what the
-> device *prints*; you cannot type into the console from Ragnar.
+> **Read-only by default.** The port opens `O_RDONLY` until you tick **Allow write**
+> in the card. With the write gate enabled, a command input bar appears and you can
+> send commands (`show version`, etc.) to the device.
 
 ## What you will see
 
@@ -43,19 +45,29 @@ bytes arriving are mostly unprintable framing garbage, re-reads at the next one
 device to be printing something (a reboot, a log line) and **never sends anything
 to provoke output**. If you know the rate, pick it.
 
-For belt-and-braces safety on a critical device, use a cable with the **TX
-conductor cut** (RJ45 pin 6 in a rollover pinout — the device's RxD): then
-transmission is impossible physically as well as in software.
+For belt-and-braces safety on a critical device **with write disabled**, use a cable
+with the **TX conductor cut** (RJ45 pin 6 in a rollover pinout — the device's RxD):
+then transmission is impossible physically as well as in software.
 
-## How "read-only" is guaranteed
+## Read-only vs read-write
 
-- The tty is opened **`O_RDONLY | O_NOCTTY`** — a write is impossible at the file
-  descriptor level (the self-test proves a write attempt is refused).
+By default the port is opened **`O_RDONLY | O_NOCTTY`** — a write is impossible at
+the file descriptor level. The self-test proves a write attempt is refused.
+
+Tick **Allow write** to enable the gated write path:
+
+- The port is reopened `O_RDWR | O_NOCTTY` (an automatic restart happens).
+- A **command input bar** (`cmd>`) appears below the output pane. Type a command and
+  press Enter (or click Send); a `\r` is appended automatically.
+- The badge changes from **READ-ONLY** to **READ-WRITE**.
+- The setting is persisted in the config and remembered across restarts.
+- Untick **Allow write** to return to read-only at any time.
+
+In both modes:
+
 - Raw termios with **`HUPCL` cleared** (no DTR drop when the port closes), hardware
   flow control off and `CLOCAL` set (modem-control lines ignored). No **BREAK** is
   ever generated — a BREAK during boot drops a Cisco into ROMMON.
-- `serial_console.py` contains **no write call at all**; an AST guard in its
-  self-test fails if one is ever added.
 - **The port stays reserved** (in `serial_claims`) from the moment you assign it,
   even while the viewer is stopped, and across reboots. GPS, CYD, RoomScan and
   wardriving auto-detection skip it — several of those write probe bytes to the
@@ -122,8 +134,9 @@ the unit on your desk.
 - **You occupy the console.** A technician who needs the port has to unplug the
   cable. Plan for one Ragnar (or one USB hub of adapters) per device.
 - **A logged-in console is attack surface.** If a session is left logged in on the
-  console, anyone with that Ragnar has the device. Ragnar never types, but log out
-  of consoles you leave cabled.
+  console, anyone with that Ragnar has the device — especially with **Allow write**
+  enabled. Log out of consoles you leave cabled, and disable the write gate when
+  you are done sending commands.
 - The viewer keeps the last 5,000 lines per unit in memory; **Download log** saves
   what the page has received (up to 20,000 lines) as a timestamped text file.
 - If the cable is unplugged, the viewer shows *disconnected* and resumes by itself
@@ -142,12 +155,16 @@ the unit on your desk.
 | GET | `/api/serial-console/units` | this unit + mesh peers with their console summary |
 | GET | `/api/mesh/serial-console/status` | peer-readable, content-free console summary |
 | POST | `/api/serial-console/share` | `{share}` — opt this unit's console in/out of view-only mesh sharing |
+| POST | `/api/serial-console/allow-write` | `{allow_write}` — enable/disable the write gate (restarts the reader) |
+| POST | `/api/serial-console/write` | `{data}` — send data to the device (refuses unless allow_write is enabled) |
 | GET | `/api/mesh/serial-console/output/<since>` | peer-readable output — **only** while sharing is on (cursor in the path: the mesh proof covers the path, not the query) |
 | GET | `/api/serial-console/peer-output?unit=ID&since=N` | this unit fetches a peer's *shared* output over the mesh |
 
 Any of the `/api/serial-console/*` calls can be sent to another unit with the
 `X-Ragnar-Target` header (mesh secret required). Self-test:
 `python3 serial_console.py --selftest` (a pseudo-terminal stands in for the
-USB-UART; it checks the termios flags, that a write is refused, ANSI stripping,
-prompt surfacing, passive auto-baud, the port reservation, and that the CYD bridge
-stays silent on — and releases — a port that never identifies as a CYD).
+USB-UART; it checks the termios flags, that a write is refused when the gate is
+closed, that a write succeeds and reaches the device side when the gate is open,
+ANSI stripping, prompt surfacing, passive auto-baud, the port reservation, and that
+the CYD bridge stays silent on — and releases — a port that never identifies as a
+CYD).
