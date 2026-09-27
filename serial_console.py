@@ -482,6 +482,7 @@ def set_allow_write(on):
     cfg = load_config()
     cfg['allow_write'] = bool(on)
     save_config(cfg)
+    _reader.allow_write = bool(on)
     # If currently running, restart so the open flags match the new setting.
     if _reader.running and _reader.port:
         port, baud = _reader.port, _reader.baud_setting
@@ -496,7 +497,10 @@ def write(data):
 
 def output(since=0, limit=1000):
     lines, last = _reader.lines_since(since, limit)
-    return {'lines': lines, 'last': last, 'status': _reader.status()}
+    st = _reader.status()
+    st['allow_write'] = bool(load_config().get('allow_write'))
+    st['read_only'] = not st['allow_write']
+    return {'lines': lines, 'last': last, 'status': st}
 
 def clear():
     _reader.clear()
