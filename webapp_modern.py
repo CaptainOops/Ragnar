@@ -14176,10 +14176,9 @@ def api_power_usb_current():
 
 
 # ---------------------------------------------------------------------------
-# Serial Console — READ-ONLY viewer for a switch/router/firewall console port
-# reached through a USB console cable (see serial_console.py). Nothing is ever
-# sent to the device: the tty is opened O_RDONLY and the port stays reserved in
-# serial_claims so GPS/CYD/RoomScan auto-detection never touches it.
+# Serial Console — viewer for a switch/router/firewall console port reached
+# through a USB console cable (see serial_console.py). Read-only by default;
+# an explicit allow_write gate enables sending commands to the device.
 # ---------------------------------------------------------------------------
 @app.route('/api/serial-console/ports')
 def api_serial_console_ports():
@@ -14237,7 +14236,10 @@ def _serial_console_summary():
     return {'has_console': bool(port), 'running': bool(st.get('running')),
             'state': st.get('state'), 'baud': st.get('baud'),
             'port_label': label or (os.path.basename(port) if port else None),
-            'shared': bool(st.get('share_mesh')), 'read_only': True}
+            'shared': bool(st.get('share_mesh')),
+            'read_only': not st.get('allow_write'),
+            'allow_write': bool(st.get('allow_write')),
+            'share_mesh_write': bool(st.get('share_mesh_write'))}
 
 
 @app.route('/api/mesh/serial-console/status', methods=['GET'])
@@ -14266,8 +14268,10 @@ def api_mesh_serial_console_output(since):
     out = serial_console.output(since=max(0, since))
     st = out.get('status') or {}
     out['status'] = {k: st.get(k) for k in ('running', 'state', 'port', 'baud', 'baud_setting',
-                                            'auto_settled', 'bytes', 'last_rx', 'read_only')}
-    out.update({'success': True, 'shared': True})
+                                            'auto_settled', 'bytes', 'last_rx', 'read_only',
+                                            'allow_write')}
+    out.update({'success': True, 'shared': True,
+                'share_mesh_write': serial_console.shared_write_with_mesh()})
     return jsonify(out)
 
 
@@ -14276,6 +14280,66 @@ def api_serial_console_share():
     import serial_console
     data = request.get_json(silent=True) or {}
     return jsonify(serial_console.set_share(bool(data.get('share'))))
+
+
+@app.route('/api/serial-console/allow-write', methods=['POST'])
+def api_serial_console_allow_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.set_allow_write(bool(data.get('allow_write'))))
+
+
+@app.route('/api/serial-console/share-write', methods=['POST'])
+def api_serial_console_share_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.set_share_write(bool(data.get('share_write'))))
+
+
+@app.route('/api/serial-console/write', methods=['POST'])
+def api_serial_console_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    return jsonify(serial_console.write(cmd))
+
+
+@app.route('/api/mesh/serial-console/write', methods=['POST'])
+def api_mesh_serial_console_write():
+    """Peer-writable: send a command to this unit's console. Only when the
+    operator has enabled both share_mesh and share_mesh_write and allow_write."""
+    import serial_console
+    if not serial_console.shared_write_with_mesh():
+        return jsonify({'success': False,
+                        'error': 'this unit has not enabled mesh write'}), 403
+    data = request.get_json(silent=True) or {}
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    return jsonify(serial_console.write(cmd))
+
+
+@app.route('/api/serial-console/peer-write', methods=['POST'])
+def api_serial_console_peer_write():
+    """Hub side: relay a write command to a peer's shared-write console."""
+    data = request.get_json(silent=True) or {}
+    unit = (data.get('unit') or '').strip()
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    if not (mesh_available and _mesh_enabled()):
+        return jsonify({'success': False, 'error': 'mesh is not enabled'}), 400
+    node = _resolve_delegate_node(unit)
+    if not node:
+        return jsonify({'success': False, 'error': 'unknown mesh unit'}), 404
+    rep = mesh_manager.post_peer(node, path='/api/mesh/serial-console/write',
+                                  payload={'data': cmd},
+                                  port=_mesh_node_port(), timeout=6)
+    if not rep.get('reachable'):
+        return jsonify({'success': False, 'error': rep.get('error') or 'unit unreachable'}), 504
+    return jsonify(rep)
 
 
 @app.route('/api/serial-console/peer-output')
@@ -14339,6 +14403,7 @@ def api_serial_console_units():
                           'has_console': bool(r.get('has_console')),
                           'running': bool(r.get('running')), 'state': r.get('state'),
                           'shared': bool(r.get('shared')),
+                          'share_mesh_write': bool(r.get('share_mesh_write')),
                           'baud': r.get('baud'), 'port_label': r.get('port_label'),
                           'error': r.get('error') if not r.get('reachable') else None})
     return jsonify({'units': units, 'gateway_ready': gateway_ready,
