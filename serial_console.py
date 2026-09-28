@@ -520,12 +520,95 @@ def clear():
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             'data', 'console_scripts')
 
+_DEFAULT_SCRIPTS = [
+    {
+        "id": "reboot_device",
+        "name": "Reboot Device",
+        "description": "Safely reboot a malfunctioning network device (enable → reload confirm).",
+        "vendor": "cisco",
+        "commands": [
+            {"cmd": "", "delay": 0.5},
+            {"cmd": "enable", "delay": 1},
+            {"cmd": "write memory", "delay": 2},
+            {"cmd": "reload", "delay": 2},
+            {"cmd": "yes", "delay": 1}
+        ]
+    },
+    {
+        "id": "monitor_logs",
+        "name": "Monitor Logs",
+        "description": "Enable terminal logging and tail console output in real time.",
+        "vendor": "cisco",
+        "commands": [
+            {"cmd": "", "delay": 0.5},
+            {"cmd": "enable", "delay": 1},
+            {"cmd": "terminal monitor", "delay": 0.5},
+            {"cmd": "terminal length 0", "delay": 0.5},
+            {"cmd": "show logging last 50", "delay": 2}
+        ]
+    },
+    {
+        "id": "version_info",
+        "name": "Version Info",
+        "description": "Retrieve firmware version, uptime, serial number and hardware platform.",
+        "vendor": "generic",
+        "commands": [
+            {"cmd": "", "delay": 0.5},
+            {"cmd": "show version", "delay": 2},
+            {"cmd": "show inventory", "delay": 2}
+        ]
+    },
+    {
+        "id": "configure_vlans",
+        "name": "Configure VLANs",
+        "description": "Create VLAN 10 (Management) and VLAN 20 (Users) with names. Edit the script to customise.",
+        "vendor": "cisco",
+        "commands": [
+            {"cmd": "", "delay": 0.5},
+            {"cmd": "enable", "delay": 1},
+            {"cmd": "configure terminal", "delay": 1},
+            {"cmd": "vlan 10", "delay": 0.5},
+            {"cmd": "name Management", "delay": 0.5},
+            {"cmd": "vlan 20", "delay": 0.5},
+            {"cmd": "name Users", "delay": 0.5},
+            {"cmd": "end", "delay": 0.5},
+            {"cmd": "write memory", "delay": 2},
+            {"cmd": "show vlan brief", "delay": 2}
+        ]
+    },
+    {
+        "id": "interface_status",
+        "name": "Interface Status",
+        "description": "Show all interface statuses, errors and traffic counters.",
+        "vendor": "generic",
+        "commands": [
+            {"cmd": "", "delay": 0.5},
+            {"cmd": "show ip interface brief", "delay": 2},
+            {"cmd": "show interfaces status", "delay": 2},
+            {"cmd": "show interfaces counters errors", "delay": 2}
+        ]
+    },
+]
+
+def _seed_default_scripts():
+    """Create default script files that don't already exist."""
+    os.makedirs(_SCRIPTS_DIR, exist_ok=True)
+    for s in _DEFAULT_SCRIPTS:
+        path = os.path.join(_SCRIPTS_DIR, s['id'] + '.json')
+        if os.path.exists(path):
+            continue
+        try:
+            with open(path, 'w') as f:
+                json.dump(s, f, indent=2)
+                f.write('\n')
+        except Exception:
+            pass
+
 def list_scripts():
     """Return available console scripts (id, name, description, vendor)."""
+    _seed_default_scripts()
     scripts = []
     d = _SCRIPTS_DIR
-    if not os.path.isdir(d):
-        return scripts
     for fn in sorted(os.listdir(d)):
         if not fn.endswith('.json'):
             continue
