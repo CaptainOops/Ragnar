@@ -106,22 +106,19 @@ Discovery reads a small, **content-free** status route on each peer
 (`GET /api/mesh/serial-console/status` — port assigned? running? shared? baud? —
 never any output). There are two ways to view a remote console:
 
-1. **Share with mesh (view-only)** — the simple way. On the unit **with the
-   cable**, tick **Share with mesh (view-only)** in the card. Every other unit in
-   the mesh can then pick it and *watch* the output; the port, baud and
-   Start/Stop controls are locked on the viewing side (start and stop it on the
-   unit itself). This works on tag trust — no mesh secret needed — and is **off by
-   default**, per unit, so nothing leaves a unit until its operator switches it on.
-   The choice is remembered across restarts and survives *Release port*.
-2. **Share write with mesh** — on the unit with the cable, tick **Share write
-   with mesh** (visible only when both **Allow write** and **Share with mesh** are
-   on). Any mesh peer can then type commands into the device from the remote
-   dashboard. The badge on the remote side changes to **REMOTE WRITE** and the
-   `cmd>` input bar appears. The remote peer sends the command via
-   `POST /api/serial-console/peer-write`, which relays it to the target unit's
-   `POST /api/mesh/serial-console/write`. This is a triple opt-in: allow_write +
-   share_mesh + share_mesh_write must all be on.
-3. **Mesh secret — full view and control.** With a
+1. **Share with mesh** — on the unit **with the cable**, tick **Share with mesh**
+   in the card. Every other unit in the mesh can then pick it and watch the
+   output; the port, baud and Start/Stop controls are locked on the viewing side
+   (start and stop it on the unit itself). This works on tag trust — no mesh
+   secret needed — and is **off by default**, per unit, so nothing leaves a unit
+   until its operator switches it on. The choice is remembered across restarts
+   and survives *Release port*. The label changes automatically:
+   - **Share with mesh (view-only)** — when Allow write is off.
+   - **Share with mesh (read-write)** — when Allow write is also on. Mesh peers
+     get a **REMOTE WRITE** badge and the `cmd>` input bar, so they can send
+     commands to the device from the remote dashboard. The command relays via
+     `POST /api/serial-console/peer-write` → `POST /api/mesh/serial-console/write`.
+2. **Mesh secret — full view and control.** With a
    [mesh secret](mesh.md#hardening-a-shared-tailnet-the-mesh-secret) armed on both
    units, the card talks to the remote unit through the
    [mesh gateway](mesh.md#mesh-gateway-reach-the-fleet-through-one-unit)
@@ -165,9 +162,8 @@ the unit on your desk.
 | POST | `/api/serial-console/share` | `{share}` — opt this unit's console in/out of view-only mesh sharing |
 | POST | `/api/serial-console/allow-write` | `{allow_write}` — enable/disable the write gate (restarts the reader) |
 | POST | `/api/serial-console/write` | `{data}` — send data to the device (refuses unless allow_write is enabled) |
-| POST | `/api/serial-console/share-write` | `{share_write}` — opt this unit's console write in/out of mesh sharing |
 | GET | `/api/mesh/serial-console/output/<since>` | peer-readable output — **only** while sharing is on (cursor in the path: the mesh proof covers the path, not the query) |
-| POST | `/api/mesh/serial-console/write` | `{data}` — peer-writable: send a command (requires share_mesh + share_mesh_write + allow_write) |
+| POST | `/api/mesh/serial-console/write` | `{data}` — peer-writable: send a command (requires share_mesh + allow_write) |
 | GET | `/api/serial-console/peer-output?unit=ID&since=N` | this unit fetches a peer's *shared* output over the mesh |
 | POST | `/api/serial-console/peer-write` | `{unit, data}` — relay a write command to a peer's shared-write console |
 
