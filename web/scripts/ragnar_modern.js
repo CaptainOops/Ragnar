@@ -24375,7 +24375,7 @@ function toggleFileEdit() {
     _setEditBtns(true, true);
     const content = document.getElementById('preview-content');
     if (!content) return;
-    content.innerHTML = `<textarea id="file-editor" spellcheck="false" class="w-full h-full bg-black/80 text-gray-200 font-mono text-xs p-3 rounded border border-slate-600 focus:border-amber-500 focus:outline-none resize-none" style="min-height:100%"></textarea>`;
+    content.innerHTML = `<textarea id="file-editor" spellcheck="false" class="w-full font-mono text-xs p-3 rounded border border-slate-600 resize-none" style="min-height:60vh;height:100%;background:#0b1220;color:#e5e7eb;caret-color:#fbbf24;outline:none;color-scheme:dark;tab-size:4;white-space:pre;overflow:auto"></textarea>`;
     const ta = document.getElementById('file-editor');
     if (ta) {
         ta.value = _editState.original;
