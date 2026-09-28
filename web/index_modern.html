@@ -1338,6 +1338,61 @@
                     <div class="text-green-400">Loading activity log…</div>
                 </div>
             </div>
+
+            <!-- Device Console: READ-ONLY serial console of a switch/router/firewall -->
+            <div class="glass rounded-xl p-4 sm:p-6 mt-6" id="serial-console-card">
+                <h2 class="text-xl font-bold mb-1 flex flex-wrap items-center gap-2">
+                    <svg class="w-6 h-6 text-Ragnar-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"></path></svg>
+                    Device Console
+                    <span id="sc-badge" class="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-800">READ-ONLY</span>
+                </h2>
+                <p class="text-xs text-gray-400 mb-3">Plug a USB console cable (FTDI / CP210x rollover) into a Ragnar and the RJ45 end into a switch, router or firewall console port to watch what the device prints: boot and POST output, ROMMON, crash dumps, and any syslog it sends to console. Read-only by default; enable <strong>Allow write</strong> to send commands. Pick another <strong>mesh unit</strong> to view a console cabled to a Ragnar elsewhere.</p>
+                <div class="flex flex-wrap items-center gap-2 mb-2">
+                    <select id="sc-unit" onchange="scUnitChanged()" title="Which Ragnar's console to view" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                        <option value="local">This unit</option>
+                    </select>
+                    <select id="sc-port" title="USB serial port wired to the device console" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                        <option value="">No USB serial adapter found</option>
+                    </select>
+                    <select id="sc-baud" title="Baud rate. Auto detects passively from what the device prints (it never sends anything)." class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                        <option value="auto">Auto baud</option>
+                        <option value="9600">9600 (Cisco / Arista / Juniper / HPE)</option>
+                        <option value="115200">115200 (MikroTik)</option>
+                        <option value="38400">38400</option>
+                        <option value="19200">19200</option>
+                        <option value="57600">57600</option>
+                    </select>
+                    <button onclick="scRefresh()" title="Rescan units and ports" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded text-sm">↻</button>
+                    <button id="sc-start" onclick="scStart()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Start</button>
+                    <button id="sc-stop" onclick="scStop(false)" class="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Stop</button>
+                </div>
+                <div id="sc-status" class="text-xs text-gray-400 mb-2 break-words">Idle.</div>
+                <div id="sc-output" style="height:24rem;white-space:pre" class="bg-black bg-opacity-75 rounded-lg p-3 overflow-y-auto overflow-x-auto font-mono text-xs sm:text-sm text-gray-200 scrollbar-thin"><span class="text-gray-500">No console output yet.</span></div>
+                <div class="flex flex-wrap items-center gap-3 mt-2 text-xs">
+                    <label class="flex items-center gap-1 text-gray-400"><input type="checkbox" id="sc-follow" checked> Follow output</label>
+                    <label class="flex items-center gap-1 text-gray-400"><input type="checkbox" id="sc-stamps"> Timestamps</label>
+                    <button onclick="scClearView()" class="text-gray-400 hover:text-white">Clear view</button>
+                    <button onclick="scDownload()" class="text-gray-400 hover:text-white">Download log</button>
+                    <label id="sc-write-wrap" class="flex items-center gap-1 text-gray-400" title="Enable sending commands to the device through the console cable. Off by default — the port opens read-only until you toggle this on."><input type="checkbox" id="sc-write" onchange="scWriteChanged()"> Allow write</label>
+                    <label id="sc-share-wrap" class="flex items-center gap-1 text-gray-400" title="Share this console with the mesh. When Allow write is also on, mesh peers can send commands too."><input type="checkbox" id="sc-share" onchange="scShareChanged()"> <span id="sc-share-label">Share with mesh</span></label>
+                    <button id="sc-release" onclick="scStop(true)" title="Stop and un-reserve the port so other components may use it" class="text-gray-500 hover:text-red-300 sm:ml-auto">Release port</button>
+                </div>
+                <div id="sc-cmd-bar" class="hidden mt-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs text-amber-300 font-mono whitespace-nowrap">cmd&gt;</span>
+                        <input type="text" id="sc-cmd-input" placeholder="show version" autocomplete="off" spellcheck="false" class="flex-1 bg-black/60 border border-slate-700 focus:border-amber-500 rounded px-3 py-1.5 font-mono text-sm text-gray-200" onkeydown="if(event.key==='Enter')scSendCmd()">
+                        <button onclick="scSendCmd()" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-sm whitespace-nowrap">Send</button>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 mt-2">
+                        <select id="sc-script-sel" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-sm text-gray-300">
+                            <option value="">Run script…</option>
+                        </select>
+                        <button onclick="scRunScript()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm whitespace-nowrap">Run Script</button>
+                        <span id="sc-script-status" class="text-xs text-gray-400"></span>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Press Enter or click Send. A \\r is appended. Scripts send pre-made command sequences — add your own JSON files in Files &gt; console_scripts.</p>
+                </div>
+            </div>
         </div>
         
         <!-- Network Tab -->
@@ -2286,9 +2341,10 @@
                 </div>
                 <!-- Telnet Watch (passive CVE-2026-24061 / CVE-2026-32746 observer) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
-                    <h3 class="text-lg font-semibold mb-1">Telnet Watch <span class="text-xs font-normal text-gray-500">(passive · CVE-2026-24061 / 32746)</span></h3>
-                    <p class="text-xs text-amber-300/90 mb-2">Passive Telnet observer — <strong>detection-only</strong>, never transmits. Telnet is <strong>cleartext end to end</strong>, including all option negotiation, so — unlike SSH/TLS, which see only a prologue before encryption — the exploit payload itself crosses the wire in the open and attack findings carry <strong>high confidence</strong>. Names two critical GNU inetutils <span class="font-mono">telnetd</span> bugs. <strong><code>CVE-2026-24061</code></strong> (CVSS 9.8, <strong>CISA KEV</strong>): a <span class="font-mono">USER=-f root</span> value in a <span class="font-mono">NEW-ENVIRON IS</span> subnegotiation makes telnetd run <span class="font-mono">login -f root</span> — an <strong>unauthenticated root shell</strong>; the injected <span class="font-mono">-</span>value is read verbatim off the wire (only the flag prefix is logged, never the full value). <strong><code>CVE-2026-32746</code></strong> (CVSS 9.8): a <span class="font-mono">LINEMODE SLC</span> table with more reply triplets than the 108-byte <span class="font-mono">slcbuf</span> holds — a BSS overflow (attempt is <em>counted</em> on the wire; a server whose SLC reply echoes past the buffer is <em>confirmed vulnerable</em>; a LINEMODE-advertising server is <em>posture only</em>, since a patched telnetd negotiates identically). Also flags <strong>cleartext credential</strong> exposure (a server password prompt with no <span class="font-mono">ENCRYPT START</span>) and environment-variable leakage.</p>
-                    <p class="text-sm text-gray-400 mb-3">One short passive capture on tcp/23 + 2323 (needs a SPAN/mirror to see other hosts). Telnet-over-TLS (992) is observed but not dissected. The client's keystrokes are never inspected or logged — only the server-side prompt is used as the cleartext-auth signal.</p>
+                    <h3 class="text-lg font-semibold mb-1">Telnet Watch <span class="text-xs font-normal text-gray-500">(passive · Telnet + rlogin/rsh/rexec · CVE-2026-24061 / 32746 / 2011-4862)</span></h3>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive Telnet observer — <strong>detection-only</strong>, never transmits. Telnet is <strong>cleartext end to end</strong>, including all option negotiation, so — unlike SSH/TLS, which see only a prologue before encryption — the exploit payload itself crosses the wire in the open and attack findings carry <strong>high confidence</strong>. Names two critical GNU inetutils <span class="font-mono">telnetd</span> bugs. <strong><code>CVE-2026-24061</code></strong> (CVSS 9.8, <strong>CISA KEV</strong>): a <span class="font-mono">USER=-f root</span> value in a <span class="font-mono">NEW-ENVIRON IS</span> subnegotiation makes telnetd run <span class="font-mono">login -f root</span> — an <strong>unauthenticated root shell</strong>; the injected <span class="font-mono">-</span>value is read verbatim off the wire (only the flag prefix is logged, never the full value). <strong><code>CVE-2026-32746</code></strong> (CVSS 9.8): a <span class="font-mono">LINEMODE SLC</span> table with more reply triplets than the 108-byte <span class="font-mono">slcbuf</span> holds — a BSS overflow (attempt is <em>counted</em> on the wire; a server whose SLC reply echoes past the buffer is <em>confirmed vulnerable</em>; a LINEMODE-advertising server is <em>posture only</em>, since a patched telnetd negotiates identically). Also names <strong><code>CVE-2011-4862</code></strong> (CVSS 9.8, exploited in the wild 2011): an <span class="font-mono">ENCRYPT</span> key-id longer than the 64-byte buffer in libtelnet's <span class="font-mono">encrypt_keyid()</span> — an unauthenticated root heap overflow; and <strong><code>CVE-2022-39028</code></strong>: a bare <span class="font-mono">IAC EC</span>/<span class="font-mono">IAC EL</span> before login that NULL-dereferences inetutils telnetd, plus the crash-loop pattern that makes inetd disable the service. The <span class="font-mono">USER=-f</span> rule also covers the Solaris <span class="font-mono">in.telnetd</span> twin (<code>CVE-2007-0882</code>). Flags <strong>cleartext credential</strong> exposure (a server password prompt with no <span class="font-mono">ENCRYPT START</span>) and environment-variable leakage.</p>
+                    <p class="text-xs text-amber-300/90 mb-2"><strong>r-services</strong> (rlogin 513, rsh 514, rexec 512) are parsed by their own engines — rlogin has no IAC framing, so it is never fed to the Telnet parser. Flags the <strong>rlogin <span class="font-mono">-froot</span></strong> argument injection (<code>CVE-1999-0113</code>, the same <span class="font-mono">login -f</span> auth bypass, also over rsh), a connection whose source port is <strong>ftp-data (20)</strong> — the trust-bounce that passes the "privileged port" check (<code>CVE-1999-0185</code>), <strong>rexec cleartext credentials</strong>, <strong>.rhosts/hosts.equiv trust</strong> logins, an unprivileged client source port, and netkit <strong>rcp</strong> abuse by a malicious server — a <span class="font-mono">.</span> / empty file name (<code>CVE-2019-7282</code>) or a file the client never requested / path traversal (<code>CVE-2019-7283</code>). rsh's stderr back-connection is correlated too: the capture admits the privileged port range it lands on.</p>
+                    <p class="text-sm text-gray-400 mb-3">One short passive capture on tcp/23 + 2323 and the r-services ports 512–514 (needs a SPAN/mirror to see other hosts). Dual-stack: the filter keeps a bare <span class="font-mono">ip6</span> term so IPv6 behind extension headers is captured, and a software port gate rejects the rest. Telnet-over-TLS (992) is observed but not dissected. The client's keystrokes are never inspected or logged — only the server-side prompt is used as the cleartext-auth signal.</p>
                     <div class="flex flex-wrap items-center gap-2">
                         <select id="telnet-iface" title="Interface for the Telnet capture — pick the LAN/access NIC or a SPAN/mirror port" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
                             <option value="">Auto (wired first)</option>
@@ -2390,7 +2446,7 @@
                 <!-- Relay/Coercion Watch (NTLM relay defense) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">Relay/Coercion Watch <span class="text-xs font-normal text-gray-500">(NTLM relay defense)</span></h3>
-                    <p class="text-xs text-amber-300/90 mb-2">Passive NTLM-relay + authentication-coercion scanner — <strong>detection-only</strong>, the defensive counterpart to Responder-style theft (SMB Watch catches the harvest; this catches the <strong>relay</strong> and the <strong>coercion</strong> that feed it). NTLM has no channel binding by default, so a captured or <em>coerced</em> auth can be relayed to another host as the victim. Flags <strong>coercion-attempt</strong> — an MSRPC call forcing a host to authenticate: <strong>PetitPotam</strong> (MS-EFSRPC), <strong>PrinterBug</strong> (MS-RPRN opnum 65/66), <strong>DFSCoerce</strong> (MS-DFSNM), <strong>ShadowCoerce</strong> (MS-FSRVP) — <strong>relay-suspected</strong> (the same NTLM server challenge seen from two servers = a relay in progress), and <strong>signing-not-required</strong> (an SMB server that makes relay possible in the first place).</p>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive NTLM-relay + authentication-coercion scanner — <strong>detection-only</strong>, the defensive counterpart to Responder-style theft (SMB Watch catches the harvest; this catches the <strong>relay</strong> and the <strong>coercion</strong> that feed it). NTLM has no channel binding by default, so a captured or <em>coerced</em> auth can be relayed to another host as the victim. Flags <strong>coercion-attempt</strong> — an MSRPC call forcing a host to authenticate: <strong>PetitPotam</strong> (MS-EFSRPC — attributed to <code>CVE-2021-36942</code> when the stream carries <span class="font-mono">EfsRpcOpenFileRaw</span>, opnum 0, the only method the August 2021 patch fixed), <strong>PrinterBug</strong> (MS-RPRN opnum 65/66), <strong>DFSCoerce</strong> (MS-DFSNM), <strong>ShadowCoerce</strong> (MS-FSRVP) — <strong>relay-suspected</strong> (the same NTLM server challenge seen from two servers = a relay in progress), and <strong>signing-not-required</strong> (an SMB server that makes relay possible in the first place).</p>
                     <p class="text-sm text-gray-400 mb-3">One short passive capture on MSRPC/SMB (tcp/445 · 139 · 135). Coercion interfaces are matched by their DCE/RPC UUID in the RPC bind; NTLM challenges and SMB2 signing come from the payloads. tcpdump captures, Scapy dissects (<span class="text-amber-400">needs Scapy</span>). The first scan learns accepted unsigned servers as the baseline (<span class="font-mono">data/relay_watch.json</span>); coercion + relay are never baselined away. Fix: enforce SMB/LDAP signing + channel binding (EPA), patch the coercion vectors.</p>
                     <div class="flex flex-wrap items-center gap-2">
                         <select id="relay-iface" title="Interface to audit — pick the NIC facing your servers/DCs" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
@@ -2405,7 +2461,7 @@
                 <!-- RPC / NetLogon Watch (Zerologon / DCSync / WinRM) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">RPC / NetLogon Watch <span class="text-xs font-normal text-gray-500">(DCERPC · Zerologon / DCSync / WinRM)</span></h3>
-                    <p class="text-xs text-amber-300/90 mb-2">Passive <strong>DCERPC / NetLogon / WinRM</strong> authentication-posture monitor — <strong>detection-only</strong>, transmits nothing, decrypts nothing, captures no credentials. The per-PDU security trailer (<span class="font-mono">auth_type</span> / <span class="font-mono">auth_level</span>) is cleartext even at <span class="font-mono">PKT_PRIVACY</span>, so "is this call integrity-protected?" is answerable from a mirror port. Flags the <strong>Zerologon</strong> chain (<span class="font-mono">CVE-2020-1472</span>) at four independent points — all-zero <em>ClientChallenge</em>, all-zero <em>ClientCredential</em>, the ~256-iteration <em>brute-force</em> loop, and the machine-account <em>password reset</em> that follows a hit — plus <strong>NetLogon secure-channel posture</strong> (Secure-RPC/sign+seal cleared, unsigned bind, weak crypto/no-AES, unexpected DC, password get/set), <strong>DCERPC auth posture</strong> (bind with no auth, below-integrity, alter-context downgrade, NTLMv1 / no-MIC / no-signing / anonymous / LM-key), <strong>interface abuse</strong> (<strong>DCSync</strong> via DRSUAPI DRSGetNCChanges, remote-exec via svcctl/atsvc/winreg, DPAPI <strong>backup-key</strong> access, and endpoint-mapper <strong>sweeps</strong>), and <strong>WinRM/WS-Man</strong> posture (cleartext HTTP, Basic auth, unencrypted SOAP body, auth downgrade, CredSSP, Shell-Create). Named-pipe DCERPC (over SMB 445/139) is carved out so pipe-borne attacks aren't missed. <em>Authentication <strong>coercion</strong> (PetitPotam / PrinterBug / DFSCoerce / ShadowCoerce) is deliberately <strong>deferred to the Relay/Coercion Watch above</strong>, which already owns it by the same DCE/RPC interface UUIDs — this watcher never double-reports it, and cross-module correlation is fused by Watchtower.</em></p>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive <strong>DCERPC / NetLogon / WinRM</strong> authentication-posture monitor — <strong>detection-only</strong>, transmits nothing, decrypts nothing, captures no credentials. The per-PDU security trailer (<span class="font-mono">auth_type</span> / <span class="font-mono">auth_level</span>) is cleartext even at <span class="font-mono">PKT_PRIVACY</span>, so "is this call integrity-protected?" is answerable from a mirror port. Flags the <strong>Zerologon</strong> chain (<span class="font-mono">CVE-2020-1472</span>) at four independent points — all-zero <em>ClientChallenge</em>, all-zero <em>ClientCredential</em>, the ~256-iteration <em>brute-force</em> loop, and the machine-account <em>password reset</em> that follows a hit — plus <strong>NetLogon secure-channel posture</strong> (Secure-RPC/sign+seal cleared, unsigned bind, weak crypto/no-AES, unexpected DC, password get/set), <strong>DCERPC auth posture</strong> (bind with no auth, below-integrity, alter-context downgrade, NTLMv1 / no-MIC / no-signing / anonymous / LM-key), <strong>interface abuse</strong> (<strong>DCSync</strong> via DRSUAPI DRSGetNCChanges, remote-exec via svcctl/atsvc/winreg, DPAPI <strong>backup-key</strong> access, and endpoint-mapper <strong>sweeps</strong>), and <strong>WinRM/WS-Man</strong> posture (cleartext HTTP, Basic auth, unencrypted SOAP body, auth downgrade, CredSSP, Shell-Create). Named-pipe DCERPC (over SMB 445/139) is carved out so pipe-borne attacks aren't missed. The <strong>print spooler</strong> gets its own relay rule: <strong>IRemoteWinSpool</strong> (MS-PAR) bound below <span class="font-mono">PKT_PRIVACY</span> is the insufficient authentication level an NTLM relay needs (<code>CVE-2021-1678</code>) — flagged high at the bind as posture (an unpatched host or a live relay), and <strong>critical</strong> when <span class="font-mono">RpcAsyncInstallPrinterDriverFromPackage</span> (opnum 62) is then called on that session, the exploit step. <em>Authentication <strong>coercion</strong> (PetitPotam / PrinterBug / DFSCoerce / ShadowCoerce) is deliberately <strong>deferred to the Relay/Coercion Watch above</strong>, which already owns it by the same DCE/RPC interface UUIDs — this watcher never double-reports it, and cross-module correlation is fused by Watchtower.</em></p>
                     <p class="text-sm text-gray-400 mb-3">One short passive capture on the RPC/SMB/WinRM ports (epmap tcp/135, SMB named pipes 445 · 139, WS-Man tcp/5985; 5986 is observed but never dissected). The DCERPC parser is written from scratch against DCE 1.1 / [MS-RPCE] with a self-validating NDR walk (the Zerologon credential is <em>not</em> at a fixed offset — NDR pads before the ULONG flags). <span class="text-amber-400">Needs Scapy</span> (Detector Self-Test → Install Scapy). Fix Zerologon by patching DCs and enforcing Secure RPC; break relay/DCSync with SMB+LDAP signing, channel binding (EPA), and tiered admin.</p>
                     <div class="flex flex-wrap items-center gap-2">
                         <select id="rpc-iface" title="Interface to audit — pick the NIC facing your DCs / member servers" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
@@ -2672,8 +2728,8 @@
                 <!-- MikroTik Switch & Router Guard -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
                     <h3 class="text-lg font-semibold mb-1">MikroTik Switch and Router Guard <span class="text-xs font-normal text-gray-500">(RouterOS · CCR / CRS · switch · router)</span></h3>
-                    <p class="text-xs text-amber-300/90 mb-2">Passive MikroTik RouterOS CVE guard — <strong>detection-only</strong>, never transmits. Reads the RouterOS management + attack surface off the wire and names the exploit signatures for a tracked CVE set: the two CISA-KEV bugs — <strong>Winbox path traversal</strong> that reads the credential store (<strong>CVE-2018-14847</strong>, MTK-003) and the pre-auth <strong>SMB/NetBIOS overflow</strong> (<strong>CVE-2018-7445</strong>, MTK-002) — plus <strong>WebFig credentials in the clear</strong> (CVE-2025-61481, MTK-001), the <strong>REST libjson</strong> overflow (CVE-2025-10948, MTK-005), <strong>SCEP</strong> base64/ASN.1 overflows (CVE-2021-41987 / CVE-2026-7668, MTK-013/008), <strong>hotspot</strong> (CVE-2022-45313, MTK-017), <strong>jsproxy</strong> (CVE-2026-67281, MTK-006), <strong>FTP</strong> request overflow (CVE-2020-22845, MTK-014), <strong>autoupgrade .npk origin bypass</strong> (CVE-2019-3977, MTK-020), <strong>DNS unrelated-data cache poisoning</strong> (CVE-2019-3979, MTK-019), the IPv6-only <strong>RDNSS RA overflow</strong> (CVE-2023-32154, MTK-007) and <strong>traceroute-range firewall bypass</strong> (CVE-2023-47310, MTK-010). It also reads the RouterOS version from <strong>MNDP</strong> to flag <strong>Chimay-Red</strong> posture (CVE-2017-20149, MTK-011 — version is dispositive because RouterOS ships one monolithic image), and correlates a gated exploit on a device already seen in cleartext management (<strong>MTK-C01</strong>).</p>
-                    <p class="text-sm text-gray-400 mb-3">One short passive capture over WebFig/REST/SCEP/hotspot HTTP (80/8080), Winbox (8291), SMB (139/445), FTP (21), DNS (53), MNDP (5678) and ICMPv6 RAs — dual-stack (bare <span class="font-mono">port</span> clauses match v4 and v6; a narrow <span class="font-mono">ip6[6]</span> clause admits v6 behind an extension header). Needs a SPAN/mirror to see other hosts. Signature-based on the per-packet capture model: the standalone's flow-behaviour codes (the www/jsproxy <em>crash</em> teardown MTK-011-event/MTK-012, the Winbox→DNS→downgrade chain MTK-018/C02/C03), the VTEP-peer-gated VXLAN code (MTK-009) and the native-L2 bridge2 code (MTK-016) are <strong>not</strong> ported — each needs flow state, operator config, or raw L2 frames the guard's IP-onward capture can't provide.</p>
+                    <p class="text-xs text-amber-300/90 mb-2">Passive MikroTik RouterOS CVE guard — <strong>detection-only</strong>, never transmits. Reads the RouterOS management + attack surface off the wire and names the exploit signatures for a tracked CVE set: the two CISA-KEV bugs — <strong>Winbox path traversal</strong> that reads the credential store (<strong>CVE-2018-14847</strong>, MTK-003) and the pre-auth <strong>SMB/NetBIOS overflow</strong> (<strong>CVE-2018-7445</strong>, MTK-002) — plus <strong>WebFig credentials in the clear</strong> (CVE-2025-61481, MTK-001), the <strong>REST libjson</strong> overflow (CVE-2025-10948, MTK-005), <strong>SCEP</strong> base64/ASN.1 overflows (CVE-2021-41987 / CVE-2026-7668, MTK-013/008), <strong>hotspot</strong> (CVE-2022-45313, MTK-017), <strong>jsproxy</strong> (CVE-2026-67281, MTK-006), <strong>FTP</strong> request overflow (CVE-2020-22845, MTK-014), <strong>autoupgrade .npk origin bypass</strong> (CVE-2019-3977, MTK-020), <strong>DNS unrelated-data cache poisoning</strong> (CVE-2019-3979, MTK-019), the IPv6-only <strong>RDNSS RA overflow</strong> (CVE-2023-32154, MTK-007) and <strong>traceroute-range firewall bypass</strong> (CVE-2023-47310, MTK-010). It also reads the RouterOS version from <strong>MNDP</strong> to flag <strong>Chimay-Red</strong> posture (CVE-2017-20149, MTK-011 — version is dispositive because RouterOS ships one monolithic image), and correlates a gated exploit on a device already seen in cleartext management (<strong>MTK-C01</strong>). <strong>v2</strong> adds the actively exploited <strong>MikroTrick</strong> chain (<code>CVE-2026-67276</code> + <code>CVE-2026-86060</code>, MTK-021 — forge an SSH key from the public modulus, then escalate via a crafted username) as an honest <strong>exposure</strong> finding: a RouterOS version inside the fix train (below 6.49.21 / 7.23.4 / 7.24.2 / 7.25beta3), read from MNDP or the cleartext <span class="font-mono">SSH-2.0-ROSSSH-x.y.z</span> banner, <em>with SSH seen on the wire</em>. The attack itself runs inside encrypted SSH authentication and can never be seen passively — so silence is <strong>not</strong> evidence of safety; the finding says to check the device.</p>
+                    <p class="text-sm text-gray-400 mb-3">One short passive capture over WebFig/REST/SCEP/hotspot HTTP (80/8080), Winbox (8291), SMB (139/445), FTP (21), DNS (53), MNDP (5678), ICMPv6 RAs and SSH (22 — only SYNs and the cleartext banner, so bulk SSH never floods the capture) — dual-stack (bare <span class="font-mono">port</span> clauses match v4 and v6; a narrow <span class="font-mono">ip6[6]</span> clause admits v6 behind an extension header). Needs a SPAN/mirror to see other hosts. Signature-based on the per-packet capture model: the standalone's flow-behaviour codes (the www/jsproxy <em>crash</em> teardown MTK-011-event/MTK-012, the Winbox→DNS→downgrade chain MTK-018/C02/C03), the VTEP-peer-gated VXLAN code (MTK-009) and the native-L2 bridge2 code (MTK-016) are <strong>not</strong> ported — each needs flow state, operator config, or raw L2 frames the guard's IP-onward capture can't provide.</p>
                     <div class="flex flex-wrap items-center gap-2">
                         <select id="mikrotik-guard-iface" title="Interface for the capture — LAN-only: pick the LAN/uplink NIC or a SPAN/mirror port (Wi-Fi is ignored)" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
                             <option value="">Auto (LAN connections)</option>
@@ -5395,6 +5451,10 @@
                             <span id="preview-truncated-badge" class="hidden flex-shrink-0 text-xs bg-yellow-700 text-yellow-200 px-2 py-0.5 rounded">Truncated</span>
                         </div>
                         <div class="flex items-center gap-2 flex-shrink-0">
+                            <button id="preview-edit-btn" onclick="toggleFileEdit()" class="hidden bg-amber-600 hover:bg-amber-700 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Edit</button>
+                            <button id="preview-save-btn" onclick="saveFileEdit()" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Save</button>
+                            <button id="preview-cancel-btn" onclick="cancelFileEdit()" class="hidden bg-slate-600 hover:bg-slate-500 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Cancel</button>
+                            <span id="preview-save-status" class="hidden text-xs text-emerald-300"></span>
                             <button id="preview-download-btn" onclick="" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Download</button>
                             <button onclick="closeFilePreview()" aria-label="Close" class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -7664,7 +7724,7 @@
                             </div>
                             <label class="flex items-center gap-1.5 text-xs text-gray-400 mt-3 cursor-pointer flex-wrap">
                                 <input type="checkbox" id="wd-au-pushover" class="accent-amber-500" onchange="saveAutoUpload()">
-                                <span>Pushover summary after each upload</span>
+                                <span>Push notification summary after each upload</span>
                                 <span id="wd-au-pushover-note" class="text-gray-500"></span>
                             </label>
                             <div id="wd-auto-upload-status" class="text-xs text-gray-500 mt-2"></div>
@@ -8332,9 +8392,9 @@
                     </div>
                 </div>
 
-                <!-- Pushover Notifications Section -->
+                <!-- Push Notifications Section (Pushover + Slack) -->
                 <div class="mb-8">
-                    <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">Pushover Notifications</h3>
+                    <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">Push Notifications</h3>
                     <div class="glass rounded-lg p-4">
                         <div class="flex flex-col gap-4 sm:flex-row sm:items-start mb-4">
                             <svg class="w-10 h-10 text-cyan-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -8343,17 +8403,18 @@
                             <div class="flex-1">
                                 <h4 class="font-medium text-lg mb-2">Push Notifications</h4>
                                 <p class="text-sm text-gray-400 mb-4">
-                                    Get real-time push notifications on your phone via <a href="https://pushover.net/" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">Pushover</a> when Ragnar discovers new devices, vulnerabilities, or credentials.
+                                    Get real-time notifications via <a href="https://pushover.net/" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">Pushover</a> and/or <a href="https://api.slack.com/messaging/webhooks" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">Slack</a> when Ragnar discovers new devices, vulnerabilities, or credentials. Every configured channel receives each alert.
                                 </p>
                                 <div class="space-y-3">
                                     <!-- Enable toggle -->
                                     <div>
                                         <label class="flex items-center space-x-3 cursor-pointer">
                                             <input type="checkbox" id="pushover-enabled-toggle" onchange="togglePushoverEnabled()" class="w-5 h-5 rounded border-gray-600 bg-gray-700 text-gray-600 focus:ring-0">
-                                            <span class="text-sm font-medium">Enable Pushover Notifications</span>
+                                            <span class="text-sm font-medium">Enable Push Notifications</span>
                                         </label>
-                                        <p class="text-xs text-gray-500 ml-0 sm:ml-8 mt-1">Send push notifications to your phone when events occur</p>
+                                        <p class="text-xs text-gray-500 ml-0 sm:ml-8 mt-1">Send notifications to every configured channel when events occur</p>
                                     </div>
+                                    <h5 class="text-sm font-semibold text-gray-200 pt-2">Pushover</h5>
                                     <!-- User Key -->
                                     <div>
                                         <label for="pushover-user-key" class="block text-sm font-medium text-gray-300 mb-2">Pushover User Key</label>
@@ -8372,6 +8433,24 @@
                                         </div>
                                         <p class="text-xs text-gray-500 mt-1">
                                             Get your keys from <a href="https://pushover.net/" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">pushover.net</a> — create an application to get the API Token.
+                                        </p>
+                                    </div>
+                                    <h5 class="text-sm font-semibold text-gray-200 pt-2">Slack</h5>
+                                    <!-- Slack Webhook -->
+                                    <div>
+                                        <label for="slack-webhook-url" class="block text-sm font-medium text-gray-300 mb-2">Slack Incoming Webhook URL</label>
+                                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                            <input type="password" id="slack-webhook-url" autocomplete="off" placeholder="https://hooks.slack.com/services/..."
+                                                   class="flex-1 w-full min-w-0 bg-slate-700 border border-slate-600 text-white py-2 px-3 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-transparent">
+                                            <button onclick="saveSlackWebhook()" class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded-lg transition-colors whitespace-nowrap w-full sm:w-auto">
+                                                Save Webhook
+                                            </button>
+                                            <button id="slack-webhook-remove" onclick="removeSlackWebhook()" class="hidden bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg transition-colors whitespace-nowrap w-full sm:w-auto">
+                                                Remove
+                                            </button>
+                                        </div>
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            Create a Slack app with <a href="https://api.slack.com/messaging/webhooks" target="_blank" class="text-cyan-400 hover:text-cyan-300 underline">Incoming Webhooks</a> and paste the channel's webhook URL.
                                         </p>
                                     </div>
                                     <!-- Status -->
@@ -8439,7 +8518,7 @@
                                 </svg>
                                 Send Test Notification
                             </button>
-                            <span class="text-xs text-gray-500">Sends "Hello there Viking, are you ready for adventures?" to your device</span>
+                            <span class="text-xs text-gray-500">Sends "Hello there Viking, are you ready for adventures?" to every configured channel</span>
                         </div>
                     </div>
                 </div>
@@ -8786,7 +8865,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260925-system-mobile"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260928-system-mobile"></script>
 
 
 

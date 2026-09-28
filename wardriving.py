@@ -117,8 +117,15 @@ SESSION_FINISHED_HOOKS = []
 
 # A row whose position is within this many metres of the GPS track (inside the
 # row's own first..last-seen window, plus slack) is re-timed to that moment.
-_ALIGN_MAX_M = 300
+_ALIGN_MAX_M = 50
 _ALIGN_SLACK_S = 15
+# Between two consecutive fixes a row is timed by interpolating along the
+# segment joining them - the track is logged only every ~9 s, so snapping to
+# the nearest fix gave rows 100 m apart the same second (a 300+ km/h "jump"
+# to Wardrift). A segment longer than this, or faster than any car, is a lost
+# fix / glitch and is never interpolated across.
+_ALIGN_SEG_MAX_S = 30
+_ALIGN_SEG_MAX_MPS = 70
 
 
 def _ts_to_epoch(s):
@@ -190,10 +197,21 @@ def _align_rows_to_track(recs, track):
             # Bound the scan on very long sightings (a network heard for hours).
             step = max(1, (hi - lo) // 4000)
             for i in range(lo, hi, step):
-                _, tlat, tlon = track[i]
-                d2 = ((tlat - lat) * 110540.0) ** 2 + ((tlon - lon) * kx) ** 2
-                if best is None or d2 < best[0]:
-                    best = (d2, track[i][0])
+                ta, alat, alon = track[i]
+                ax, ay = (alon - lon) * kx, (alat - lat) * 110540.0
+                cand = (ax * ax + ay * ay, ta)
+                if step == 1 and i + 1 < len(track):
+                    tb, blat, blon = track[i + 1]
+                    bx, by = (blon - lon) * kx, (blat - lat) * 110540.0
+                    sx, sy = bx - ax, by - ay
+                    seg2 = sx * sx + sy * sy
+                    dt = tb - ta
+                    if 0 < dt <= _ALIGN_SEG_MAX_S and seg2 > 0 and seg2 <= (_ALIGN_SEG_MAX_MPS * dt) ** 2:
+                        f = min(1.0, max(0.0, -(ax * sx + ay * sy) / seg2))
+                        px, py = ax + f * sx, ay + f * sy
+                        cand = (px * px + py * py, ta + f * dt)
+                if best is None or cand[0] < best[0]:
+                    best = cand
             if best is not None and best[0] <= _ALIGN_MAX_M ** 2:
                 when = best[1]
             else:
@@ -2254,6 +2272,12 @@ class WardrivingEngine:
         self.session = WardrivingSession(self.data_dir)
         self._running = True
         self._starting = False
+        # Tell the orchestrator to pause its active scans (nmap/attacks) while
+        # we drive — they thrash a small board and starve cold-start GPS.
+        try:
+            self.shared_data.wardriving_session_active = True
+        except Exception:
+            pass
         self.error = None
         self.scans_completed = 0
         self.bt_count = 0
@@ -2499,6 +2523,11 @@ class WardrivingEngine:
 
         self._running = False
         self._starting = False
+        # Let the orchestrator resume active scans now that we've stopped.
+        try:
+            self.shared_data.wardriving_session_active = False
+        except Exception:
+            pass
         if self.session:
             self.session.close()
         if self._gps:

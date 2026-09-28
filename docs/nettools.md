@@ -15,14 +15,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 
 > **Co-authored by [Solarflere](https://www.instagram.com/solarflere).** The
 > Authority Verification suite was designed and built in collaboration with Solarflere.
-
-<img width="2160" height="4626" alt="image" src="https://github.com/user-attachments/assets/9b76a1a8-69dd-43f5-a330-47b1de3550e5" />
-
-
-
-
-
-
+<img width="2160" height="4626" alt="image" src="https://github.com/user-attachments/assets/5fa8244a-5118-4ea2-965a-76d253481a4a" />
 
 
 
@@ -1822,7 +1815,11 @@ it to another service and act as the victim (`ntlmrelayx`). **Detection-only**
 
 - **coercion-attempt** — an MSRPC call over 445/135 that forces a host to
   authenticate, identified by the interface UUID in the RPC bind (matched by its
-  DCE/RPC little-endian wire encoding): **PetitPotam** (MS-EFSRPC), **PrinterBug /
+  DCE/RPC little-endian wire encoding): **PetitPotam** (MS-EFSRPC — attributed to
+  **CVE-2021-36942** when the stream also carries an `EfsRpcOpenFileRaw` request, EFSR
+  opnum 0: the August 2021 patch fixed *only* that method, which is why the downlevel
+  variants stayed exploitable and CVE-2022-26925 followed; an EFSR bind with no opnum 0 is
+  still coercion, just unattributed), **PrinterBug /
   SpoolSample** (MS-RPRN, plus the coercion opnum 65/66 to avoid flagging legit
   printing), **DFSCoerce** (MS-DFSNM), **ShadowCoerce** (MS-FSRVP).
 - **relay-suspected** — the *same* NTLMSSP server challenge seen from **two different
@@ -1876,7 +1873,16 @@ rides `\pipe\lsarpc`, DFSCoerce `\pipe\netdfs` and Zerologon works fine over
   `Authorization` headers and (opt-in) SMB2 session setup. *(v2:)* the **RemoteRegistry
   NTLM-relay fallback** (`RPC-WINREG-RELAY-FALLBACK`, **CVE-2024-43532**) — WinReg binding
   over direct `ncacn_ip_tcp` (not `\pipe\winreg`) at `RPC_C_AUTHN_LEVEL_CONNECT`, the
-  unsigned condition an NTLM relay to AD CS needs.
+  unsigned condition an NTLM relay to AD CS needs. *(v3:)* the **IRemoteWinSpool relay
+  level** (`RPC-WINSPOOL-RELAY-LEVEL`, **CVE-2021-1678**) — MS-PAR bound below
+  `RPC_C_AUTHN_LEVEL_PKT_PRIVACY`, the level Microsoft's fix requires (enforced by default
+  since June 2021). At the bind it is **high** posture — an unpatched host or a live relay,
+  *not* proof of exploitation; a call to `RpcAsyncInstallPrinterDriverFromPackage`
+  (opnum 62) on that association escalates to **critical**, the exploit step. A driver
+  install at packet privacy, and MS-RPRN at the same level, stay quiet. The engine also
+  attributes an EFSR `EfsRpcOpenFileRaw` coercion call to **CVE-2021-36942**; like all
+  coercion codes that is surfaced by Relay/Coercion Watch (below), not double-reported
+  here.
 - **interface** — **DCSync** (DRSUAPI `DRSGetNCChanges`, opnum 3), remote-exec
   primitives (svcctl / atsvc / winreg), DPAPI domain **backup-key** access (MS-BKRP),
   and endpoint-mapper **sweeps** at an enumeration rate. *(v2:)* **PrintNightmare**
@@ -2072,10 +2078,15 @@ suited to deep passive detection because the protocol is **cleartext end to end*
 all option negotiation — so unlike [SSH Watch](#ssh-watch) and [TLS Watch](#tls-watch), which
 see only a prologue before the session encrypts, Telnet Watch sees the **whole session** and
 the exploit payload itself crosses the wire in the open. It monitors **tcp/23** and **2323**
-(Telnet-over-TLS **992** is observed but not dissected). `telnet_watch.py` is a standalone
-module imported by the toolbox; Scapy is imported lazily.
+(Telnet-over-TLS **992** is observed but not dissected) and, since v5, the **r-services**
+on **512 / 513 / 514**. `telnet_watch.py` is the vendored upstream module plus a thin in-app
+adapter that replays the capture through the module's own `run_capture(offline=…)`, so the
+in-app path uses exactly the live dispatcher, engines and BPF. Scapy is imported lazily.
+**Dual-stack:** the capture filter keeps a bare `ip6` term — the only libpcap form that
+admits IPv6 behind extension headers (`(ip6 and tcp port 23)` is a measured no-op) — and a
+software port gate rejects non-Telnet IPv6.
 
-It names two critical GNU inetutils `telnetd` CVEs:
+It names these `telnetd` CVEs:
 
 - **TELNET-24061-ARGINJECT** — **CVE-2026-24061** (CVSS **9.8**, **CISA KEV** 2026-01-26).
   telnetd expands the `USER` environment variable from the client's `NEW-ENVIRON IS`
@@ -2094,6 +2105,37 @@ It names two critical GNU inetutils `telnetd` CVEs:
   merely advertising LINEMODE is **posture only**, capped at `notice`/low confidence — the
   patch is wire-invisible, a patched telnetd negotiates LINEMODE identically. *(overflow /
   confirmed → compromised; flood / oversized → suspicious; posture → clean)*
+- **TELNET-4862-KEYID-OVERFLOW** — **CVE-2011-4862** (CVSS **9.8**, exploited in the wild
+  December 2011). libtelnet's `encrypt_keyid()` copied the key id from an `ENCRYPT
+  ENC_KEYID` / `DEC_KEYID` subnegotiation into a fixed 64-byte buffer; a key id longer than
+  that is an unauthenticated **root heap overflow** (FreeBSD, Heimdal and MIT telnetd).
+  *(compromised)*
+- **TELNET-39028-EC-EL-PREAUTH** / **-CRASH-LOOP** — **CVE-2022-39028**. A bare `IAC EC` or
+  `IAC EL` before login NULL-dereferences inetutils telnetd — a 2-byte DoS; repeated attempts
+  that each end in a torn-down session are the **crash loop** that makes inetd disable the
+  service. *(suspicious)*
+- The `USER=-f` rule also covers the Solaris `in.telnetd` twin, **CVE-2007-0882** (CVSS v2
+  10.0) — the same argument-injection shape.
+
+**r-services** (rlogin **513**, rsh **514**, rexec **512**) each get their own engine —
+rlogin has no IAC framing, so feeding it to the Telnet parser would be actively wrong:
+
+- **RSVC-RLOGIN-ARGINJECT** — **CVE-1999-0113** (CVSS v2 10.0). A local or remote user field
+  in the rlogin (or rsh) handshake that begins with `-`: `-froot` becomes `login -f root`,
+  the same auth bypass. *(compromised)*
+- **RSVC-FTPDATA-SRCPORT** — **CVE-1999-0185**. An r-services connection whose source port is
+  **20** (ftp-data): it passes the "privileged port means trusted client" check, so an FTP
+  bounce can forge trusted rsh/rlogin sessions. *(compromised)* **RSVC-UNPRIV-SRCPORT** flags
+  a client source port above 1023, which a genuine r-services client never uses.
+- **RSVC-RCP-7282-DOTNAME** / **-7283-UNREQUESTED** / **-7283-TRAVERSAL** — **CVE-2019-7282 /
+  CVE-2019-7283**. A malicious netkit `rcp` *server* sending a `.` or empty file name (which
+  overwrites the target directory's permissions) or a file the client never requested / a
+  path-traversal name — the rcp twin of the OpenSSH scp bug CVE-2019-6111.
+- **RSVC-REXEC-CLEARTEXT-CRED** (rexec sends the password in the clear), **RSVC-TRUST-AUTH**
+  (a `.rhosts` / `hosts.equiv` trust login), **RSVC-RSH-SESSION** and
+  **RSVC-RLOGIN-SESSION** (inventory). rsh's **stderr back-connection** — server to a port the
+  client advertised — is correlated too; the capture admits the privileged port range it
+  lands on, because `tcp port 514` alone sees none of it.
 
 Plus general cleartext exposure: **TELNET-CLEARTEXT-AUTH** — a server `Password:` prompt on a
 session that never reached RFC 2946 `ENCRYPT START` (a lone `WILL ENCRYPT`, which inetutils
@@ -2104,10 +2146,13 @@ signal, and the credential content never appears in any finding.
 
 Verdict is **clean → suspicious → compromised**. Capture is a short passive tcpdump snapshot
 dissected with Scapy; the parser/engine is pure Python and self-tests without root
-(`telnet_watch.py --selftest`, 92 checks; wire bytes are fabricated through the production
-engine). Hardening it drives: **disable Telnet** and use SSH; where it must remain, patch
+(`telnet_watch.py --selftest`, **411 checks** across 114 tests since v5; wire bytes are
+fabricated through the production engines, and an AST guard asserts the module contains no
+packet-transmit primitive). Hardening it drives: **disable Telnet** and use SSH; where it must remain, patch
 inetutils (**2.5 `3ubuntu4.1`** is the fixed build) and firewall tcp/23 off the management
 plane. **API:** `GET /api/net/telnet-watch`. **CLI:** `telnet-watch`, `telnet-selftest`.
+**HIGH/CRITICAL** findings (Telnet and r-services) stream to [Watchtower](watchtower.md) as
+`telnet_watch.jsonl`.
 
 > **Watchtower feed.** Each non-`info` finding is appended as a JSON-lines record to
 > `/var/log/ragnar/telnet_watch.jsonl` (time-window deduplicated per code + server), so
@@ -3216,8 +3261,30 @@ response's own CNAME/DNAME/NS chain), and the IPv6-only **`MTK-007`** RDNSS RA o
 reads the RouterOS version from **MNDP** (UDP 5678) to raise **`MTK-011`** Chimay-Red
 posture (CVE-2017-20149) — version is *dispositive* because RouterOS ships one monolithic
 image with no downstream backporting — and **`MTK-C01`** correlates a gated exploit on a
-device already seen running management in the clear. **Dual-stack** (bare `port` clauses
-match v4 and v6; a narrow `ip6[6]` clause admits v6 behind an extension header).
+device already seen running management in the clear.
+
+**v2 — MikroTrick (`MTK-021`, CVE-2026-67276 + CVE-2026-86060, exploited in the wild since
+2 September 2026).** CVE-2026-67276 lets an attacker who knows a username and the public
+*modulus* of that user's authorized key forge a working key without the private half
+(RouterOS compared type and modulus but not the exponent); CVE-2026-86060 then turns the
+session administrative via a crafted username. **Neither half is passively detectable**:
+both sit in `SSH_MSG_USERAUTH_REQUEST`, after `NEWKEYS`, i.e. encrypted — and CERT Polska's
+indicators are on-device log artifacts. So `MTK-021` is an honest **exposure** finding, one
+code for both CVEs (they share one encrypted exchange): a RouterOS version inside the
+September 2026 fix train (below **6.49.21 / 7.23.4 / 7.24.2 / 7.25beta3**) *and* SSH seen on
+the wire. The version comes from **MNDP** — keyed on the sender and on the IPv4/IPv6
+addresses the device announces — or from the cleartext SSH identification string
+(`SSH-2.0-ROSSSH-7.23.3`); a non-RouterOS SSH server contributes nothing. The finding says
+outright that the attack cannot be seen and that silence is not evidence of safety, and
+tells you what to check on the device (`user -2` log lines, an unexpected `ops` account,
+the Flagged marker). One deliberate difference from the upstream module: a **7.25beta1 /
+beta2** build (which predates the beta3 fix) is treated as affected — upstream's version
+parser reads `7.25beta3` as plain `7.25` and would call every 7.25 pre-release fixed.
+
+**Dual-stack** (bare `port` clauses match v4 and v6; a narrow `ip6[6]` clause admits v6
+behind an extension header). SSH is captured as **SYNs and the banner only**: libpcap's
+`tcp[]` payload accessor is IPv4-only (it compiles but matches no IPv6 packet), so IPv6
+gets an explicit fixed-offset `ip6[]` twin — verified on both families.
 **Signature-based on the per-packet capture model**, so the standalone's codes that need
 state, config or raw L2 are deliberately **not** ported, each with a reason: the www/jsproxy
 **crash** codes (server teardown with no response — flow-close behaviour), the

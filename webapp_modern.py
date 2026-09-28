@@ -14175,6 +14175,262 @@ def api_power_usb_current():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Serial Console — viewer for a switch/router/firewall console port reached
+# through a USB console cable (see serial_console.py). Read-only by default;
+# an explicit allow_write gate enables sending commands to the device.
+# ---------------------------------------------------------------------------
+@app.route('/api/serial-console/ports')
+def api_serial_console_ports():
+    try:
+        import serial_console
+        return jsonify({'ports': serial_console.list_ports(),
+                        'status': serial_console.status()})
+    except Exception as e:
+        logger.error(f"Serial console ports error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/serial-console/status')
+def api_serial_console_status():
+    import serial_console
+    return jsonify(serial_console.status())
+
+
+@app.route('/api/serial-console/start', methods=['POST'])
+def api_serial_console_start():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.start(data.get('port'), data.get('baud', 'auto')))
+
+
+@app.route('/api/serial-console/stop', methods=['POST'])
+def api_serial_console_stop():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.stop(release=bool(data.get('release'))))
+
+
+@app.route('/api/serial-console/output')
+def api_serial_console_output():
+    import serial_console
+    try:
+        since = int(request.args.get('since', 0))
+    except (TypeError, ValueError):
+        since = 0
+    return jsonify(serial_console.output(since=max(0, since)))
+
+
+def _serial_console_summary():
+    """Content-free summary of this unit's console (safe for mesh peers to read):
+    whether a port is assigned and the viewer's state — never any output."""
+    import serial_console
+    st = serial_console.status()
+    label = None
+    port = st.get('reserved_port')
+    if port:
+        for p in serial_console.list_ports():
+            if port in (p.get('path'), p.get('device')):
+                label = p.get('description') or p.get('device')
+                break
+    return {'has_console': bool(port), 'running': bool(st.get('running')),
+            'state': st.get('state'), 'baud': st.get('baud'),
+            'port_label': label or (os.path.basename(port) if port else None),
+            'shared': bool(st.get('share_mesh')),
+            'read_only': not st.get('allow_write'),
+            'allow_write': bool(st.get('allow_write')),
+            'share_mesh_write': bool(st.get('share_mesh_write'))}
+
+
+@app.route('/api/mesh/serial-console/status', methods=['GET'])
+def api_mesh_serial_console_status():
+    """Peer-readable (GET under /api/mesh/): lets a hub discover which mesh units
+    have a console cable attached. Status only — console OUTPUT is never exposed
+    here; viewing it goes through the secret-gated mesh gateway."""
+    try:
+        out = _serial_console_summary()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    out.update({'success': True, 'name': _mesh_viking_name() or socket.gethostname()})
+    return jsonify(out)
+
+
+@app.route('/api/mesh/serial-console/output/<int:since>', methods=['GET'])
+def api_mesh_serial_console_output(since):
+    """Peer-readable console OUTPUT — only when this unit's operator has opted in
+    ("Share this console with the mesh"). Read-only lines; no control. The cursor
+    is a path segment, not a query string, because the mesh proof is computed
+    over the path alone."""
+    import serial_console
+    if not serial_console.shared_with_mesh():
+        return jsonify({'success': True, 'shared': False, 'lines': [], 'last': 0,
+                        'error': 'this unit has not shared its console with the mesh'})
+    out = serial_console.output(since=max(0, since))
+    st = out.get('status') or {}
+    out['status'] = {k: st.get(k) for k in ('running', 'state', 'port', 'baud', 'baud_setting',
+                                            'auto_settled', 'bytes', 'last_rx', 'read_only',
+                                            'allow_write')}
+    out.update({'success': True, 'shared': True,
+                'share_mesh_write': serial_console.shared_write_with_mesh()})
+    return jsonify(out)
+
+
+@app.route('/api/serial-console/share', methods=['POST'])
+def api_serial_console_share():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.set_share(bool(data.get('share'))))
+
+
+@app.route('/api/serial-console/allow-write', methods=['POST'])
+def api_serial_console_allow_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    return jsonify(serial_console.set_allow_write(bool(data.get('allow_write'))))
+
+
+@app.route('/api/serial-console/write', methods=['POST'])
+def api_serial_console_write():
+    import serial_console
+    data = request.get_json(silent=True) or {}
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    return jsonify(serial_console.write(cmd))
+
+
+@app.route('/api/mesh/serial-console/write', methods=['POST'])
+def api_mesh_serial_console_write():
+    """Peer-writable: send a command to this unit's console. Only when the
+    operator has enabled both share_mesh and allow_write."""
+    import serial_console
+    if not serial_console.shared_write_with_mesh():
+        return jsonify({'success': False,
+                        'error': 'this unit has not enabled mesh write'}), 403
+    data = request.get_json(silent=True) or {}
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    return jsonify(serial_console.write(cmd))
+
+
+@app.route('/api/serial-console/peer-write', methods=['POST'])
+def api_serial_console_peer_write():
+    """Hub side: relay a write command to a peer's shared-write console."""
+    data = request.get_json(silent=True) or {}
+    unit = (data.get('unit') or '').strip()
+    cmd = data.get('data', '')
+    if not cmd:
+        return jsonify({'success': False, 'error': 'empty payload'})
+    if not (mesh_available and _mesh_enabled()):
+        return jsonify({'success': False, 'error': 'mesh is not enabled'}), 400
+    node = _resolve_delegate_node(unit)
+    if not node:
+        return jsonify({'success': False, 'error': 'unknown mesh unit'}), 404
+    rep = mesh_manager.post_peer(node, path='/api/mesh/serial-console/write',
+                                  payload={'data': cmd},
+                                  port=_mesh_node_port(), timeout=6)
+    if not rep.get('reachable'):
+        return jsonify({'success': False, 'error': rep.get('error') or 'unit unreachable'}), 504
+    return jsonify(rep)
+
+
+@app.route('/api/serial-console/peer-output')
+def api_serial_console_peer_output():
+    """Hub side of shared (view-only) remote consoles: fetch a peer's shared
+    console output over the mesh on tag trust. Works without the mesh secret, but
+    only for a peer whose operator switched sharing on."""
+    unit = (request.args.get('unit') or '').strip()
+    try:
+        since = max(0, int(request.args.get('since', 0)))
+    except (TypeError, ValueError):
+        since = 0
+    if not (mesh_available and _mesh_enabled()):
+        return jsonify({'success': False, 'error': 'mesh is not enabled'}), 400
+    node = _resolve_delegate_node(unit)        # roster-bound: no arbitrary targets
+    if not node:
+        return jsonify({'success': False, 'error': 'unknown mesh unit'}), 404
+    rep = mesh_manager.poll_peer(node, port=_mesh_node_port(), timeout=6,
+                                 path='/api/mesh/serial-console/output/%d' % since)
+    if not rep.get('reachable'):
+        return jsonify({'success': False, 'error': rep.get('error') or 'unit unreachable'}), 504
+    return jsonify(rep)
+
+
+@app.route('/api/serial-console/units')
+def api_serial_console_units():
+    """This unit plus every mesh peer, each with its console summary, so the
+    dashboard can view the console of any Ragnar wired to a switch. Viewing a
+    peer relays through the mesh gateway, which needs the mesh secret."""
+    units = []
+    try:
+        local = _serial_console_summary()
+    except Exception as e:
+        local = {'has_console': False, 'error': str(e)}
+    local.update({'id': 'local', 'name': (_mesh_viking_name() if mesh_available else None)
+                  or socket.gethostname(), 'local': True, 'reachable': True})
+    units.append(local)
+    gateway_ready = False
+    if mesh_available and _mesh_enabled():
+        gateway_ready = bool(_mesh_secret())
+        peers = _mesh_tagged_peers()
+        results = {}
+
+        def _poll(node):
+            results[node.get('id')] = mesh_manager.poll_peer(
+                node, port=_mesh_node_port(), timeout=4,
+                path='/api/mesh/serial-console/status')
+
+        threads = [threading.Thread(target=_poll, args=(p,), daemon=True)
+                   for p in peers if p.get('online') and p.get('id')]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=6)
+        for p in peers:
+            r = results.get(p.get('id')) or {}
+            units.append({'id': p.get('id'), 'local': False,
+                          'name': r.get('name') or p.get('hostname') or p.get('dns_name'),
+                          'online': bool(p.get('online')),
+                          'reachable': bool(r.get('reachable')) and bool(r.get('success')),
+                          'has_console': bool(r.get('has_console')),
+                          'running': bool(r.get('running')), 'state': r.get('state'),
+                          'shared': bool(r.get('shared')),
+                          'share_mesh_write': bool(r.get('share_mesh_write')),
+                          'baud': r.get('baud'), 'port_label': r.get('port_label'),
+                          'error': r.get('error') if not r.get('reachable') else None})
+    return jsonify({'units': units, 'gateway_ready': gateway_ready,
+                    'mesh_enabled': bool(mesh_available and _mesh_enabled())})
+
+
+@app.route('/api/serial-console/clear', methods=['POST'])
+def api_serial_console_clear():
+    import serial_console
+    return jsonify(serial_console.clear())
+
+
+@app.route('/api/serial-console/scripts')
+def api_serial_console_scripts():
+    import serial_console
+    return jsonify({'scripts': serial_console.list_scripts()})
+
+
+@app.route('/api/serial-console/run-script', methods=['POST'])
+def api_serial_console_run_script():
+    import serial_console
+    body = request.get_json(silent=True) or {}
+    sid = (body.get('script_id') or '').strip()
+    if not sid:
+        return jsonify({'success': False, 'error': 'missing script_id'}), 400
+    return jsonify(serial_console.run_script(sid))
+
+
+@app.route('/api/serial-console/script-status')
+def api_serial_console_script_status():
+    import serial_console
+    return jsonify(serial_console.script_status())
+
+
 @app.route('/api/power/test', methods=['GET', 'POST'])
 def api_power_test():
     """Idle-vs-load power test. POST {duration, loads:[cpu,sdr,wifi]} starts
@@ -14728,7 +14984,10 @@ def _upload_outcome(target, res):
             and resp.get('status') in ('pending', 'processing'):
         return {'state': 'processing', 'upload_id': resp['upload_id'], 'message': 'Wardrift is processing'}
     if target == 'wardrift' and res.get('duplicate'):
-        return {'state': 'ok', 'message': 'Already on Wardrift'}
+        # Wardrift also answers duplicate_route while an identical earlier
+        # upload is still pending - and that one can still be rejected.
+        return {'state': 'unknown', 'message': 'Wardrift already has this file (an earlier upload may '
+                                               'still be processing) - check your routes on wardrift.net'}
     return {'state': 'ok', 'message': _upload_resp_summary(target, resp)}
 
 
@@ -15027,7 +15286,7 @@ def _auto_upload_start_worker():
 
 
 def _pushover_ready():
-    """'ok' | 'off' (keys set, Pushover disabled) | 'missing' (no keys)."""
+    """'ok' | 'off' (channel set, push disabled) | 'missing' (no Pushover/Slack)."""
     po = _rusense_pushover()
     if po is None or not po.is_configured():
         return 'missing'
@@ -23289,7 +23548,8 @@ def list_files_api():
                 {'name': 'vulnerabilities', 'is_directory': True, 'path': '/vulnerabilities'},
                 {'name': 'logs', 'is_directory': True, 'path': '/logs'},
                 {'name': 'backups', 'is_directory': True, 'path': '/backups'},
-                {'name': 'uploads', 'is_directory': True, 'path': '/uploads'}
+                {'name': 'uploads', 'is_directory': True, 'path': '/uploads'},
+                {'name': 'console_scripts', 'is_directory': True, 'path': '/console_scripts'}
             ])
         
         # Map paths to actual directories
@@ -23323,6 +23583,12 @@ def list_files_api():
         elif path == '/uploads' or path.startswith('/uploads/'):
             try:
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, path)
+            except ValueError:
+                return jsonify({'error': 'Invalid path'}), 400
+        elif path == '/console_scripts' or path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), path)
             except ValueError:
                 return jsonify({'error': 'Invalid path'}), 400
         else:
@@ -23423,6 +23689,12 @@ def preview_file_api():
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid path'}), 400
+        elif file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid path'}), 400
         else:
             return jsonify({'error': 'Invalid path'}), 400
 
@@ -23460,22 +23732,65 @@ def preview_file_api():
                             'size': file_size, 'name': os.path.basename(actual_path)})
 
         elif ext in TEXT_EXTENSIONS or (mime_type and mime_type.startswith('text/')):
+            can_edit = ext in EDITABLE_EXTENSIONS and file_size <= 512 * 1024
             if file_size > 512 * 1024:  # 512KB limit for text
-                # Return first 512KB with truncation notice
                 with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read(512 * 1024)
                 return jsonify({'type': 'text', 'content': content, 'truncated': True,
-                                'size': file_size, 'name': os.path.basename(actual_path)})
+                                'size': file_size, 'name': os.path.basename(actual_path),
+                                'editable': False})
             with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
             return jsonify({'type': 'text', 'content': content, 'truncated': False,
-                            'size': file_size, 'name': os.path.basename(actual_path)})
+                            'size': file_size, 'name': os.path.basename(actual_path),
+                            'editable': can_edit})
         else:
             return jsonify({'type': 'binary', 'mime': mime_type,
                             'size': file_size, 'name': os.path.basename(actual_path)})
 
     except Exception as e:
         logger.error(f"Error previewing file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+EDITABLE_EXTENSIONS = {'.txt', '.log', '.json', '.xml', '.yaml', '.yml',
+                       '.md', '.conf', '.cfg', '.ini', '.sh', '.py',
+                       '.csv', '.env', '.toml', '.html', '.css', '.js',
+                       '.bat', '.ps1', '.rb', '.pl', '.lua', '.sql',
+                       '.nmap', '.gnmap', '.rules'}
+
+@app.route('/api/files/save', methods=['POST'])
+def save_file_api():
+    """Save edited text file content back to disk."""
+    try:
+        body = request.get_json(silent=True) or {}
+        file_path = (body.get('path') or '').strip()
+        content = body.get('content')
+        if not file_path:
+            return jsonify({'error': 'File path required'}), 400
+        if content is None:
+            return jsonify({'error': 'Content required'}), 400
+
+        try:
+            actual_path = _resolve_readable_path(file_path)
+        except ValueError:
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.isfile(actual_path):
+            return jsonify({'error': 'File not found'}), 404
+
+        ext = os.path.splitext(actual_path)[1].lower()
+        if ext not in EDITABLE_EXTENSIONS:
+            return jsonify({'error': 'This file type cannot be edited'}), 400
+
+        with open(actual_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        logger.info(f"File saved: {actual_path} ({len(content)} bytes)")
+        return jsonify({'success': True, 'size': len(content)})
+
+    except Exception as e:
+        logger.error(f"Error saving file: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -23522,6 +23837,12 @@ def download_file_api():
         elif file_path == '/uploads' or file_path.startswith('/uploads/'):
             try:
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid file path'}), 400
+        elif file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid file path'}), 400
         else:
@@ -23599,6 +23920,12 @@ def delete_file_api():
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid file path'}), 400
+        elif file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid file path'}), 400
         else:
             return jsonify({'error': 'Invalid file path'}), 400
 
@@ -23659,6 +23986,9 @@ def _resolve_readable_path(file_path):
         return _resolve_legacy_path('/backups', shared_data.backupdir, file_path)
     if file_path == '/uploads' or file_path.startswith('/uploads/'):
         return _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
+    if file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+        return _resolve_legacy_path('/console_scripts',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
     raise ValueError('Invalid path')
 
 
@@ -28435,7 +28765,7 @@ def remove_ai_token():
 
 
 # ============================================================================
-# PUSHOVER NOTIFICATION ENDPOINTS
+# PUSH NOTIFICATION ENDPOINTS (Pushover + Slack)
 # ============================================================================
 
 @app.route('/api/pushover/keys', methods=['GET'])
@@ -28528,7 +28858,7 @@ def test_pushover():
             shared_data._pushover_service = pushover
 
         if not pushover.is_configured():
-            return jsonify({'success': False, 'message': 'Pushover keys not configured. Please save your User Key and API Token first.'}), 400
+            return jsonify({'success': False, 'message': 'No notification channel configured. Save your Pushover keys or a Slack webhook URL first.'}), 400
 
         result = pushover.send(
             message="Hello there Viking, are you ready for adventures?",
@@ -28539,6 +28869,57 @@ def test_pushover():
     except Exception as e:
         logger.error(f"Error testing Pushover: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/slack/webhook', methods=['GET'])
+def get_slack_webhook():
+    """Get Slack webhook status (without revealing the full URL)."""
+    try:
+        from env_manager import EnvManager
+        url = EnvManager().get_env_key("RAGNAR_SLACK_WEBHOOK_URL")
+        return jsonify({
+            'configured': bool(url),
+            'preview': f"{url[:30]}...{url[-4:]}" if url and len(url) > 40 else None,
+        })
+    except Exception as e:
+        logger.error(f"Error getting Slack webhook status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/slack/webhook', methods=['POST'])
+def save_slack_webhook():
+    """Save the Slack incoming-webhook URL to the .env file."""
+    try:
+        from env_manager import EnvManager
+        from pushover_service import SLACK_WEBHOOK_PREFIX
+        data = request.get_json() or {}
+        url = (data.get('webhook_url') or '').strip()
+        if not url:
+            return jsonify({'error': 'No webhook URL provided'}), 400
+        if not url.startswith(SLACK_WEBHOOK_PREFIX) or any(c.isspace() for c in url):
+            return jsonify({'error': f'Slack webhook URL must start with {SLACK_WEBHOOK_PREFIX}'}), 400
+        EnvManager().set_env_key("RAGNAR_SLACK_WEBHOOK_URL", url)
+        auto_enabled = False
+        if not shared_data.config.get('pushover_enabled', False):
+            shared_data.config['pushover_enabled'] = True
+            shared_data.save_config()
+            auto_enabled = True
+        return jsonify({'success': True, 'message': '✓ Slack webhook saved', 'auto_enabled': auto_enabled})
+    except Exception as e:
+        logger.error(f"Error saving Slack webhook: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/slack/webhook', methods=['DELETE'])
+def remove_slack_webhook():
+    """Remove the Slack webhook URL from the .env file."""
+    try:
+        from env_manager import EnvManager
+        EnvManager().delete_env_key("RAGNAR_SLACK_WEBHOOK_URL")
+        return jsonify({'success': True, 'message': 'Slack webhook removed'})
+    except Exception as e:
+        logger.error(f"Error removing Slack webhook: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
@@ -28901,6 +29282,15 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
 
         if use_https:
             logger.info("⚠️  Using self-signed certificate - browser will show security warning")
+
+        # Serial console: reserve the assigned port in serial_claims straight away
+        # (before GPS/CYD auto-detection can open it) and resume the read-only
+        # viewer if it was left running. Never fatal.
+        try:
+            import serial_console
+            serial_console.init()
+        except Exception as e:
+            logger.warning(f"Serial console init skipped: {e}")
 
         # Synchronize counts in the background so the web server binds
         # immediately instead of waiting for a full DB scan first.

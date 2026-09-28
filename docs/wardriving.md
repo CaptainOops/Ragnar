@@ -356,6 +356,32 @@ Re-run `sudo scripts/setup_gpsd.sh` manually after swapping to a different GPS r
 - **GSV parsing.** Per-constellation `$xxGSV` sentences are aggregated; the API exposes `satellites_in_view` (sum across all reporting constellations) and `snr_max` (highest reported SNR in dB-Hz). The multi-message GSV sweep is also stitched back into a **per-satellite list** (PRN, elevation, azimuth, SNR) per constellation, which the diagnostics endpoint surfaces as `gps.sky` for the sky-view plot; the NMEA 4.10+ trailing signal-ID field is ignored. Entries that haven't been heard from in 30 s are pruned so a constellation that stops reporting doesn't inflate the total.
 - **Liveness signal.** `last_sentence` updates on any recognized NMEA line (including GSV / GSA / VTG / GLL / TXT and pre-fix GGA/RMC). `last_update` continues to mean "last positional/fix update". Together they distinguish "GPS is alive but has no fix yet" from "GPS isn't transmitting at all".
 
+### Active scans pause during a drive
+
+The orchestrator's active scans — nmap port/vulnerability scans and attack
+actions — are heavy. On a small board (Pi Zero 2 W especially) they thrash RAM
+and CPU and starve `gpsd` of the continuous serial reads a cold start needs, so
+the GPS shows satellites but never demodulates the ephemeris and never fixes.
+That is why a receiver fixes when booted alone but not once the orchestrator is
+also hammering hosts.
+
+Starting a wardriving session sets `shared_data.wardriving_session_active`, and
+the orchestrator pauses its whole active-scan/attack cycle (status
+`PAUSED_WARDRIVE`) for the duration — including aborting any per-host
+vulnerability scan already in flight. The nmap vulnerability scanner itself also
+checks the flag, so a **manually triggered** scan (from the Adv Scan tab) is
+skipped during a drive too, not only the orchestrator's automatic ones.
+**Passive wardriving capture keeps running the entire time**; only the active
+scans stop. They resume automatically when the session stops, with an immediate
+refresh rather than waiting out the old interval. This frees the CPU so
+cold-start GPS can complete during the drive.
+
+Note: this is separate from the existing **wardriving-on-boot** behaviour, which
+sets `manual_mode` so the orchestrator never starts in the first place. The flag
+above covers the case where wardriving is started *after* the orchestrator is
+already running (or scans are triggered manually). Scans launched directly from
+a shell (`nmap`, `lynis` over SSH) are outside Ragnar and are not affected.
+
 ### Status Fields (`/api/wardriving/gps`)
 
 | Field | Meaning |
@@ -640,9 +666,11 @@ GPS breadcrumb trail — one row every 5 s during a session, only while GPS has 
 Standard format for uploading to wigle.net. Contains MAC, SSID, AuthMode, channel, RSSI, GPS coordinates.
 
 The export (and every upload, which uses the same file) contains only
-**GPS-pinned** rows: sightings whose position matches a real GPS fix on the
-session's track. All row types are written as one time-ordered list, each
-row's `FirstSeen` is the moment the drive was at that position (UTC,
+**GPS-pinned** rows: sightings whose position lies within 50 m of the
+session's GPS track. All row types are written as one time-ordered list, each
+row's `FirstSeen` is the moment the drive was at that position, interpolated
+between the track's fixes (logged every ~9 s), so rows heard between two fixes
+don't share one timestamp while sitting 100 m apart (UTC,
 `YYYY-MM-DD HH:MM:SS`), and fields are standard CSV-quoted (an SSID with a
 comma is `"name,with,comma"`). Services that rebuild the drive route from the
 file, such as Wardrift, otherwise reject it ("The GPS trail has a few jumps").
@@ -709,7 +737,7 @@ has two auth paths and Ragnar supports both:
 
 | Mode | How to set it up | What an upload does |
 |------|------------------|---------------------|
-| **Signed in** (preferred) | Enter your Wardrift username + password and hit *Sign in*. Ragnar keeps only the session token; the password is never stored. | `POST /v1/wardrive/logs` with the WiGLE CSV. The session becomes an archived route (distance, AP count, streak), public if *Public routes* is ticked. A re-upload returns `409 duplicate_route`, which Ragnar treats as success. The card shows your character level, EXP to next level, currency and lifetime routes/APs. |
+| **Signed in** (preferred) | Enter your Wardrift username + password and hit *Sign in*. Ragnar keeps only the session token; the password is never stored. | `POST /v1/wardrive/logs` with the WiGLE CSV. The session becomes an archived route (distance, AP count, streak), public if *Public routes* is ticked. A re-upload returns `409 duplicate_route`. Wardrift also answers that while an identical earlier upload is still pending (processing a large drive can take ~10 minutes), and that one can still be rejected, so Ragnar shows it as *already has this file — check wardrift.net* rather than a success. The card shows your character level, EXP to next level, currency and lifetime routes/APs. |
 | **API key** | Paste a **character-bound** Wardrift key (`wdk_…`). | `POST /v1/ingest/signals` in batches of 250. Each row becomes a signal item (`wifi` / `bluetooth` / `cellular` / `other`) with SSID and BSSID sent **only as SHA-256 hashes**, timestamps converted to UTC. |
 
 If both are set, the signed-in route upload is used, and it falls back to the API

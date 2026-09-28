@@ -878,7 +878,10 @@ class SharedData:
             "ai_max_tokens": 500,
             "ai_temperature": 0.7,
 
-            "__title_pushover__": "Pushover Notifications",
+            "__title_pushover__": "Push Notifications",
+            # Master switch for push notifications (key name kept for compat).
+            # Delivered to every configured channel: Pushover and/or Slack
+            # (RAGNAR_SLACK_WEBHOOK_URL in .env).
             "pushover_enabled": False,
             "pushover_notify_new_device": True,
             "pushover_notify_new_vulnerability": True,
@@ -1290,6 +1293,11 @@ class SharedData:
         self.display_should_exit = False
         self.orchestrator_should_exit = False
         self.webapp_should_exit = False
+        # Set True while a wardriving session is active. The orchestrator reads
+        # this to pause its active scans (nmap port/vuln, attacks): on a small
+        # board those scans thrash RAM/CPU and starve gpsd, so cold-start GPS
+        # never completes while wardriving. Passive wardriving keeps running.
+        self.wardriving_session_active = False
         self.web_portal_active = True  # Tracks whether the web portal is currently running
         self.ragnar_instance = None
         self.gateway_info = {}  # Populated by NetworkScanner.get_gateway_info()

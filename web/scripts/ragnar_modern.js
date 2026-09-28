@@ -2133,7 +2133,8 @@ function wifiSdrCheck() {
     ]).then(([d, hk]) => {
         if (!d) { box.innerHTML = '<span style="color:#f87171">SDR check failed — the endpoint did not respond.</span>'; return; }
         const tone = { ok: ['#34d399', '✅'], no_usb: ['#fb7185', '⛔'], tools_missing: ['#fbbf24', '⚙️'],
-                       dvb_held: ['#fbbf24', '🔒'], probe_timeout: ['#fbbf24', '⏱️'] }[d.state] || ['#94a3b8', 'ℹ️'];
+                       dvb_held: ['#fbbf24', '🔒'], probe_timeout: ['#fbbf24', '⏱️'],
+                       usb_stuck: ['#fbbf24', '🔁'], usb_flapping: ['#fb7185', '⚡'] }[d.state] || ['#94a3b8', 'ℹ️'];
         const col = tone[0], icon = tone[1];
         const fixes = (d.fix || []).map(s =>
             `<li style="display:flex;gap:.4rem"><span style="color:${col}">›</span><code class="font-mono text-xs" style="color:#e5e7eb;word-break:break-all">${escapeHtml(String(s))}</code></li>`).join('');
@@ -2145,6 +2146,18 @@ function wifiSdrCheck() {
             `blacklist: ${yn(d.blacklisted, 'set', 'absent')}`,
             d.throttled ? `power: ${d.undervoltage ? '<span style="color:#fb7185">under-voltage (' + escapeHtml(String(d.throttled)) + ')</span>' : '<span style="color:#34d399">ok</span>'}` : ''
         ].filter(Boolean).join(' · ');
+        // Self-healing: what the watcher is doing about the dongle, and a button
+        // to run the recovery ladder now (power-cycles a stuck port).
+        const h = d.heal || {};
+        const last = (h.history || []).slice(-1)[0];
+        const healLine = (h.state && h.state !== 'ok')
+            ? `<div class="mt-2 text-xs" style="color:#9ca3af">🩹 Self-heal: ${escapeHtml(String(h.message || h.state))}`
+              + (last ? ` <span style="color:#6b7280">(last: ${escapeHtml(String(last.action).replace('_', ' '))} ${escapeHtml(String(last.target || ''))} → ${last.back ? 'back' : 'not back yet'})</span>` : '')
+              + (h.enabled === false ? ' <span style="color:#fbbf24">— switched off</span>' : '') + `</div>`
+            : '';
+        const healBtn = (h.state && ['recovering', 'failed', 'flapping', 'unplugged'].indexOf(h.state) >= 0) || d.state === 'no_usb'
+            ? `<button type="button" onclick="wifiSdrHeal(this)" style="margin-top:.6rem;margin-left:.4rem;background:#0f766e;color:#fff;border:0;border-radius:6px;padding:.45rem .8rem;font-weight:600;cursor:pointer" title="Run the recovery ladder now: USB reset, or power-cycle the port the dongle is stuck on (the same as replugging it).">⭮ Recover now</button>`
+            : '';
         const hkline = hk && hk.detect
             ? `<div class="mt-2 text-xs" style="color:#9ca3af">HackRF (Wi-Fi bands): ${hk.detect.available ? '<span style="color:#34d399">detected</span>' : escapeHtml(String(hk.detect.error || 'not detected'))}</div>`
             : '';
@@ -2161,13 +2174,22 @@ function wifiSdrCheck() {
                <div style="flex:1;min-width:0">
                  <div class="font-semibold" style="color:${col}">${escapeHtml(String(d.summary || 'SDR check'))}</div>
                  ${fixes ? `<ul style="margin-top:.5rem;display:flex;flex-direction:column;gap:.25rem">${fixes}</ul>` : ''}
-                 ${actBtn}
+                 ${actBtn}${healBtn}
+                 ${healLine}
                  <div class="mt-2 text-xs" style="color:#9ca3af">${facts}</div>
                  ${hkline}
                </div>
                <button type="button" onclick="document.getElementById('wifi-sdr-diag').classList.add('hidden')" class="text-xs" style="color:#6b7280" title="Dismiss">✕</button>
              </div>`;
     });
+}
+
+// "Recover now": run the self-heal ladder once (it can take ~30 s: a stuck
+// dongle is power-cycled and then has to re-enumerate), then re-run the check.
+function wifiSdrHeal(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '⭮ Recovering… (up to ~40 s)'; }
+    fetch('/api/net/rtl/heal', { method: 'POST' }).then(r => r.json()).catch(() => null)
+        .then(() => wifiSdrCheck());
 }
 
 // One-click install/fix from the SDR check panel: apt-installs rtl-sdr+rtl-433
@@ -7882,9 +7904,9 @@ async function runSshWatch() {
 
 // ---- Telnet Watch (passive CVE-2026-24061 / 32746 observer) ----------------
 const _TELNET_VERDICT_STYLE = {
-    clean:       ['bg-green-950/40 border-green-900 text-green-400', '✓ No Telnet attack signatures or cleartext-credential exposure'],
-    suspicious:  ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Telnet exposure — cleartext credentials or an SLC probe; review the findings'],
-    compromised: ['bg-red-950/60 border-red-800 text-red-300', '🛑 Telnet attack on the wire — argument injection, SLC overflow, or a confirmed-vulnerable server'],
+    clean:       ['bg-green-950/40 border-green-900 text-green-400', '✓ No Telnet / r-services attack signatures or cleartext-credential exposure'],
+    suspicious:  ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Telnet / r-services exposure — cleartext credentials, .rhosts trust, an SLC probe or an EC/EL crash attempt; review the findings'],
+    compromised: ['bg-red-950/60 border-red-800 text-red-300', '🛑 Remote-login attack on the wire — login -f argument injection (Telnet or rlogin/rsh), SLC or key-id overflow, an ftp-data trust bounce, or a confirmed-vulnerable server'],
     unknown:     ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
 };
 const _TELNET_SEV_COLOR = { critical: 'text-red-300', high: 'text-red-300', warning: 'text-amber-300', notice: 'text-gray-300', low: 'text-gray-400', info: 'text-gray-500' };
@@ -9200,7 +9222,7 @@ async function runRelayWatch() {
                 '<tr class="text-left text-gray-500"><th class="px-2 py-1">Technique</th><th class="px-2 py-1">Interface</th><th class="px-2 py-1">Attacker</th><th class="px-2 py-1">Victim</th></tr>' +
                 '</thead><tbody>' +
                 d.coercion.map(c => `<tr class="border-t border-slate-800">
-                    <td class="px-2 py-1 text-red-300">${escapeHtml(c.technique)}</td>
+                    <td class="px-2 py-1 text-red-300">${escapeHtml(c.technique)}${c.cve ? `<div class="font-mono text-[11px] text-red-400/80">${escapeHtml(c.cve)}${c.call ? ' · ' + escapeHtml(c.call) : ''}</div>` : ''}</td>
                     <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(c.interface)}</td>
                     <td class="px-2 py-1 font-mono">${escapeHtml(c.attacker)}</td>
                     <td class="px-2 py-1 font-mono">${escapeHtml(c.victim)}</td>
@@ -21192,6 +21214,423 @@ function isLikelyNetworkError(error) {
         /failed to fetch|networkerror|load failed|network request failed/i.test(error?.message || '');
 }
 
+// ---- Device Console: READ-ONLY serial console viewer (this unit or a mesh peer) ----
+// Ragnar only ever reads the port; the backend opens it O_RDONLY. Viewing another
+// unit sends X-Ragnar-Target so this unit's mesh gateway relays the call there.
+const scState = { unit: 'local', last: 0, buf: [], timer: null, busy: false, gateway: false, units: [] };
+const SC_MAX_DOM_LINES = 5000;
+const SC_MAX_BUF = 20000;
+
+function scUnit() {
+    return scState.units.find(x => x.id === scState.unit) || { id: scState.unit, local: scState.unit === 'local' };
+}
+
+// How the selected unit is reached: 'local'; 'gateway' (mesh secret — full view +
+// control); 'shared' (its operator opted in — view-only on tag trust); 'blocked'.
+function scMode() {
+    const u = scUnit();
+    if (u.local || scState.unit === 'local') return 'local';
+    if (scState.gateway) return 'gateway';
+    if (u.shared) return 'shared';
+    return 'blocked';
+}
+
+function scSetControls(mode) {
+    const lock = mode === 'shared' || mode === 'blocked';
+    ['sc-port', 'sc-baud', 'sc-start', 'sc-stop', 'sc-release'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = lock;
+        el.classList.toggle('opacity-50', lock);
+    });
+    const wrap = document.getElementById('sc-share-wrap');
+    if (wrap) wrap.classList.toggle('hidden', mode !== 'local');
+    const ww = document.getElementById('sc-write-wrap');
+    if (ww) ww.classList.toggle('hidden', mode !== 'local');
+}
+
+function scUpdateWriteUI(st, mode) {
+    mode = mode || scMode();
+    const aw = !!(st && st.allow_write);
+    const sm = !!(st && st.share_mesh);
+    if (mode === 'local') {
+        const badge = document.getElementById('sc-badge');
+        if (badge) {
+            badge.textContent = aw ? 'READ-WRITE' : 'READ-ONLY';
+            badge.className = 'text-xs font-semibold px-2 py-0.5 rounded border '
+                + (aw ? 'bg-amber-900/60 text-amber-300 border-amber-800' : 'bg-emerald-900/60 text-emerald-300 border-emerald-800');
+        }
+        const box = document.getElementById('sc-write');
+        if (box) box.checked = aw;
+        const bar = document.getElementById('sc-cmd-bar');
+        if (bar) bar.classList.toggle('hidden', !aw);
+        if (aw) scLoadScripts();
+        // update share label to reflect write state
+        const lbl = document.getElementById('sc-share-label');
+        if (lbl) lbl.textContent = aw ? 'Share with mesh (read-write)' : 'Share with mesh (view-only)';
+    } else {
+        // remote unit: show cmd bar if the peer has share_mesh + allow_write
+        const remoteWrite = !!(st && st.share_mesh_write);
+        const badge = document.getElementById('sc-badge');
+        if (badge) {
+            badge.textContent = remoteWrite ? 'REMOTE WRITE' : 'VIEW-ONLY';
+            badge.className = 'text-xs font-semibold px-2 py-0.5 rounded border '
+                + (remoteWrite ? 'bg-amber-900/60 text-amber-300 border-amber-800' : 'bg-sky-900/60 text-sky-300 border-sky-800');
+        }
+        const bar = document.getElementById('sc-cmd-bar');
+        if (bar) bar.classList.toggle('hidden', !remoteWrite);
+        if (remoteWrite) scLoadScripts();
+    }
+}
+
+async function scShareChanged() {
+    const box = document.getElementById('sc-share');
+    if (!box) return;
+    try {
+        const r = await fetchAPI('/api/serial-console/share', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ share: box.checked }) });
+        box.checked = !!r.share_mesh;
+    } catch (e) {
+        box.checked = !box.checked;
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scWriteChanged() {
+    const box = document.getElementById('sc-write');
+    if (!box) return;
+    if (box.checked && !confirm('Enable writing to the device console? Commands you type will be sent to the device through the console cable.')) {
+        box.checked = false;
+        return;
+    }
+    try {
+        const r = await fetchAPI('/api/serial-console/allow-write', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ allow_write: box.checked }) });
+        scUpdateWriteUI(r);
+        if (r.status) scSetStatus(scDescribe(Object.assign({ reserved_port: (r.status || {}).port }, r.status)));
+    } catch (e) {
+        box.checked = !box.checked;
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scSendCmd() {
+    const inp = document.getElementById('sc-cmd-input');
+    if (!inp) return;
+    const cmd = inp.value;
+    if (!cmd) return;
+    const mode = scMode();
+    try {
+        let r;
+        if (mode === 'local' || mode === 'gateway') {
+            r = await fetchAPI('/api/serial-console/write', scOpts({
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ data: cmd + '\r' }) }));
+        } else {
+            r = await fetchAPI('/api/serial-console/peer-write', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ unit: scState.unit, data: cmd + '\r' }) });
+        }
+        if (r.success) {
+            inp.value = '';
+        } else {
+            scSetStatus(`<span class="text-red-400">Write failed: ${escapeHtml(r.error || 'unknown')}</span>`);
+        }
+    } catch (e) {
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+let scScriptsLoadedAt = 0;
+async function scLoadScripts(force) {
+    // Called from every poll tick: throttle, and never clobber the user's pick.
+    if (!force && Date.now() - scScriptsLoadedAt < 15000) return;
+    scScriptsLoadedAt = Date.now();
+    try {
+        const d = await fetchAPI('/api/serial-console/scripts');
+        const sel = document.getElementById('sc-script-sel');
+        if (!sel) return;
+        const scripts = d.scripts || [];
+        const html = '<option value="">Run script\u2026</option>' +
+            scripts.map(s => `<option value="${escapeHtml(s.id)}" title="${escapeHtml(s.description)}">${escapeHtml(s.name)} (${s.commands} cmds, ${escapeHtml(s.vendor)})</option>`).join('');
+        if (sel.dataset.html === html || document.activeElement === sel) return;
+        const keep = sel.value;
+        sel.innerHTML = html;
+        sel.dataset.html = html;
+        if (keep && scripts.some(s => s.id === keep)) sel.value = keep;
+    } catch (e) { /* scripts unavailable */ }
+}
+
+async function scRunScript() {
+    const sel = document.getElementById('sc-script-sel');
+    const sid = sel ? sel.value : '';
+    if (!sid) return;
+    const name = sel.options[sel.selectedIndex].textContent;
+    if (!confirm(`Run script "${name}" on the connected device? Each command will be sent sequentially.`)) return;
+    const statusEl = document.getElementById('sc-script-status');
+    try {
+        const r = await fetchAPI('/api/serial-console/run-script', scOpts({
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script_id: sid }) }));
+        if (r.success) {
+            if (statusEl) statusEl.innerHTML = `<span class="text-emerald-300">Running ${escapeHtml(r.script)} (${r.steps} steps)…</span>`;
+            scPollScriptStatus();
+        } else {
+            if (statusEl) statusEl.innerHTML = `<span class="text-red-400">${escapeHtml(r.error)}</span>`;
+        }
+    } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span class="text-red-400">${escapeHtml(e.message)}</span>`;
+    }
+}
+
+async function scPollScriptStatus() {
+    const statusEl = document.getElementById('sc-script-status');
+    try {
+        const r = await fetchAPI('/api/serial-console/script-status');
+        if (r.running) {
+            if (statusEl) statusEl.innerHTML = `<span class="text-amber-300">Step ${r.step}/${r.total}…</span>`;
+            setTimeout(scPollScriptStatus, 500);
+        } else if (r.error) {
+            if (statusEl) statusEl.innerHTML = `<span class="text-red-400">Failed at step ${r.step}: ${escapeHtml(r.error)}</span>`;
+        } else {
+            if (statusEl) statusEl.innerHTML = `<span class="text-emerald-300">Done (${r.total} commands sent)</span>`;
+            setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 5000);
+        }
+    } catch (e) {
+        if (statusEl) statusEl.textContent = '';
+    }
+}
+
+function scOpts(extra = {}) {
+    const headers = Object.assign({}, extra.headers || {});
+    if (scState.unit && scState.unit !== 'local') headers['X-Ragnar-Target'] = scState.unit;
+    return Object.assign({}, extra, { headers });
+}
+
+function scSetStatus(html) {
+    const el = document.getElementById('sc-status');
+    if (el) el.innerHTML = html;
+}
+
+function scDescribe(st) {
+    if (!st) return 'Idle.';
+    const ago = st.last_rx ? Math.max(0, Math.round(Date.now() / 1000 - st.last_rx)) : null;
+    const baud = st.baud_setting === 'auto'
+        ? `${st.baud} baud (auto${st.auto_settled ? ', locked' : ', detecting'})`
+        : `${st.baud} baud`;
+    const rw = st.allow_write ? ' · <span class="text-amber-300">read-write</span>' : '';
+    if (!st.running) {
+        return st.reserved_port
+            ? `Stopped · port <span class="font-mono">${escapeHtml(st.reserved_port)}</span> stays reserved — Start to view, or Release port.` + rw
+            : 'Stopped. Pick the USB serial port wired to the device console and press Start.';
+    }
+    const colour = st.state === 'reading' ? 'text-emerald-300' : 'text-amber-300';
+    let line = `<span class="${colour}">● ${escapeHtml(st.state)}</span> · <span class="font-mono">${escapeHtml(st.port || '')}</span> · ${baud} · ${st.bytes || 0} bytes` + rw;
+    line += ago === null ? ' · nothing received yet (a quiet console is normal — boot output and console logging appear here)' : ` · last data ${ago}s ago`;
+    if (st.error) line += ` · <span class="text-amber-300">${escapeHtml(st.error)}</span>`;
+    return line;
+}
+
+async function scRefresh() {
+    // Units (this unit + mesh peers with their console summary)
+    try {
+        const u = await fetchAPI('/api/serial-console/units');
+        scState.units = u.units || [];
+        scState.gateway = !!u.gateway_ready;
+        const sel = document.getElementById('sc-unit');
+        if (sel) {
+            const keep = scState.unit;
+            sel.innerHTML = scState.units.map(x => {
+                const tag = x.local ? 'This unit' : (x.name || x.id);
+                let note = '';
+                if (!x.local) {
+                    if (!x.online) note = ' — offline';
+                    else if (!x.reachable) note = ' — unreachable';
+                    else note = x.has_console ? (x.running ? ' — console live' : ' — console cabled') + (x.shared ? ' (shared)' : '') : ' — no console';
+                } else if (x.has_console) {
+                    note = x.running ? ' — console live' : ' — console cabled';
+                }
+                return `<option value="${escapeHtml(x.id)}">${escapeHtml(tag + note)}</option>`;
+            }).join('');
+            sel.value = scState.units.some(x => x.id === keep) ? keep : 'local';
+            scState.unit = sel.value;
+        }
+    } catch (e) { /* mesh off or unavailable: stay on this unit */ }
+
+    const mode = scMode();
+    scSetControls(mode);
+    if (mode === 'blocked') {
+        const u = scUnit();
+        scUpdateWriteUI({}, 'blocked');
+        scSetStatus(`<span class="text-amber-300">${escapeHtml(u.name || 'That unit')} has not shared its console. On that unit, tick <strong>Share with mesh (view-only)</strong> in this card — or arm the mesh secret on both units for full view + control.</span>`);
+        return;
+    }
+    if (mode === 'shared') {
+        const u = scUnit();
+        const writeNote = u.share_mesh_write ? ' · <span class="text-amber-300">write enabled</span>' : '';
+        scSetStatus(`<span class="text-emerald-300">${u.share_mesh_write ? 'Shared' : 'View-only'}:</span> ${escapeHtml(u.name || 'this unit')} shares its console with the mesh${u.port_label ? ' · ' + escapeHtml(u.port_label) : ''}${writeNote}. Start/stop happen on that unit.`);
+        scUpdateWriteUI({ share_mesh_write: u.share_mesh_write }, 'shared');
+        return;
+    }
+    // Ports on the selected unit
+    try {
+        const d = await fetchAPI('/api/serial-console/ports', scOpts());
+        const sel = document.getElementById('sc-port');
+        const ports = d.ports || [];
+        const st = d.status || {};
+        if (sel) {
+            const reserved = st.reserved_port || '';
+            let opts = ports.map(p => {
+                const label = `${p.device} — ${p.description || 'USB serial'}${p.held_by ? ' (in use by ' + p.held_by + ')' : ''}`;
+                return `<option value="${escapeHtml(p.path)}" ${p.held_by ? 'disabled' : ''}>${escapeHtml(label)}</option>`;
+            });
+            if (reserved && !ports.some(p => p.path === reserved || p.device === reserved)) {
+                opts.unshift(`<option value="${escapeHtml(reserved)}">${escapeHtml(reserved)} (reserved, not plugged in)</option>`);
+            }
+            sel.innerHTML = opts.length ? opts.join('') : '<option value="">No USB serial adapter found</option>';
+            if (reserved) sel.value = reserved;
+        }
+        const b = document.getElementById('sc-baud');
+        if (b && st.baud_setting) b.value = String(st.baud_setting);
+        const sh = document.getElementById('sc-share');
+        if (sh && mode === 'local') sh.checked = !!st.share_mesh;
+        scUpdateWriteUI(st, mode);
+        scSetStatus(scDescribe(st));
+    } catch (e) {
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+function scUnitChanged() {
+    const sel = document.getElementById('sc-unit');
+    scState.unit = sel ? sel.value : 'local';
+    scState.last = 0;
+    scClearView(true);
+    scRefresh().then(() => scPoll());
+}
+
+async function scStart() {
+    const port = (document.getElementById('sc-port') || {}).value || '';
+    const baud = (document.getElementById('sc-baud') || {}).value || 'auto';
+    if (!port) { scSetStatus('<span class="text-amber-300">Plug in a USB console cable and press ↻ to find it.</span>'); return; }
+    try {
+        const r = await fetchAPI('/api/serial-console/start', scOpts({
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port, baud }) }));
+        if (!r.success) { scSetStatus(`<span class="text-red-400">${escapeHtml(r.error || 'failed to start')}</span>`); return; }
+        scSetStatus(scDescribe(Object.assign({ reserved_port: port }, r.status)));
+        scPoll();
+    } catch (e) {
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scStop(release) {
+    if (release && !confirm('Stop the viewer and release the port? Other Ragnar components (GPS, CYD, RoomScan) may then open it — unplug the console cable first if it stays connected to the device.')) return;
+    try {
+        const r = await fetchAPI('/api/serial-console/stop', scOpts({
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ release: !!release }) }));
+        scSetStatus(scDescribe(Object.assign({ reserved_port: r.reserved }, r.status)));
+        if (release) scRefresh();
+    } catch (e) {
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+function scFmt(l) {
+    if (!(document.getElementById('sc-stamps') || {}).checked) return l.text;
+    const d = new Date(l.t * 1000);
+    return `[${d.toLocaleTimeString([], { hour12: false })}] ${l.text}`;
+}
+
+function scAppend(lines) {
+    const out = document.getElementById('sc-output');
+    if (!out || !lines.length) return;
+    if (out.dataset.empty !== '0') { out.textContent = ''; out.dataset.empty = '0'; }
+    const frag = document.createDocumentFragment();
+    for (const l of lines) {
+        const div = document.createElement('div');
+        div.textContent = scFmt(l) || ' ';
+        frag.appendChild(div);
+    }
+    out.appendChild(frag);
+    while (out.childElementCount > SC_MAX_DOM_LINES) out.removeChild(out.firstChild);
+    if ((document.getElementById('sc-follow') || {}).checked) out.scrollTop = out.scrollHeight;
+}
+
+async function scPoll() {
+    if (scState.busy) return;
+    const mode = scMode();
+    if (mode === 'blocked') return;
+    scState.busy = true;
+    try {
+        const d = mode === 'shared'
+            ? await fetchAPI(`/api/serial-console/peer-output?unit=${encodeURIComponent(scState.unit)}&since=${scState.last}`)
+            : await fetchAPI(`/api/serial-console/output?since=${scState.last}`, scOpts());
+        if (mode === 'shared' && d.shared === false) {
+            scSetStatus(`<span class="text-amber-300">${escapeHtml(scUnit().name || 'That unit')} stopped sharing its console.</span>`);
+            return;
+        }
+        const lines = d.lines || [];
+        if (d.last < scState.last) {            // viewer restarted remotely: resync
+            scState.last = 0;
+        } else if (lines.length) {
+            scState.last = lines[lines.length - 1].seq;
+            scState.buf.push(...lines);
+            if (scState.buf.length > SC_MAX_BUF) scState.buf.splice(0, scState.buf.length - SC_MAX_BUF);
+            scAppend(lines);
+        }
+        if (d.status) {
+            const smw = d.share_mesh_write || (d.status && d.status.share_mesh_write);
+            const prefix = mode === 'shared'
+                ? `<span class="text-emerald-300">${smw ? 'Shared' : 'View-only'}</span> · ${escapeHtml(scUnit().name || '')} · ` : '';
+            scSetStatus(prefix + scDescribe(Object.assign({ reserved_port: d.status.port }, d.status)));
+            const stForUI = Object.assign({}, d.status, { share_mesh_write: smw });
+            scUpdateWriteUI(stForUI, mode);
+        }
+    } catch (e) {
+        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    } finally {
+        scState.busy = false;
+    }
+}
+
+function scClearView(silent) {
+    const out = document.getElementById('sc-output');
+    if (out) {
+        out.innerHTML = '<span class="text-gray-500">No console output yet.</span>';
+        out.dataset.empty = '1';
+    }
+    scState.buf = [];
+}
+
+function scDownload() {
+    if (!scState.buf.length) return;
+    const unit = (scState.units.find(x => x.id === scState.unit) || {}).name || 'ragnar';
+    const text = scState.buf.map(l => `[${new Date(l.t * 1000).toISOString()}] ${l.text}`).join('\n') + '\n';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    a.download = `console-${unit}-${new Date().toISOString().replace(/[:.]/g, '-')}.log`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+function scTick() {
+    if (document.hidden || currentTab !== 'dashboard') return;
+    if (!document.getElementById('sc-output')) return;
+    scPoll();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    if (!document.getElementById('serial-console-card')) return;
+    scRefresh().then(() => scPoll());
+    scState.timer = setInterval(scTick, 1000);
+});
+
 async function fetchAPI(endpoint, options = {}) {
     try {
         const response = await networkAwareFetch(endpoint, options);
@@ -23082,7 +23521,7 @@ async function saveAIToken() {
     }
 }
 
-// ─── Pushover Notification Functions ───────────────────────────────────
+// ─── Push Notification Functions (Pushover + Slack) ────────────────────
 async function loadPushoverConfiguration(config) {
     // Sync toggle checkboxes from config
     const toggle = document.getElementById('pushover-enabled-toggle');
@@ -23117,6 +23556,54 @@ async function loadPushoverConfiguration(config) {
     } catch (e) {
         console.error('Failed to fetch Pushover key status:', e);
     }
+
+    try {
+        const sw = await fetchAPI('/api/slack/webhook');
+        const whInput = document.getElementById('slack-webhook-url');
+        if (whInput) {
+            whInput.value = '';
+            whInput.placeholder = sw.configured ? `Configured: ${sw.preview || '••••'}` : 'https://hooks.slack.com/services/...';
+        }
+        const rm = document.getElementById('slack-webhook-remove');
+        if (rm) rm.classList.toggle('hidden', !sw.configured);
+    } catch (e) {
+        console.error('Failed to fetch Slack webhook status:', e);
+    }
+}
+
+async function saveSlackWebhook() {
+    const input = document.getElementById('slack-webhook-url');
+    const url = input ? input.value.trim() : '';
+    if (!url) {
+        showPushoverStatus('⚠ Please enter a Slack webhook URL.', 'yellow');
+        return;
+    }
+    try {
+        const result = await postAPI('/api/slack/webhook', { webhook_url: url });
+        if (result.success) {
+            showPushoverStatus('✓ Slack webhook saved!', 'green');
+            addConsoleMessage('Slack webhook saved', 'success');
+            const config = await fetchAPI('/api/config');
+            await loadPushoverConfiguration(config);
+        } else {
+            throw new Error(result.error || result.message || 'Save failed');
+        }
+    } catch (e) {
+        showPushoverStatus('✗ Failed to save Slack webhook: ' + (e.message || 'unknown error'), 'red');
+    }
+}
+
+async function removeSlackWebhook() {
+    try {
+        const resp = await networkAwareFetch('/api/slack/webhook', { method: 'DELETE' });
+        const result = await resp.json();
+        if (!resp.ok || !result.success) throw new Error(result.error || 'Remove failed');
+        showPushoverStatus('ℹ Slack webhook removed', 'blue');
+        const config = await fetchAPI('/api/config');
+        await loadPushoverConfiguration(config);
+    } catch (e) {
+        showPushoverStatus('✗ Failed to remove Slack webhook: ' + (e.message || 'unknown error'), 'red');
+    }
 }
 
 async function togglePushoverEnabled() {
@@ -23124,11 +23611,11 @@ async function togglePushoverEnabled() {
     if (!cb) return;
     try {
         await postAPI('/api/config', { pushover_enabled: cb.checked });
-        showPushoverStatus(cb.checked ? '✓ Pushover notifications enabled' : 'ℹ Pushover notifications disabled',
+        showPushoverStatus(cb.checked ? '✓ Push notifications enabled' : 'ℹ Push notifications disabled',
             cb.checked ? 'green' : 'blue');
     } catch (e) {
         cb.checked = !cb.checked;
-        showPushoverStatus('✗ Failed to toggle Pushover: ' + (e.message || 'unknown error'), 'red');
+        showPushoverStatus('✗ Failed to toggle push notifications: ' + (e.message || 'unknown error'), 'red');
     }
 }
 
@@ -23188,8 +23675,8 @@ async function testPushover() {
     try {
         const result = await postAPI('/api/pushover/test', {});
         if (result.success) {
-            showPushoverStatus('✓ Test notification sent! Check your device.', 'green', 5000);
-            addConsoleMessage('Pushover test notification sent', 'success');
+            showPushoverStatus('✓ ' + (result.message || 'Test notification sent') + ' — check your device/channel.', 'green', 6000);
+            addConsoleMessage('Push test notification sent', 'success');
         } else {
             throw new Error(result.message || 'Send failed');
         }
@@ -23799,7 +24286,20 @@ function downloadFile(filePath) {
     showFileSuccess(`Downloading ${filePath.split('/').pop()}`);
 }
 
-// ── File Preview ────────────────────────────────────────────────
+// ── File Preview & Editor ───────────────────────────────────────
+const _editState = { path: '', original: '', editing: false, editable: false };
+
+function _setEditBtns(editing, editable) {
+    const editBtn = document.getElementById('preview-edit-btn');
+    const saveBtn = document.getElementById('preview-save-btn');
+    const cancelBtn = document.getElementById('preview-cancel-btn');
+    const statusEl = document.getElementById('preview-save-status');
+    if (editBtn) editBtn.classList.toggle('hidden', !editable || editing);
+    if (saveBtn) saveBtn.classList.toggle('hidden', !editing);
+    if (cancelBtn) cancelBtn.classList.toggle('hidden', !editing);
+    if (statusEl) statusEl.classList.add('hidden');
+}
+
 function previewFile(filePath) {
     const modal = document.getElementById('file-preview-modal');
     const content = document.getElementById('preview-content');
@@ -23808,9 +24308,15 @@ function previewFile(filePath) {
     const dlBtn = document.getElementById('preview-download-btn');
     if (!modal) return;
 
+    _editState.path = filePath;
+    _editState.editing = false;
+    _editState.editable = false;
+    _editState.original = '';
+
     const name = filePath.split('/').pop();
     filename.textContent = name;
     truncBadge.classList.add('hidden');
+    _setEditBtns(false, false);
     content.innerHTML = `<div class="text-center text-gray-400 py-12">
         <svg class="w-8 h-8 inline animate-spin mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
@@ -23837,9 +24343,11 @@ function previewFile(filePath) {
                 renderPreviewVideo(content, resolveNetworkAwareEndpoint(`/api/files/download?path=${encodeURIComponent(filePath)}&inline=1`), name, data.mime, filePath);
             } else if (data.type === 'text') {
                 if (data.truncated) truncBadge.classList.remove('hidden');
+                _editState.editable = !!data.editable;
+                _editState.original = data.content;
+                _setEditBtns(false, _editState.editable);
                 const isCSV = name.toLowerCase().endsWith('.csv');
                 if (isCSV) {
-                    // Render CSV as table
                     const lines = data.content.split('\n').filter(l => l.trim());
                     if (lines.length > 0) {
                         const headers = lines[0].split(',');
@@ -23870,7 +24378,63 @@ function previewFile(filePath) {
         });
 }
 
+function toggleFileEdit() {
+    if (!_editState.editable || _editState.editing) return;
+    _editState.editing = true;
+    _setEditBtns(true, true);
+    const content = document.getElementById('preview-content');
+    if (!content) return;
+    content.innerHTML = `<textarea id="file-editor" spellcheck="false" class="w-full font-mono text-xs p-3 rounded border border-slate-600 resize-none" style="min-height:60vh;height:100%;background:#0b1220;color:#e5e7eb;caret-color:#fbbf24;outline:none;color-scheme:dark;tab-size:4;white-space:pre;overflow:auto"></textarea>`;
+    const ta = document.getElementById('file-editor');
+    if (ta) {
+        ta.value = _editState.original;
+        ta.focus();
+    }
+}
+
+function cancelFileEdit() {
+    if (!_editState.editing) return;
+    _editState.editing = false;
+    _setEditBtns(false, _editState.editable);
+    const content = document.getElementById('preview-content');
+    if (content) {
+        content.innerHTML = `<pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words leading-relaxed">${escapeHtml(_editState.original)}</pre>`;
+    }
+}
+
+async function saveFileEdit() {
+    const ta = document.getElementById('file-editor');
+    const statusEl = document.getElementById('preview-save-status');
+    if (!ta || !_editState.path) return;
+    const newContent = ta.value;
+    try {
+        if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.classList.remove('hidden'); }
+        const r = await networkAwareFetch('/api/files/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: _editState.path, content: newContent })
+        }).then(r => r.json());
+        if (r.success) {
+            _editState.original = newContent;
+            _editState.editing = false;
+            _setEditBtns(false, true);
+            const content = document.getElementById('preview-content');
+            if (content) {
+                content.innerHTML = `<pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words leading-relaxed">${escapeHtml(newContent)}</pre>`;
+            }
+            if (statusEl) { statusEl.textContent = 'Saved'; statusEl.classList.remove('hidden'); }
+            setTimeout(() => { if (statusEl) statusEl.classList.add('hidden'); }, 3000);
+        } else {
+            if (statusEl) { statusEl.textContent = r.error || 'Save failed'; statusEl.className = 'text-xs text-red-400'; statusEl.classList.remove('hidden'); }
+        }
+    } catch (e) {
+        if (statusEl) { statusEl.textContent = e.message; statusEl.className = 'text-xs text-red-400'; statusEl.classList.remove('hidden'); }
+    }
+}
+
 function closeFilePreview() {
+    _editState.editing = false;
+    _editState.editable = false;
     const modal = document.getElementById('file-preview-modal');
     if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
 }
@@ -31998,8 +32562,8 @@ function _renderAutoUpload(d) {
     const po = document.getElementById('wd-au-pushover');
     if (po) po.checked = !!d.notify_pushover;
     const poNote = document.getElementById('wd-au-pushover-note');
-    if (poNote) poNote.textContent = { missing: '(set up Pushover in Settings → Notifications)',
-                                       off: '(Pushover is switched off in Settings → Notifications)' }[d.pushover_ready] || '';
+    if (poNote) poNote.textContent = { missing: '(set up Pushover or Slack in Settings → Push Notifications)',
+                                       off: '(Push notifications are switched off in Settings → Push Notifications)' }[d.pushover_ready] || '';
     const st = document.getElementById('wd-auto-upload-status');
     if (st) {
         const missing = picked.filter(t => !ready[t]).map(t => ({ wigle: 'WiGLE', wdgwars: 'WDGWars', wardrift: 'Wardrift' })[t]);
@@ -32055,7 +32619,7 @@ async function uploadWardriveSession(sessionId, target) {
             const resp = res.response || {};
             let extra;
             if (target === 'wardrift') {
-                extra = res.duplicate ? '\nAlready uploaded — no double awards.'
+                extra = res.duplicate ? '\nWardrift already has this file — an earlier upload may still be processing. Check your routes on wardrift.net.'
                     : (res.mode === 'route' ? '\nWardrift is processing it — the result appears under Auto-upload → Recent uploads.'
                        : `\n+${resp.awarded_exp || 0} EXP, +${resp.awarded_currency || 0} currency (${resp.batches} batches)`);
             } else {

@@ -249,6 +249,8 @@ link's own gateway. The choice resets to Auto when the mode is switched on.
   normal portrait dashboard returns.
 - Headless installs (no display) accept the display toggles but have nothing to
   render on and no buttons to read.
+  To add a screen (e.g. this HAT) to a headless install, run
+  `sudo ./installhead.sh` — see [Install Guide](INSTALL.md#adding-a-screen-to-a-headless-install-installheadsh).
 
 ---
 
