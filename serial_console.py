@@ -515,6 +515,93 @@ def clear():
     return {'success': True}
 
 # ---------------------------------------------------------------------------
+# console scripts — pre-made command sequences stored as JSON in data/
+# ---------------------------------------------------------------------------
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'data', 'console_scripts')
+
+def list_scripts():
+    """Return available console scripts (id, name, description, vendor)."""
+    scripts = []
+    d = _SCRIPTS_DIR
+    if not os.path.isdir(d):
+        return scripts
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(d, fn)) as f:
+                s = json.load(f)
+            scripts.append({
+                'id': s.get('id', fn[:-5]),
+                'name': s.get('name', fn[:-5]),
+                'description': s.get('description', ''),
+                'vendor': s.get('vendor', ''),
+                'commands': len(s.get('commands', [])),
+            })
+        except Exception:
+            continue
+    return scripts
+
+def load_script(script_id):
+    """Return the full script dict or None."""
+    path = os.path.join(_SCRIPTS_DIR, script_id + '.json')
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+_script_runner = None
+_script_status = {'running': False, 'script_id': None, 'step': 0, 'total': 0, 'error': None}
+
+def run_script(script_id):
+    """Run a console script — sends each command with its delay.  Non-blocking."""
+    global _script_runner
+    if _script_status['running']:
+        return {'success': False, 'error': 'a script is already running'}
+    script = load_script(script_id)
+    if not script:
+        return {'success': False, 'error': 'script not found'}
+    cmds = script.get('commands', [])
+    if not cmds:
+        return {'success': False, 'error': 'script has no commands'}
+    cfg = load_config()
+    if not cfg.get('allow_write'):
+        return {'success': False, 'error': 'write is not enabled'}
+    if not _reader.running:
+        return {'success': False, 'error': 'console is not running'}
+
+    _script_status.update(running=True, script_id=script_id,
+                          step=0, total=len(cmds), error=None)
+
+    def _runner():
+        try:
+            for i, entry in enumerate(cmds):
+                _script_status['step'] = i + 1
+                cmd = entry.get('cmd', '') if isinstance(entry, dict) else str(entry)
+                delay = float(entry.get('delay', 0.5)) if isinstance(entry, dict) else 0.5
+                res = _reader.write(cmd + '\r')
+                if not res.get('success'):
+                    _script_status['error'] = res.get('error', 'write failed')
+                    break
+                time.sleep(delay)
+        except Exception as exc:
+            _script_status['error'] = str(exc)
+        finally:
+            _script_status['running'] = False
+
+    _script_runner = threading.Thread(target=_runner, daemon=True)
+    _script_runner.start()
+    return {'success': True, 'script': script.get('name', script_id),
+            'steps': len(cmds)}
+
+def script_status():
+    return dict(_script_status)
+
+# ---------------------------------------------------------------------------
 # self-test: a pseudo-terminal pair stands in for the USB-UART
 # ---------------------------------------------------------------------------
 def selftest():

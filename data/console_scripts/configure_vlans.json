@@ -1,0 +1,48 @@
+{
+  "id": "configure_vlans",
+  "name": "Configure VLANs",
+  "description": "Create VLAN 10 (Management) and VLAN 20 (Users) with names. Edit the script to customise.",
+  "vendor": "cisco",
+  "commands": [
+    {
+      "cmd": "",
+      "delay": 0.5
+    },
+    {
+      "cmd": "enable",
+      "delay": 1
+    },
+    {
+      "cmd": "configure terminal",
+      "delay": 1
+    },
+    {
+      "cmd": "vlan 10",
+      "delay": 0.5
+    },
+    {
+      "cmd": "name Management",
+      "delay": 0.5
+    },
+    {
+      "cmd": "vlan 20",
+      "delay": 0.5
+    },
+    {
+      "cmd": "name Users",
+      "delay": 0.5
+    },
+    {
+      "cmd": "end",
+      "delay": 0.5
+    },
+    {
+      "cmd": "write memory",
+      "delay": 2
+    },
+    {
+      "cmd": "show vlan brief",
+      "delay": 2
+    }
+  ]
+}

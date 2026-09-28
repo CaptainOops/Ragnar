@@ -21264,6 +21264,7 @@ function scUpdateWriteUI(st, mode) {
         if (box) box.checked = aw;
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !aw);
+        if (aw) scLoadScripts();
         // update share label to reflect write state
         const lbl = document.getElementById('sc-share-label');
         if (lbl) lbl.textContent = aw ? 'Share with mesh (read-write)' : 'Share with mesh (view-only)';
@@ -21278,6 +21279,7 @@ function scUpdateWriteUI(st, mode) {
         }
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !remoteWrite);
+        if (remoteWrite) scLoadScripts();
     }
 }
 
@@ -21338,6 +21340,57 @@ async function scSendCmd() {
         }
     } catch (e) {
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scLoadScripts() {
+    try {
+        const d = await fetchAPI('/api/serial-console/scripts');
+        const sel = document.getElementById('sc-script-sel');
+        if (!sel) return;
+        const scripts = d.scripts || [];
+        sel.innerHTML = '<option value="">Run script…</option>' +
+            scripts.map(s => `<option value="${escapeHtml(s.id)}" title="${escapeHtml(s.description)}">${escapeHtml(s.name)} (${s.commands} cmds, ${escapeHtml(s.vendor)})</option>`).join('');
+    } catch (e) { /* scripts unavailable */ }
+}
+
+async function scRunScript() {
+    const sel = document.getElementById('sc-script-sel');
+    const sid = sel ? sel.value : '';
+    if (!sid) return;
+    const name = sel.options[sel.selectedIndex].textContent;
+    if (!confirm(`Run script "${name}" on the connected device? Each command will be sent sequentially.`)) return;
+    const statusEl = document.getElementById('sc-script-status');
+    try {
+        const r = await fetchAPI('/api/serial-console/run-script', scOpts({
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script_id: sid }) }));
+        if (r.success) {
+            if (statusEl) statusEl.innerHTML = `<span class="text-emerald-300">Running ${escapeHtml(r.script)} (${r.steps} steps)…</span>`;
+            scPollScriptStatus();
+        } else {
+            if (statusEl) statusEl.innerHTML = `<span class="text-red-400">${escapeHtml(r.error)}</span>`;
+        }
+    } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span class="text-red-400">${escapeHtml(e.message)}</span>`;
+    }
+}
+
+async function scPollScriptStatus() {
+    const statusEl = document.getElementById('sc-script-status');
+    try {
+        const r = await fetchAPI('/api/serial-console/script-status');
+        if (r.running) {
+            if (statusEl) statusEl.innerHTML = `<span class="text-amber-300">Step ${r.step}/${r.total}…</span>`;
+            setTimeout(scPollScriptStatus, 500);
+        } else if (r.error) {
+            if (statusEl) statusEl.innerHTML = `<span class="text-red-400">Failed at step ${r.step}: ${escapeHtml(r.error)}</span>`;
+        } else {
+            if (statusEl) statusEl.innerHTML = `<span class="text-emerald-300">Done (${r.total} commands sent)</span>`;
+            setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 5000);
+        }
+    } catch (e) {
+        if (statusEl) statusEl.textContent = '';
     }
 }
 

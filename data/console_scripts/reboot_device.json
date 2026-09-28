@@ -1,0 +1,28 @@
+{
+  "id": "reboot_device",
+  "name": "Reboot Device",
+  "description": "Safely reboot a malfunctioning network device (enable \u2192 reload confirm).",
+  "vendor": "cisco",
+  "commands": [
+    {
+      "cmd": "",
+      "delay": 0.5
+    },
+    {
+      "cmd": "enable",
+      "delay": 1
+    },
+    {
+      "cmd": "write memory",
+      "delay": 2
+    },
+    {
+      "cmd": "reload",
+      "delay": 2
+    },
+    {
+      "cmd": "yes",
+      "delay": 1
+    }
+  ]
+}
