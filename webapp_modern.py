@@ -14175,6 +14175,69 @@ def api_power_usb_current():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/fan')
+def api_fan():
+    """Cooling fan: presence, RPM, duty, mode, trip curve (see fan_tools.py)."""
+    try:
+        import fan_tools
+        return jsonify(fan_tools.status())
+    except Exception as e:
+        logger.error(f"Fan status error: {e}")
+        return jsonify({'supported': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fan/mode', methods=['POST'])
+def api_fan_mode():
+    """{"mode": "auto"} or {"mode": "manual", "percent": 0-100}.
+
+    Manual is runtime-only and hands back to automatic at the failsafe temp.
+    """
+    try:
+        import fan_tools
+        body = request.get_json(silent=True) or {}
+        if body.get('mode') == 'manual':
+            try:
+                percent = int(body.get('percent', 100))
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'error': 'percent must be 0-100'}), 400
+            result = fan_tools.set_manual(percent)
+        else:
+            result = fan_tools.set_auto()
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Fan mode error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fan/test', methods=['POST'])
+def api_fan_test():
+    """Spin the fan at 100 % for a few seconds and read the tachometer."""
+    try:
+        import fan_tools
+        result = fan_tools.spin_test()
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Fan spin test error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fan/curve', methods=['POST'])
+def api_fan_curve():
+    """{"temps": [50, 60, 67.5, 75], "persist": bool} or {"reset": true}."""
+    try:
+        import fan_tools
+        body = request.get_json(silent=True) or {}
+        if body.get('reset'):
+            result = fan_tools.reset_curve()
+        else:
+            result = fan_tools.set_curve(body.get('temps') or [],
+                                         persist=bool(body.get('persist')))
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Fan curve error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Serial Console — viewer for a switch/router/firewall console port reached
 # through a USB console cable (see serial_console.py). Read-only by default;
@@ -29235,6 +29298,12 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
         ssl_key: Path to SSL key file (optional)
         https_port: HTTPS port (default: None, uses port+443-80 if SSL enabled)
     """
+    try:
+        # A manual fan speed left behind by a crashed run must not stick.
+        import fan_tools
+        fan_tools.recover()
+    except Exception as e:
+        logger.debug(f"Fan recover skipped: {e}")
     try:
         # Bind to a specific interface if configured
         bind_iface = shared_data.config.get('web_bind_interface', '')

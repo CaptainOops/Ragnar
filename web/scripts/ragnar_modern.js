@@ -26290,6 +26290,7 @@ function loadSystemData() {
     fetchSystemStatus();
     fetchNetworkStats();
     fetchPowerDetail();
+    fetchFanStatus();
 
     // Auto-refresh every 5 seconds when on system tab
     if (systemMonitoringInterval) {
@@ -26301,6 +26302,7 @@ function loadSystemData() {
             fetchSystemStatus();
             fetchNetworkStats();
             fetchPowerDetail();
+            if (!_fan.busy) fetchFanStatus();
         }
     }, 5000);
 }
@@ -26314,6 +26316,183 @@ function fetchPowerDetail() {
         .then(data => { if (!data || !data.error) updatePowerSystemView(data); })
         .catch(error => console.error('Error fetching power detail:', error));
 }
+
+// ---- Cooling fan (System tab) ---------------------------------------------
+// /api/fan is a handful of sysfs reads, cheap enough for the 5 s system loop.
+// The curve inputs are only rebuilt when the trip values change, so a poll
+// never overwrites a number the user is typing.
+const _fan = { busy: false, curveKey: null, mode: null };
+
+function fetchFanStatus() {
+    networkAwareFetch('/api/fan')
+        .then(r => r.json())
+        .then(d => updateFanView(d))
+        .catch(e => console.error('Error fetching fan status:', e));
+}
+
+function _fanPresence(d) {
+    if (d.connected === true) return { short: 'Connected', cls: 'pw-ok' };
+    if (d.connected === false) return { short: 'Not detected', cls: 'pw-bad' };
+    return { short: d.has_tach ? 'Idle' : 'Unknown', cls: 'pw-muted' };
+}
+
+function updateFanView(d) {
+    const card = document.getElementById('fan-card');
+    const panel = document.getElementById('fan-panel');
+    if (!d || !d.supported) {
+        [card, panel].forEach(el => el && el.classList.add('hidden'));
+        return;
+    }
+    const p = _fanPresence(d);
+    const pct = d.percent != null ? d.percent : 0;
+
+    if (card) {
+        card.classList.remove('hidden');
+        const st = document.getElementById('fan-card-status');
+        const det = document.getElementById('fan-card-details');
+        const bar = document.getElementById('fan-card-progress');
+        if (st) {
+            st.textContent = d.rpm ? `${d.rpm} rpm` : p.short;
+            st.className = 'sys-stat-value ' + (d.rpm ? '' : p.cls);
+        }
+        if (det) det.textContent = `${pct} % · ${d.mode === 'manual' ? 'manual' : 'auto'}`;
+        if (bar) bar.style.width = pct + '%';
+    }
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    const drv = document.getElementById('fan-driver');
+    if (drv) drv.textContent = d.driver || '';
+
+    // Live values
+    const tiles = [
+        ['Fan', p.short, p.cls],
+        ['Speed', d.has_tach ? `${d.rpm || 0} rpm` : 'n/a', ''],
+        ['Duty', `${pct} %`, ''],
+    ];
+    if (d.state != null && d.max_state) tiles.push(['Step', `${d.state} / ${d.max_state}`, '']);
+    if (d.temp_c != null) tiles.push(['SoC temp', `${d.temp_c} °C`, d.temp_c >= 80 ? 'pw-bad' : d.temp_c >= 70 ? 'pw-warn' : '']);
+    if (d.max_rpm) tiles.push(['Max rpm', `${d.max_rpm}`, '']);
+    if (d.health_percent != null) tiles.push(['Health', `${d.health_percent} %`, d.health_percent < 70 ? 'pw-warn' : 'pw-ok']);
+    let html = `<div class="pw-tiles">${tiles.map(([l, v, c]) =>
+        `<div class="pw-tile"><div class="pw-tile-label">${l}</div><div class="pw-tile-value ${c}">${escapeHtml(v)}</div></div>`).join('')}</div>`;
+    html += `<div class="pw-muted">${escapeHtml(d.connected_reason || '')}</div>`;
+    if (d.last_failsafe) {
+        html += `<div class="pw-warn" style="font-size:13px;margin-top:6px">${escapeHtml(d.last_failsafe.reason)}</div>`;
+    }
+    const live = document.getElementById('fan-live');
+    if (live) live.innerHTML = html;
+
+    // Control
+    const autoBtn = document.getElementById('fan-mode-auto');
+    const manBtn = document.getElementById('fan-mode-manual');
+    const manual = d.mode === 'manual';
+    _fan.mode = d.mode;
+    if (autoBtn) autoBtn.classList.toggle('fan-on', !manual);
+    if (manBtn) manBtn.classList.toggle('fan-on', manual);
+    [autoBtn, manBtn].forEach(b => { if (b) b.disabled = !d.can_control || _fan.busy; });
+    const slider = document.getElementById('fan-speed');
+    if (slider && manual && d.manual && document.activeElement !== slider) {
+        slider.value = d.manual.percent;
+        document.getElementById('fan-speed-val').textContent = d.manual.percent + ' %';
+    }
+    const testBtn = document.getElementById('fan-test-btn');
+    if (testBtn) { testBtn.disabled = !d.has_tach || _fan.busy; }
+    const note = document.getElementById('fan-control-note');
+    if (note) {
+        note.textContent = manual
+            ? `Manual: fixed at ${d.manual ? d.manual.percent : pct} %. Returns to automatic at ${d.failsafe_c} °C and on reboot.`
+            : 'Automatic: the kernel steps the fan along the curve below. Pick a speed and press Manual to override.';
+    }
+
+    // Curve
+    const sec = document.getElementById('fan-curve-section');
+    const trips = d.trips || [];
+    if (sec) sec.classList.toggle('hidden', !trips.length);
+    const key = JSON.stringify(trips.map(t => t.temp_c));
+    const box = document.getElementById('fan-curve');
+    if (box && key !== _fan.curveKey) {
+        _fan.curveKey = key;
+        box.innerHTML = trips.map((t, i) => `
+            <div class="fan-step" data-step="${i}">
+                <div class="pw-tile-label">Step ${i + 1}${t.percent != null ? ' → ' + t.percent + ' %' : ''}</div>
+                <input type="number" inputmode="decimal" min="30" max="85" step="0.5" value="${t.temp_c}"
+                       ${d.curve_writable ? '' : 'disabled'} aria-label="Step ${i + 1} temperature °C">
+                <div class="pw-muted">°C${t.hyst_c ? ' · off at −' + t.hyst_c : ''}</div>
+            </div>`).join('');
+    }
+    if (box) trips.forEach((t, i) => {
+        const el = box.querySelector(`[data-step="${i}"]`);
+        if (el) el.classList.toggle('fan-step-on', !!t.active);
+    });
+    const persist = document.getElementById('fan-curve-persist');
+    if (persist) {
+        persist.disabled = !d.can_persist;
+        persist.parentElement.title = d.can_persist ? 'Writes dtparam=fan_tempN to config.txt (backup kept)' : 'Pi 5 fan header only';
+        if (!persist.dataset.touched) persist.checked = !!d.persisted_curve;
+    }
+}
+
+async function _fanPost(url, body, okMsg) {
+    _fan.busy = true;
+    try {
+        const res = await postAPI(url, body);
+        if (res && res.success) {
+            if (okMsg) showNotification(okMsg, 'success');
+            _fan.curveKey = null;
+            updateFanView(res);
+        } else {
+            showNotification((res && res.error) || 'Fan request failed', 'error');
+        }
+        return res;
+    } catch (e) {
+        showNotification('Fan: ' + (e.message || e), 'error');
+    } finally {
+        _fan.busy = false;
+        fetchFanStatus();
+    }
+}
+
+function setFanAuto() {
+    return _fanPost('/api/fan/mode', { mode: 'auto' }, 'Fan back on automatic control');
+}
+
+function setFanManual() {
+    const percent = Number((document.getElementById('fan-speed') || {}).value || 50);
+    return _fanPost('/api/fan/mode', { mode: 'manual', percent }, `Fan fixed at ${percent} %`);
+}
+
+async function runFanSpinTest() {
+    const btn = document.getElementById('fan-test-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Spinning…'; }
+    const res = await _fanPost('/api/fan/test', {});
+    if (btn) btn.textContent = 'Spin test';
+    if (res && res.success && res.spin_test) {
+        const st = res.spin_test;
+        showNotification(st.connected ? `Fan OK — ${st.rpm} rpm at full speed` : 'No fan detected: 0 rpm at full speed',
+                         st.connected ? 'success' : 'error');
+    }
+}
+
+function saveFanCurve() {
+    const temps = Array.from(document.querySelectorAll('#fan-curve input')).map(el => Number(el.value));
+    const persistEl = document.getElementById('fan-curve-persist');
+    const persist = !!(persistEl && persistEl.checked && !persistEl.disabled);
+    return _fanPost('/api/fan/curve', { temps, persist },
+                    persist ? 'Fan curve applied and saved to config.txt' : 'Fan curve applied (until reboot)');
+}
+
+function resetFanCurve() {
+    const persistEl = document.getElementById('fan-curve-persist');
+    if (persistEl) { persistEl.checked = false; delete persistEl.dataset.touched; }
+    return _fanPost('/api/fan/curve', { reset: true }, 'Fan curve reset to defaults');
+}
+
+document.addEventListener('change', e => {
+    if (!e.target) return;
+    if (e.target.id === 'fan-curve-persist') e.target.dataset.touched = '1';
+    // Already manual: releasing the slider applies the new speed directly.
+    if (e.target.id === 'fan-speed' && _fan.mode === 'manual') setFanManual();
+});
 
 function updatePowerSystemView(d) {
     const card = document.getElementById('power-card');
