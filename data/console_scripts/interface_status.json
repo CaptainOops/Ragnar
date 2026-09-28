@@ -1,0 +1,24 @@
+{
+  "id": "interface_status",
+  "name": "Interface Status",
+  "description": "Show all interface statuses, errors and traffic counters.",
+  "vendor": "generic",
+  "commands": [
+    {
+      "cmd": "",
+      "delay": 0.5
+    },
+    {
+      "cmd": "show ip interface brief",
+      "delay": 2
+    },
+    {
+      "cmd": "show interfaces status",
+      "delay": 2
+    },
+    {
+      "cmd": "show interfaces counters errors",
+      "delay": 2
+    }
+  ]
+}

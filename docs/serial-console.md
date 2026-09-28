@@ -147,6 +147,42 @@ the unit on your desk.
 - If the cable is unplugged, the viewer shows *disconnected* and resumes by itself
   when it returns. It also resumes after a Ragnar restart if it was running.
 
+## Console scripts
+
+With **Allow write** enabled a **Run script** picker appears beside the command
+input. Select a script and click **Run Script** — each command is sent
+sequentially with the inter-command delay defined in the script file.
+
+Five built-in scripts ship in `data/console_scripts/`:
+
+| Script | Vendor | What it does |
+|---|---|---|
+| Reboot Device | Cisco | `enable` → `write memory` → `reload` confirm |
+| Monitor Logs | Cisco | `terminal monitor` + `show logging last 50` |
+| Version Info | Generic | `show version` + `show inventory` |
+| Configure VLANs | Cisco | Creates VLAN 10 (Management) and VLAN 20 (Users) |
+| Interface Status | Generic | `show ip interface brief` + counters + errors |
+
+**Create your own:** add a `.json` file to `data/console_scripts/` (or upload one
+via **Files > console_scripts** in the dashboard). The format:
+
+```json
+{
+  "id": "my_script",
+  "name": "My Script",
+  "description": "What it does",
+  "vendor": "cisco",
+  "commands": [
+    {"cmd": "enable", "delay": 1},
+    {"cmd": "show version", "delay": 2}
+  ]
+}
+```
+
+Each `cmd` is sent with a `\r` appended; `delay` (seconds) is the pause before
+the next command. A script refuses to run unless write is enabled and the console
+is started.
+
 ## API
 
 | Method | Path | Purpose |
@@ -166,6 +202,9 @@ the unit on your desk.
 | POST | `/api/mesh/serial-console/write` | `{data}` — peer-writable: send a command (requires share_mesh + allow_write) |
 | GET | `/api/serial-console/peer-output?unit=ID&since=N` | this unit fetches a peer's *shared* output over the mesh |
 | POST | `/api/serial-console/peer-write` | `{unit, data}` — relay a write command to a peer's shared-write console |
+| GET | `/api/serial-console/scripts` | list available console scripts |
+| POST | `/api/serial-console/run-script` | `{script_id}` — run a script (requires allow_write + console running) |
+| GET | `/api/serial-console/script-status` | current script execution progress |
 
 Any of the `/api/serial-console/*` calls can be sent to another unit with the
 `X-Ragnar-Target` header (mesh secret required). Self-test:

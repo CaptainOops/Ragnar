@@ -14409,6 +14409,28 @@ def api_serial_console_clear():
     return jsonify(serial_console.clear())
 
 
+@app.route('/api/serial-console/scripts')
+def api_serial_console_scripts():
+    import serial_console
+    return jsonify({'scripts': serial_console.list_scripts()})
+
+
+@app.route('/api/serial-console/run-script', methods=['POST'])
+def api_serial_console_run_script():
+    import serial_console
+    body = request.get_json(silent=True) or {}
+    sid = (body.get('script_id') or '').strip()
+    if not sid:
+        return jsonify({'success': False, 'error': 'missing script_id'}), 400
+    return jsonify(serial_console.run_script(sid))
+
+
+@app.route('/api/serial-console/script-status')
+def api_serial_console_script_status():
+    import serial_console
+    return jsonify(serial_console.script_status())
+
+
 @app.route('/api/power/test', methods=['GET', 'POST'])
 def api_power_test():
     """Idle-vs-load power test. POST {duration, loads:[cpu,sdr,wifi]} starts
@@ -23526,7 +23548,8 @@ def list_files_api():
                 {'name': 'vulnerabilities', 'is_directory': True, 'path': '/vulnerabilities'},
                 {'name': 'logs', 'is_directory': True, 'path': '/logs'},
                 {'name': 'backups', 'is_directory': True, 'path': '/backups'},
-                {'name': 'uploads', 'is_directory': True, 'path': '/uploads'}
+                {'name': 'uploads', 'is_directory': True, 'path': '/uploads'},
+                {'name': 'console_scripts', 'is_directory': True, 'path': '/console_scripts'}
             ])
         
         # Map paths to actual directories
@@ -23560,6 +23583,12 @@ def list_files_api():
         elif path == '/uploads' or path.startswith('/uploads/'):
             try:
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, path)
+            except ValueError:
+                return jsonify({'error': 'Invalid path'}), 400
+        elif path == '/console_scripts' or path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), path)
             except ValueError:
                 return jsonify({'error': 'Invalid path'}), 400
         else:
@@ -23658,6 +23687,12 @@ def preview_file_api():
         elif file_path == '/uploads' or file_path.startswith('/uploads/'):
             try:
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid path'}), 400
+        elif file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid path'}), 400
         else:
@@ -23761,6 +23796,12 @@ def download_file_api():
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid file path'}), 400
+        elif file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid file path'}), 400
         else:
             return jsonify({'error': 'Invalid file path'}), 400
 
@@ -23836,6 +23877,12 @@ def delete_file_api():
                 actual_path = _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid file path'}), 400
+        elif file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+            try:
+                actual_path = _resolve_legacy_path('/console_scripts',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid file path'}), 400
         else:
             return jsonify({'error': 'Invalid file path'}), 400
 
@@ -23896,6 +23943,9 @@ def _resolve_readable_path(file_path):
         return _resolve_legacy_path('/backups', shared_data.backupdir, file_path)
     if file_path == '/uploads' or file_path.startswith('/uploads/'):
         return _resolve_legacy_path('/uploads', shared_data.upload_dir, file_path)
+    if file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
+        return _resolve_legacy_path('/console_scripts',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
     raise ValueError('Invalid path')
 
 
