@@ -1405,6 +1405,7 @@ function showTab(tabName) {
 
     if (tabName === 'config') {
         try { refreshSensingInstallCard(); syncRusenseTabToggle(); syncTerminalToggle(); syncMeshTabToggle(); } catch (e) { /* ignore */ }
+        try { showConfigSubtab(localStorage.getItem('cfg-subtab') || 'system'); } catch (e) { /* ignore */ }
     }
 
     const mobileMenu = document.getElementById('mobile-menu');
@@ -1420,6 +1421,25 @@ function _setSubtabActive(btn, active) {
     btn.classList.toggle('text-slate-400', !active);
     btn.classList.toggle('hover:bg-slate-700', !active);
     btn.classList.toggle('hover:text-white', !active);
+}
+
+function showConfigSubtab(name) {
+    const views = {
+        system: 'cfg-sub-system',
+        network: 'cfg-sub-network',
+        bluetooth: 'cfg-sub-bluetooth',
+        wardriving: 'cfg-sub-wardriving',
+        security: 'cfg-sub-security',
+        integrations: 'cfg-sub-integrations',
+        advanced: 'cfg-sub-advanced'
+    };
+    if (!views[name]) name = 'system';
+    Object.keys(views).forEach(key => {
+        const el = document.getElementById(views[key]);
+        if (el) el.classList.toggle('hidden', key !== name);
+        _setSubtabActive(document.getElementById('cfg-subtab-' + key), key === name);
+    });
+    try { localStorage.setItem('cfg-subtab', name); } catch (e) { /* ignore */ }
 }
 
 function showNetworkSubtab(name) {
