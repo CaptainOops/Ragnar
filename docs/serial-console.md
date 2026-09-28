@@ -181,7 +181,9 @@ via **Files > console_scripts** in the dashboard). The format:
 
 Each `cmd` is sent with a `\r` appended; `delay` (seconds) is the pause before
 the next command. A script refuses to run unless write is enabled and the console
-is started.
+is started. You can also edit existing scripts directly from the dashboard: open
+the file in **Files > console_scripts**, click **Edit**, make your changes, and
+**Save**.
 
 ## API
 
