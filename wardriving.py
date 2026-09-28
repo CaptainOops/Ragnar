@@ -3582,7 +3582,7 @@ class WardrivingEngine:
                     for line in r.stdout.split('\n'):
                         if '(disabled)' in line.lower():
                             continue
-                        m = re.search(r'\*\s*(\d{4,5})\s*MHz', line)
+                        m = re.search(r'\*\s*(\d{4,5})(?:\.\d+)?\s*MHz', line)
                         if m:
                             supported.add(int(m.group(1)))
             except Exception as e:
@@ -3646,7 +3646,7 @@ class WardrivingEngine:
                         for line in r.stdout.split('\n'):
                             if '(disabled)' in line.lower():
                                 continue
-                            m = re.search(r'\*\s*(\d{4,5})\s*MHz', line)
+                            m = re.search(r'\*\s*(\d{4,5})(?:\.\d+)?\s*MHz', line)
                             if m:
                                 bands.add(self._freq_to_band(int(m.group(1))))
                 except Exception:
