@@ -36,7 +36,6 @@ if parent_dir not in sys.path:
 
 import re
 import json
-import pandas as pd
 import subprocess
 import logging
 from datetime import datetime, timedelta
