@@ -2909,6 +2909,28 @@
                 <div class="glass rounded-xl p-4 sm:p-6 mb-6">
                     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
                         <div class="min-w-0">
+                            <h3 class="text-lg font-semibold">Cellular Uplink Fallback</h3>
+                            <p class="text-sm text-gray-400">A USB-tethered hotspot (Orbic Speed, MiFi, Nighthawk…), a phone in USB-tethering mode or an LTE modem becomes a <strong>backup</strong> internet path. It only carries traffic when Ethernet and Wi-Fi are down, and is never scanned.</p>
+                        </div>
+                        <div class="flex gap-2 w-full sm:w-auto"><button onclick="loadCellularUplink()" class="flex-1 bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Refresh</button></div>
+                    </div>
+                    <div id="cellular-uplink-results" class="mt-3 text-sm text-gray-400">Loading…</div>
+                    <details class="mt-4">
+                        <summary class="cursor-pointer text-sm text-gray-300">Settings</summary>
+                        <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                            <label class="flex items-center gap-2"><input type="checkbox" id="cell-enabled" class="w-4 h-4"> Keep cellular as fallback (pin route metric)</label>
+                            <label class="flex items-center gap-2"><input type="checkbox" id="cell-allow-scan" class="w-4 h-4"> Allow network scans over cellular</label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Fallback route metric</span><input type="number" id="cell-metric" min="1000" max="65535" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200"></label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Always treat as cellular (interfaces)</span><input type="text" id="cell-force" placeholder="e.g. enx0a1b2c3d4e5f" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200 font-mono"></label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Never treat as cellular (interfaces)</span><input type="text" id="cell-exclude" placeholder="e.g. a 2.5 GbE cdc_ncm dongle" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200 font-mono"></label>
+                            <div class="flex items-end"><button onclick="saveCellularUplink()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm">Save</button></div>
+                        </div>
+                        <p id="cell-save-status" class="mt-2 text-xs text-gray-400"></p>
+                    </details>
+                </div>
+                <div class="glass rounded-xl p-4 sm:p-6 mb-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-2">
+                        <div class="min-w-0">
                             <h3 class="text-lg font-semibold">Network Identity</h3>
                             <p class="text-sm text-gray-400">DNS domain &amp; search suffix, nameservers, this host&#39;s name/FQDN, and the default gateway. Pick an <strong>interface</strong> to see the network <em>that NIC</em> is attached to (its own gateway + DHCP nameservers) instead of the default-route view — e.g. a second dongle on a test LAN.</p>
                         </div>
@@ -8570,6 +8592,13 @@
                                         <p class="text-xs text-gray-500">Summary of each auto-uploaded drive, with every service's result</p>
                                     </div>
                                 </label>
+                                <label class="flex items-center space-x-3 cursor-pointer">
+                                    <input type="checkbox" id="pushover-notify-cellular" onchange="savePushoverTriggers()" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-gray-600 focus:ring-0">
+                                    <div>
+                                        <span class="text-sm font-medium">Cellular Failover</span>
+                                        <p class="text-xs text-gray-500">Uplink moves to / back from a USB-tethered cellular hotspot</p>
+                                    </div>
+                                </label>
                             </div>
                         </div>
 
@@ -8928,7 +8957,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260928-fan"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260928-cellular"></script>
 
 
 

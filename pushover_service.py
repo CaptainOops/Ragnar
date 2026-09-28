@@ -331,6 +331,17 @@ class PushoverService:
         threading.Thread(target=self.send, args=(message[:1024], title, priority), daemon=True).start()
         return True
 
+    def notify_cellular_uplink(self, message, title="Ragnar — Cellular uplink", priority=0):
+        """Uplink failover to / restore from a USB-tethered cellular hotspot
+        (cellular_uplink.py). Gated by pushover_enabled +
+        pushover_notify_cellular."""
+        if not self.is_enabled():
+            return False
+        if not self.shared_data.config.get("pushover_notify_cellular", True):
+            return False
+        threading.Thread(target=self.send, args=(message[:1024], title, priority), daemon=True).start()
+        return True
+
     # ------------------------------------------------------------------
     # RuSense (WiFi-CSI camera-free surveillance) alerts
     # ------------------------------------------------------------------

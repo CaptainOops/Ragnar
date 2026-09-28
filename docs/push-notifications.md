@@ -16,7 +16,8 @@ failed). Saving keys or a webhook switches notifications on automatically.
 ## What gets sent
 
 The trigger checkboxes (new device, new vulnerability, new credential, device
-offline / back online, wardrive auto-upload summary) apply to all channels. The
+offline / back online, wardrive auto-upload summary, [cellular failover](cellular-uplink.md))
+apply to all channels. The
 same channels also carry Network Integrity, Watchtower, incident-correlation and
 RuSense alerts — each gated by its own toggle in its tab.
 

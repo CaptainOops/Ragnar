@@ -6557,6 +6557,14 @@ def _get_wifi_iface():
     return detect_wifi_interface(shared_data.config.get('wifi_default_interface', 'auto'))
 
 
+def _is_cellular_iface(iface):
+    try:
+        import cellular_uplink
+        return cellular_uplink.is_cellular(iface)
+    except Exception:                                           # noqa: BLE001
+        return False
+
+
 def _get_lan_iface():
     """Return the interface that actually carries the LAN, wired or wireless.
 
@@ -6575,8 +6583,10 @@ def _get_lan_iface():
                 parts = line.split()
                 if 'dev' in parts:
                     iface = parts[parts.index('dev') + 1]
-                    # Ignore virtual/container bridges — they carry no LAN hosts.
-                    if iface and not iface.startswith(('lo', 'docker', 'br-', 'veth', 'tailscale')):
+                    # Ignore virtual/container bridges — they carry no LAN hosts —
+                    # and a tethered cellular hotspot (fallback uplink, not a LAN).
+                    if iface and not iface.startswith(('lo', 'docker', 'br-', 'veth', 'tailscale')) \
+                            and not _is_cellular_iface(iface):
                         return iface
     except Exception as exc:                                    # noqa: BLE001
         logger.debug(f"_get_lan_iface: default-route lookup failed: {exc}")
@@ -14218,6 +14228,84 @@ def api_fan_test():
         return jsonify(result), (200 if result.get('success') else 400)
     except Exception as e:
         logger.error(f"Fan spin test error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Cellular uplink fallback (USB-tethered hotspot / phone / LTE modem)
+# ---------------------------------------------------------------------------
+_cellular_monitor = None
+
+
+def cellular_uplink_monitor_loop():
+    """Pin tethered-cellular default routes to the fallback metric and push a
+    notification when the uplink fails over to / back from cellular."""
+    global _cellular_monitor
+    try:
+        import cellular_uplink
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning(f"[cellular] module unavailable: {exc}")
+        return
+    _cellular_monitor = cellular_uplink.Monitor(log=logger)
+    try:
+        # Self-provision the NM/dhcpcd hooks so web-updated boxes get them too.
+        for change in cellular_uplink.install(shared_data.config):
+            logger.info(f"[cellular] {change}")
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning(f"[cellular] hook install failed: {exc}")
+    while not getattr(shared_data, 'webapp_should_exit', False):
+        try:
+            for msg in _cellular_monitor.tick(shared_data.config):
+                po = _rusense_pushover()
+                if po:
+                    po.notify_cellular_uplink(msg)
+        except Exception as exc:                                # noqa: BLE001
+            logger.debug(f"[cellular] tick failed: {exc}")
+        time.sleep(10)
+
+
+@app.route('/api/cellular/status', methods=['GET'])
+def api_cellular_status():
+    try:
+        import cellular_uplink
+        data = cellular_uplink.status(shared_data.config)
+        data['events'] = list(_cellular_monitor.events[-20:]) if _cellular_monitor else []
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Cellular status error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/cellular/settings', methods=['POST'])
+def api_cellular_settings():
+    try:
+        import cellular_uplink
+        body = request.get_json(silent=True) or {}
+        cfg = shared_data.config
+        if 'enabled' in body:
+            cfg['cellular_fallback_enabled'] = bool(body['enabled'])
+        if 'allow_scan' in body:
+            cfg['cellular_allow_scan'] = bool(body['allow_scan'])
+        if 'metric' in body:
+            try:
+                metric = int(body['metric'])
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'error': 'metric must be a number'}), 400
+            if not 1000 <= metric <= 65535:
+                return jsonify({'success': False, 'error': 'metric must be 1000-65535'}), 400
+            cfg['cellular_route_metric'] = metric
+        for key in ('force_ifaces', 'exclude_ifaces'):
+            if key in body:
+                names = cellular_uplink._split_list(body[key])
+                cfg[f'cellular_{key}'] = ' '.join(sorted(names))
+        shared_data.save_config()
+        changes = cellular_uplink.install(cfg)
+        actions = cellular_uplink.enforce(cfg)
+        data = cellular_uplink.status(cfg)
+        data['applied'] = changes + actions
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Cellular settings error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -29381,6 +29469,7 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
         socketio.start_background_task(watchtower_monitor_loop)
         socketio.start_background_task(asset_inventory_monitor_loop)
         socketio.start_background_task(mesh_monitor_loop)
+        socketio.start_background_task(cellular_uplink_monitor_loop)
 
         # Bring up the BLE provisioning peripheral if the user has enabled it.
         # Deferred so a slow/absent Bluetooth stack never delays the web server

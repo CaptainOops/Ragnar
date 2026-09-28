@@ -391,7 +391,8 @@ def _egress_iface(preferred=None):
     dflt = _default_route_iface()
     wired = []
     for name in _list_iface_names(include_virtual=False):
-        if _is_wireless(name) or name.startswith(('tun', 'tap', 'wg', 'zt', 'tailscale')):
+        if _is_wireless(name) or name.startswith(('tun', 'tap', 'wg', 'zt', 'tailscale')) \
+                or _is_cellular(name):
             continue
         try:
             with open(f'/sys/class/net/{name}/carrier') as f:
@@ -2868,6 +2869,16 @@ def _is_vpn(iface):
     return _iface_vpn_info(iface)['is_vpn']
 
 
+def _is_cellular(iface):
+    """USB-tethered hotspot/phone/LTE modem (see cellular_uplink.py). It is a
+    fallback internet path, never a LAN segment to capture on or test."""
+    try:
+        import cellular_uplink
+        return cellular_uplink.is_cellular(iface)
+    except Exception:
+        return False
+
+
 def do_interfaces(include_virtual=False):
     interfaces = []
     for name in _list_iface_names(include_virtual=include_virtual):
@@ -2878,9 +2889,11 @@ def do_interfaces(include_virtual=False):
             itype = 'wifi'
         elif vpn['is_vpn']:
             itype = 'vpn'
+        elif _is_cellular(name):
+            itype = 'cellular'
         else:
             itype = 'ethernet'
-        eth = _iface_ethtool(name) if itype == 'ethernet' else {
+        eth = _iface_ethtool(name) if itype in ('ethernet', 'cellular') else {
             'speed': None, 'duplex': None, 'autoneg': None, 'link_detected': None}
         method = _iface_ip_method(name, v4)
         interfaces.append({
@@ -3055,7 +3068,8 @@ def _capture_iface(preferred=None):
         return preferred
     wired = []
     for name in _list_iface_names(include_virtual=False):
-        if _is_wireless(name) or name.startswith(('tun', 'tap', 'wg', 'zt', 'tailscale')):
+        if _is_wireless(name) or name.startswith(('tun', 'tap', 'wg', 'zt', 'tailscale')) \
+                or _is_cellular(name):
             continue
         try:
             with open(f'/sys/class/net/{name}/carrier') as f:
@@ -3080,7 +3094,8 @@ def _wired_capture_iface(preferred=None):
         return preferred
     wired = []
     for name in _list_iface_names(include_virtual=False):
-        if _is_wireless(name) or name.startswith(_VPN_IFACE_PREFIXES):
+        if _is_wireless(name) or name.startswith(_VPN_IFACE_PREFIXES) \
+                or _is_cellular(name):
             continue
         try:
             with open(f'/sys/class/net/{name}/carrier') as f:

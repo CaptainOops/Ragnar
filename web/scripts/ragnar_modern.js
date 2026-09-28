@@ -1469,6 +1469,7 @@ function showNetworkSubtab(name) {
     } else if (name === 'interfaces') {
         loadNetworkIdentity();
         loadInterfaces();
+        loadCellularUplink();
     } else if (name === 'wifi') {
         wifiInit();
     } else if (name === 'diagnostics') {
@@ -7076,6 +7077,75 @@ async function checkVpnEgress() {
     }
 }
 
+// Cellular uplink fallback — USB-tethered hotspot / phone / LTE modem.
+async function loadCellularUplink() {
+    const out = document.getElementById('cellular-uplink-results');
+    if (!out) return;
+    try {
+        const d = await fetchAPI('/api/cellular/status');
+        if (!d.success) throw new Error(d.error || 'failed');
+        const set = (id, prop, v) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el[prop] = v; };
+        set('cell-enabled', 'checked', !!d.enabled);
+        set('cell-allow-scan', 'checked', !!d.allow_scan);
+        set('cell-metric', 'value', d.metric);
+        set('cell-force', 'value', (d.force_ifaces || []).join(' '));
+        set('cell-exclude', 'value', (d.exclude_ifaces || []).join(' '));
+        const pill = (txt, cls) => `<span class="px-2 py-0.5 rounded text-xs ${cls}">${escapeHtml(txt)}</span>`;
+        const uplink = d.active_uplink
+            ? (d.on_cellular ? pill('on cellular: ' + d.active_uplink, 'bg-amber-900/50 text-amber-300')
+                             : pill('primary: ' + d.active_uplink, 'bg-green-900/50 text-green-300'))
+            : pill('no internet uplink', 'bg-red-900/50 text-red-300');
+        const hooks = (d.nm_conf_installed || d.dhcpcd_hook_installed)
+            ? '' : ' ' + pill('route hooks not installed', 'bg-slate-700 text-slate-400');
+        let html = `<div class="flex flex-wrap items-center gap-2 mb-3">${uplink}${d.enabled ? '' : ' ' + pill('fallback pinning off', 'bg-red-900/50 text-red-300')}${hooks}</div>`;
+        if (!(d.interfaces || []).length) {
+            html += '<p class="text-gray-400">No cellular device plugged in. Connect a hotspot or phone to a USB port and turn on its <strong>USB tethering</strong>; it shows up here within a few seconds.</p>';
+        } else {
+            html += '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' + d.interfaces.map(i => {
+                const role = i.role === 'active' ? pill('ACTIVE — carrying traffic', 'bg-amber-900/50 text-amber-300')
+                    : i.role === 'standby' ? pill('standby', 'bg-green-900/50 text-green-300')
+                    : pill(i.carrier ? 'no route (DHCP?)' : 'link down', 'bg-slate-700 text-slate-400');
+                const row = (k, v) => `<div class="flex justify-between gap-3"><span class="text-gray-500">${k}</span><span class="font-mono text-gray-300 break-all text-right">${escapeHtml(String(v))}</span></div>`;
+                return `<div class="bg-slate-900/40 border border-slate-700 rounded-lg p-3 space-y-1 min-w-0">
+                    <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-mono font-semibold">${escapeHtml(i.name)}</span>${role}</div>
+                    ${row('Device', i.device || '—')}
+                    ${row('Detected by', i.reason || '—')}
+                    ${row('IPv4', (i.ipv4 || []).join(', ') || '—')}
+                    ${row('Gateway', i.gateway || '—')}
+                    ${row('Route metric', i.metric == null ? '—' : i.metric)}
+                    ${row('Data (rx / tx)', formatBytes(i.rx_bytes || 0) + ' / ' + formatBytes(i.tx_bytes || 0))}
+                </div>`;
+            }).join('') + '</div>';
+        }
+        if ((d.events || []).length) {
+            html += '<div class="mt-3 text-xs text-gray-500 space-y-1">' + d.events.slice(-5).reverse().map(e =>
+                `<div>${escapeHtml(new Date(e.ts * 1000).toLocaleString())} — ${escapeHtml(e.msg)}</div>`).join('') + '</div>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-red-400">' + escapeHtml(e.message || String(e)) + '</p>';
+    }
+}
+
+async function saveCellularUplink() {
+    const st = document.getElementById('cell-save-status');
+    const payload = {
+        enabled: document.getElementById('cell-enabled').checked,
+        allow_scan: document.getElementById('cell-allow-scan').checked,
+        metric: parseInt(document.getElementById('cell-metric').value, 10),
+        force_ifaces: document.getElementById('cell-force').value,
+        exclude_ifaces: document.getElementById('cell-exclude').value
+    };
+    try {
+        const d = await postAPI('/api/cellular/settings', payload);
+        if (!d.success) throw new Error(d.error || 'failed');
+        if (st) st.textContent = '✓ Saved' + ((d.applied || []).length ? ' — ' + d.applied.join('; ') : '');
+        loadCellularUplink();
+    } catch (e) {
+        if (st) st.textContent = '✗ ' + (e.message || e);
+    }
+}
+
 async function loadInterfaces() {
     const out = document.getElementById('interfaces-results');
     out.innerHTML = '<p class="text-gray-400">Loading…</p>';
@@ -7097,6 +7167,7 @@ async function loadInterfaces() {
         const typeLabel = (i) => {
             if (i.type === 'vpn') return '<span class="px-2 py-0.5 rounded text-xs bg-amber-900/50 text-amber-300">🔒 ' + escapeHtml(i.vpn_kind || 'VPN') + '</span>';
             if (i.type === 'wifi') return '<span class="px-2 py-0.5 rounded text-xs bg-sky-900/50 text-sky-300">wifi</span>';
+            if (i.type === 'cellular') return '<span class="px-2 py-0.5 rounded text-xs bg-amber-900/50 text-amber-300">📶 cellular</span>';
             return '<span class="px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-300">ethernet</span>';
         };
         const rows = data.interfaces.map(i => {
@@ -23533,7 +23604,8 @@ async function loadPushoverConfiguration(config) {
         'pushover-notify-new-cred': 'pushover_notify_new_credential',
         'pushover-notify-device-lost': 'pushover_notify_device_lost',
         'pushover-notify-device-back-online': 'pushover_notify_device_back_online',
-        'pushover-notify-wardrive-upload': 'pushover_notify_wardrive_upload'
+        'pushover-notify-wardrive-upload': 'pushover_notify_wardrive_upload',
+        'pushover-notify-cellular': 'pushover_notify_cellular'
     };
     for (const [elemId, key] of Object.entries(evtMap)) {
         const cb = document.getElementById(elemId);
@@ -23655,7 +23727,8 @@ async function savePushoverTriggers() {
         'pushover-notify-new-cred': 'pushover_notify_new_credential',
         'pushover-notify-device-lost': 'pushover_notify_device_lost',
         'pushover-notify-device-back-online': 'pushover_notify_device_back_online',
-        'pushover-notify-wardrive-upload': 'pushover_notify_wardrive_upload'
+        'pushover-notify-wardrive-upload': 'pushover_notify_wardrive_upload',
+        'pushover-notify-cellular': 'pushover_notify_cellular'
     };
     const payload = {};
     for (const [elemId, key] of Object.entries(evtMap)) {
