@@ -417,6 +417,21 @@
         .pw-table th { text-align: left; font-weight: 500; color: #94a3b8; font-size: 12px; padding: 4px 6px; }
         .pw-table td { padding: 4px 6px; border-top: 1px solid #1e293b; font-family: ui-monospace, monospace; }
         .pw-table td:first-child { font-family: inherit; color: #cbd5e1; }
+        .fan-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+        .fan-seg { display: inline-flex; }
+        .fan-seg .pw-btn:first-child { border-radius: 8px 0 0 8px; }
+        .fan-seg .pw-btn:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+        .fan-seg .pw-btn.fan-on { background: #0284c7; border-color: #0284c7; color: #fff; }
+        .fan-slider { display: flex; align-items: center; gap: 10px; flex: 1 1 200px; min-width: 0; }
+        .fan-slider input { flex: 1; min-width: 0; accent-color: #0284c7; height: 28px; }
+        .fan-speed-val { font-family: ui-monospace, monospace; font-size: 13px; min-width: 44px; text-align: right; }
+        .fan-curve { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .fan-step { background: rgba(15, 23, 42, .6); border: 1px solid #1e293b; border-radius: 8px; padding: 8px 10px; min-width: 0; }
+        .fan-step.fan-step-on { border-color: #0284c7; }
+        .fan-step input { width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; padding: 4px 6px; font-family: ui-monospace, monospace; font-size: 14px; }
+        .fan-curve-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-top: 10px; }
+        .fan-persist { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+        .fan-curve-btns { display: flex; gap: 8px; }
         .sys-panel { padding: 16px; }
         .sys-traffic { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
         @media (max-width: 639px) {
@@ -439,6 +454,12 @@
             .pw-test-run .pw-btn { flex: 1; }
             .pw-table { font-size: 12px; }
             .pw-table th, .pw-table td { padding: 4px 4px; }
+            .fan-seg, .fan-slider { width: 100%; }
+            .fan-seg .pw-btn { flex: 1; }
+            .fan-controls > #fan-test-btn { width: 100%; }
+            .fan-curve { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .fan-curve-btns { width: 100%; }
+            .fan-curve-btns .pw-btn { flex: 1; }
         }
         .wifi-hm-btn {
             display: inline-flex;
@@ -5599,6 +5620,13 @@
                         <div class="sys-stat-value" id="temp-usage">--</div>
                         <div class="sys-stat-sub" id="temp-details">&nbsp;</div>
                     </div>
+                    <!-- Cooling fan (only when a fan driver exists) -->
+                    <div id="fan-card" class="glass-card sys-stat hidden">
+                        <div class="sys-stat-label">Fan</div>
+                        <div class="sys-stat-value" id="fan-card-status">--</div>
+                        <div class="sys-stat-sub" id="fan-card-details">&nbsp;</div>
+                        <div class="sys-bar"><div id="fan-card-progress" class="sys-bar-fill" style="width:0%"></div></div>
+                    </div>
                     <div class="glass-card sys-stat">
                         <div class="sys-stat-label">Uptime</div>
                         <div class="sys-stat-value" id="uptime-display">--</div>
@@ -5655,7 +5683,42 @@
                     <div id="power-test-body" class="mt-3"></div>
                 </div>
 
-                <!-- Processes + interfaces -->
+                <!-- Cooling fan -->
+                <div id="fan-panel" class="glass-card sys-panel mb-4 sm:mb-6 hidden">
+                    <div class="flex items-center justify-between gap-3 mb-3">
+                        <h3 class="font-semibold">Cooling fan</h3>
+                        <span class="pw-muted" id="fan-driver"></span>
+                    </div>
+                    <div id="fan-live"></div>
+                    <div class="pw-section">
+                        <div class="pw-section-title">Control</div>
+                        <div class="fan-controls">
+                            <div class="fan-seg" role="group" aria-label="Fan mode">
+                                <button id="fan-mode-auto" class="pw-btn" onclick="setFanAuto()">Automatic</button>
+                                <button id="fan-mode-manual" class="pw-btn" onclick="setFanManual()">Manual</button>
+                            </div>
+                            <div class="fan-slider">
+                                <input id="fan-speed" type="range" min="0" max="100" step="5" value="50" oninput="document.getElementById('fan-speed-val').textContent = this.value + ' %'">
+                                <span id="fan-speed-val" class="fan-speed-val">50 %</span>
+                            </div>
+                            <button id="fan-test-btn" class="pw-btn" onclick="runFanSpinTest()">Spin test</button>
+                        </div>
+                        <div id="fan-control-note" class="pw-muted" style="margin-top:6px"></div>
+                    </div>
+                    <div class="pw-section" id="fan-curve-section">
+                        <div class="pw-section-title">Fan curve</div>
+                        <div id="fan-curve" class="fan-curve"></div>
+                        <div class="fan-curve-actions">
+                            <label class="pw-muted fan-persist"><input type="checkbox" id="fan-curve-persist"> Keep after reboot</label>
+                            <div class="fan-curve-btns">
+                                <button class="pw-btn" onclick="resetFanCurve()">Defaults</button>
+                                <button class="pw-btn pw-btn-primary" onclick="saveFanCurve()">Apply curve</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                                <!-- Processes + interfaces -->
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
                     <div class="glass-card sys-panel">
                         <div class="flex items-center justify-between mb-4">
@@ -8865,7 +8928,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260928-system-mobile"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260928-fan"></script>
 
 
 
