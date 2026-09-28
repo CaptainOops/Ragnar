@@ -21343,14 +21343,23 @@ async function scSendCmd() {
     }
 }
 
-async function scLoadScripts() {
+let scScriptsLoadedAt = 0;
+async function scLoadScripts(force) {
+    // Called from every poll tick: throttle, and never clobber the user's pick.
+    if (!force && Date.now() - scScriptsLoadedAt < 15000) return;
+    scScriptsLoadedAt = Date.now();
     try {
         const d = await fetchAPI('/api/serial-console/scripts');
         const sel = document.getElementById('sc-script-sel');
         if (!sel) return;
         const scripts = d.scripts || [];
-        sel.innerHTML = '<option value="">Run script…</option>' +
+        const html = '<option value="">Run script\u2026</option>' +
             scripts.map(s => `<option value="${escapeHtml(s.id)}" title="${escapeHtml(s.description)}">${escapeHtml(s.name)} (${s.commands} cmds, ${escapeHtml(s.vendor)})</option>`).join('');
+        if (sel.dataset.html === html || document.activeElement === sel) return;
+        const keep = sel.value;
+        sel.innerHTML = html;
+        sel.dataset.html = html;
+        if (keep && scripts.some(s => s.id === keep)) sel.value = keep;
     } catch (e) { /* scripts unavailable */ }
 }
 
