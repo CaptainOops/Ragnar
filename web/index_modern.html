@@ -1351,8 +1351,7 @@
                     <button onclick="scClearView()" class="text-gray-400 hover:text-white">Clear view</button>
                     <button onclick="scDownload()" class="text-gray-400 hover:text-white">Download log</button>
                     <label id="sc-write-wrap" class="flex items-center gap-1 text-gray-400" title="Enable sending commands to the device through the console cable. Off by default — the port opens read-only until you toggle this on."><input type="checkbox" id="sc-write" onchange="scWriteChanged()"> Allow write</label>
-                    <label id="sc-share-wrap" class="flex items-center gap-1 text-gray-400" title="Let other Ragnars in the mesh VIEW this console's output (read-only). Starting/stopping it from another unit still needs the mesh secret."><input type="checkbox" id="sc-share" onchange="scShareChanged()"> Share with mesh (view-only)</label>
-                    <label id="sc-share-write-wrap" class="hidden flex items-center gap-1 text-gray-400" title="Also let mesh peers SEND commands to this console. Requires Share with mesh + Allow write."><input type="checkbox" id="sc-share-write" onchange="scShareWriteChanged()"> Share write with mesh</label>
+                    <label id="sc-share-wrap" class="flex items-center gap-1 text-gray-400" title="Share this console with the mesh. When Allow write is also on, mesh peers can send commands too."><input type="checkbox" id="sc-share" onchange="scShareChanged()"> <span id="sc-share-label">Share with mesh</span></label>
                     <button id="sc-release" onclick="scStop(true)" title="Stop and un-reserve the port so other components may use it" class="text-gray-500 hover:text-red-300 sm:ml-auto">Release port</button>
                 </div>
                 <div id="sc-cmd-bar" class="hidden mt-2">

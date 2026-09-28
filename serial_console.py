@@ -493,18 +493,10 @@ def set_allow_write(on):
     return {'success': True, 'allow_write': bool(on), 'status': _reader.status()}
 
 def shared_write_with_mesh():
-    """Per-unit opt-in: may mesh peers SEND commands through this console?
-    Requires both share_mesh and allow_write to be on."""
+    """May mesh peers SEND commands through this console?
+    Automatic when both share_mesh and allow_write are on."""
     cfg = load_config()
-    return bool(cfg.get('share_mesh_write') and cfg.get('share_mesh')
-                and cfg.get('allow_write'))
-
-def set_share_write(on):
-    cfg = load_config()
-    cfg['share_mesh_write'] = bool(on)
-    save_config(cfg)
-    return {'success': True, 'share_mesh_write': bool(on),
-            'effective': shared_write_with_mesh()}
+    return bool(cfg.get('share_mesh') and cfg.get('allow_write'))
 
 def write(data):
     """Send data to the device console.  Refuses unless allow_write is enabled

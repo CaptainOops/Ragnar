@@ -14289,13 +14289,6 @@ def api_serial_console_allow_write():
     return jsonify(serial_console.set_allow_write(bool(data.get('allow_write'))))
 
 
-@app.route('/api/serial-console/share-write', methods=['POST'])
-def api_serial_console_share_write():
-    import serial_console
-    data = request.get_json(silent=True) or {}
-    return jsonify(serial_console.set_share_write(bool(data.get('share_write'))))
-
-
 @app.route('/api/serial-console/write', methods=['POST'])
 def api_serial_console_write():
     import serial_console
@@ -14309,7 +14302,7 @@ def api_serial_console_write():
 @app.route('/api/mesh/serial-console/write', methods=['POST'])
 def api_mesh_serial_console_write():
     """Peer-writable: send a command to this unit's console. Only when the
-    operator has enabled both share_mesh and share_mesh_write and allow_write."""
+    operator has enabled both share_mesh and allow_write."""
     import serial_console
     if not serial_console.shared_write_with_mesh():
         return jsonify({'success': False,

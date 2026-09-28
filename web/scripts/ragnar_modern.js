@@ -21251,8 +21251,9 @@ function scSetControls(mode) {
 
 function scUpdateWriteUI(st, mode) {
     mode = mode || scMode();
+    const aw = !!(st && st.allow_write);
+    const sm = !!(st && st.share_mesh);
     if (mode === 'local') {
-        const aw = !!(st && st.allow_write);
         const badge = document.getElementById('sc-badge');
         if (badge) {
             badge.textContent = aw ? 'READ-WRITE' : 'READ-ONLY';
@@ -21263,14 +21264,11 @@ function scUpdateWriteUI(st, mode) {
         if (box) box.checked = aw;
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !aw);
-        // show share-write checkbox when both share_mesh and allow_write are on
-        const sm = !!(st && st.share_mesh);
-        const sww = document.getElementById('sc-share-write-wrap');
-        if (sww) sww.classList.toggle('hidden', !(aw && sm));
-        const swb = document.getElementById('sc-share-write');
-        if (swb && st) swb.checked = !!st.share_mesh_write;
+        // update share label to reflect write state
+        const lbl = document.getElementById('sc-share-label');
+        if (lbl) lbl.textContent = aw ? 'Share with mesh (read-write)' : 'Share with mesh (view-only)';
     } else {
-        // remote unit: show cmd bar if the peer advertises share_mesh_write
+        // remote unit: show cmd bar if the peer has share_mesh + allow_write
         const remoteWrite = !!(st && st.share_mesh_write);
         const badge = document.getElementById('sc-badge');
         if (badge) {
@@ -21280,9 +21278,6 @@ function scUpdateWriteUI(st, mode) {
         }
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !remoteWrite);
-        // hide local-only checkboxes
-        const sww = document.getElementById('sc-share-write-wrap');
-        if (sww) sww.classList.toggle('hidden', true);
     }
 }
 
@@ -21313,24 +21308,6 @@ async function scWriteChanged() {
             body: JSON.stringify({ allow_write: box.checked }) });
         scUpdateWriteUI(r);
         if (r.status) scSetStatus(scDescribe(Object.assign({ reserved_port: (r.status || {}).port }, r.status)));
-    } catch (e) {
-        box.checked = !box.checked;
-        scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
-    }
-}
-
-async function scShareWriteChanged() {
-    const box = document.getElementById('sc-share-write');
-    if (!box) return;
-    if (box.checked && !confirm('Allow mesh peers to send commands to the device through this console? Only peers in your mesh can reach this endpoint.')) {
-        box.checked = false;
-        return;
-    }
-    try {
-        const r = await fetchAPI('/api/serial-console/share-write', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ share_write: box.checked }) });
-        box.checked = !!r.share_mesh_write;
     } catch (e) {
         box.checked = !box.checked;
         scSetStatus(`<span class="text-red-400">${escapeHtml(e.message)}</span>`);
