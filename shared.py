@@ -787,6 +787,16 @@ class SharedData:
             "ethernet_scan_enabled": True,
             "ethernet_prefer_over_wifi": True,
             "ethernet_auto_detect": True,
+            # Cellular uplink fallback (cellular_uplink.py): a USB-tethered
+            # hotspot/phone/LTE modem is pinned to a high route metric so it
+            # only carries traffic when Ethernet and Wi-Fi are down, and is
+            # never used as a scan target (metered data, carrier LAN).
+            "cellular_fallback_enabled": True,
+            "cellular_route_metric": 20000,
+            "cellular_allow_scan": False,
+            # Space/comma-separated overrides for detection by driver/vendor.
+            "cellular_force_ifaces": "",
+            "cellular_exclude_ifaces": "",
             # When True, the e-Paper shows an Ethernet-focused network
             # diagnostic screen (link / IP / switch port), auto-cycling pages
             # every 5s. Web-toggled from Network > Diagnostics. e-Paper only.
@@ -889,6 +899,7 @@ class SharedData:
             "pushover_notify_device_lost": False,
             "pushover_notify_device_back_online": False,
             "pushover_notify_wardrive_upload": True,  # summary after each auto-uploaded wardrive
+            "pushover_notify_cellular": True,  # uplink failover to / restore from a tethered cellular hotspot
 
             "__title_rusense_pushover__": "RuSense Sensing Alerts",
             # Master switch for camera-free (WiFi-CSI) surveillance alerts. Sent

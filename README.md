@@ -87,6 +87,7 @@ Every feature below has a full guide in [`docs/`](docs). Short version here, det
 
 ### Platform, safety & storage
 - **LAN-first connectivity & smart WiFi** — prefers Ethernet when present, manages WiFi as fallback, auto-connects to known networks and falls back to AP mode with a captive portal.
+- **Cellular uplink fallback** — plug a USB-tethered hotspot (Orbic Speed, MiFi, Nighthawk…), a phone or an LTE modem into a Ragnar and it becomes a backup internet path. No extra drivers are needed. It only carries traffic when Ethernet and Wi-Fi are down, it is never scanned, and a push alert fires on failover, so a leave-behind unit stays reachable over the mesh. See [Cellular Uplink Fallback](docs/cellular-uplink.md).
 - **Hardware-bound authentication** — optional login with full database encryption at rest. See [Security & Authentication](docs/SECURITY.md).
 - **Vault — encrypted file store** — a password-protected, AES-256-GCM store in the **Files** tab (contents *and* index are ciphertext on disk; scrypt-derived key; auto-locks; no recovery). See [Vault](docs/vault.md).
 - **In-browser file editor** — open any text file (JSON, Python, shell, YAML, config, etc.) in the Files tab and edit it directly from the dashboard. Changes save back to disk — useful for tweaking console scripts, configs and scan results without SSH.

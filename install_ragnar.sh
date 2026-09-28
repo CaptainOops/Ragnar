@@ -2053,6 +2053,21 @@ BANNER
 }
 
 # Main installation process
+# Cellular uplink fallback: a USB-tethered hotspot / phone / LTE modem (rndis_host,
+# cdc_ether, cdc_ncm, ipheth, qmi_wwan, cdc_mbim — all in the stock Pi kernel)
+# must be a BACKUP path. dhcpcd/NetworkManager would otherwise give it a lower
+# route metric than Wi-Fi and silently make it the primary uplink. Installs a
+# NetworkManager conf.d drop-in + a dhcpcd hook (cellular_uplink.py install).
+setup_cellular_fallback() {
+    if [ -f "$ragnar_PATH/cellular_uplink.py" ]; then
+        if python3 "$ragnar_PATH/cellular_uplink.py" install >/dev/null 2>&1; then
+            log "INFO" "Cellular uplink fallback hooks installed"
+        else
+            log "WARNING" "Cellular uplink fallback hook install failed (the service retries at start)"
+        fi
+    fi
+}
+
 # Install Tailscale and optionally join this unit to the Ragnar mesh.
 # Three entry paths, all handled by scripts/setup_mesh.sh:
 #   * unattended  — RAGNAR_MESH_AUTHKEY set, or /boot/ragnar-mesh.conf present
@@ -2553,6 +2568,7 @@ except:
 
     CURRENT_STEP=8; show_progress "Configuring USB Gadget"
     configure_usb_gadget
+    setup_cellular_fallback
 
     CURRENT_STEP=9; show_progress "Setting up services"
     setup_services

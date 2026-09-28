@@ -786,6 +786,17 @@ else
     echo -e "  ${GREEN}✓${NC} Mesh not enabled on this unit — nothing to do"
 fi
 
+echo -e "${BLUE}Step 6.97: Cellular uplink fallback hooks...${NC}"
+# A USB-tethered hotspot/phone must stay a BACKUP uplink: pin its route metric
+# above Wi-Fi/Ethernet (NetworkManager conf.d + dhcpcd hook). Idempotent.
+if [ -f "$(dirname "$0")/cellular_uplink.py" ]; then
+    if python3 "$(dirname "$0")/cellular_uplink.py" install >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} Cellular fallback hooks in place"
+    else
+        echo -e "  ${YELLOW}⚠${NC} Cellular fallback hook install failed (the service retries at start)"
+    fi
+fi
+
 echo -e "${BLUE}Step 7: Starting ragnar service...${NC}"
 systemctl start ragnar.service
 

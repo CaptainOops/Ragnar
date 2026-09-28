@@ -85,6 +85,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 | [Comware Guard](#comware-guard) | Switch & L2/L3 | `GET /api/net/comware-guard` |
 | [Locate Port](#locate-port) | Switch & L2/L3 | `POST /api/net/locate-port` |
 | [PCAP Analyzer](#pcap-analyzer) | Switch & L2/L3 | `POST /api/net/pcap` |
+| [Cellular Uplink Fallback](cellular-uplink.md) | Interfaces | `GET /api/cellular/status` |
 | [Interfaces](#interface-list) | Interfaces | `GET /api/net/interfaces` |
 | [Network Identity](#network-identity) | Interfaces | `GET /api/net/identity` |
 | [ISP / WAN + VPN Detection](#isp--wan-detection) | Interfaces | `GET /api/net/isp` |
