@@ -5428,6 +5428,10 @@
                             <span id="preview-truncated-badge" class="hidden flex-shrink-0 text-xs bg-yellow-700 text-yellow-200 px-2 py-0.5 rounded">Truncated</span>
                         </div>
                         <div class="flex items-center gap-2 flex-shrink-0">
+                            <button id="preview-edit-btn" onclick="toggleFileEdit()" class="hidden bg-amber-600 hover:bg-amber-700 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Edit</button>
+                            <button id="preview-save-btn" onclick="saveFileEdit()" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Save</button>
+                            <button id="preview-cancel-btn" onclick="cancelFileEdit()" class="hidden bg-slate-600 hover:bg-slate-500 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Cancel</button>
+                            <span id="preview-save-status" class="hidden text-xs text-emerald-300"></span>
                             <button id="preview-download-btn" onclick="" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 sm:px-3 py-1.5 rounded-lg text-sm transition-colors">Download</button>
                             <button onclick="closeFilePreview()" aria-label="Close" class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -8838,7 +8842,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260928-console-scripts"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260928-files-editor"></script>
 
 
 

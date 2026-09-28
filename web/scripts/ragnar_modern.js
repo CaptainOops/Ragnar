@@ -24277,7 +24277,20 @@ function downloadFile(filePath) {
     showFileSuccess(`Downloading ${filePath.split('/').pop()}`);
 }
 
-// ── File Preview ────────────────────────────────────────────────
+// ── File Preview & Editor ───────────────────────────────────────
+const _editState = { path: '', original: '', editing: false, editable: false };
+
+function _setEditBtns(editing, editable) {
+    const editBtn = document.getElementById('preview-edit-btn');
+    const saveBtn = document.getElementById('preview-save-btn');
+    const cancelBtn = document.getElementById('preview-cancel-btn');
+    const statusEl = document.getElementById('preview-save-status');
+    if (editBtn) editBtn.classList.toggle('hidden', !editable || editing);
+    if (saveBtn) saveBtn.classList.toggle('hidden', !editing);
+    if (cancelBtn) cancelBtn.classList.toggle('hidden', !editing);
+    if (statusEl) statusEl.classList.add('hidden');
+}
+
 function previewFile(filePath) {
     const modal = document.getElementById('file-preview-modal');
     const content = document.getElementById('preview-content');
@@ -24286,9 +24299,15 @@ function previewFile(filePath) {
     const dlBtn = document.getElementById('preview-download-btn');
     if (!modal) return;
 
+    _editState.path = filePath;
+    _editState.editing = false;
+    _editState.editable = false;
+    _editState.original = '';
+
     const name = filePath.split('/').pop();
     filename.textContent = name;
     truncBadge.classList.add('hidden');
+    _setEditBtns(false, false);
     content.innerHTML = `<div class="text-center text-gray-400 py-12">
         <svg class="w-8 h-8 inline animate-spin mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
@@ -24315,9 +24334,11 @@ function previewFile(filePath) {
                 renderPreviewVideo(content, resolveNetworkAwareEndpoint(`/api/files/download?path=${encodeURIComponent(filePath)}&inline=1`), name, data.mime, filePath);
             } else if (data.type === 'text') {
                 if (data.truncated) truncBadge.classList.remove('hidden');
+                _editState.editable = !!data.editable;
+                _editState.original = data.content;
+                _setEditBtns(false, _editState.editable);
                 const isCSV = name.toLowerCase().endsWith('.csv');
                 if (isCSV) {
-                    // Render CSV as table
                     const lines = data.content.split('\n').filter(l => l.trim());
                     if (lines.length > 0) {
                         const headers = lines[0].split(',');
@@ -24348,7 +24369,63 @@ function previewFile(filePath) {
         });
 }
 
+function toggleFileEdit() {
+    if (!_editState.editable || _editState.editing) return;
+    _editState.editing = true;
+    _setEditBtns(true, true);
+    const content = document.getElementById('preview-content');
+    if (!content) return;
+    content.innerHTML = `<textarea id="file-editor" spellcheck="false" class="w-full h-full bg-black/80 text-gray-200 font-mono text-xs p-3 rounded border border-slate-600 focus:border-amber-500 focus:outline-none resize-none" style="min-height:100%"></textarea>`;
+    const ta = document.getElementById('file-editor');
+    if (ta) {
+        ta.value = _editState.original;
+        ta.focus();
+    }
+}
+
+function cancelFileEdit() {
+    if (!_editState.editing) return;
+    _editState.editing = false;
+    _setEditBtns(false, _editState.editable);
+    const content = document.getElementById('preview-content');
+    if (content) {
+        content.innerHTML = `<pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words leading-relaxed">${escapeHtml(_editState.original)}</pre>`;
+    }
+}
+
+async function saveFileEdit() {
+    const ta = document.getElementById('file-editor');
+    const statusEl = document.getElementById('preview-save-status');
+    if (!ta || !_editState.path) return;
+    const newContent = ta.value;
+    try {
+        if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.classList.remove('hidden'); }
+        const r = await networkAwareFetch('/api/files/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: _editState.path, content: newContent })
+        }).then(r => r.json());
+        if (r.success) {
+            _editState.original = newContent;
+            _editState.editing = false;
+            _setEditBtns(false, true);
+            const content = document.getElementById('preview-content');
+            if (content) {
+                content.innerHTML = `<pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words leading-relaxed">${escapeHtml(newContent)}</pre>`;
+            }
+            if (statusEl) { statusEl.textContent = 'Saved'; statusEl.classList.remove('hidden'); }
+            setTimeout(() => { if (statusEl) statusEl.classList.add('hidden'); }, 3000);
+        } else {
+            if (statusEl) { statusEl.textContent = r.error || 'Save failed'; statusEl.className = 'text-xs text-red-400'; statusEl.classList.remove('hidden'); }
+        }
+    } catch (e) {
+        if (statusEl) { statusEl.textContent = e.message; statusEl.className = 'text-xs text-red-400'; statusEl.classList.remove('hidden'); }
+    }
+}
+
 function closeFilePreview() {
+    _editState.editing = false;
+    _editState.editable = false;
     const modal = document.getElementById('file-preview-modal');
     if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
 }

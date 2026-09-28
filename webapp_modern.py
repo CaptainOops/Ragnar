@@ -23732,22 +23732,65 @@ def preview_file_api():
                             'size': file_size, 'name': os.path.basename(actual_path)})
 
         elif ext in TEXT_EXTENSIONS or (mime_type and mime_type.startswith('text/')):
+            can_edit = ext in EDITABLE_EXTENSIONS and file_size <= 512 * 1024
             if file_size > 512 * 1024:  # 512KB limit for text
-                # Return first 512KB with truncation notice
                 with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read(512 * 1024)
                 return jsonify({'type': 'text', 'content': content, 'truncated': True,
-                                'size': file_size, 'name': os.path.basename(actual_path)})
+                                'size': file_size, 'name': os.path.basename(actual_path),
+                                'editable': False})
             with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
             return jsonify({'type': 'text', 'content': content, 'truncated': False,
-                            'size': file_size, 'name': os.path.basename(actual_path)})
+                            'size': file_size, 'name': os.path.basename(actual_path),
+                            'editable': can_edit})
         else:
             return jsonify({'type': 'binary', 'mime': mime_type,
                             'size': file_size, 'name': os.path.basename(actual_path)})
 
     except Exception as e:
         logger.error(f"Error previewing file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+EDITABLE_EXTENSIONS = {'.txt', '.log', '.json', '.xml', '.yaml', '.yml',
+                       '.md', '.conf', '.cfg', '.ini', '.sh', '.py',
+                       '.csv', '.env', '.toml', '.html', '.css', '.js',
+                       '.bat', '.ps1', '.rb', '.pl', '.lua', '.sql',
+                       '.nmap', '.gnmap', '.rules'}
+
+@app.route('/api/files/save', methods=['POST'])
+def save_file_api():
+    """Save edited text file content back to disk."""
+    try:
+        body = request.get_json(silent=True) or {}
+        file_path = (body.get('path') or '').strip()
+        content = body.get('content')
+        if not file_path:
+            return jsonify({'error': 'File path required'}), 400
+        if content is None:
+            return jsonify({'error': 'Content required'}), 400
+
+        try:
+            actual_path = _resolve_readable_path(file_path)
+        except ValueError:
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.isfile(actual_path):
+            return jsonify({'error': 'File not found'}), 404
+
+        ext = os.path.splitext(actual_path)[1].lower()
+        if ext not in EDITABLE_EXTENSIONS:
+            return jsonify({'error': 'This file type cannot be edited'}), 400
+
+        with open(actual_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        logger.info(f"File saved: {actual_path} ({len(content)} bytes)")
+        return jsonify({'success': True, 'size': len(content)})
+
+    except Exception as e:
+        logger.error(f"Error saving file: {e}")
         return jsonify({'error': str(e)}), 500
 
 
