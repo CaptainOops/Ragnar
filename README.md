@@ -89,6 +89,7 @@ Every feature below has a full guide in [`docs/`](docs). Short version here, det
 - **LAN-first connectivity & smart WiFi** — prefers Ethernet when present, manages WiFi as fallback, auto-connects to known networks and falls back to AP mode with a captive portal.
 - **Hardware-bound authentication** — optional login with full database encryption at rest. See [Security & Authentication](docs/SECURITY.md).
 - **Vault — encrypted file store** — a password-protected, AES-256-GCM store in the **Files** tab (contents *and* index are ciphertext on disk; scrypt-derived key; auto-locks; no recovery). See [Vault](docs/vault.md).
+- **In-browser file editor** — open any text file (JSON, Python, shell, YAML, config, etc.) in the Files tab and edit it directly from the dashboard. Changes save back to disk — useful for tweaking console scripts, configs and scan results without SSH.
 - **Web Terminal** — optional in-dashboard shell (xterm.js ↔ PTY over Socket.IO) as the non-root `ragnar` user; off by default and login-gated — enable only on trusted networks.
 - **Kill Switch** — `/api/kill` wipes all databases, logs and data. See [Kill Switch](docs/KILL_SWITCH.md).
 
