@@ -413,6 +413,10 @@ API: `GET /api/net/rtl/health` (state, port, recent drops, kernel evidence,
 history), `POST /api/net/rtl/heal` (recover now), `POST /api/net/rtl/reset`
 (USB reset if present, otherwise the recovery ladder).
 
+The IQ capture and rtl\_power subprocesses are terminated and their pipes closed
+in the sweep thread's `finally` block, so a stopped or restarted sweep never
+leaves an orphaned `rtl_sdr` process holding the USB device.
+
 ## Front-end health and proving a signal is real
 
 
