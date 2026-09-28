@@ -7298,6 +7298,18 @@
                     </button>
                 </div>
                 
+                <!-- Sub-tab navigation -->
+                <div class="flex flex-wrap items-center gap-1 mb-5 border-b border-slate-800 pb-2">
+                    <button id="cfg-subtab-system" onclick="showConfigSubtab('system')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors bg-Ragnar-600 text-white">System</button>
+                    <button id="cfg-subtab-network" onclick="showConfigSubtab('network')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-slate-400 hover:bg-slate-700 hover:text-white">Network</button>
+                    <button id="cfg-subtab-bluetooth" onclick="showConfigSubtab('bluetooth')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-slate-400 hover:bg-slate-700 hover:text-white">Bluetooth</button>
+                    <button id="cfg-subtab-wardriving" onclick="showConfigSubtab('wardriving')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-slate-400 hover:bg-slate-700 hover:text-white">Wardriving</button>
+                    <button id="cfg-subtab-security" onclick="showConfigSubtab('security')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-slate-400 hover:bg-slate-700 hover:text-white">Security</button>
+                    <button id="cfg-subtab-integrations" onclick="showConfigSubtab('integrations')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-slate-400 hover:bg-slate-700 hover:text-white">Integrations</button>
+                    <button id="cfg-subtab-advanced" onclick="showConfigSubtab('advanced')" class="cfg-subtab px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-slate-400 hover:bg-slate-700 hover:text-white">Advanced</button>
+                </div>
+
+                <div id="cfg-sub-system" class="cfg-subview">
                 <!-- System Management Section -->
                 <div class="mb-8">
                     <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">System Management</h3>
@@ -7590,6 +7602,9 @@
                     </div>
                 </div>
 
+                </div><!-- /cfg-sub-system -->
+
+                <div id="cfg-sub-network" class="cfg-subview hidden">
                 <!-- Network Scanning Section -->
                 <div id="network-scanning-config-section" class="mb-8">
                     <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">Network Scanning</h3>
@@ -7614,6 +7629,9 @@
                     </div>
                 </div>
 
+                </div><!-- /cfg-sub-network -->
+
+                <div id="cfg-sub-bluetooth" class="cfg-subview hidden">
                 <!-- Bluetooth handover Section.
                      The Ragnar mobile app can find this box over BLE and read
                      its LAN IP (see ble_provisioning.py + the app's src/ble.ts),
@@ -7686,6 +7704,9 @@
                     </div>
                 </div>
 
+                </div><!-- /cfg-sub-bluetooth -->
+
+                <div id="cfg-sub-wardriving" class="cfg-subview hidden">
                 <!-- Wardriving Section -->
                 <div id="wardriving-config-section" class="mb-8">
                     <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">Wardriving</h3>
@@ -7988,6 +8009,9 @@
                     </div><!-- /#wardriving-config-body -->
                 </div>
 
+                </div><!-- /cfg-sub-wardriving -->
+
+                <div id="cfg-sub-security" class="cfg-subview hidden">
                 <!-- Security Section (collapsible) -->
                 <div class="mb-8">
                     <div class="glass rounded-lg overflow-hidden">
@@ -8388,6 +8412,9 @@
                     </div>
                 </div>
                 
+                </div><!-- /cfg-sub-security -->
+
+                <div id="cfg-sub-integrations" class="cfg-subview hidden">
                 <!-- AI Configuration Section -->
                 <div class="mb-8">
                     <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">AI Integration</h3>
@@ -8615,6 +8642,9 @@
                     </div>
                 </div>
 
+                </div><!-- /cfg-sub-integrations -->
+
+                <div id="cfg-sub-advanced" class="cfg-subview hidden">
                 <!-- Hardware Profile Configuration Section -->
                 <div class="mb-8">
                     <h3 class="text-xl font-semibold mb-4 text-Ragnar-400">Hardware Resource Configuration</h3>
@@ -8715,9 +8745,10 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /cfg-sub-advanced -->
             </div>
         </div>
-        
+
         <!-- Terminal Tab (interactive shell on the Pi via PTY over Socket.IO) -->
         <div id="terminal-tab" class="tab-content hidden">
             <div class="max-w-6xl mx-auto">
@@ -8957,7 +8988,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260928-cellular"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260928-settings-subtabs"></script>
 
 
 
