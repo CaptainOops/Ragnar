@@ -53,9 +53,50 @@ interface's default route (IPv4 and IPv6) to metric **20000**, in three ways:
    `cdc_ether`/`cdc_ncm` devices, which are detected by USB vendor (see below).
 
 The kernel always uses the lowest-metric default route. As long as Ethernet or
-Wi-Fi has one, cellular is on **standby**. When they drop, the cellular route is
-the only one left and traffic moves over within seconds; when they come back,
-traffic moves back.
+Wi-Fi has one, cellular is on **standby**. A route alone isn't enough, though:
+it only disappears when Wi-Fi or Ethernet loses its *link*. If the ISP dies
+upstream, Wi-Fi stays associated, keeps its route, and without heartbeats
+traffic would sit on a dead WAN forever.
+
+### Heartbeat failover
+
+About every 10 s, while a cellular link is plugged in, Ragnar checks the
+internet **through each primary interface**. The socket is bound to that
+interface, so the check can't take a shortcut over cellular.
+
+- **Beyond the gateway, not just the gateway.** Each check is a TCP handshake
+  to public targets, by default `1.1.1.1:443`, `8.8.8.8:443` and
+  `9.9.9.9:443`. A target that is the interface's gateway, or on its own
+  subnet, is skipped and shown as *skipped* in the card. A router that answers
+  while its upstream is dead can't count as healthy. Only a completed
+  handshake counts: a *connection refused* can come from that same router, so
+  it counts as a failure.
+- **Several targets.** A round is **good** when at least *N* targets answer
+  (default 1). One unreachable target never triggers failover.
+- **Failover:** after **3** consecutive bad rounds (about 30 s), Ragnar first
+  checks the cellular link the same way. If cellular passes, its route metric
+  is **promoted** from 20000 to **50**, below every Wi-Fi/Ethernet metric, and
+  traffic moves to cellular even though the primary still has a route. If
+  cellular fails too, Ragnar stays put and sends one warning.
+- **Failback hysteresis:** traffic returns to the primary only after **6**
+  *consecutive* good rounds (about 60 s). One bad round in between resets the
+  count, so a flapping WAN doesn't bounce Ragnar back and forth. The same
+  hysteresis applies when Wi-Fi loses its link and later reconnects: cellular
+  keeps the traffic until the returning link has proved itself.
+- **Outage window:** the restore alert reports when the outage started, when
+  it ended, how long it lasted, and how much data cellular carried, e.g.
+  *"Uplink restored to wlan0 after a 33m 20s outage (13:46:40 → 14:20:00);
+  cellular carried 36.4 MB"*.
+
+The failover state is kept in `/run/ragnar-cellular.json`, so a service
+restart mid-outage stays failed over, and the dhcpcd hook applies the right
+metric if the hotspot reconnects. A reboot starts clean. Heartbeats run only
+while a cellular link is present: a unit with nothing to fail over to sends
+no probes. Each round is a few TCP handshakes, well under 1 KB.
+
+The card shows the live state: *primary healthy*, *primary failing 2/3*, or
+*FAILED OVER since … — fail back 4/6*. It also shows each target's result
+and the last outage.
 
 **It is never scanned.** The network scanner, ARP liveness sweeps, the
 Ethernet lists, the passive-capture interface pickers (L2/L3 watchers, vendor
@@ -71,9 +112,10 @@ HAT's IFACE card it is last in Auto order, but you can still pin it to
 speed-test the cellular link itself.
 
 **Failover alerts.** With push notifications enabled, **Config → Push
-Notifications → Cellular Failover** sends one message when the uplink moves to
-cellular and one when it moves back. The failover message goes out over
-cellular, so you still receive it after the site network is gone.
+Notifications → Cellular Failover** sends one alert on failover (high priority,
+with the per-interface target counts that triggered it) and one on restore
+(with the full outage window). The failover alert goes out over cellular, so
+you still receive it after the site network is gone.
 
 ## Detection
 
@@ -98,6 +140,12 @@ add it to the matching override list.
 | `cellular_route_metric` | `20000` | Fallback metric (1000–65535). Must stay above every Wi-Fi/Ethernet metric. |
 | `cellular_allow_scan` | `false` | Allow the network scanner to target a cellular LAN. |
 | `cellular_force_ifaces` / `cellular_exclude_ifaces` | `""` | Space/comma-separated interface names. |
+| `cellular_heartbeat_enabled` | `true` | Heartbeat failover. Off = cellular takes over only on link/route loss, with no hysteresis. |
+| `cellular_heartbeat_targets` | `1.1.1.1:443 8.8.8.8:443 9.9.9.9:443` | Public IPv4 `ip[:port]` targets (up to 8; no DNS names, no loopback/link-local). |
+| `cellular_heartbeat_min_ok` | `1` | Targets that must answer for a good round. |
+| `cellular_failover_after` | `3` | Consecutive bad rounds before failover (1–60). |
+| `cellular_failback_after` | `6` | Consecutive good rounds before failback (1–360). |
+| `cellular_promoted_metric` | `50` | Cellular metric while failed over (must beat every primary). |
 | `pushover_notify_cellular` | `true` | Failover / restore push notifications. |
 
 ## API & CLI
@@ -105,14 +153,18 @@ add it to the matching override list.
 - `GET /api/cellular/status`: settings, the active uplink, `on_cellular`, and
   per-interface role (`active` / `standby` / `no route`), driver, USB device,
   IPv4, gateway, metric and rx/tx byte counters. Also returns the last monitor
-  events.
+  events and `heartbeat`: state, streaks, per-interface target results, and
+  the last outage.
 - `POST /api/cellular/settings`: `{enabled, metric, allow_scan, force_ifaces,
-  exclude_ifaces}`. Saves, re-installs the hooks and enforces immediately.
+  exclude_ifaces, heartbeat_enabled, heartbeat_targets, heartbeat_min_ok,
+  failover_after, failback_after}`. Saves, re-installs the hooks and enforces
+  immediately.
 
 ```bash
 sudo python3 cellular_uplink.py status            # same JSON as the API
 sudo python3 cellular_uplink.py is-cellular enx0a1b2c3d4e5f
 sudo python3 cellular_uplink.py enforce           # pin metrics now
+sudo python3 cellular_uplink.py probe wlan0       # one heartbeat round through wlan0
 sudo python3 cellular_uplink.py install           # (re)write NM + dhcpcd hooks
 ```
 

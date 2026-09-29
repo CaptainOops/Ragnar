@@ -54,7 +54,7 @@ browse than search.
 - [BLE provisioning](ble_provisioning.md) · [Power (badge, Pi 5 USB limit, power test)](power.md) · [Cooling fan (status, manual speed, fan curve)](fan.md) · [UPS integration](UPS_INTEGRATION.md)
 
 ## Platform & safety
-- [Cellular Uplink Fallback](cellular-uplink.md) — USB-tethered hotspot / phone / LTE modem as a backup uplink, never scanned
+- [Cellular Uplink Fallback](cellular-uplink.md) — USB-tethered hotspot / phone / LTE modem as a backup uplink with heartbeat failover + failback hysteresis, never scanned
 - [Security & Authentication](SECURITY.md) — hardware-bound login, encryption at rest
 - [Vault](vault.md) — encrypted file store
 - [Kill Switch](KILL_SWITCH.md) — wipe all data
