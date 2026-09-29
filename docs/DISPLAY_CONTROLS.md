@@ -141,6 +141,22 @@ become wardriving actions:
 | **KEY2** | **Reconnect** to a known Wi‑Fi (wardriving keeps running) |
 | **KEY3** | **Start / stop** the phone-access AP |
 
+> **What "known Wi‑Fi" means (KEY2 here, KEY4 on the 2.7" HAT):** Ragnar's own
+> saved networks first, then **every Wi‑Fi profile saved in NetworkManager** —
+> the ones added by the Pi Imager, `nmcli` or the desktop, which is where most
+> units keep them. It rescans, then brings up the best saved network **in
+> range** (NetworkManager priority first, then the one used most recently) with
+> `nmcli connection up`, using its stored password as-is. AP profiles, and
+> profiles pinned to a Wi‑Fi dongle that isn't plugged in, are skipped. This is
+> the reliable way back online after carrying the unit out of range and back:
+> NetworkManager stops retrying a profile after a few failed attempts, and this
+> clears that back-off. The web UI's **Reconnect** button runs the same code.
+> Previously, with Ragnar's own list empty, the key logged "No known networks
+> configured" and did nothing.
+>
+> KEY2 reconnects only on the **wardriving screens**. On the normal Ragnar
+> pages (after KEY1) it rotates the screen.
+
 The screens, in carousel order (the footer shows the key hints and an `n/6`
 counter):
 
