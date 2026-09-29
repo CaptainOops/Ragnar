@@ -401,7 +401,7 @@ Ragnar already knows most of what the receiver is missing, so
   declared as ±100 km so a fix from another town doesn't mislead it.
 - **Time** — the system clock, **only when the kernel reports it NTP-synced**
   (`adjtimex`). A Pi has no RTC; booted offline it runs on fake-hwclock, and a
-  wrong time is worse than none, so an unsynced boot sends position only.
+  wrong time is worse than none, so an unsynced boot sends no time.
 - **Orbit data** — 5 s after the session's first fix, again 1 min later, then
   every 5 min, Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris
   (`AID-EPH`) and health/UTC/iono (`AID-HUI`) and saves them to
@@ -413,6 +413,11 @@ Ragnar already knows most of what the receiver is missing, so
   At the next start the data is re-injected if fresh: ephemeris entries ≤ 4 h old
   (a reboot mid-drive becomes a *hot* start), almanac/HUI ≤ 30 days (a *warm*
   start). The status `aid_saved` counts show what is on disk in total.
+  **Orbit data is injected even on an offline boot** (no NTP), which is the
+  normal wardriving case. The receiver learns GPS time from the first
+  satellite within seconds and checks each ephemeris against its own
+  reference time, ignoring expired ones. fake-hwclock only runs *behind* real
+  time, so data that is already too old by the local clock is still skipped.
 
 It runs once per reader start, 3 s in, and only if there's no fix yet, so a
 receiver that is still tracking (service restart mid-drive) is left alone.

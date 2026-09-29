@@ -109,14 +109,30 @@ def test_build_frames_policy():
     assert (0x0B, 0x30) in kinds and (0x0B, 0x31) not in kinds
     assert any('time' in s for s in summary)
 
-    # Untrusted clock: position only, no time, no orbit data.
+    # Untrusted clock (offline boot): no time, but orbit data still goes in —
+    # the receiver checks ephemeris age itself. Data older than the limit on
+    # the (behind-running) local clock is still skipped.
     frames, summary = ga.build_assist_frames(last, now, False, store)
-    assert [_payload(f)[:2] for f in frames] == [(0x0B, 0x01), (0x13, 0x40)]
+    kinds = [_payload(f)[:2] for f in frames]
+    assert kinds[:2] == [(0x0B, 0x01), (0x13, 0x40)]
+    assert (0x0B, 0x30) in kinds and (0x0B, 0x31) not in kinds
     flags = struct.unpack_from('<I', _payload(frames[0])[2], 44)[0]
     assert not flags & 0x02
+    assert not any('time' in s for s in summary)
 
     # Nothing known at all: send nothing.
-    assert ga.build_assist_frames(None, now, False, store) == ([], [])
+    assert ga.build_assist_frames(None, now, False, {}) == ([], [])
+
+
+def test_offline_clock_behind_the_save_still_injects_ephemeris():
+    now = 1_790_000_000.0
+    eph = {'5': {'d': (struct.pack('<II', 5, 1) + bytes(96)).hex(), 't': now + 3600}}
+    frames, summary = ga.build_assist_frames(None, now, False, {'eph': eph})
+    assert [_payload(f)[:2] for f in frames] == [(0x0B, 0x31)]
+    assert summary == ['ephemeris 1 SV (receiver checks age)']
+    # With a trusted clock, a save "from the future" is nonsense: skip it.
+    frames, _ = ga.build_assist_frames(None, now, True, {'eph': eph})
+    assert (0x0B, 0x31) not in [_payload(f)[:2] for f in frames]
 
 
 def _mgr(tmp_path, **kw):
