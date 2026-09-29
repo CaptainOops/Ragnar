@@ -402,12 +402,17 @@ Ragnar already knows most of what the receiver is missing, so
 - **Time** — the system clock, **only when the kernel reports it NTP-synced**
   (`adjtimex`). A Pi has no RTC; booted offline it runs on fake-hwclock, and a
   wrong time is worse than none, so an unsynced boot sends position only.
-- **Orbit data** — 5 s after a fix (again at 1 min, then every 5 min while fixed)
-  Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris (`AID-EPH`) and
-  health/UTC/iono (`AID-HUI`) and saves them to `data/gps_aid.json`.
-  At the next start they are re-injected if fresh: ephemeris ≤ 4 h old (a
-  reboot mid-drive becomes a *hot* start), almanac/HUI ≤ 30 days (a *warm*
-  start). An empty poll never overwrites good saved data.
+- **Orbit data** — 5 s after the session's first fix, again 1 min later, then
+  every 5 min, Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris
+  (`AID-EPH`) and health/UTC/iono (`AID-HUI`) and saves them to
+  `data/gps_aid.json`. The schedule runs from the *first* fix, whether or not
+  the fix is still held: the receiver keeps what it decoded when a marginal fix
+  flickers. A poll that returns nothing is retried a minute later. Saves
+  **merge per satellite**, so a later poll that reports fewer satellites never
+  shrinks the saved set. Each ephemeris entry keeps its own timestamp.
+  At the next start the data is re-injected if fresh: ephemeris entries ≤ 4 h old
+  (a reboot mid-drive becomes a *hot* start), almanac/HUI ≤ 30 days (a *warm*
+  start). The status `aid_saved` counts show what is on disk in total.
 
 It runs once per reader start, 3 s in, and only if there's no fix yet, so a
 receiver that is still tracking (service restart mid-drive) is left alone.

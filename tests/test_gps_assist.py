@@ -77,9 +77,22 @@ def test_update_store_keeps_only_real_data_and_never_wipes():
               _eph(5), (0x0B, 0x31, struct.pack('<II', 6, 0))]
     assert ga.update_store(store, frames, 1000.0) == (2, 1, False)
     assert set(store['alm']) == {'1', '2'} and set(store['eph']) == {'5'}
-    # A later poll with no ephemeris (receiver lost track) keeps the old set.
+    # A later, smaller poll merges instead of replacing: nothing saved is lost.
     assert ga.update_store(store, [_alm(7)], 2000.0) == (1, 0, False)
-    assert set(store['alm']) == {'7'} and store['eph_saved_at'] == 1000.0
+    assert set(store['alm']) == {'1', '2', '7'} and set(store['eph']) == {'5'}
+    # Ephemeris ages out per SV.
+    ga.update_store(store, [_eph(6)], 1000.0 + ga.EPH_MAX_AGE_S + 1)
+    assert set(store['eph']) == {'6'}
+
+
+def test_legacy_flat_eph_store_still_injects_and_migrates():
+    now = 1_790_000_000.0
+    hx = (struct.pack('<II', 5, 1) + bytes(96)).hex()
+    store = {'eph': {'5': hx}, 'eph_saved_at': now - 600}
+    frames, summary = ga.build_assist_frames({'lat': 1.0, 'lon': 2.0}, now, True, store)
+    assert 'ephemeris 1 SV' in summary
+    ga.update_store(store, [_eph(9)], now)
+    assert store['eph']['5'] == {'d': hx, 't': now - 600} and set(store['eph']) == {'5', '9'}
 
 
 def test_build_frames_policy():
@@ -87,8 +100,8 @@ def test_build_frames_policy():
     last = {'lat': 59.3, 'lon': 18.0, 'alt': 20.0}
     store = {'alm': {'1': (struct.pack('<II', 1, 2400) + bytes(32)).hex()},
              'alm_saved_at': now - 86400,
-             'eph': {'5': (struct.pack('<II', 5, 1) + bytes(96)).hex()},
-             'eph_saved_at': now - 5 * 3600}          # stale: > 4 h
+             'eph': {'5': {'d': (struct.pack('<II', 5, 1) + bytes(96)).hex(),
+                           't': now - 5 * 3600}}}      # stale: > 4 h
 
     frames, summary = ga.build_assist_frames(last, now, True, store)
     kinds = [_payload(f)[:2] for f in frames]
@@ -152,17 +165,26 @@ def test_manager_serial_capture_saves_store(tmp_path):
     assert m.get_status()['aid_saved']['eph'] == 1
 
 
-def test_manager_saves_soon_after_fix_then_followup(tmp_path):
+def test_manager_save_schedule_follows_first_fix_not_continuous_fix(tmp_path):
     m = _mgr(tmp_path)
     m._assist_done = True
-    m.fix_quality, m.latitude, m.longitude = 1, 59.3, 18.0
     calls = []
+    t0 = time.time()
     with patch.object(GPSManager, '_run_bg', staticmethod(calls.append)):
-        m.last_update = time.time()
-        m._assist_tick()                       # fix just appeared: too early
-        assert not calls
-        m._fix_since = time.time() - GPSManager._AID_SAVE_AFTER_FIX_S
+        m.fix_quality, m.latitude, m.longitude = 1, 59.3, 18.0
+        m.last_update = t0
+        m._assist_tick()                       # first fix stamped: too early
+        assert not calls and m.first_fix_time
+        # The fix flickers away, but the save still fires 5 s after first fix.
+        m.fix_quality = 0
+        m.first_fix_time = t0 - GPSManager._AID_SAVE_AFTER_FIX_S
         m._assist_tick()
-        assert len(calls) == 1                 # early save fires
+        assert len(calls) == 1
         m._aid_busy = False
-        assert m._aid_next_save - time.time() <= GPSManager._AID_SAVE_FOLLOWUP_S
+        # Nothing saved yet → retry after the 1-min follow-up interval.
+        assert abs(m._aid_next_save - time.time() - GPSManager._AID_SAVE_FOLLOWUP_S) < 2
+        m._aid_saves = 1
+        m._aid_next_save = 0
+        m._assist_tick()
+        assert len(calls) == 2
+        assert abs(m._aid_next_save - time.time() - GPSManager._AID_SAVE_EVERY_S) < 2

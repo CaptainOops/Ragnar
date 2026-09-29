@@ -346,8 +346,8 @@ class GPSManager:
         self._assist_status = None       # {'at', 'items', 'via'} once sent
         self._aid_saved = None           # {'at', 'alm', 'eph'} after a save
         self._aid_next_save = 0.0
+        self._aid_saves = 0              # successful saves this reader run
         self._aid_busy = False
-        self._fix_since = 0.0
         self._ubx_capture = None         # serial path: bytes during a poll
         self._ubx_capture_until = 0.0
 
@@ -362,7 +362,8 @@ class GPSManager:
         self.start_time = time.time()
         self.first_fix_time = 0
         self._assist_done = False
-        self._fix_since = 0.0
+        self._aid_saves = 0
+        self._aid_next_save = 0.0
 
         if not self.port:
             self.port = detect_gps_device(exclude_ports=self._exclude_ports)
@@ -542,11 +543,14 @@ class GPSManager:
     # that is still powered and tracking (service restart mid-drive) reports
     # its fix first and is left alone.
     _ASSIST_DELAY_S = 3
-    # Save orbit data soon after a fix — the receiver already holds ephemeris
-    # for every satellite it fixed with, and people power off or restart right
-    # after seeing "fix" (a 60 s wait lost the save in the field). Save again
-    # at 1 min, when more ephemeris has landed, then every 5 min so a power
-    # cut mid-drive leaves fresh ephemeris and a growing almanac on disk.
+    # Save orbit data soon after the first fix — the receiver already holds
+    # ephemeris for every satellite it fixed with, and people power off or
+    # restart right after seeing "fix". Save again 1 min later, then every
+    # 5 min so a power cut mid-drive leaves fresh ephemeris and a growing
+    # almanac on disk. Timed from the session's FIRST fix, not a continuous
+    # one: the receiver keeps what it decoded when a marginal fix flickers
+    # (a continuous-fix requirement meant repeat saves almost never ran), and
+    # a poll that yields nothing is retried a minute later.
     _AID_SAVE_AFTER_FIX_S = 5
     _AID_SAVE_FOLLOWUP_S = 60
     _AID_SAVE_EVERY_S = 300
@@ -568,19 +572,16 @@ class GPSManager:
                 self._run_bg(self._send_assist)
         if not self._aid_file:
             return
-        if self.has_fix():
-            if not self._fix_since:
-                self._fix_since = now
-            if (now - self._fix_since >= self._AID_SAVE_AFTER_FIX_S
-                    and now >= self._aid_next_save
-                    and not self._aid_busy and self._ubx_capture is None):
-                self._aid_next_save = now + (self._AID_SAVE_EVERY_S
-                                             if self._aid_saved
-                                             else self._AID_SAVE_FOLLOWUP_S)
-                self._aid_busy = True
-                self._run_bg(self._capture_aid)
-        else:
-            self._fix_since = 0.0
+        self.has_fix()                 # stamps first_fix_time on the first fix
+        if (self.first_fix_time
+                and now - self.first_fix_time >= self._AID_SAVE_AFTER_FIX_S
+                and now >= self._aid_next_save
+                and not self._aid_busy and self._ubx_capture is None):
+            self._aid_next_save = now + (self._AID_SAVE_EVERY_S
+                                         if self._aid_saves
+                                         else self._AID_SAVE_FOLLOWUP_S)
+            self._aid_busy = True
+            self._run_bg(self._capture_aid)
 
     @staticmethod
     def _run_bg(fn):
@@ -651,9 +652,12 @@ class GPSManager:
                 logger.debug("GPS orbit-data poll returned nothing usable")
                 return
             gps_assist.save_store(self._aid_file, store)
-            self._aid_saved = {'at': now, 'alm': n_alm, 'eph': n_eph}
-            logger.info(f"GPS assist: saved almanac {n_alm} SV, ephemeris "
-                        f"{n_eph} SV for the next cold start")
+            self._aid_saves += 1
+            # Report what is on disk now (merged), not just this poll.
+            self._aid_saved = {'at': now, 'alm': len(store.get('alm') or {}),
+                               'eph': len(store.get('eph') or {})}
+            logger.info(f"GPS assist: saved almanac {self._aid_saved['alm']} SV, "
+                        f"ephemeris {self._aid_saved['eph']} SV for the next cold start")
         except Exception as e:
             logger.debug(f"GPS orbit-data save failed: {e}")
 
