@@ -233,7 +233,9 @@ The **IFACE** card picks which NIC the egress tests (**Speedtest**, **Ping GW**,
 **Ping WAN**) originate from: ↑/↓ highlights **Auto** or an interface, the
 centre press selects it (`*` marks the active choice, and each row shows the
 NIC's IP, *no IP*, or *down*). **Auto** follows a fixed priority — **built-in
-Ethernet → USB Ethernet → wlan1 → wlan0** — picking the first interface that is
+Ethernet → USB Ethernet → wlan1 → wlan0 → cellular** (a USB-tethered hotspot,
+see [Cellular Uplink Fallback](cellular-uplink.md); pin it to test the cellular
+link itself) — picking the first interface that is
 up, addressed and (for the speedtest) verified able to reach the internet, so a
 plugged-in cable is tested instead of whatever holds the default route. A pinned
 interface really binds the socket to that device; Ping GW then targets that

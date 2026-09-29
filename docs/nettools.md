@@ -180,7 +180,8 @@ The display auto-cycles six pages every **5 seconds**:
    WAN) originate from. ↑/↓ highlights **Auto** or an interface, press selects
    it; `*` marks the active choice and each row shows the NIC's IP, *no IP* or
    *down*. **Auto** follows a fixed priority — **built-in Ethernet → USB
-   Ethernet → wlan1 → wlan0** — taking the first interface that is up and
+   Ethernet → wlan1 → wlan0 → cellular** (tethered hotspot, last; pin it to
+   test the cellular link) — taking the first interface that is up and
    addressed (and, for the speed test, verified able to reach the internet with
    a device-bound probe), so a plugged-in cable is what gets tested instead of
    whatever holds the default route. The selection resets to Auto each time the
@@ -243,7 +244,7 @@ press is never blocked, and the panel wakes immediately on a press rather than
 waiting out the 5 s cycle.
 
 The speed test and pings originate from the **priority interface** — built-in
-Ethernet → USB Ethernet → wlan1 → wlan0, first one up and addressed (the speed
+Ethernet → USB Ethernet → wlan1 → wlan0 → cellular, first one up and addressed (the speed
 test also verifies it can reach the internet) — not from whatever holds the
 default route, so plugging in a cable is enough to test the cable. The result
 page shows the interface used.
@@ -277,7 +278,7 @@ The functions selectable inside each card (Up/Down, then press):
 | **IP** | **Ping gateway** (LAN) · **Ping internet** (`8.8.8.8`, WAN) · **DNS Doctor** (poison/hijack verdict) · **Speed test** |
 | **DHCP** / **WIFI** / **SIGNAL** | read-only (no functions) |
 | **SPECTRUM** | Up/Down selects the **band** (2.4 / 5 / 6 GHz) whose live channel-occupancy spectrum is drawn (scanned on the widest-band adapter — plug in the Alfa for 5/6 GHz); press does nothing (nothing to run) |
-| **IFACE** | Up/Down highlights **Auto** or a NIC; press **pins the egress tests** (Speed test / pings) to it. Auto = built-in eth → USB eth → wlan1 → wlan0 |
+| **IFACE** | Up/Down highlights **Auto** or a NIC; press **pins the egress tests** (Speed test / pings) to it. Auto = built-in eth → USB eth → wlan1 → wlan0 → cellular |
 | **BT** | **Scan BT** — press runs a ~8 s Bluetooth/BLE discovery sweep; the card then shows that result (with its age) until you scan again |
 | **ZIGBEE** | **Scan Zigbee** — press runs a ~8 s 802.15.4 sniff on the HuginnESP; the card then shows that result (with its age) until you scan again |
 
