@@ -15972,7 +15972,8 @@ def _start_gps_manager(engine):
         port=gps_port,
         baudrate=shared_data.config.get('wardriving_gps_baudrate', 9600),
         exclude_ports=esp_exclude,
-        state_file=os.path.join(engine.data_dir, 'last_gps.json'))
+        state_file=os.path.join(engine.data_dir, 'last_gps.json'),
+        assist=shared_data.config.get('wardriving_gps_assist', True))
     return engine._gps.start()
 
 

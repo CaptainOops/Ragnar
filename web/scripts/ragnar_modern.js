@@ -575,6 +575,10 @@ const configMetadata = {
         label: "GPS Baud Rate",
         description: "Serial baud rate for the GPS module. Most USB GPS modules use 9600. Some high-speed modules use 38400 or 115200."
     },
+    wardriving_gps_assist: {
+        label: "GPS Assisted Start",
+        description: "Pre-load the GPS with its last-known position, the NTP time and its own saved almanac/ephemeris at start, so a battery-less u-blox puck starts warm instead of cold and fixes much faster on a weak sky. Time is only sent when the clock is NTP-synced."
+    },
     wardriving_auto_export: {
         label: "Auto Export on Stop",
         description: "Automatically export a WiGLE CSV file when a wardriving session is stopped."
@@ -23153,7 +23157,7 @@ function displayConfigForm(config) {
     // Render wardriving config settings into the dedicated Wardriving section slot
     const wdSlot = document.getElementById('wardriving-config-slot');
     if (wdSlot) {
-        const wdKeys = ['wardriving_scan_interval', 'wardriving_gps_port', 'wardriving_gps_baudrate', 'wardriving_auto_export', 'wardriving_wigle_include_zigbee'];
+        const wdKeys = ['wardriving_scan_interval', 'wardriving_gps_port', 'wardriving_gps_baudrate', 'wardriving_gps_assist', 'wardriving_auto_export', 'wardriving_wigle_include_zigbee'];
         let wdHtml = '<form id="wardriving-config-form" class="bg-slate-800 bg-opacity-50 rounded-lg p-4 mt-4"><h4 class="text-md font-bold mb-4 text-gray-300">Settings</h4><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
         wdKeys.forEach(key => {
             const hasKey = Object.prototype.hasOwnProperty.call(config, key);
@@ -30471,6 +30475,19 @@ function _wdFetchDiagExtra(force) {
         .finally(() => { _wdDiagExtraBusy = false; });
 }
 
+// "position, time (NTP), almanac 31 SV · 2m ago" — what gps_assist pre-loaded
+// at start, plus when orbit data was last saved for the next cold start.
+function _wdAssist(gps) {
+    const parts = [];
+    if (gps.assist && (gps.assist.items || []).length) {
+        parts.push(`${gps.assist.items.join(', ')} · ${_wdAge(gps.assist.at)}`);
+    }
+    if (gps.aid_saved) {
+        parts.push(`saved alm ${gps.aid_saved.alm} / eph ${gps.aid_saved.eph} SV ${_wdAge(gps.aid_saved.at)}`);
+    }
+    return parts.length ? parts.join(' · ') : null;
+}
+
 function _wdHas(v) { return v !== undefined && v !== null && v !== ''; }
 
 function _wdAge(ts) {
@@ -30657,6 +30674,7 @@ function renderWardrivingDiagnostics(status) {
         ['Searching for', _wdHas(gps.searching_seconds)
             ? `${_wdDur(gps.searching_seconds)} (no fix yet)` : null,
             gps.searching_seconds > 120 ? 'warn' : null],
+        ['Assisted start', _wdAssist(gps)],
         ['GPS error', gps.error, 'warn']
     ]));
 

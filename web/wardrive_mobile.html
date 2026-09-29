@@ -431,6 +431,8 @@
       ['Searching for', has(gps.searching_seconds)
         ? fmtDur(gps.searching_seconds) + ' (no fix)' : null,
         gps.searching_seconds > 120 ? 'warn' : null],
+      ['Assisted start', (gps.assist && (gps.assist.items || []).length)
+        ? gps.assist.items.join(', ') + ' · ' + fmtAge(gps.assist.at) : null],
       ['GPS error', gps.error, 'warn']
     ]);
 
