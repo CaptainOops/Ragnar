@@ -41,6 +41,7 @@ browse than search.
 - [Home Assistant integration](homeassistant.md) — native HA entities, HACS install, dashboard card & automations (the `custom_components/ragnar` integration guide)
 
 ## Mesh & fleet
+- [Device Console](serial-console.md) — USB console cable to a switch/router/firewall: read-only by default, write gate, console scripts, mesh sharing
 - [Ragnar Mesh](mesh.md) — controller-free Tailscale unit mesh
 - [Mesh Share & File Transfer](mesh-share.md)
 

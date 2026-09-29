@@ -21402,6 +21402,8 @@ function scUpdateWriteUI(st, mode) {
         if (box) box.checked = aw;
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !aw);
+        const row = document.getElementById('sc-script-row');
+        if (row) row.classList.remove('hidden');
         if (aw) scLoadScripts();
         // update share label to reflect write state
         const lbl = document.getElementById('sc-share-label');
@@ -21417,7 +21419,11 @@ function scUpdateWriteUI(st, mode) {
         }
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !remoteWrite);
-        if (remoteWrite) scLoadScripts();
+        // Scripts run on the target unit through the mesh gateway (mesh
+        // secret); a console that is only *shared* relays single commands.
+        const row = document.getElementById('sc-script-row');
+        if (row) row.classList.toggle('hidden', mode !== 'gateway');
+        if (remoteWrite && mode === 'gateway') scLoadScripts();
     }
 }
 
@@ -21482,12 +21488,16 @@ async function scSendCmd() {
 }
 
 let scScriptsLoadedAt = 0;
+let scScriptsUnit = null;
 async function scLoadScripts(force) {
     // Called from every poll tick: throttle, and never clobber the user's pick.
+    // A unit switch always reloads — scripts come from the unit being viewed.
+    if (scScriptsUnit !== scState.unit) force = true;
     if (!force && Date.now() - scScriptsLoadedAt < 15000) return;
     scScriptsLoadedAt = Date.now();
+    scScriptsUnit = scState.unit;
     try {
-        const d = await fetchAPI('/api/serial-console/scripts');
+        const d = await fetchAPI('/api/serial-console/scripts', scOpts());
         const sel = document.getElementById('sc-script-sel');
         if (!sel) return;
         const scripts = d.scripts || [];
@@ -21526,7 +21536,7 @@ async function scRunScript() {
 async function scPollScriptStatus() {
     const statusEl = document.getElementById('sc-script-status');
     try {
-        const r = await fetchAPI('/api/serial-console/script-status');
+        const r = await fetchAPI('/api/serial-console/script-status', scOpts());
         if (r.running) {
             if (statusEl) statusEl.innerHTML = `<span class="text-amber-300">Step ${r.step}/${r.total}…</span>`;
             setTimeout(scPollScriptStatus, 500);
