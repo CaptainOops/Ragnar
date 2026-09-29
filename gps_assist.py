@@ -261,35 +261,45 @@ def build_assist_frames(last_known, now, synced, store=None):
             and last_known.get('lon') is not None:
         lat, lon, alt = last_known['lat'], last_known['lon'], last_known.get('alt')
     t = now if synced else None
-    if lat is None and t is None:
-        return frames, summary
-    frames.append(aid_ini_frame(lat, lon, alt, t))
+    if lat is not None or t is not None:
+        frames.append(aid_ini_frame(lat, lon, alt, t))
     if lat is not None:
         frames.append(mga_ini_pos_frame(lat, lon, alt))
         summary.append(f"position {lat:.4f},{lon:.4f} (±{POS_ACC_M // 1000} km)")
     if t is not None:
         frames.append(mga_ini_time_frame(t))
         summary.append("time (NTP)")
-    # Orbit data is only judged fresh against a trustworthy clock.
-    if synced and store:
-        def fresh(key, max_age):
-            ts = store.get(key + '_saved_at') or 0
-            return store.get(key) and 0 <= now - ts <= max_age
-        if fresh('hui', HUI_MAX_AGE_S):
-            frames.append(ubx_frame(CLS_AID, ID_AID_HUI, bytes.fromhex(store['hui'])))
-        if fresh('alm', ALM_MAX_AGE_S):
-            for hx in store['alm'].values():
-                frames.append(ubx_frame(CLS_AID, ID_AID_ALM, bytes.fromhex(hx)))
-            summary.append(f"almanac {len(store['alm'])} SV")
-        n_eph = 0
-        for entry in (store.get('eph') or {}).values():
-            if isinstance(entry, str):          # pre-merge format
-                entry = {'d': entry, 't': store.get('eph_saved_at') or 0}
-            if 0 <= now - entry.get('t', 0) <= EPH_MAX_AGE_S:
-                frames.append(ubx_frame(CLS_AID, ID_AID_EPH, bytes.fromhex(entry['d'])))
-                n_eph += 1
-        if n_eph:
-            summary.append(f"ephemeris {n_eph} SV")
+    if not store:
+        return frames, summary
+
+    # Orbit data goes in with or without NTP. Wardriving boots are usually
+    # offline, and a Pi without an RTC then runs on fake-hwclock (the last
+    # saved time), so the clock is untrusted — but it is only ever BEHIND real
+    # time. An age past the limit on that clock is therefore a real age past
+    # the limit: skip it. Anything younger is sent and the receiver decides:
+    # it learns GPS time from the first satellite within seconds and checks
+    # each ephemeris against its own reference time, ignoring expired ones.
+    # A negative age (clock behind the save) only happens on such a clock.
+    def fresh(ts, max_age):
+        age = now - (ts or 0)
+        return age <= max_age and (age >= 0 or not synced)
+
+    if store.get('hui') and fresh(store.get('hui_saved_at'), HUI_MAX_AGE_S):
+        frames.append(ubx_frame(CLS_AID, ID_AID_HUI, bytes.fromhex(store['hui'])))
+    if store.get('alm') and fresh(store.get('alm_saved_at'), ALM_MAX_AGE_S):
+        for hx in store['alm'].values():
+            frames.append(ubx_frame(CLS_AID, ID_AID_ALM, bytes.fromhex(hx)))
+        summary.append(f"almanac {len(store['alm'])} SV")
+    n_eph = 0
+    for entry in (store.get('eph') or {}).values():
+        if isinstance(entry, str):          # pre-merge format
+            entry = {'d': entry, 't': store.get('eph_saved_at') or 0}
+        if fresh(entry.get('t'), EPH_MAX_AGE_S):
+            frames.append(ubx_frame(CLS_AID, ID_AID_EPH, bytes.fromhex(entry['d'])))
+            n_eph += 1
+    if n_eph:
+        summary.append(f"ephemeris {n_eph} SV"
+                       + ("" if synced else " (receiver checks age)"))
     return frames, summary
 
 
