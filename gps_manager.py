@@ -545,11 +545,11 @@ class GPSManager:
     # Save orbit data soon after a fix — the receiver already holds ephemeris
     # for every satellite it fixed with, and people power off or restart right
     # after seeing "fix" (a 60 s wait lost the save in the field). Save again
-    # at 5 min, when the almanac has filled in further, then every 30 min so a
-    # reboot mid-drive gets ephemeris young enough for a hot start.
-    _AID_SAVE_AFTER_FIX_S = 15
-    _AID_SAVE_FOLLOWUP_S = 300
-    _AID_SAVE_EVERY_S = 1800
+    # at 1 min, when more ephemeris has landed, then every 5 min so a power
+    # cut mid-drive leaves fresh ephemeris and a growing almanac on disk.
+    _AID_SAVE_AFTER_FIX_S = 5
+    _AID_SAVE_FOLLOWUP_S = 60
+    _AID_SAVE_EVERY_S = 300
     _AID_CAPTURE_S = 6
 
     def _assist_tick(self):
