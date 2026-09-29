@@ -201,7 +201,15 @@ def load_store(path):
 
 
 def update_store(store, frames, now):
-    """Fold polled AID frames into the store. Returns (n_alm, n_eph, hui)."""
+    """Merge polled AID frames into the store, per satellite.
+
+    Merging (not replacing) matters: the receiver only reports what it holds
+    right now, so a poll after it lost a few satellites — or one taken early
+    in a drive — would otherwise shrink a fuller set saved earlier. Almanac
+    entries are overwritten per SV (newer wins). Ephemeris entries carry their
+    own timestamp, since each SV's is only good for ~4 h; entries past that
+    are dropped here. Returns (n_alm, n_eph, hui) for THIS poll.
+    """
     alm = {}
     eph = {}
     hui = None
@@ -214,14 +222,21 @@ def update_store(store, frames, now):
             eph[str(struct.unpack_from('<I', payload)[0])] = payload.hex()
         elif mid == ID_AID_HUI and len(payload) == _HUI_LEN:
             hui = payload.hex()
-    # Replace a set only when the poll produced one: a receiver that briefly
-    # lost track should not wipe a good almanac saved earlier.
     if alm:
-        store['alm'] = alm
+        store['alm'] = {**(store.get('alm') or {}), **alm}
         store['alm_saved_at'] = now
-    if eph:
-        store['eph'] = eph
-        store['eph_saved_at'] = now
+    if eph or store.get('eph'):
+        merged = {}
+        for sv, entry in (store.get('eph') or {}).items():
+            if isinstance(entry, str):          # pre-merge format: one set time
+                entry = {'d': entry, 't': store.get('eph_saved_at') or 0}
+            if 0 <= now - entry.get('t', 0) <= EPH_MAX_AGE_S:
+                merged[sv] = entry
+        for sv, hx in eph.items():
+            merged[sv] = {'d': hx, 't': now}
+        store['eph'] = merged
+        if eph:
+            store['eph_saved_at'] = now
     if hui:
         store['hui'] = hui
         store['hui_saved_at'] = now
@@ -266,10 +281,15 @@ def build_assist_frames(last_known, now, synced, store=None):
             for hx in store['alm'].values():
                 frames.append(ubx_frame(CLS_AID, ID_AID_ALM, bytes.fromhex(hx)))
             summary.append(f"almanac {len(store['alm'])} SV")
-        if fresh('eph', EPH_MAX_AGE_S):
-            for hx in store['eph'].values():
-                frames.append(ubx_frame(CLS_AID, ID_AID_EPH, bytes.fromhex(hx)))
-            summary.append(f"ephemeris {len(store['eph'])} SV")
+        n_eph = 0
+        for entry in (store.get('eph') or {}).values():
+            if isinstance(entry, str):          # pre-merge format
+                entry = {'d': entry, 't': store.get('eph_saved_at') or 0}
+            if 0 <= now - entry.get('t', 0) <= EPH_MAX_AGE_S:
+                frames.append(ubx_frame(CLS_AID, ID_AID_EPH, bytes.fromhex(entry['d'])))
+                n_eph += 1
+        if n_eph:
+            summary.append(f"ephemeris {n_eph} SV")
     return frames, summary
 
 
