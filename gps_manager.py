@@ -12,6 +12,8 @@ import struct
 import threading
 import logging
 
+import gps_assist
+
 logger = logging.getLogger("GPSManager")
 
 _NMEA_GGA = re.compile(
@@ -278,7 +280,7 @@ class GPSManager:
     """Manages a GPS source (gpsd socket or direct NMEA serial), providing real-time position data."""
 
     def __init__(self, port=None, baudrate=9600, exclude_ports=None,
-                 state_file=None):
+                 state_file=None, assist=True):
         self.port = port
         self.baudrate = baudrate
         self._exclude_ports = set(exclude_ports or [])
@@ -332,6 +334,22 @@ class GPSManager:
         # Set by update_external_fix(); cleared once a local receiver
         # produces a real fix.
         self._external_source = None
+        # Self-aided start (gps_assist): pre-load last-known position, NTP time
+        # and the receiver's own saved almanac/ephemeris so a battery-less
+        # u-blox cold boot behaves like a warm/hot start. Orbit data lives next
+        # to the last-known position file.
+        self.assist_enabled = bool(assist)
+        self._aid_file = (os.path.join(os.path.dirname(state_file), 'gps_aid.json')
+                          if state_file else None)
+        self._gpsd_device = None
+        self._assist_done = False
+        self._assist_status = None       # {'at', 'items', 'via'} once sent
+        self._aid_saved = None           # {'at', 'alm', 'eph'} after a save
+        self._aid_next_save = 0.0
+        self._aid_busy = False
+        self._fix_since = 0.0
+        self._ubx_capture = None         # serial path: bytes during a poll
+        self._ubx_capture_until = 0.0
 
     def start(self):
         """Start GPS reading thread."""
@@ -343,6 +361,8 @@ class GPSManager:
         # when a receiver is struggling.
         self.start_time = time.time()
         self.first_fix_time = 0
+        self._assist_done = False
+        self._fix_since = 0.0
 
         if not self.port:
             self.port = detect_gps_device(exclude_ports=self._exclude_ports)
@@ -517,6 +537,121 @@ class GPSManager:
             except Exception as e:
                 logger.debug(f"last-known GPS persist failed: {e}")
 
+    # ── Self-aided start (gps_assist) ──────────────────────────────────────
+    # Wait this long after the reader starts before pre-loading, so a receiver
+    # that is still powered and tracking (service restart mid-drive) reports
+    # its fix first and is left alone.
+    _ASSIST_DELAY_S = 3
+    # Save orbit data once a fix has held this long (ephemeris for the tracked
+    # satellites is complete by then), and refresh it periodically so a reboot
+    # mid-drive gets ephemeris young enough for a hot start.
+    _AID_SAVE_AFTER_FIX_S = 60
+    _AID_SAVE_EVERY_S = 1800
+    _AID_CAPTURE_S = 6
+
+    def _assist_tick(self):
+        """Called by both read loops after every message: fires the one-shot
+        pre-load at start and the periodic orbit-data save while fixed."""
+        if not self.assist_enabled or self._external_source:
+            return
+        now = time.time()
+        if self._ubx_capture is not None and now >= self._ubx_capture_until:
+            data, self._ubx_capture = bytes(self._ubx_capture), None
+            self._store_aid(gps_assist.parse_ubx_frames(data), now)
+        if (not self._assist_done and self.last_sentence
+                and now - self.start_time >= self._ASSIST_DELAY_S):
+            self._assist_done = True
+            if not self.has_fix():
+                self._run_bg(self._send_assist)
+        if not self._aid_file:
+            return
+        if self.has_fix():
+            if not self._fix_since:
+                self._fix_since = now
+            if (now - self._fix_since >= self._AID_SAVE_AFTER_FIX_S
+                    and now >= self._aid_next_save
+                    and not self._aid_busy and self._ubx_capture is None):
+                self._aid_next_save = now + self._AID_SAVE_EVERY_S
+                self._aid_busy = True
+                self._run_bg(self._capture_aid)
+        else:
+            self._fix_since = 0.0
+
+    @staticmethod
+    def _run_bg(fn):
+        threading.Thread(target=fn, daemon=True, name="gps-assist").start()
+
+    def _send_assist(self):
+        """Pre-load position/time (+ fresh saved almanac/ephemeris)."""
+        try:
+            store = gps_assist.load_store(self._aid_file) if self._aid_file else {}
+            synced = gps_assist.clock_is_synced()
+            frames, summary = gps_assist.build_assist_frames(
+                self.last_known, time.time(), synced, store)
+            if not frames:
+                logger.info("GPS assist: nothing to pre-load (no last-known "
+                            "position and clock not NTP-synced)")
+                return
+            if self._use_gpsd:
+                if not self._gpsd_device:
+                    logger.info("GPS assist skipped: gpsd did not report a device path")
+                    return
+                via = 'gpsd'
+                ok = gps_assist.gpsd_write(self._gpsd_device, frames)
+            else:
+                via = 'serial'
+                ok = 0
+                for frame in frames:
+                    self._serial.write(frame)
+                    ok += 1
+                    time.sleep(0.05)
+                self._serial.flush()
+            if not synced:
+                summary.append("no time (clock not NTP-synced)")
+            logger.info(f"GPS assist: pre-loaded {', '.join(summary)} via {via} "
+                        f"({ok}/{len(frames)} frames accepted)")
+            self._assist_status = {'at': time.time(), 'items': summary,
+                                   'via': via, 'frames': ok}
+        except Exception as e:
+            logger.warning(f"GPS assist pre-load failed: {e}")
+
+    def _capture_aid(self):
+        """Poll the receiver's almanac/ephemeris/HUI and save it."""
+        try:
+            polls = gps_assist.poll_frames()
+            if self._use_gpsd:
+                if not self._gpsd_device:
+                    return
+                frames = gps_assist.gpsd_capture(self._gpsd_device, polls,
+                                                 seconds=self._AID_CAPTURE_S)
+                self._store_aid(frames, time.time())
+            else:
+                # The read loop owns the port: collect replies there and let
+                # _assist_tick() hand them to _store_aid() when time is up.
+                self._ubx_capture_until = time.time() + self._AID_CAPTURE_S
+                self._ubx_capture = bytearray()
+                for frame in polls:
+                    self._serial.write(frame)
+                    time.sleep(0.05)
+        except Exception as e:
+            logger.debug(f"GPS orbit-data capture failed: {e}")
+        finally:
+            self._aid_busy = False
+
+    def _store_aid(self, frames, now):
+        try:
+            store = gps_assist.load_store(self._aid_file)
+            n_alm, n_eph, hui = gps_assist.update_store(store, frames, now)
+            if not (n_alm or n_eph or hui):
+                logger.debug("GPS orbit-data poll returned nothing usable")
+                return
+            gps_assist.save_store(self._aid_file, store)
+            self._aid_saved = {'at': now, 'alm': n_alm, 'eph': n_eph}
+            logger.info(f"GPS assist: saved almanac {n_alm} SV, ephemeris "
+                        f"{n_eph} SV for the next cold start")
+        except Exception as e:
+            logger.debug(f"GPS orbit-data save failed: {e}")
+
     # Talker code -> human constellation name, for the sky view. Shared by the
     # gpsd (SKY) and serial (GSV) paths, both of which key by these codes.
     _TALKER_NAMES = {
@@ -579,6 +714,8 @@ class GPSManager:
                 'last_update': self.last_update,
                 'last_sentence': self.last_sentence,
                 'last_known': self.last_known,
+                'assist': self._assist_status,
+                'aid_saved': self._aid_saved,
                 'error': self.error
             }
 
@@ -671,8 +808,17 @@ class GPSManager:
                     cls = obj.get('class')
                     if cls == 'TPV':
                         self._parse_tpv(obj)
+                        if obj.get('device'):
+                            self._gpsd_device = obj['device']
                     elif cls == 'SKY':
                         self._parse_sky(obj)
+                    elif cls == 'DEVICES':
+                        devs = obj.get('devices') or []
+                        if devs and devs[0].get('path'):
+                            self._gpsd_device = devs[0]['path']
+                    elif cls == 'DEVICE' and obj.get('path'):
+                        self._gpsd_device = obj['path']
+                    self._assist_tick()
             except Exception as e:
                 if self._running:
                     logger.debug(f"gpsd read error: {e}")
@@ -798,6 +944,9 @@ class GPSManager:
                     continue
 
                 raw = self._serial.readline()
+                if self._ubx_capture is not None:
+                    self._ubx_capture += raw
+                self._assist_tick()
                 if not raw:
                     continue
 

@@ -975,6 +975,7 @@ class SharedData:
             "wardriving_scan_interval": 2,
             "wardriving_gps_port": "auto",
             "wardriving_gps_baudrate": 9600,
+            "wardriving_gps_assist": True,
             "wardriving_interfaces": [],
             "wardriving_auto_export": True,
             "wardriving_wigle_include_zigbee": False,

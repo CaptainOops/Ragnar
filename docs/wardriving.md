@@ -382,6 +382,52 @@ above covers the case where wardriving is started *after* the orchestrator is
 already running (or scans are triggered manually). Scans launched directly from
 a shell (`nmap`, `lynis` over SSH) are outside Ragnar and are not affected.
 
+### Assisted start (position / time / orbit pre-load)
+
+The common u-blox 7 USB pucks (VK-172 class) have **no battery-backed RAM**, so
+every power-up is a full *cold start*: the receiver doesn't know where it is,
+what time it is, or where any satellite is. Before it can fix it has to
+download ~30 s of uninterrupted ephemeris per satellite, and without an almanac
+it also has to search the whole sky blind. On a marginal sky (a window, a
+dashboard, a Wi-Fi adapter right next to the puck) that often never completes.
+The same receiver fixes fine once it has *started*, because tracking needs far
+less signal than acquisition.
+
+Ragnar already knows most of what the receiver is missing, so
+[`gps_assist.py`](../gps_assist.py) hands it over at start (toggle:
+**Config → Wardriving → GPS Assisted Start**, `wardriving_gps_assist`, default on):
+
+- **Position** — the persisted last-known fix (`data/wardriving/last_gps.json`),
+  declared as ±100 km so a fix from another town doesn't mislead it.
+- **Time** — the system clock, **only when the kernel reports it NTP-synced**
+  (`adjtimex`). A Pi has no RTC; booted offline it runs on fake-hwclock, and a
+  wrong time is worse than none, so an unsynced boot sends position only.
+- **Orbit data** — once a fix has held for 60 s (then every 30 min while fixed)
+  Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris (`AID-EPH`) and
+  health/UTC/iono (`AID-HUI`) and saves them to `data/wardriving/gps_aid.json`.
+  At the next start they are re-injected if fresh: ephemeris ≤ 4 h old (a
+  reboot mid-drive becomes a *hot* start), almanac/HUI ≤ 30 days (a *warm*
+  start). An empty poll never overwrites good saved data.
+
+It runs once per reader start, 3 s in, and only if there's no fix yet, so a
+receiver that is still tracking (service restart mid-drive) is left alone.
+Frames are standard UBX: `AID-INI`/`HUI`/`ALM`/`EPH` for u-blox 6/7/M8, plus
+`MGA-INI-POS_LLH`/`TIME_UTC` for M8/M9/M10 (a receiver ignores the class it
+doesn't implement). With gpsd they are written through gpsd's control socket
+(`/run/gpsd.sock`, `&<device>=<hex>`) and replies are read from a raw
+(`"raw":2`) watch, so Ragnar never fights gpsd for the port; on direct serial
+they go down the open port. The journal logs e.g.
+`GPS assist: pre-loaded position 59.3066,18.0256 (±100 km), time (NTP), almanac 31 SV via gpsd`,
+and the Diagnostics panel shows an **Assisted start** row.
+
+Validated on a u-blox 7 (PROTVER 14.00) via gpsd: after injection the receiver's
+own `AID-INI` readback showed the injected GPS week/TOW and position with
+100 km accuracy (before: firmware defaults, week 1691, 6 496 km).
+
+This speeds up the start; it doesn't create signal. A puck that can't hear
+satellites (behind coated glass, next to the Alfa) still needs a better spot:
+put it on a 1–2 m USB extension, face up, away from the Pi/hub/Wi-Fi adapter.
+
 ### Status Fields (`/api/wardriving/gps`)
 
 | Field | Meaning |
@@ -399,6 +445,8 @@ a shell (`nmap`, `lynis` over SSH) are outside Ragnar and are not affected.
 | `speed_kmh` / `course` | Velocity / heading |
 | `last_update` | Epoch of last GGA/RMC with position info |
 | `last_sentence` | Epoch of last *any* parsed NMEA |
+| `assist` | What the assisted start pre-loaded: `{at, items[], via, frames}`, or `null` |
+| `aid_saved` | Last orbit-data save: `{at, alm, eph}` (SV counts), or `null` |
 | `error` | Last error string, or `null` |
 
 ### Wardriving GPS Card (UI)

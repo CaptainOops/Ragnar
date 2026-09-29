@@ -2263,7 +2263,8 @@ class WardrivingEngine:
             gps_port = None
         self._gps = GPSManager(
             port=gps_port, exclude_ports=esp_exclude,
-            state_file=os.path.join(self.data_dir, 'last_gps.json'))
+            state_file=os.path.join(self.data_dir, 'last_gps.json'),
+            assist=self.shared_data.config.get('wardriving_gps_assist', True))
         gps_ok = self._gps.start()
         if not gps_ok:
             logger.warning(f"GPS not available: {self._gps.error}. Wardriving without GPS.")
