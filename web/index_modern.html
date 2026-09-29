@@ -2923,6 +2923,11 @@
                             <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Fallback route metric</span><input type="number" id="cell-metric" min="1000" max="65535" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200"></label>
                             <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Always treat as cellular (interfaces)</span><input type="text" id="cell-force" placeholder="e.g. enx0a1b2c3d4e5f" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200 font-mono"></label>
                             <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Never treat as cellular (interfaces)</span><input type="text" id="cell-exclude" placeholder="e.g. a 2.5 GbE cdc_ncm dongle" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200 font-mono"></label>
+                            <label class="flex items-center gap-2"><input type="checkbox" id="cell-hb-enabled" class="w-4 h-4"> Heartbeat failover (fail over when the WAN is dead upstream, not only on link loss)</label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Heartbeat targets (public IPv4[:port], beyond your gateway)</span><input type="text" id="cell-hb-targets" placeholder="1.1.1.1:443 8.8.8.8:443 9.9.9.9:443" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200 font-mono"></label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Targets that must answer for a good round</span><input type="number" id="cell-hb-minok" min="1" max="8" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200"></label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Fail over after N bad rounds (~10 s each)</span><input type="number" id="cell-hb-fail" min="1" max="60" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200"></label>
+                            <label class="flex flex-col gap-1 min-w-0"><span class="text-gray-400">Fail back after N consecutive good rounds</span><input type="number" id="cell-hb-back" min="1" max="360" class="bg-slate-800 border border-slate-700 rounded px-2 py-2 text-gray-200"></label>
                             <div class="flex items-end"><button onclick="saveCellularUplink()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm">Save</button></div>
                         </div>
                         <p id="cell-save-status" class="mt-2 text-xs text-gray-400"></p>
@@ -8988,7 +8993,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260929-gps-assist"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260929-cellular-heartbeat"></script>
 
 
 

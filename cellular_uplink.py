@@ -32,21 +32,47 @@ The route metric is enforced three ways, each idempotent:
   3. enforce() — called every few seconds by the web server's monitor loop as
      a backstop, and the only path for vendor-matched cdc_ether/cdc_ncm.
 
+Heartbeat failover (Monitor): a route only disappears when Wi-Fi/Ethernet
+loses its LINK. An ISP that dies upstream leaves the route in place, so every
+~10 s the monitor also TCP-connects to several public targets THROUGH each
+primary interface (SO_BINDTODEVICE). Targets on the interface's own subnet
+or equal to its gateway are skipped — a gateway that answers while upstream
+is dead must not count as healthy. A round is good when at least `min_ok`
+targets answer, so one unreachable target never triggers failover. After
+`fail_after` consecutive bad rounds (and only if the cellular link itself
+passes a heartbeat) the cellular metric is PROMOTED below the primary's;
+it is demoted again only after `recover_after` consecutive good rounds, so a
+flapping WAN does not bounce the uplink. The state lives in
+/run/ragnar-cellular.json so the dhcpcd hook and a service restart honour it.
+
 CLI (root):  cellular_uplink.py status | enforce [--iface IF] | install
              | is-cellular IF   (exit 0 when IF is cellular)
+             | probe IF         (one heartbeat round through IF)
 """
 
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(REPO_DIR, 'config', 'shared_config.json')
 
 DEFAULT_METRIC = 20000
+# While failed over, cellular must beat every primary (NM ethernet 100,
+# NM wifi 600, dhcpcd 1000+/3000+).
+DEFAULT_PROMOTED_METRIC = 50
+DEFAULT_TARGETS = '1.1.1.1:443 8.8.8.8:443 9.9.9.9:443'
+PROBE_TIMEOUT = 2.5
+STATE_PATH = '/run/ragnar-cellular.json'
+# Interfaces that are never a "primary" WAN to heartbeat (VPN / virtual).
+_NON_PRIMARY_PREFIXES = ('lo', 'tailscale', 'tun', 'tap', 'wg', 'zt', 'docker',
+                         'br-', 'veth', 'virbr', 'ppp')
 
 # Drivers that only ever front a phone, hotspot or cellular modem.
 CELLULAR_DRIVERS = ('rndis_host', 'ipheth', 'qmi_wwan', 'cdc_mbim', 'huawei_cdc_ncm')
@@ -103,19 +129,89 @@ def _split_list(value):
     return {i.strip() for i in items if i and _IFACE_RE.match(i.strip())}
 
 
+def parse_targets(value):
+    """'1.1.1.1:443 8.8.8.8' -> [('1.1.1.1', 443), ('8.8.8.8', 443)].
+    IPv4 literals only: a heartbeat must not depend on DNS (which may be the
+    very thing that broke), and loopback/link-local can never prove upstream."""
+    items = value if isinstance(value, (list, tuple)) else re.split(r'[\s,]+', str(value or ''))
+    out = []
+    for item in items:
+        item = str(item).strip()
+        if not item:
+            continue
+        host, _, port = item.partition(':')
+        try:
+            ip = ipaddress.IPv4Address(host)
+            port = int(port) if port else 443
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast \
+                or not 1 <= port <= 65535:
+            continue
+        if (str(ip), port) not in out:
+            out.append((str(ip), port))
+    return out[:8]
+
+
+def _int(cfg, key, default, lo, hi):
+    try:
+        return max(lo, min(int(cfg.get(key, default)), hi))
+    except (TypeError, ValueError):
+        return default
+
+
 def settings(cfg=None):
     cfg = cfg if cfg is not None else _load_config()
-    try:
-        metric = int(cfg.get('cellular_route_metric', DEFAULT_METRIC))
-    except (TypeError, ValueError):
-        metric = DEFAULT_METRIC
+    targets = parse_targets(cfg.get('cellular_heartbeat_targets', DEFAULT_TARGETS)) \
+        or parse_targets(DEFAULT_TARGETS)
     return {
         'enabled': bool(cfg.get('cellular_fallback_enabled', True)),
-        'metric': max(1, min(metric, 65535)),
+        'metric': _int(cfg, 'cellular_route_metric', DEFAULT_METRIC, 1000, 65535),
         'force': _split_list(cfg.get('cellular_force_ifaces', '')),
         'exclude': _split_list(cfg.get('cellular_exclude_ifaces', '')),
         'allow_scan': bool(cfg.get('cellular_allow_scan', False)),
+        'heartbeat': bool(cfg.get('cellular_heartbeat_enabled', True)),
+        'targets': targets,
+        'min_ok': _int(cfg, 'cellular_heartbeat_min_ok', 1, 1, len(targets)),
+        'fail_after': _int(cfg, 'cellular_failover_after', 3, 1, 60),
+        'recover_after': _int(cfg, 'cellular_failback_after', 6, 1, 360),
+        'promoted_metric': _int(cfg, 'cellular_promoted_metric', DEFAULT_PROMOTED_METRIC, 1, 999),
     }
+
+
+# --------------------------------------------------------------------------
+# failover state (shared with the dhcpcd hook through /run)
+# --------------------------------------------------------------------------
+def read_state():
+    try:
+        with open(STATE_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(data):
+    try:
+        tmp = STATE_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp, STATE_PATH)
+        return True
+    except OSError:
+        return False
+
+
+def failed_over(cfg=None):
+    s = settings(cfg)
+    return bool(s['enabled'] and s['heartbeat'] and read_state().get('failover'))
+
+
+def desired_metric(cfg=None):
+    """Promoted metric while failed over (cellular carries the traffic even
+    though the primary still has a route), fallback metric otherwise."""
+    s = settings(cfg)
+    return s['promoted_metric'] if failed_over(cfg) else s['metric']
 
 
 # --------------------------------------------------------------------------
@@ -245,15 +341,16 @@ def _nm_managed(iface):
 
 
 def enforce(cfg=None, iface=None):
-    """Pin every cellular interface's default routes to the fallback metric.
-    Returns a list of human-readable actions taken (empty when compliant)."""
+    """Pin every cellular interface's default routes to the desired metric
+    (fallback, or promoted while failed over). Returns a list of
+    human-readable actions taken (empty when compliant)."""
     s = settings(cfg)
     if not s['enabled']:
         return []
     targets = [iface] if iface else cellular_ifaces(cfg)
     targets = [t for t in targets if t and is_cellular(t, cfg)]
     actions = []
-    metric = s['metric']
+    metric = desired_metric(cfg)
     for dev in targets:
         bad = [r for fam in (4, 6) for r in default_routes(fam)
                if r['dev'] == dev and r['metric'] != metric]
@@ -280,6 +377,97 @@ def enforce(cfg=None, iface=None):
                 _run(base + ['del'] + spec + ['metric', str(r['metric'])])
                 actions.append(f'IPv{fam} default via {dev}: metric {r["metric"]} -> {metric}')
     return actions
+
+
+# --------------------------------------------------------------------------
+# heartbeat
+# --------------------------------------------------------------------------
+def _probe_one(iface, ip, port, timeout=PROBE_TIMEOUT):
+    """TCP connect to ip:port forced out of `iface`. Only a completed handshake
+    counts: a 'connection refused' can come from a router whose own WAN is
+    down (TCP RST on the target's behalf), which is exactly what must NOT
+    look healthy."""
+    t0 = time.monotonic()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode() + b'\0')
+        sock.settimeout(timeout)
+        rc = sock.connect_ex((ip, port))
+        ok = rc == 0
+        err = None if ok else os.strerror(rc) if rc else 'timeout'
+    except socket.timeout:
+        ok, err = False, 'timeout'
+    except OSError as e:
+        ok, err = False, e.strerror or str(e)
+    finally:
+        sock.close()
+    return {'target': f'{ip}:{port}', 'ok': ok,
+            'ms': round((time.monotonic() - t0) * 1000) if ok else None, 'error': err}
+
+
+def _onlink(iface, gateway):
+    """Networks the interface is directly attached to, plus its gateway —
+    targets inside these prove nothing about the upstream."""
+    nets = []
+    for cidr in _iface_ipv4(iface):
+        try:
+            nets.append(ipaddress.IPv4Interface(cidr).network)
+        except ValueError:
+            pass
+    return nets, gateway
+
+
+def probe(ifaces, targets, gateways=None):
+    """One heartbeat round through each interface, all probes in parallel.
+    Returns {iface: {'ok': n, 'total': m, 'results': [...], 'skipped': [...]}}."""
+    gateways = gateways or {}
+    jobs, out = [], {}
+    for iface in ifaces:
+        nets, gw = _onlink(iface, gateways.get(iface))
+        entry = {'ok': 0, 'total': 0, 'results': [], 'skipped': []}
+        for ip, port in targets:
+            addr = ipaddress.IPv4Address(ip)
+            if ip == gw or any(addr in n for n in nets):
+                entry['skipped'].append(f'{ip}:{port} (on-link / gateway)')
+                continue
+            jobs.append((iface, ip, port))
+        out[iface] = entry
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(12, len(jobs))) as ex:
+            for (iface, _, _), res in zip(jobs, ex.map(lambda j: _probe_one(*j), jobs)):
+                out[iface]['results'].append(res)
+                out[iface]['total'] += 1
+                out[iface]['ok'] += int(res['ok'])
+    return out
+
+
+def _primary_ifaces(routes4, cell_names):
+    seen = []
+    for r in routes4:
+        dev = r['dev']
+        if dev in cell_names or dev.startswith(_NON_PRIMARY_PREFIXES) or dev in seen:
+            continue
+        seen.append(dev)
+    return seen
+
+
+def _fmt_duration(sec):
+    sec = int(max(0, sec))
+    h, rem = divmod(sec, 3600)
+    m, s_ = divmod(rem, 60)
+    return (f'{h}h {m}m {s_}s' if h else f'{m}m {s_}s' if m else f'{s_}s')
+
+
+def _fmt_bytes(n):
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if n < 1024 or unit == 'GB':
+            return f'{n:.0f} {unit}' if unit == 'B' else f'{n:.1f} {unit}'
+        n /= 1024.0
+
+
+def _iface_bytes(iface):
+    return sum(int(_read(f'/sys/class/net/{iface}/statistics/{k}') or 0)
+               for k in ('rx_bytes', 'tx_bytes'))
 
 
 # --------------------------------------------------------------------------
@@ -325,6 +513,13 @@ def status(cfg=None):
         'active_uplink': active,
         'on_cellular': bool(active and any(i['name'] == active for i in ifaces)),
         'primary_routes': [r for r in routes4 if not any(i['name'] == r['dev'] for i in ifaces)],
+        'failed_over': failed_over(cfg),
+        'heartbeat_enabled': s['heartbeat'],
+        'heartbeat_targets': [f'{ip}:{port}' for ip, port in s['targets']],
+        'heartbeat_min_ok': s['min_ok'],
+        'failover_after': s['fail_after'],
+        'failback_after': s['recover_after'],
+        'promoted_metric': s['promoted_metric'],
         'interfaces': ifaces,
         'nm_conf_installed': os.path.exists(NM_CONF_PATH),
         'dhcpcd_hook_installed': os.path.exists(DHCPCD_HOOK_PATH),
@@ -410,12 +605,33 @@ def install(cfg=None):
 # monitor
 # --------------------------------------------------------------------------
 class Monitor:
-    """Backstop enforcer + change log, driven by the web server's loop."""
+    """Heartbeat failover state machine + backstop enforcer, driven by the web
+    server's loop (one tick ≈ one heartbeat round).
+
+      normal   --(fail_after bad rounds, cellular healthy)-->  failover
+      failover --(recover_after good rounds)----------------> normal
+      failover --(cellular unplugged / feature off)---------> normal
+
+    tick() returns [{'msg', 'priority'}] transitions for push notification."""
 
     def __init__(self, log=None):
         self.log = log
-        self.last_active = None
         self.events = []          # [{'ts', 'msg'}], newest last, capped
+        self.bad_streak = 0
+        self.good_streak = 0
+        self.outage_start = None
+        self.cell_dead_warned = False
+        self.last_round = {}      # {iface: probe result} for the UI
+        self.cell_round = {}
+        self.primaries = []
+        self.last_outage = None   # summary of the most recent completed outage
+        self.last_active = None   # legacy (heartbeat off) transition tracking
+        st = read_state()         # survive a service restart mid-outage
+        self.state = 'failover' if st.get('failover') else 'normal'
+        self.failover_at = st.get('failover_at')
+        self.outage_start = st.get('outage_start')
+        self.cell_iface = st.get('iface')
+        self.cell_bytes0 = st.get('cell_bytes0', 0)
 
     def _event(self, msg):
         self.events.append({'ts': time.time(), 'msg': msg})
@@ -423,26 +639,146 @@ class Monitor:
         if self.log:
             self.log.info(f'[cellular] {msg}')
 
-    def tick(self, cfg=None):
-        """Enforce metrics and detect failover. Returns the transition messages
-        (failover / restore) raised this tick so the caller can push them."""
+    def snapshot(self):
+        return {
+            'state': self.state,
+            'primaries': list(self.primaries),
+            'bad_streak': self.bad_streak,
+            'good_streak': self.good_streak,
+            'outage_start': self.outage_start,
+            'failover_at': self.failover_at,
+            'cellular_iface': self.cell_iface,
+            'last_round': dict(self.last_round),
+            'cellular_round': dict(self.cell_round),
+            'last_outage': self.last_outage,
+        }
+
+    # -- transitions --------------------------------------------------------
+    def _enter_failover(self, cell, reason, now, cfg):
+        self.state = 'failover'
+        self.failover_at = now
+        self.cell_iface = cell
+        self.cell_bytes0 = _iface_bytes(cell)
+        self.good_streak = self.bad_streak = 0
+        write_state({'failover': True, 'iface': cell, 'failover_at': now,
+                     'outage_start': self.outage_start, 'cell_bytes0': self.cell_bytes0})
+        for a in enforce(cfg):
+            self._event(a)
+        msg = f'Failed over to cellular ({cell}): {reason}'
+        self._event(msg)
+        return {'msg': msg, 'priority': 1}
+
+    def _leave_failover(self, why, now, cfg, restored_to=None):
+        start = self.outage_start or self.failover_at or now
+        used = max(0, _iface_bytes(self.cell_iface) - self.cell_bytes0) if self.cell_iface else 0
+        self.last_outage = {'start': start, 'failover_at': self.failover_at, 'end': now,
+                            'duration': now - start, 'cellular_bytes': used,
+                            'iface': self.cell_iface, 'ended_by': why}
+        self.state = 'normal'
+        write_state({'failover': False})
+        for a in enforce(cfg):
+            self._event(a)
+        stamp = lambda t: time.strftime('%H:%M:%S', time.localtime(t))
+        if restored_to:
+            msg = (f'Uplink restored to {restored_to} after a {_fmt_duration(now - start)} outage '
+                   f'({stamp(start)} → {stamp(now)}); cellular carried {_fmt_bytes(used)}')
+        else:
+            msg = f'Cellular failover ended ({why}) after {_fmt_duration(now - start)}'
+        self.outage_start = self.failover_at = None
+        self.bad_streak = self.good_streak = 0
+        self.cell_dead_warned = False
+        self._event(msg)
+        return {'msg': msg, 'priority': 0}
+
+    # -- main ---------------------------------------------------------------
+    def tick(self, cfg=None, now=None):
+        now = now or time.time()
+        s = settings(cfg)
         for action in enforce(cfg):
             self._event(action)
-        transitions = []
+        out = []
+
+        if not (s['enabled'] and s['heartbeat']):
+            if self.state == 'failover':
+                out.append(self._leave_failover('heartbeat failover turned off', now, cfg))
+            self.last_round, self.cell_round, self.primaries = {}, {}, []
+            return out + self._legacy_tick(cfg)
+
+        routes4 = default_routes(4)
+        cell_names = set(cellular_ifaces(cfg))
+        gateways = {r['dev']: r['via'] for r in routes4}
+        cells = [r['dev'] for r in routes4 if r['dev'] in cell_names]
+        self.primaries = _primary_ifaces(routes4, cell_names)
+
+        if self.state == 'failover' and self.cell_iface not in cells:
+            return [self._leave_failover('cellular link gone', now, cfg)]
+        if not cells:
+            # Nothing to fail over to: don't spend probes, forget streaks.
+            self.bad_streak = self.good_streak = 0
+            self.outage_start = None
+            self.last_round, self.cell_round = {}, {}
+            return out
+
+        self.last_round = probe(self.primaries, s['targets'], gateways) if self.primaries else {}
+        good = [i for i, r in self.last_round.items() if r['total'] and r['ok'] >= s['min_ok']]
+        healthy = bool(good)
+
+        if self.state == 'normal':
+            self.cell_round = {}
+            if healthy:
+                self.bad_streak = 0
+                self.outage_start = None
+                self.cell_dead_warned = False
+                return out
+            self.bad_streak += 1
+            self.outage_start = self.outage_start or now
+            if self.bad_streak < s['fail_after']:
+                return out
+            cell = cells[0]
+            self.cell_round = probe([cell], s['targets'], gateways)
+            c = self.cell_round.get(cell, {})
+            if c.get('total') and c.get('ok', 0) >= s['min_ok']:
+                seen = ', '.join(f'{i} {r["ok"]}/{r["total"]}' for i, r in self.last_round.items())
+                why = (f'{self.bad_streak} failed heartbeat rounds in a row '
+                       f'(targets answering: {seen or "none probed"}; need {s["min_ok"]})'
+                       if self.primaries else 'no Ethernet/Wi-Fi uplink')
+                out.append(self._enter_failover(cell, why, now, cfg))
+            elif not self.cell_dead_warned:
+                self.cell_dead_warned = True
+                msg = (f'Primary uplink down and cellular ({cell}) also fails its heartbeat '
+                       '— staying put')
+                self._event(msg)
+                out.append({'msg': msg, 'priority': 1})
+            return out
+
+        # failover: wait for recover_after consecutive good rounds
+        if healthy:
+            self.good_streak += 1
+            if self.good_streak >= s['recover_after']:
+                out.append(self._leave_failover('primary healthy', now, cfg,
+                                                restored_to=', '.join(good)))
+        else:
+            self.good_streak = 0
+        return out
+
+    def _legacy_tick(self, cfg):
+        """Heartbeat off: report route-level failover only (kernel metric)."""
+        out = []
         active = active_uplink(4)
         if active != self.last_active:
             now_cell = bool(active and is_cellular(active, cfg))
             was_cell = bool(self.last_active and is_cellular(self.last_active, cfg))
             if now_cell and not was_cell:
-                transitions.append(f'Uplink failed over to cellular ({active}) — '
-                                   f'{self.last_active or "no other uplink"} is down')
+                out.append({'msg': f'Uplink failed over to cellular ({active}) — '
+                                   f'{self.last_active or "no other uplink"} is down',
+                            'priority': 1})
             elif was_cell and not now_cell:
-                transitions.append(f'Uplink restored to {active or "none"} — '
-                                   'cellular back on standby')
-            for msg in transitions:
-                self._event(msg)
+                out.append({'msg': f'Uplink restored to {active or "none"} — '
+                                   'cellular back on standby', 'priority': 0})
+            for t in out:
+                self._event(t['msg'])
             self.last_active = active
-        return transitions
+        return out
 
 
 def main(argv):
@@ -466,6 +802,10 @@ def main(argv):
     if cmd == 'install':
         for c in install():
             print(c)
+        return 0
+    if cmd == 'probe' and len(argv) > 2 and _IFACE_RE.match(argv[2]):
+        gw = {r['dev']: r['via'] for r in default_routes(4)}
+        print(json.dumps(probe([argv[2]], settings()['targets'], gw), indent=2))
         return 0
     print(f'unknown command: {cmd}', file=sys.stderr)
     return 2

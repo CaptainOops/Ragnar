@@ -7114,6 +7114,11 @@ async function loadCellularUplink() {
         set('cell-metric', 'value', d.metric);
         set('cell-force', 'value', (d.force_ifaces || []).join(' '));
         set('cell-exclude', 'value', (d.exclude_ifaces || []).join(' '));
+        set('cell-hb-enabled', 'checked', !!d.heartbeat_enabled);
+        set('cell-hb-targets', 'value', (d.heartbeat_targets || []).join(' '));
+        set('cell-hb-minok', 'value', d.heartbeat_min_ok);
+        set('cell-hb-fail', 'value', d.failover_after);
+        set('cell-hb-back', 'value', d.failback_after);
         const pill = (txt, cls) => `<span class="px-2 py-0.5 rounded text-xs ${cls}">${escapeHtml(txt)}</span>`;
         const uplink = d.active_uplink
             ? (d.on_cellular ? pill('on cellular: ' + d.active_uplink, 'bg-amber-900/50 text-amber-300')
@@ -7122,6 +7127,7 @@ async function loadCellularUplink() {
         const hooks = (d.nm_conf_installed || d.dhcpcd_hook_installed)
             ? '' : ' ' + pill('route hooks not installed', 'bg-slate-700 text-slate-400');
         let html = `<div class="flex flex-wrap items-center gap-2 mb-3">${uplink}${d.enabled ? '' : ' ' + pill('fallback pinning off', 'bg-red-900/50 text-red-300')}${hooks}</div>`;
+        html += _cellHeartbeatHtml(d, pill);
         if (!(d.interfaces || []).length) {
             html += '<p class="text-gray-400">No cellular device plugged in. Connect a hotspot or phone to a USB port and turn on its <strong>USB tethering</strong>; it shows up here within a few seconds.</p>';
         } else {
@@ -7151,6 +7157,38 @@ async function loadCellularUplink() {
     }
 }
 
+function _cellHeartbeatHtml(d, pill) {
+    const hb = d.heartbeat;
+    if (!d.heartbeat_enabled) return '<p class="text-xs text-gray-500 mb-3">Heartbeat failover off — cellular takes over only when Ethernet/Wi-Fi lose their link.</p>';
+    if (!hb) return '';
+    const t = ts => ts ? new Date(ts * 1000).toLocaleTimeString() : '—';
+    const dur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + (s % 60) + 's'; };
+    let state;
+    if (hb.state === 'failover') {
+        state = pill(`FAILED OVER since ${t(hb.failover_at)} — fail back ${hb.good_streak}/${d.failback_after}`, 'bg-amber-900/50 text-amber-300');
+    } else if (hb.bad_streak) {
+        state = pill(`primary failing ${hb.bad_streak}/${d.failover_after}`, 'bg-red-900/50 text-red-300');
+    } else if (Object.keys(hb.last_round || {}).length) {
+        state = pill('primary healthy', 'bg-green-900/50 text-green-300');
+    } else {
+        state = pill('idle — no cellular link to fail over to', 'bg-slate-700 text-slate-400');
+    }
+    const rounds = Object.entries(hb.last_round || {}).map(([iface, r]) => {
+        const good = r.total && r.ok >= d.heartbeat_min_ok;
+        const rtt = (r.results || []).filter(x => x.ok && x.ms != null).map(x => x.ms);
+        const detail = (r.results || []).map(x => `${x.target} ${x.ok ? '✓' : '✗'}`).join(' · ');
+        return `<div class="flex flex-wrap justify-between gap-2"><span class="font-mono">${escapeHtml(iface)}</span>`
+            + `<span class="${good ? 'text-green-400' : 'text-red-400'}">${r.ok}/${r.total} targets${rtt.length ? ' · ' + Math.min(...rtt) + ' ms' : ''}</span></div>`
+            + (detail ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(detail)}</div>` : '')
+            + ((r.skipped || []).length ? `<div class="text-xs text-amber-300 break-all">skipped: ${escapeHtml(r.skipped.join(', '))}</div>` : '');
+    }).join('');
+    const lo = hb.last_outage;
+    const last = lo ? `<div class="text-xs text-gray-400 mt-2">Last outage: ${t(lo.start)} → ${t(lo.end)} (${dur(lo.duration)}), cellular carried ${formatBytes(lo.cellular_bytes || 0)}</div>` : '';
+    return `<div class="bg-slate-900/40 border border-slate-700 rounded-lg p-3 mb-3 space-y-1 min-w-0">
+        <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-semibold">Heartbeat</span>${state}</div>
+        ${rounds || '<div class="text-xs text-gray-500">No primary uplink with a default route.</div>'}${last}</div>`;
+}
+
 async function saveCellularUplink() {
     const st = document.getElementById('cell-save-status');
     const payload = {
@@ -7158,7 +7196,12 @@ async function saveCellularUplink() {
         allow_scan: document.getElementById('cell-allow-scan').checked,
         metric: parseInt(document.getElementById('cell-metric').value, 10),
         force_ifaces: document.getElementById('cell-force').value,
-        exclude_ifaces: document.getElementById('cell-exclude').value
+        exclude_ifaces: document.getElementById('cell-exclude').value,
+        heartbeat_enabled: document.getElementById('cell-hb-enabled').checked,
+        heartbeat_targets: document.getElementById('cell-hb-targets').value,
+        heartbeat_min_ok: parseInt(document.getElementById('cell-hb-minok').value, 10),
+        failover_after: parseInt(document.getElementById('cell-hb-fail').value, 10),
+        failback_after: parseInt(document.getElementById('cell-hb-back').value, 10)
     };
     try {
         const d = await postAPI('/api/cellular/settings', payload);
