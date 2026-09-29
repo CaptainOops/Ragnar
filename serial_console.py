@@ -616,7 +616,9 @@ def list_scripts():
             with open(os.path.join(d, fn)) as f:
                 s = json.load(f)
             scripts.append({
-                'id': s.get('id', fn[:-5]),
+                # The file name IS the id: load_script() looks the script up
+                # by it, so a mismatched "id" field must not leak into the UI.
+                'id': fn[:-5],
                 'name': s.get('name', fn[:-5]),
                 'description': s.get('description', ''),
                 'vendor': s.get('vendor', ''),
@@ -626,8 +628,13 @@ def list_scripts():
             continue
     return scripts
 
+_SCRIPT_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+
 def load_script(script_id):
-    """Return the full script dict or None."""
+    """Return the full script dict or None. The id is a bare file stem —
+    anything else (../ etc.) would reach JSON files outside the scripts dir."""
+    if not isinstance(script_id, str) or not _SCRIPT_ID_RE.match(script_id):
+        return None
     path = os.path.join(_SCRIPTS_DIR, script_id + '.json')
     if not os.path.isfile(path):
         return None

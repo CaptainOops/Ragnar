@@ -2,7 +2,8 @@
 
 Plug a cellular hotspot, a phone or an LTE modem into a Ragnar's USB port and
 it becomes a **backup internet path**. It carries traffic only when Ethernet and
-Wi-Fi are down, and it is never scanned. A leave-behind unit therefore stays
+Wi-Fi are down, whether their link has dropped or their internet is dead
+upstream (see [Heartbeat failover](#heartbeat-failover)). It is never scanned. A leave-behind unit therefore stays
 reachable (Ragnar Mesh / Tailscale works through carrier NAT) and keeps sending
 push alerts after the site network goes away.
 
@@ -94,9 +95,34 @@ metric if the hotspot reconnects. A reboot starts clean. Heartbeats run only
 while a cellular link is present: a unit with nothing to fail over to sends
 no probes. Each round is a few TCP handshakes, well under 1 KB.
 
-The card shows the live state: *primary healthy*, *primary failing 2/3*, or
-*FAILED OVER since … — fail back 4/6*. It also shows each target's result
-and the last outage.
+The card shows the live state:
+
+| Card state | Meaning |
+|---|---|
+| *idle — no cellular link to fail over to* | No hotspot with a route is plugged in, so no heartbeats are sent |
+| *primary healthy* | The last round was good |
+| *primary failing 2/3* | Two bad rounds in a row; failover at 3 |
+| *FAILED OVER since … — fail back 4/6* | On cellular; four consecutive good rounds so far, failback at 6 |
+
+Below the state it shows each target's result (✓/✗, fastest response time),
+any skipped targets, and the last outage. The card updates when you open the
+Interfaces tab or press **Refresh**; it does not update live.
+
+### Testing it
+
+With the hotspot plugged in and on *standby*:
+
+1. **Dead upstream:** block this Ragnar's internet on your router (for example
+   a firewall rule, or unplug the router's WAN cable) and leave Wi-Fi
+   connected. After about 30 s the card shows *FAILED OVER* and the push alert
+   arrives. Remove the block; about 60 s later it fails back and the restore
+   alert gives the outage window.
+2. **Link loss:** `sudo nmcli radio wifi off`, then `on` again. Failback waits
+   for the six good rounds even though Wi-Fi reconnects within seconds.
+
+If you manage the unit over Wi-Fi, connect through the Ragnar Mesh / Tailscale
+for the test so you don't cut yourself off. `sudo python3 cellular_uplink.py
+probe wlan0` shows one heartbeat round from the shell.
 
 **It is never scanned.** The network scanner, ARP liveness sweeps, the
 Ethernet lists, the passive-capture interface pickers (L2/L3 watchers, vendor
