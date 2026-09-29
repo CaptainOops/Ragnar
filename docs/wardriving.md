@@ -397,14 +397,14 @@ Ragnar already knows most of what the receiver is missing, so
 [`gps_assist.py`](../gps_assist.py) hands it over at start (toggle:
 **Config → Wardriving → GPS Assisted Start**, `wardriving_gps_assist`, default on):
 
-- **Position** — the persisted last-known fix (`data/wardriving/last_gps.json`),
+- **Position** — the persisted last-known fix (`data/last_gps.json`),
   declared as ±100 km so a fix from another town doesn't mislead it.
 - **Time** — the system clock, **only when the kernel reports it NTP-synced**
   (`adjtimex`). A Pi has no RTC; booted offline it runs on fake-hwclock, and a
   wrong time is worse than none, so an unsynced boot sends position only.
 - **Orbit data** — once a fix has held for 60 s (then every 30 min while fixed)
   Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris (`AID-EPH`) and
-  health/UTC/iono (`AID-HUI`) and saves them to `data/wardriving/gps_aid.json`.
+  health/UTC/iono (`AID-HUI`) and saves them to `data/gps_aid.json`.
   At the next start they are re-injected if fresh: ephemeris ≤ 4 h old (a
   reboot mid-drive becomes a *hot* start), almanac/HUI ≤ 30 days (a *warm*
   start). An empty poll never overwrites good saved data.
