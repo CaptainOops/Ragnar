@@ -150,3 +150,19 @@ def test_manager_serial_capture_saves_store(tmp_path):
     store = ga.load_store(m._aid_file)
     assert set(store['alm']) == {'3'} and set(store['eph']) == {'9'}
     assert m.get_status()['aid_saved']['eph'] == 1
+
+
+def test_manager_saves_soon_after_fix_then_followup(tmp_path):
+    m = _mgr(tmp_path)
+    m._assist_done = True
+    m.fix_quality, m.latitude, m.longitude = 1, 59.3, 18.0
+    calls = []
+    with patch.object(GPSManager, '_run_bg', staticmethod(calls.append)):
+        m.last_update = time.time()
+        m._assist_tick()                       # fix just appeared: too early
+        assert not calls
+        m._fix_since = time.time() - GPSManager._AID_SAVE_AFTER_FIX_S
+        m._assist_tick()
+        assert len(calls) == 1                 # early save fires
+        m._aid_busy = False
+        assert m._aid_next_save - time.time() <= GPSManager._AID_SAVE_FOLLOWUP_S
