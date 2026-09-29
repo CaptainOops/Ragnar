@@ -542,11 +542,14 @@ class GPSManager:
     # that is still powered and tracking (service restart mid-drive) reports
     # its fix first and is left alone.
     _ASSIST_DELAY_S = 3
-    # Save orbit data once a fix has held this long (ephemeris for the tracked
-    # satellites is complete by then), and refresh it periodically so a reboot
-    # mid-drive gets ephemeris young enough for a hot start.
-    _AID_SAVE_AFTER_FIX_S = 60
-    _AID_SAVE_EVERY_S = 1800
+    # Save orbit data soon after a fix — the receiver already holds ephemeris
+    # for every satellite it fixed with, and people power off or restart right
+    # after seeing "fix" (a 60 s wait lost the save in the field). Save again
+    # at 1 min, when more ephemeris has landed, then every 5 min so a power
+    # cut mid-drive leaves fresh ephemeris and a growing almanac on disk.
+    _AID_SAVE_AFTER_FIX_S = 5
+    _AID_SAVE_FOLLOWUP_S = 60
+    _AID_SAVE_EVERY_S = 300
     _AID_CAPTURE_S = 6
 
     def _assist_tick(self):
@@ -571,7 +574,9 @@ class GPSManager:
             if (now - self._fix_since >= self._AID_SAVE_AFTER_FIX_S
                     and now >= self._aid_next_save
                     and not self._aid_busy and self._ubx_capture is None):
-                self._aid_next_save = now + self._AID_SAVE_EVERY_S
+                self._aid_next_save = now + (self._AID_SAVE_EVERY_S
+                                             if self._aid_saved
+                                             else self._AID_SAVE_FOLLOWUP_S)
                 self._aid_busy = True
                 self._run_bg(self._capture_aid)
         else:

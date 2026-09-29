@@ -402,7 +402,7 @@ Ragnar already knows most of what the receiver is missing, so
 - **Time** — the system clock, **only when the kernel reports it NTP-synced**
   (`adjtimex`). A Pi has no RTC; booted offline it runs on fake-hwclock, and a
   wrong time is worse than none, so an unsynced boot sends position only.
-- **Orbit data** — once a fix has held for 60 s (then every 30 min while fixed)
+- **Orbit data** — 5 s after a fix (again at 1 min, then every 5 min while fixed)
   Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris (`AID-EPH`) and
   health/UTC/iono (`AID-HUI`) and saves them to `data/gps_aid.json`.
   At the next start they are re-injected if fresh: ephemeris ≤ 4 h old (a
