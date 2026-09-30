@@ -18,7 +18,7 @@ browse than search.
 - [IP Attribution](ip-intel.md) — geo / ASN / reputation, and what isn't knowable
 
 ## Network defense & watchers
-- [Authority Verification & network tools](nettools.md) — Diagnostics, Switch & L2/L3, Interfaces + the detection-only L2→L7 watcher suite
+- [Authority Verification & network tools](nettools.md) — Diagnostics (every module by OSI layer, with the module visibility matrix) and Interfaces + the detection-only L2→L7 watcher suite
 - [Watchtower](watchtower.md) — unified, deduped alert feed with one push-notification path
 - [Push Notifications](push-notifications.md) — Pushover and/or Slack delivery for all alerts
 - [Asset Inventory](asset-inventory.md) · [SIEM Forwarding](siem.md) · [Incident Correlation](incident-correlation.md)

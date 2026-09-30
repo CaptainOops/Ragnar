@@ -2,8 +2,8 @@
 
 Registers a set of /api/net/* routes that wrap standard Linux networking
 tools (ping, traceroute, mtr, whois, speedtest, arp-scan, lldpctl, ethtool,
-ip, nmcli) and surface the results as JSON for the Network > Diagnostics /
-Switch & L2 / Interfaces sub-tabs in the web UI.
+ip, nmcli) and surface the results as JSON for the Network > Diagnostics
+(per-OSI-layer panels) and Interfaces sub-tabs in the web UI.
 
 The whole module is self-contained (no import from webapp_modern) to avoid a
 circular import: webapp_modern imports register_network_diagnostics() and calls
@@ -520,7 +520,7 @@ def do_speedtest(interface=None):
 
 
 # --------------------------------------------------------------------------
-# Switch & L2: LLDP/CDP/EDP neighbor discovery + ARP scan
+# L2: LLDP/CDP/EDP neighbor discovery + ARP scan
 # --------------------------------------------------------------------------
 
 def do_lldp(interface=None):

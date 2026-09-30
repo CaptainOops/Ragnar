@@ -927,7 +927,7 @@ function initializeTabs() {
 function routeFromHash() {
     const raw = (window.location.hash || '').replace(/^#/, '').trim();
     if (!raw) return false;
-    const [tab, sub] = raw.split('/');
+    const [tab, sub, layer] = raw.split('/');
     const known = new Set([
         'dashboard', 'network', 'wifidef', 'discovered', 'rusense', 'pentest',
         'threat-intel', 'traffic', 'adv-vuln', 'wardriving', 'epaper', 'files',
@@ -944,13 +944,8 @@ function routeFromHash() {
             const anchor = onDiag[sub];
             // Let the network tab finish mounting before selecting a subtab.
             setTimeout(() => {
-                try { showNetworkSubtab(realSub); } catch (e) {}
-                if (anchor) {
-                    setTimeout(() => {
-                        const el = document.getElementById(anchor);
-                        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }, 120);
-                }
+                try { showNetworkSubtab(realSub, layer); } catch (e) {}
+                if (anchor) setTimeout(() => revealNetCard(anchor), 120);
             }, 60);
         }
         return true;
@@ -1450,11 +1445,14 @@ function showConfigSubtab(name) {
     try { localStorage.setItem('cfg-subtab', name); } catch (e) { /* ignore */ }
 }
 
-function showNetworkSubtab(name) {
+function showNetworkSubtab(name, layer) {
+    // Diagnostics and the old "Switch & L2/L3" sub-tab are one Diagnostics view now,
+    // split into OSI-layer panels. 'switch' stays as an alias (its cards were mostly L2/L3).
+    if (name === 'switch') { name = 'diagnostics'; layer = layer || 'l2'; }
     const views = {
         hosts: 'net-sub-hosts', archive: 'net-sub-archive', assets: 'net-sub-assets',
         map: 'net-sub-map',
-        diagnostics: 'net-sub-diagnostics', switch: 'net-sub-switch', interfaces: 'net-sub-interfaces',
+        diagnostics: 'net-sub-diagnostics', interfaces: 'net-sub-interfaces',
         wifi: 'net-sub-wifi'
     };
     Object.keys(views).forEach(key => {
@@ -1470,9 +1468,19 @@ function showNetworkSubtab(name) {
         if (!_mapInitialized) { loadNetworkMap(); }
     } else if (name === 'hosts') {
         loadNetworkData();
-    } else if (name === 'switch') {
+    } else if (name === 'diagnostics') {
+        // Pick the layer panel first so a failing picker fill can't leave it blank.
+        showNetLayer(layer || _netLayerSaved());
+        populateMtrSources();
+        syncNetDiagDisplayFromServer();
+        syncNetIntegrityFromServer();
+        syncWatchtowerFromServer();
+        _macWatchFillIfaces();
+        _ntpFillIfaces();
+        _snmpFillIfaces();
+        _certFillIfaces();
+        _tlsFillIfaces();
         _lldpFillIfaces();
-        loadLldp();
         _arpScanFillIfaces();
         _pcapCapFillIfaces();
         _locateFillIfaces();
@@ -1493,25 +1501,56 @@ function showNetworkSubtab(name) {
         _isisFillIfaces();
         _fhrpFillIfaces();
         _bgpFillIfaces();
-        dhcpSnoopStatus();
     } else if (name === 'interfaces') {
         loadNetworkIdentity();
         loadInterfaces();
         loadCellularUplink();
     } else if (name === 'wifi') {
         wifiInit();
-    } else if (name === 'diagnostics') {
-        populateMtrSources();
-        syncNetDiagDisplayFromServer();
-        syncNetIntegrityFromServer();
-        syncWatchtowerFromServer();
-        _macWatchFillIfaces();
-        _ntpFillIfaces();
-        _snmpFillIfaces();
-        _certFillIfaces();
-        _tlsFillIfaces();
     }
-    // Diagnostics tools run on demand; we only prefill the MTR start-point list.
+    // Diagnostics tools run on demand; opening the view only prefills interface pickers.
+}
+
+// ---- Diagnostics: one panel per OSI layer ----------------------------------
+const NET_LAYERS = ['overview', 'l7', 'l6', 'l5', 'l4', 'l3', 'l2', 'l1'];
+const _NET_LAYER_ON = ['bg-Ragnar-600', 'text-white'];
+const _NET_LAYER_OFF = ['text-slate-400', 'hover:bg-slate-700', 'hover:text-white'];
+
+function _netLayerSaved() {
+    try {
+        const v = localStorage.getItem('ragnar.netLayer');
+        return NET_LAYERS.includes(v) ? v : 'overview';
+    } catch (e) { return 'overview'; }
+}
+
+function showNetLayer(layer) {
+    if (!NET_LAYERS.includes(layer)) layer = 'overview';
+    NET_LAYERS.forEach(l => {
+        const panel = document.getElementById('net-layer-' + l);
+        if (panel) panel.classList.toggle('hidden', l !== layer);
+        const btn = document.getElementById('net-layer-btn-' + l);
+        if (btn) {
+            _NET_LAYER_ON.forEach(c => btn.classList.toggle(c, l === layer));
+            _NET_LAYER_OFF.forEach(c => btn.classList.toggle(c, l !== layer));
+            btn.setAttribute('aria-pressed', l === layer ? 'true' : 'false');
+        }
+    });
+    const panel = document.getElementById('net-layer-' + layer);
+    const desc = document.getElementById('net-layer-desc');
+    if (desc && panel) desc.textContent = (panel.dataset.desc || '') + ' Modules that act on more than one layer sit at the one they mostly watch.';
+    try { localStorage.setItem('ragnar.netLayer', layer); } catch (e) {}
+    // The two views that talk to the network when opened, only when you look at them.
+    if (layer === 'l2') loadLldp();
+    if (layer === 'l7') dhcpSnoopStatus();
+}
+
+// Scroll to a Diagnostics card, switching to the layer panel that holds it.
+function revealNetCard(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const panel = el.closest('.net-layer');
+    if (panel) showNetLayer(panel.id.replace('net-layer-', ''));
+    setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
 }
 
 // ============================================================================
@@ -5745,7 +5784,7 @@ async function wifidefProbePortal(ssid) {
 }
 
 // ============================================================================
-// Network diagnostics (Diagnostics / Switch & L2 / Interfaces sub-tabs)
+// Network diagnostics (Diagnostics — per-OSI-layer panels — and Interfaces sub-tabs)
 // Backend: /api/net/* (see network_diagnostics.py)
 // ============================================================================
 
@@ -6761,7 +6800,7 @@ async function analyzeStoredPcap(el) {
 
 // PCAP source #3 — capture live traffic on an interface into a new pcap. The
 // interface <select> is static in the page (with "Auto (wired first)") and is
-// pre-filled on tab load like every other Switch & L2/L3 picker, so opening the
+// pre-filled on tab load like every other Diagnostics picker, so opening the
 // form just reveals it — no async populate.
 function _pcapCapFillIfaces() {
     const sel = document.getElementById('pcap-cap-iface');

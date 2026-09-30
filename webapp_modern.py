@@ -181,7 +181,7 @@ try:
 except Exception:  # pragma: no cover - defensive; never block startup
     pass
 
-# Register Network > Diagnostics / Switch & L2 / Interfaces API routes.
+# Register Network > Diagnostics / Interfaces API routes.
 # Kept in a separate module (network_diagnostics.py) to keep this file lean;
 # wrapped in try/except so a problem there can never take down the web app.
 try:
