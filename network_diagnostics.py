@@ -22891,8 +22891,6 @@ def _apc_selftest():
         scenarios.append({'name': name, 'pass': bool(ok), 'expect': expect, 'got': str(got)})
 
     try:
-        import io as _io
-        import contextlib as _cl
         ag = _apc_module()
         import apcguard_selftest as T
     except Exception as e:
@@ -22900,14 +22898,14 @@ def _apc_selftest():
             {'name': 'apcguard import failed: %s' % e, 'pass': False,
              'expect': 'import', 'got': 'error'}]}
 
-    # 1. The module's own tier. run() prints 'N checks, F failures' + a line per FAIL.
-    buf = _io.StringIO()
-    try:
-        with _cl.redirect_stdout(buf):
-            rc = T.run()
-    except Exception as e:
-        rc, buf = 1, _io.StringIO('run raised %r' % e)
-    out = buf.getvalue()
+    # 1. The module's own tier, in its own interpreter: one check installs signal
+    # handlers (main thread only — the web self-test runs in a request thread), and
+    # the tier monkeypatches the module, which must not touch a scan in progress.
+    # It prints 'N checks, F failures' + a line per FAIL.
+    res = _run([sys.executable or 'python3', os.path.join(_APC_PY_DIR, 'apcguard.py'),
+                '--self-test'], timeout=240)
+    out = (res.get('out') or '') + (res.get('err') or '')
+    rc = res.get('rc', 1)
     m = re.search(r'(\d+)\s+checks,\s+(\d+)\s+failures', out)
     total, failed = (int(m.group(1)), int(m.group(2))) if m else (0, 1)
     for i in range(max(0, total - failed)):
@@ -22917,7 +22915,8 @@ def _apc_selftest():
         if ln.strip().startswith('FAIL:'):
             sc(ln.strip()[5:].strip(), False, 'pass', 'FAIL')
     if not m or rc != 0 and not failed:
-        sc('apcguard module self-test', False, 'rc 0', 'rc %s' % rc)
+        sc('apcguard module self-test', False, 'rc 0',
+           'rc %s %s' % (rc, (res.get('err') or out or '').strip()[-160:]))
 
     # 2. In-app adapter.
     card, nms = T.N4, '10.0.0.5'
