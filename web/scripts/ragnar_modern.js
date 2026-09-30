@@ -579,6 +579,10 @@ const configMetadata = {
         label: "GPS Assisted Start",
         description: "Pre-load the GPS with its last-known position, the NTP time and its own saved almanac/ephemeris at start, so a battery-less u-blox puck starts warm instead of cold and fixes much faster on a weak sky. Time is only sent when the clock is NTP-synced."
     },
+    wardriving_gps_set_clock: {
+        label: "Set Clock from GPS",
+        description: "When the Pi's clock isn't NTP-synced (no RTC — e.g. booted away from Wi-Fi), set it from GPS time once there is a fix, and repair the running session's earlier timestamps when the clock is corrected. Without this, sessions recorded offline are stamped with the stale boot time."
+    },
     wardriving_auto_export: {
         label: "Auto Export on Stop",
         description: "Automatically export a WiGLE CSV file when a wardriving session is stopped."
@@ -23210,7 +23214,7 @@ function displayConfigForm(config) {
     // Render wardriving config settings into the dedicated Wardriving section slot
     const wdSlot = document.getElementById('wardriving-config-slot');
     if (wdSlot) {
-        const wdKeys = ['wardriving_scan_interval', 'wardriving_gps_port', 'wardriving_gps_baudrate', 'wardriving_gps_assist', 'wardriving_auto_export', 'wardriving_wigle_include_zigbee'];
+        const wdKeys = ['wardriving_scan_interval', 'wardriving_gps_port', 'wardriving_gps_baudrate', 'wardriving_gps_assist', 'wardriving_gps_set_clock', 'wardriving_auto_export', 'wardriving_wigle_include_zigbee'];
         let wdHtml = '<form id="wardriving-config-form" class="bg-slate-800 bg-opacity-50 rounded-lg p-4 mt-4"><h4 class="text-md font-bold mb-4 text-gray-300">Settings</h4><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
         wdKeys.forEach(key => {
             const hasKey = Object.prototype.hasOwnProperty.call(config, key);
@@ -30728,6 +30732,9 @@ function renderWardrivingDiagnostics(status) {
             ? `${_wdDur(gps.searching_seconds)} (no fix yet)` : null,
             gps.searching_seconds > 120 ? 'warn' : null],
         ['Assisted start', _wdAssist(gps)],
+        ['Clock from GPS', gps.clock_set
+            ? (gps.clock_set.changed ? `set ${gps.clock_set.delta > 0 ? '+' : ''}${gps.clock_set.delta}s · ${_wdAge(gps.clock_set.at)}`
+                                     : 'clock already correct') : null],
         ['GPS error', gps.error, 'warn']
     ]));
 
