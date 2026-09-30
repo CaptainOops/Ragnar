@@ -3083,9 +3083,10 @@ It's **detection-only**, but the traceroute is *active probing*, so it runs
   covers the convergence engine too), aggregated into the Detector Self-Test panel
   (`GET /api/net/routing-selftest`).
 
-### Vendor CVE Guards (Cisco · Juniper · Arista)
+### Vendor CVE Guards
 
-Three passive, **detection-only** vendor guards watch a network segment and report
+Seven passive, **detection-only** vendor guards — Cisco, Juniper, Arista, Comware, MikroTik,
+Aruba and APC (plus the standalone Dell Guard daemon) — watch a network segment and report
 **three classes** of evidence about a tracked set of router/switch CVEs — never
 transmitting, probing, or authenticating:
 
@@ -3324,14 +3325,93 @@ admits PAPI behind an extension header (**`ARB-008`**).
 - Endpoint: `GET /api/net/aruba-guard` `{interface, seconds}` · binary: `tcpdump`
 - CLI: `python3 network_diagnostics.py aruba-guard [--iface I] [--seconds N] [--json]`
 
-> **Watchtower feed.** All six vendor guards append their findings as JSON-lines to
-> `/var/log/ragnar/<guard>.jsonl` (time-window deduplicated), so [Watchtower](#watchtower)
-> tails them into the unified alert pane and single Pushover path alongside the standalone
-> watcher daemons — automatically whenever Extended Monitoring is on.
+#### APC Guard
+**APC / Schneider Network Management Cards** (NMC1, NMC2, NMC3 — rack PDUs, rack ATS, NMC-equipped
+UPS) against **Ripple20**, the Treck TCP/IP stack bugs. The detection engine is the vendored
+standalone module `python/apcguard.py` (pure Python over raw frames). The in-app scan captures a
+bounded window with `tcpdump` using the module's own filter
+(`udp port 161`, `udp port 53`, ICMP, IP protocols 4 and 41, IPv4 fragments, and all IPv6), then
+replays the capture through the module with packet timestamps as its clock. Sources: Schneider
+FA410359 / SEVD-2020-174-01 V2.3, the JSOF Ripple20 whitepaper, and the McAfee ATR / JSOF
+detection logic. Never transmits.
+
+- **Version gates (posture).** Reads the card's **SNMP sysDescr** and gates on the hardware
+  and application tokens in `PN`/`AN1` (e.g. `apc_hw05_rpdu2g_694.bin`) — not the model number,
+  which does not identify the platform. **`APC-001`** NMC2 AOS ≤ 6.9.4, **`APC-002`** NMC1 ≤ 3.9.2,
+  **`APC-003`** NMC3 ≤ 1.3.3.1. These say *version in range*, never *vulnerable*: sysDescr does not
+  prove patch state. NMC2 6.9.2 / 6.9.4 fixed 14 of the 15 Treck CVEs; CVE-2020-11901 was fixed
+  only in 6.9.6, and the finding says so. **`APC-010`** inventories each card; **`APC-011`**
+  reports a sysDescr it cannot gate (missing or unknown tokens, or a version between last-affected
+  and first-fixed — never assumed safe).
+- **Attack shapes (against a known card).** **`APC-101`** fragmented IPv4-in-IP tunnel datagram
+  and **`APC-102`** inner IPv4 length shorter than the data present (CVE-2020-11896; also
+  CVE-2020-11898 when the inner protocol is 0); **`APC-103`** the card decapsulated a flagged
+  datagram and answered with ICMP protocol-unreachable; **`APC-106`** that reply quotes bytes that
+  were not in the packet — **heap memory disclosed** (CVE-2020-11898; the finding carries counts
+  and offsets, never the leaked bytes); **`APC-105`** IPv6-in-IPv4 to a card (CVE-2020-11902);
+  **`APC-111`** a DNS answer whose CNAME overruns its RDLENGTH and **`APC-112`** an overlong,
+  looping or chained name (CVE-2020-11901).
+- **Tunnel observations.** **`APC-104`** tunnel traffic to a card that meets no CVE condition;
+  **`APC-107`/`APC-108`** the card rejected an IP-in-IP / IPv6-in-IPv4 packet (informational — a
+  statement about that address and path, not immunity); **`APC-109`** another device answered
+  for it; **`APC-110`** a card with a declared MAC answered SNMP from a different MAC.
+- **CVE-2020-11899** (CISA KEV) has no documented wire trigger, so it is carried by the version
+  gates only. **CVE-2020-11897** does not apply to APC products.
+
+In Ragnar the module's findings map to **POSTURE** (version gates, inventory, tunnel
+observations), **EXPOSURE** (`APC-104`, `APC-110`) and **ATTACK** (`APC-101`/`102`/`103`/`105`/
+`106`/`111`/`112`); severities `info`/`notice`/`warn`/`critical` become INFO/LOW/HIGH/CRITICAL.
+
+**Known cards.** Tunnel and DNS attempts are analysed only against cards the engine knows, and a
+20-second window rarely contains an SNMP poll. So cards seen answering SNMP are **remembered
+across scans** (up to 256, in `data/apc_guard.json`), and you can **declare cards** in the card's
+text box — `ADDR` or `ADDR=MAC`, comma-separated, IPv4 or IPv6. Declare a MAC only where the tap
+sees the card's own frames: in a routed topology every frame carries the router's MAC. **Forget
+learned cards** clears the remembered list. IPv4 + IPv6 (the tunnel CVEs are IPv4-outer by
+definition).
+
+- Endpoint: `GET /api/net/apc-guard` `{interface, seconds (5-60), cards?, forget?}` · binary: `tcpdump`
+- CLI: `python3 network_diagnostics.py apc-guard [--iface I] [--seconds N] [--cards 'ADDR[=MAC],…'] [--forget] [--json]`
+- Self-test: `apc-guard-selftest` — the module's own 516-check tier plus the in-app adapter
+  (pcap reader, finding mapping, card memory, declared-card parsing, and a real `tcpdump` replay
+  through the module's filter). `python/apcguard_scapy_xcheck.py` is the module's independent
+  scapy cross-check (114 checks; its live-sniff legs need root).
+
+**Continuous mode (opt-in daemon).** `scripts/apcguard@.service` runs the same engine
+continuously on one tapped interface, keeping the author's measured hardening (`CAP_NET_RAW`
+only, `AF_PACKET`/`AF_NETLINK` only, `MemoryDenyWriteExecute=yes` — verified on this project's
+Raspberry Pi 5 / ARM64, where the author had measured x86_64 only — syscall filter,
+`MemoryMax=160M`). It runs the module self-test before every start and streams findings to
+`/var/log/ragnar/apcguard.jsonl`, which Watchtower tails.
+
+```
+sudo cp scripts/apcguard@.service /etc/systemd/system/
+sudo install -d /etc/ragnar/apcguard
+sudo cp scripts/apcguard.conf.example /etc/ragnar/apcguard/apcguard.conf     # optional
+sudo cp scripts/apcguard-nmc.list.example /etc/ragnar/apcguard/nmc.list      # your cards
+sudo systemctl daemon-reload && sudo systemctl enable --now apcguard@eth1
+```
+
+`scripts/apcguard@eth1.service.d.iface.conf.example` pins the instance to its interface
+(`RestrictNetworkInterfaces=` needs a literal name, not `%I`).
+
+**Blind spots** (from the module): the sysDescr grammar was checked against 13 public captures,
+not your fleet, and application tokens without a public capture are unverified; SNMPv3 with
+privacy hides sysDescr (declare the card); DNS over TCP is not inspected; tunnel nesting beyond
+one level is not unwrapped; a reply is matched only to a request the tap also saw; and the
+module's lab has never run against a real NMC — `APC-103`/`APC-106` are exercised by an emulated
+Treck-style responder.
+
+> **Watchtower feed.** All seven vendor guards append their findings as JSON-lines to
+> `/var/log/ragnar/<guard>.jsonl` (time-window deduplicated) on every scan, so
+> [Watchtower](#watchtower) tails them into the unified alert pane and single Pushover path
+> alongside the standalone watcher daemons. Cisco, Juniper, Arista and Comware also run in the
+> Extended Monitoring rotation; MikroTik, Aruba and APC run when you scan them (and APC's
+> daemon, above, writes `apcguard.jsonl`).
 
 #### Dell Guard (standalone daemon)
 Dell **SmartFabric OS10** SSRF-egress sensor for **CVE-2025-22474** (CWE-918, CVSS 6.8,
-`C:H/I:N/A:N`). Unlike the four guards above, Dell Guard is **not** an on-demand in-app
+`C:H/I:N/A:N`). Unlike the in-app guards above, Dell Guard is **not** an on-demand in-app
 scan — it is an **opt-in standalone daemon** (`python/dellguard.py`, units
 `scripts/dellguard@.service` + `scripts/dellguard-learn@.service`) that feeds
 [Watchtower](#watchtower) via `/var/log/ragnar/dellguard.jsonl`. It lives outside the
