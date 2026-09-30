@@ -556,8 +556,13 @@ class WardrivingSession:
                     value TEXT
                 )
             """)
+            # INSERT OR IGNORE: only a NEW session gets its start time here.
+            # _init_db also runs every time an existing session is opened
+            # (viewing, export, upload, backfill), and REPLACE used to stamp
+            # "now" over the real start — old drives then showed up in the
+            # session list under whatever date they were last opened.
             conn.execute(
-                "INSERT OR REPLACE INTO session_info (key, value) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO session_info (key, value) VALUES (?, ?)",
                 ('start_time', datetime.now(timezone.utc).isoformat())
             )
 
@@ -3227,6 +3232,8 @@ class WardrivingEngine:
                 sid = f[8:-3]  # strip 'session_' and '.db'
                 db_path = os.path.join(wd_dir, f)
                 size = os.path.getsize(db_path)
+                if size == 0 and not os.path.exists(db_path + '-wal'):
+                    continue  # created, never written (power cut at start): nothing to show
                 try:
                     with sqlite3.connect(db_path) as conn:
                         conn.row_factory = sqlite3.Row
@@ -3234,13 +3241,25 @@ class WardrivingEngine:
                         info = {}
                         for row in conn.execute("SELECT key, value FROM session_info").fetchall():
                             info[row[0]] = row[1]
+                        first, last = conn.execute(
+                            "SELECT MIN(first_seen), MAX(last_seen) FROM networks").fetchone()
+                    start, end = info.get('start_time', ''), info.get('end_time', '')
+                    # The recorded data is the ground truth for when a drive
+                    # happened. A start_time later than the first sighting was
+                    # overwritten by an older build when the session was
+                    # reopened; a session cut off by a power loss never got
+                    # an end_time. Both are recovered from the networks table.
+                    if first and (not start or start > first):
+                        start = first
+                    if last and not end:
+                        end = last
                     sessions.append({
                         'session_id': sid,
                         'db_path': db_path,
                         'file_size': size,
                         'total_networks': total,
-                        'start_time': info.get('start_time', ''),
-                        'end_time': info.get('end_time', ''),
+                        'start_time': start,
+                        'end_time': end,
                     })
                 except Exception:
                     sessions.append({'session_id': sid, 'error': 'corrupt'})
