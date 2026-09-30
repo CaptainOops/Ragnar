@@ -1544,6 +1544,15 @@ function showNetLayer(layer) {
     if (layer === 'l7') dhcpSnoopStatus();
 }
 
+// Visibility-matrix reference cards load their image the first time they are opened.
+function netMatrixLoad(d) {
+    if (!d || !d.open) return;
+    d.querySelectorAll('img[data-src]').forEach(img => {
+        img.src = img.dataset.src;
+        img.removeAttribute('data-src');
+    });
+}
+
 // Scroll to a Diagnostics card, switching to the layer panel that holds it.
 function revealNetCard(id) {
     const el = document.getElementById(id);

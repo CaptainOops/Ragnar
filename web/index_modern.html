@@ -1856,6 +1856,14 @@
                 <!-- ===== Overview ===== -->
                 <div id="net-layer-overview" class="net-layer" data-desc="Cross-layer: the Network Integrity Monitor, Watchtower's unified alerts, the Detector Self-Test and offline PCAP analysis.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (overview) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Module visibility matrix <span class="text-xs font-normal text-gray-500">— reference guide · every module by OSI layer × vantage tier</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_full.jpg?v=20260930" alt="Ragnar module visibility matrix: every module by OSI layer and vantage tier" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">A clean verdict is only as wide as the tap: check a module's vantage tier before reading silence as safety. Each layer button above shows its own band of this matrix. Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image to open it full-size.</p>
+                        </details>
                         <!-- Passive network-integrity monitor (DNS poisoning + ARP spoofing) -->
                         <div id="netint-card" class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
                             <div class="flex items-center justify-between gap-4">
@@ -1981,6 +1989,14 @@
                 <!-- ===== L7 Application ===== -->
                 <div id="net-layer-l7" class="net-layer hidden" data-desc="DHCP, DNS, NTP, SNMP, Windows / AD, mail and file services, routing daemons and the vendor CVE guards.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l7) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L7 Application <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l7.jpg?v=20260930" alt="Module visibility matrix, L7 Application band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passive · network services</h3>
                         <!-- DHCP Guardian -->
                         <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
@@ -2444,6 +2460,14 @@
                 <!-- ===== L6 Presentation ===== -->
                 <div id="net-layer-l6" class="net-layer hidden" data-desc="TLS handshakes and certificates.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l6) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L6 Presentation <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l6.jpg?v=20260930" alt="Module visibility matrix, L6 Presentation band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passive</h3>
                         <!-- TLS Watch (passive TLS/QUIC handshake observer) -->
                         <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
@@ -2488,6 +2512,14 @@
                 <!-- ===== L5 Session ===== -->
                 <div id="net-layer-l5" class="net-layer hidden" data-desc="SSH, Telnet and the r-services sessions.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l5) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L5 Session <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l5.jpg?v=20260930" alt="Module visibility matrix, L5 Session band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passive</h3>
                         <!-- SSH Watch (passive regreSSHion / Terrapin observer) -->
                         <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
@@ -2525,6 +2557,14 @@
                 <!-- ===== L4 Transport ===== -->
                 <div id="net-layer-l4" class="net-layer hidden" data-desc="Flows and throughput. TCP/UDP carry every L7 module; there is no dedicated L4-anomaly detector.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l4) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L4 Transport <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l4.jpg?v=20260930" alt="Module visibility matrix, L4 Transport band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passive</h3>
                         <!-- Live Flow Telemetry -->
                         <div class="glass rounded-xl p-4 sm:p-6">
@@ -2564,6 +2604,14 @@
                 <!-- ===== L3 Network ===== -->
                 <div id="net-layer-l3" class="net-layer hidden" data-desc="Reachability, ICMP / ICMPv6, IPv6 first-hop, multicast, the IGPs, FHRP, BFD and SR-MPLS.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l3) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L3 Network <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l3.jpg?v=20260930" alt="Module visibility matrix, L3 Network band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passive</h3>
                         <!-- IGMP Watch -->
                         <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
@@ -2771,6 +2819,14 @@
                 <!-- ===== L2 Data Link ===== -->
                 <div id="net-layer-l2" class="net-layer hidden" data-desc="ARP / MAC, the switch control protocols (STP, DTP, CDP, VTP, LACP, IS-IS) and PTP.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l2) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L2 Data Link <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l2.jpg?v=20260930" alt="Module visibility matrix, L2 Data Link band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passive</h3>
                         <!-- MAC Watch -->
                         <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
@@ -2965,6 +3021,14 @@
                 <!-- ===== L1 Physical ===== -->
                 <div id="net-layer-l1" class="net-layer hidden" data-desc="Find the switch port. RF spectrum (Wi-Fi, Bluetooth, SDR) lives in Signal Intelligence.">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        <!-- Visibility matrix reference (l1) -->
+                        <details class="glass rounded-xl p-3 sm:p-4 md:col-span-2" ontoggle="netMatrixLoad(this)">
+                            <summary class="cursor-pointer select-none text-sm font-semibold text-gray-300 hover:text-white">Visibility matrix · L1 Physical <span class="text-xs font-normal text-gray-500">— what a tap must see for each module here</span></summary>
+                            <a href="/web/images/osi/matrix_full.jpg?v=20260930" target="_blank" rel="noopener" title="Open the full matrix">
+                                <img data-src="/web/images/osi/matrix_l1.jpg?v=20260930" alt="Module visibility matrix, L1 Physical band" class="block w-full h-auto rounded-lg mt-3">
+                            </a>
+                            <p class="text-xs text-gray-500 mt-2">Card letters are the vantage tier: <strong>A</strong> VLAN-wide · <strong>B</strong> link-local · <strong>C</strong> on-path unicast · <strong>D</strong> configured peer · <strong>E</strong> active / local · <strong>RF</strong> over-the-air. Tap the image for the full matrix (all layers).</p>
+                        </details>
                         <h3 class="md:col-span-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Active tools</h3>
                         <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
                             <div class="mb-3">
@@ -9081,7 +9145,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260930-osi-layers"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20260930-osi-matrix"></script>
 
 
 

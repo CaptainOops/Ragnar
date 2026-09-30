@@ -25,6 +25,12 @@ Every module by OSI layer and **vantage tier** — what a tap has to see for a c
 verdict to mean anything (A VLAN-wide · B link-local · C on-path unicast · D configured
 peer · E active / local · RF over-the-air). The Diagnostics layer buttons follow it.
 
+The matrix is also in the web UI as a reference guide: **Overview** has a collapsible
+*Module visibility matrix* card with the whole graphic, and every layer panel (L7 … L1)
+opens with its own band of it (with the tier legend), so the tier of each module is right
+next to its card. The images load only when you expand a card; tap one to open the full
+matrix to zoom (`/web/images/osi/`).
+
 <img src="ragnar_osi_visibility_matrix.jpg" alt="Ragnar module visibility matrix: OSI layer × vantage tier" width="1080" />
 
 
