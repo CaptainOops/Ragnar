@@ -8690,7 +8690,11 @@ async function _runGuard(module, label, btn) {
         _guardFillIfaces(module + '-guard-iface');
         const roleEl = document.getElementById(module + '-guard-role');
         const roleQs = (roleEl && roleEl.value) ? '&role=' + encodeURIComponent(roleEl.value) : '';
-        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + roleQs;
+        const cardsEl = document.getElementById(module + '-guard-cards');
+        const forgetEl = document.getElementById(module + '-guard-forget');
+        const cardsQs = (cardsEl && cardsEl.dataset.dirty === '1') ? '&cards=' + encodeURIComponent(cardsEl.value) : '';
+        const forgetQs = (forgetEl && forgetEl.checked) ? '&forget=1' : '';
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + roleQs + cardsQs + forgetQs;
         const d = await fetchAPI('/api/net/' + module + '-guard' + qs);
         if (!d || d.success === false) {
             const msg = (d && d.error) || 'failed';
@@ -8700,6 +8704,16 @@ async function _runGuard(module, label, btn) {
             return;
         }
         out.innerHTML = _renderGuardResult(d);
+        if (d.cards) {
+            if (cardsEl) { cardsEl.value = d.cards.declared || ''; cardsEl.dataset.dirty = '0'; }
+            if (forgetEl) forgetEl.checked = false;
+            const learned = d.cards.learned || [];
+            const fresh = d.cards.new || [];
+            out.insertAdjacentHTML('beforeend', '<p class="text-xs text-gray-400 mt-2 break-words">Known cards: '
+                + (d.cards.declared ? 'declared <span class="font-mono">' + escapeHtml(d.cards.declared) + '</span> · ' : 'none declared · ')
+                + learned.length + ' learned from SNMP' + (learned.length ? ' (<span class="font-mono">' + escapeHtml(learned.slice(0, 12).join(', ')) + (learned.length > 12 ? ', …' : '') + '</span>)' : '')
+                + (fresh.length ? ' · <span class="text-emerald-300">new: ' + escapeHtml(fresh.join(', ')) + '</span>' : '') + '</p>');
+        }
     } catch (e) {
         out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(e.message) + '</p>';
     } finally {
@@ -8712,6 +8726,7 @@ function runAristaGuard() { _runGuard('arista', 'Arista', (typeof event !== 'und
 function runComwareGuard() { _runGuard('comware', 'Comware', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runMikroTikGuard() { _runGuard('mikrotik', 'MikroTik', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runArubaGuard() { _runGuard('aruba', 'Aruba', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
+function runAPCGuard() { _runGuard('apc', 'APC', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 // --- Dell Guard daemon control (standalone systemd sensor; enable/disable switch) ---
 function _dellGuardRender(d) {
     if (!d) return '<span class="text-red-400">No status returned.</span>';
@@ -11133,7 +11148,7 @@ async function runRoutingSelftest() {
                         bfd: 'BFD Watch (failover manipulation)', ptp: 'PTP Watch (IEEE-1588 grandmaster takeover)', srmpls: 'SR-MPLS Watch (MPLS segment injection)', ipsec: 'IPsec/IKE Watch (D(HE)at / weak-DH / SWEET32)',
                         dns_passive: 'DNS Watch (KeyTrap / NSEC3 / NXNSAttack / MaginotDNS / SAD DNS)',
                         cisco_guard: 'Cisco Guard (IOS/IOS-XE/NX-OS CVEs)', juniper_guard: 'Juniper Guard (J-Web/SSR/Space CVEs)', arista_guard: 'Arista Guard (EOS CVEs)', comware_guard: 'Comware Guard (VRF-hop / MPLS CVEs)',
-                        mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
+                        mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', apc_guard: 'APC Guard (NMC Ripple20)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
                         bgp_speaker: 'BGP Speaker (codec/FSM/RIB)', path_asymmetry: 'Path Asymmetry (OWD)' };
         const overall = d.success
             ? '<div class="mb-2 px-3 py-2 rounded border bg-green-950/40 border-green-900 text-green-400 text-sm">✓ All detector self-tests passed' + (d.scapy_available ? ' (including Scapy end-to-end)' : ' — install Scapy for the end-to-end leg') + '</div>'
@@ -11142,7 +11157,7 @@ async function runRoutingSelftest() {
             '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
             '<tr class="text-left text-gray-500"><th class="px-2 py-1">Scanner</th><th class="px-2 py-1">Scenarios</th><th class="px-2 py-1">End-to-end</th><th class="px-2 py-1">Result</th></tr>' +
             '</thead><tbody>';
-        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
+        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'apc_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
         // Append any suite the backend returned that isn't in the preferred order,
         // so a newly-wired detector can never again be counted toward pass/fail yet
         // stay invisible in the table.

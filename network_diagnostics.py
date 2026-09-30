@@ -22672,6 +22672,328 @@ def _aruba_selftest():
             'total': len(scenarios), 'scenarios': scenarios}
 
 
+# ==========================================================================
+# APC Guard — passive APC / Schneider Network Management Card (NMC) monitor
+# ==========================================================================
+# Ripple20 (Treck TCP/IP stack) exposure + attack attempts against NMC-managed
+# rack PDUs, rack ATS and UPS. The detection engine is the vendored standalone
+# apcguard (python/apcguard.py, pure Python over raw frames). In-app we capture a
+# bounded window with tcpdump using the module's own BPF, then replay the pcap
+# through apcguard.Engine with packet timestamps as the clock (its 10 s
+# request/reply windows need capture time, not replay time). Never transmits.
+#
+# The engine analyses tunnel / DNS attempts only against cards it knows, and a
+# short window rarely contains an SNMP poll, so cards learned from sysDescr are
+# remembered across scans (and operators can declare cards, ADDR or ADDR=MAC).
+_APC_GUARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'data', 'apc_guard.json')
+_apc_guard_lock = threading.Lock()
+_APC_PY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'python')
+_APC_MAX_LEARNED = 256
+_APC_MAX_DECLARED = 64
+_APC_SEVERITY = {'info': 'INFO', 'notice': 'LOW', 'warn': 'HIGH', 'critical': 'CRITICAL'}
+# Version gates are posture; card-state observations too. Tunnel/DNS attempts and the
+# heap-disclosure reply are attacks. Tunnel traffic with no CVE condition and a
+# declared-MAC contradiction are exposure (something is talking to / answering as a card).
+_APC_KLASS = {
+    'APC-001': 'POSTURE', 'APC-002': 'POSTURE', 'APC-003': 'POSTURE',
+    'APC-010': 'POSTURE', 'APC-011': 'POSTURE', 'APC-012': 'POSTURE',
+    'APC-101': 'ATTACK', 'APC-102': 'ATTACK', 'APC-103': 'ATTACK',
+    'APC-104': 'EXPOSURE', 'APC-105': 'ATTACK', 'APC-106': 'ATTACK',
+    'APC-107': 'POSTURE', 'APC-108': 'POSTURE', 'APC-109': 'POSTURE',
+    'APC-110': 'EXPOSURE', 'APC-111': 'ATTACK', 'APC-112': 'ATTACK',
+}
+_APC_CVES = ('CVE-2020-11896', 'CVE-2020-11898', 'CVE-2020-11899',
+             'CVE-2020-11901', 'CVE-2020-11902')
+
+
+def _apc_module():
+    if _APC_PY_DIR not in sys.path:
+        sys.path.insert(0, _APC_PY_DIR)
+    import apcguard
+    return apcguard
+
+
+def _apc_pcap_frames(path):
+    """Read a classic libpcap file into [(ts, frame)]. Ethernet link type only
+    (what tcpdump -w writes on a wired NIC). Raises ValueError otherwise."""
+    with open(path, 'rb') as fh:
+        data = fh.read()
+    if len(data) < 24:
+        return []
+    magic = data[:4]
+    if magic in (b'\xd4\xc3\xb2\xa1', b'\x4d\x3c\xb2\xa1'):
+        end = '<'
+    elif magic in (b'\xa1\xb2\xc3\xd4', b'\xa1\xb2\x3c\x4d'):
+        end = '>'
+    else:
+        raise ValueError('not a libpcap file')
+    nano = magic in (b'\x4d\x3c\xb2\xa1', b'\xa1\xb2\x3c\x4d')
+    linktype = struct.unpack(end + 'I', data[20:24])[0] & 0x0FFFFFFF
+    if linktype != 1:
+        raise ValueError('unsupported link type %d (Ethernet only)' % linktype)
+    out, off, n = [], 24, len(data)
+    while off + 16 <= n:
+        sec, frac, incl, _orig = struct.unpack(end + 'IIII', data[off:off + 16])
+        off += 16
+        if incl > 262144 or off + incl > n:
+            break
+        out.append((sec + frac / (1e9 if nano else 1e6), data[off:off + incl]))
+        off += incl
+    return out
+
+
+def _apc_parse_cards(spec):
+    """'ADDR[=MAC], ADDR, ...' (commas, spaces or newlines) → [addr | (addr, mac)].
+    Raises ValueError on a bad address/MAC or a card declared with two MACs."""
+    ag = _apc_module()
+    cards, macs = [], {}
+    for tok in re.split(r'[\s,;]+', (spec or '').strip()):
+        if not tok:
+            continue
+        spec_ = ag.parse_nmc_spec(tok)
+        addr, mac = spec_ if isinstance(spec_, tuple) else (spec_, None)
+        if mac:
+            if macs.get(addr, mac) != mac:
+                raise ValueError('%s is declared with two different MACs' % addr)
+            macs[addr] = mac
+        cards.append((addr, mac) if mac else addr)
+    if len(cards) > _APC_MAX_DECLARED:
+        raise ValueError('at most %d declared cards' % _APC_MAX_DECLARED)
+    return cards
+
+
+def _apc_card_spec(cards):
+    return ', '.join('%s=%s' % c if isinstance(c, (tuple, list)) else c for c in cards)
+
+
+def _apc_map_finding(f):
+    code = f.get('code', '')
+    detail = dict(f.get('detail') or {})
+    for k in ('dst', 'af', 'confidence'):
+        if f.get(k):
+            detail[k] = f[k]
+    detail['module_severity'] = f.get('severity')
+    if f.get('severity_lowered_from'):
+        detail['severity_lowered_from'] = f['severity_lowered_from']
+    return {'code': code, 'name': f.get('title', code),
+            'severity': _APC_SEVERITY.get(f.get('severity'), 'MEDIUM'),
+            'klass': _APC_KLASS.get(code, 'POSTURE'),
+            'cves': list(f.get('cves') or []),
+            'src': f.get('src'), 'detail': detail}
+
+
+def _apc_analyze_frames(frames, cards=()):
+    """Replay [(ts, frame)] through apcguard.Engine seeded with `cards`.
+    Returns (findings, learned_addrs, stats)."""
+    ag = _apc_module()
+    raw = []
+    now = [frames[0][0] if frames else time.time()]
+    eng = ag.Engine(nmcs=list(cards), emit=raw.append, clock=lambda: now[0])
+    for ts, fr in frames:
+        now[0] = ts
+        try:
+            eng.handle_frame(fr)
+        except Exception:
+            eng.stats['parse_errors'] += 1
+    learned = sorted(a for a, r in eng.nmcs.items() if 'observed' in r.get('source', ''))
+    return [_apc_map_finding(f) for f in raw], learned, dict(eng.stats)
+
+
+def _apc_state_load():
+    d = _guard_events_load(_APC_GUARD_PATH)
+    return (d.get('declared') or []), (d.get('learned') or [])
+
+
+def _apc_learn(addrs):
+    with _apc_guard_lock:
+        d = _guard_events_load(_APC_GUARD_PATH)
+        cur = [a for a in (d.get('learned') or []) if a not in addrs]
+        d['learned'] = (cur + list(addrs))[-_APC_MAX_LEARNED:]
+        _guard_events_save(_APC_GUARD_PATH, d)
+
+
+def do_apc_guard(interface=None, seconds=20, cards=None, learn=True, quick=False,
+                 forget=False):
+    """Passive APC / Schneider NMC guard (detection-only). Captures SNMP, DNS,
+    ICMP, IP-in-IP / IPv6-in-IPv4 tunnels and IPv4 fragments for a few seconds
+    and replays them through the vendored apcguard engine: Ripple20 version gates
+    from SNMP sysDescr (NMC1/NMC2/NMC3 AOS) and the CVE-2020-11896 / 11898 / 11901
+    / 11902 attack shapes. `cards` (str) replaces the declared-card list; `forget`
+    clears the learned cards. Never transmits."""
+    if cards is not None or forget:
+        try:
+            declared_new = _apc_parse_cards(cards) if cards is not None else None
+        except (ValueError, ImportError) as e:
+            return {'success': False, 'error': 'declared cards: %s' % e}
+        with _apc_guard_lock:
+            d = _guard_events_load(_APC_GUARD_PATH)
+            if declared_new is not None:
+                d['declared'] = [list(c) if isinstance(c, tuple) else c for c in declared_new]
+            if forget:
+                d['learned'] = []
+            _guard_events_save(_APC_GUARD_PATH, d)
+    iface, iface_error = _lan_guard_iface(interface, 'APC Guard')
+    if iface_error:
+        return iface_error
+    seconds = _clamp_int(seconds, 20, 5, 60)
+    if not _have('tcpdump'):
+        return {'success': False, 'interface': iface,
+                'error': 'tcpdump is not installed. Click Install to add it.',
+                'missing_tool': 'tcpdump'}
+    try:
+        ag = _apc_module()
+    except Exception as e:
+        return {'success': False, 'interface': iface, 'error': 'apcguard module: %s' % e}
+    declared, learned = _apc_state_load()
+    seed = [tuple(c) if isinstance(c, list) else c for c in declared]
+    seen = {c[0] if isinstance(c, tuple) else c for c in seed}
+    seed += [a for a in learned if a not in seen]
+    tmpdir = tempfile.mkdtemp(prefix='apcguard-')
+    pcap = os.path.join(tmpdir, 'cap.pcap')
+    try:
+        res = _run(['timeout', str(seconds), 'tcpdump', '-i', iface, '-nn', '-s', '0',
+                    '-c', '20000', '-w', pcap, ag.BPF_FILTER], timeout=seconds + 8)
+        if not os.path.exists(pcap):
+            err = (res.get('err') or 'capture failed').strip()
+            return {'success': False, 'interface': iface, 'error': err[:200]}
+        try:
+            frames = _apc_pcap_frames(pcap)
+        except ValueError as e:
+            return {'success': False, 'interface': iface, 'error': str(e)}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    try:
+        findings, learned_now, stats = _apc_analyze_frames(frames, seed)
+    except ValueError as e:
+        return {'success': False, 'interface': iface, 'error': 'declared cards: %s' % e}
+    new_cards = [a for a in learned_now if a not in seen and a not in learned]
+    if learn and new_cards:
+        _apc_learn(new_cards)
+        learned = (learned + new_cards)[-_APC_MAX_LEARNED:]
+    result = _guard_finish('apc_guard', iface, seconds, findings, frames)
+    result['cards'] = {'declared': _apc_card_spec(seed[:len(declared)]),
+                       'learned': learned, 'new': new_cards}
+    result['stats'] = stats
+    if not quick:
+        _guard_record_event(_APC_GUARD_PATH, _apc_guard_lock, result)
+    _guard_emit_jsonl('apc_guard', result)
+    return result
+
+
+def _apc_selftest():
+    """APC Guard: the vendored apcguard self-test tier (516 checks, reshaped like
+    Dell's) plus the in-app adapter — pcap reader, severity/klass mapping, card
+    memory across scans, declared-card parsing, and a tcpdump BPF replay."""
+    scenarios = []
+
+    def sc(name, ok, expect='', got=''):
+        scenarios.append({'name': name, 'pass': bool(ok), 'expect': expect, 'got': str(got)})
+
+    try:
+        import io as _io
+        import contextlib as _cl
+        ag = _apc_module()
+        import apcguard_selftest as T
+    except Exception as e:
+        return {'success': False, 'scenarios': [
+            {'name': 'apcguard import failed: %s' % e, 'pass': False,
+             'expect': 'import', 'got': 'error'}]}
+
+    # 1. The module's own tier. run() prints 'N checks, F failures' + a line per FAIL.
+    buf = _io.StringIO()
+    try:
+        with _cl.redirect_stdout(buf):
+            rc = T.run()
+    except Exception as e:
+        rc, buf = 1, _io.StringIO('run raised %r' % e)
+    out = buf.getvalue()
+    m = re.search(r'(\d+)\s+checks,\s+(\d+)\s+failures', out)
+    total, failed = (int(m.group(1)), int(m.group(2))) if m else (0, 1)
+    for i in range(max(0, total - failed)):
+        scenarios.append({'name': 'apcguard check %d' % (i + 1), 'pass': True,
+                          'expect': 'pass', 'got': 'pass'})
+    for ln in out.splitlines():
+        if ln.strip().startswith('FAIL:'):
+            sc(ln.strip()[5:].strip(), False, 'pass', 'FAIL')
+    if not m or rc != 0 and not failed:
+        sc('apcguard module self-test', False, 'rc 0', 'rc %s' % rc)
+
+    # 2. In-app adapter.
+    card, nms = T.N4, '10.0.0.5'
+    snmp = T.v4f(card, nms, 17, T.udp(161, 40000, T.snmp_response(sysdescr=T.DESCR)))
+    inner = T.ipv4('9.9.9.9', card, 17, b'P' * 200, total=28)
+    frags = T._tunnel_frags_v4(inner, 7)
+    tmpdir = tempfile.mkdtemp(prefix='apcguard-st-')
+    try:
+        pin = os.path.join(tmpdir, 'in.pcap')
+        frames = [(1000.0, snmp), (1001.5, frags[0]), (1001.6, frags[1])]
+        with open(pin, 'wb') as fh:
+            fh.write(struct.pack('<IHHiIII', 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
+            for ts, fr in frames:
+                fh.write(struct.pack('<IIII', int(ts), int(round((ts % 1) * 1e6)),
+                                     len(fr), len(fr)) + fr)
+        back = _apc_pcap_frames(pin)
+        sc('apc-pcap-roundtrip', [f for _, f in back] == [f for _, f in frames]
+           and abs(back[1][0] - 1001.5) < 1e-6, 'frames+ts identical', len(back))
+
+        f0, _, _ = _apc_analyze_frames([])
+        sc('apc-clean', _guard_verdict(f0) == 'clean', 'clean', _guard_verdict(f0))
+
+        f1, learned, _ = _apc_analyze_frames(frames[:1])
+        by = {f['code']: f for f in f1}
+        sc('apc-version-gate-nmc2', 'APC-001' in by and by['APC-001']['klass'] == 'POSTURE'
+           and by['APC-001']['severity'] == 'HIGH' and 'CVE-2020-11901' in by['APC-001']['cves'],
+           'APC-001 POSTURE HIGH', sorted(by))
+        sc('apc-verdict-posture', _guard_verdict(f1) == 'posture', 'posture', _guard_verdict(f1))
+        sc('apc-learns-card', learned == [card], [card], learned)
+
+        f2, _, _ = _apc_analyze_frames(frames[1:])
+        sc('apc-unknown-card-ignored', not f2, 'no findings without the card', len(f2))
+        f3, _, _ = _apc_analyze_frames(frames[1:], [card])
+        c3 = {f['code']: f for f in f3}
+        sc('apc-remembered-card-attack', 'APC-101' in c3 and 'APC-102' in c3
+           and c3['APC-101']['severity'] == 'CRITICAL' and _guard_verdict(f3) == 'attack',
+           'APC-101+102 CRITICAL → attack', sorted(c3))
+        sc('apc-src-is-attacker', c3.get('APC-101', {}).get('src') == '8.8.8.8',
+           '8.8.8.8', c3.get('APC-101', {}).get('src'))
+
+        cards = _apc_parse_cards('192.0.2.10=02:AA:bb:cc:dd:10, 2001:db8::10\n192.0.2.11')
+        sc('apc-parse-cards', cards == [('192.0.2.10', '02:aa:bb:cc:dd:10'),
+                                        '2001:db8::10', '192.0.2.11'], '3 cards', cards)
+        for bad in ('999.1.1.1', '192.0.2.10=zz', '192.0.2.10=02:aa:bb:cc:dd:10 192.0.2.10=02:aa:bb:cc:dd:11'):
+            try:
+                _apc_parse_cards(bad)
+                sc('apc-parse-rejects %s' % bad, False, 'ValueError', 'accepted')
+            except ValueError:
+                sc('apc-parse-rejects %s' % bad, True, 'ValueError', 'ValueError')
+
+        sc('apc-klass-covers-codes', set(_APC_KLASS) == set(ag.CODES)
+           and set(_APC_SEVERITY) == set(ag.SEV_ORDER), 'every code mapped',
+           sorted(set(ag.CODES) ^ set(_APC_KLASS)))
+        sc('apc-cves-match-module', set(_APC_CVES) == {c for v in ag.CODES.values() for c in v[2]},
+           '5 Ripple20 CVEs', len(_APC_CVES))
+
+        # 3. The module's BPF, compiled and applied by the real tcpdump.
+        if _have('tcpdump'):
+            pout = os.path.join(tmpdir, 'out.pcap')
+            r = _run(['tcpdump', '-nn', '-r', pin, '-w', pout, ag.BPF_FILTER], timeout=20)
+            try:
+                rep = _apc_pcap_frames(pout)
+            except (OSError, ValueError):
+                rep = []
+            f4, _, _ = _apc_analyze_frames(rep, [card])
+            sc('apc-tcpdump-bpf-replay', len(rep) == 3 and _guard_verdict(f4) == 'attack',
+               '3 frames admitted → attack', '%d frames %s %s' % (
+                   len(rep), _guard_verdict(f4), (r.get('err') or '')[:80]))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    failed = sum(1 for s in scenarios if not s['pass'])
+    return {'success': failed == 0, 'passed': len(scenarios) - failed,
+            'total': len(scenarios), 'scenarios': scenarios}
+
+
 def _guard_rec(proto=None, src='10.0.0.9', sport=40000, dst='10.0.0.1',
                dport=None, payload=b'', dissect='', vlan_tags=0, ipver=4,
                ip_raw=b''):
@@ -24023,6 +24345,7 @@ def do_routing_selftest():
               'arista_guard': _arista_selftest(), 'comware_guard': _comware_selftest(),
               'mikrotik_guard': _mikrotik_selftest(),
               'aruba_guard': _aruba_selftest(),
+              'apc_guard': _apc_selftest(),
               'dell_guard': _dell_selftest(),
               'bgp_speaker': bgp_speaker.selftest(), 'path_asymmetry': path_asymmetry.selftest()}
     return {
@@ -26072,6 +26395,20 @@ def register_network_diagnostics(app, logger=None):
         secs = _clamp_int(request.args.get('seconds'), 20, 5, 40)
         _log(f"net/aruba-guard iface={iface or 'default-route'} secs={secs}")
         return jsonify(do_aruba_guard(interface=iface, seconds=secs))
+
+    @app.route('/api/net/apc-guard', methods=['GET'])
+    def net_apc_guard():
+        iface = (request.args.get('interface') or '').strip() or None
+        if iface is not None and not _valid_iface(iface):
+            return _bad('Invalid interface')
+        secs = _clamp_int(request.args.get('seconds'), 20, 5, 60)
+        cards = request.args.get('cards')
+        if cards is not None and len(cards) > 4096:
+            return _bad('Declared card list too long')
+        forget = request.args.get('forget') in ('1', 'true', 'yes')
+        _log(f"net/apc-guard iface={iface or 'default-route'} secs={secs}")
+        return jsonify(do_apc_guard(interface=iface, seconds=secs, cards=cards,
+                                    forget=forget))
 
     @app.route('/api/net/dell-guard', methods=['GET', 'POST'])
     def net_dell_guard():
@@ -28580,11 +28917,17 @@ def _cli(argv=None):
                            ('arista', 'Arista EOS switch/router'),
                            ('comware', 'HPE Comware / Huawei VRF-hopping (MPLS)'),
                            ('mikrotik', 'MikroTik RouterOS (CCR/CRS)'),
-                           ('aruba', 'HPE Aruba ArubaOS (PAPI)')):
+                           ('aruba', 'HPE Aruba ArubaOS (PAPI)'),
+                           ('apc', 'APC / Schneider NMC (Ripple20)')):
         gp = sub.add_parser('%s-guard' % _gname,
                             help='passive %s CVE guard (posture/exposure/attack)' % _ghelp)
         gp.add_argument('--iface', '-i', default=None, help='interface (default: route)')
-        gp.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-40)')
+        gp.add_argument('--seconds', '-s', type=int, default=20, help='capture window (5-40; APC 5-60)')
+        if _gname == 'apc':
+            gp.add_argument('--cards', default=None,
+                            help="declared NMCs: 'ADDR[=MAC],...' (replaces the saved list)")
+            gp.add_argument('--forget', action='store_true',
+                            help='clear the cards learned from SNMP sysDescr')
         if _gname == 'comware':
             gp.add_argument('--role', default='unknown', choices=('ce', 'core', 'unknown'),
                             help='segment role (ce/core/unknown; unknown=>ce)')
@@ -29550,12 +29893,16 @@ def _cli(argv=None):
         'comware-guard': (do_comware_guard, 'Comware'),
         'mikrotik-guard': (do_mikrotik_guard, 'MikroTik'),
         'aruba-guard': (do_aruba_guard, 'Aruba'),
+        'apc-guard': (do_apc_guard, 'APC'),
     }
     if args.cmd in _GUARD_CLI:
         fn, label = _GUARD_CLI[args.cmd]
         kw = {'interface': args.iface, 'seconds': args.seconds}
         if args.cmd == 'comware-guard':
             kw['role'] = getattr(args, 'role', 'unknown')
+        if args.cmd == 'apc-guard':
+            kw['cards'] = args.cards
+            kw['forget'] = args.forget
         r = fn(**kw)
         if args.json:
             print(json.dumps(r, indent=2))
@@ -29580,6 +29927,7 @@ def _cli(argv=None):
         'comware-guard-selftest': (_comware_selftest, 'Comware'),
         'mikrotik-guard-selftest': (_mikrotik_selftest, 'MikroTik'),
         'aruba-guard-selftest': (_aruba_selftest, 'Aruba'),
+        'apc-guard-selftest': (_apc_selftest, 'APC'),
     }
     if args.cmd in _GUARD_SELFTEST_CLI:
         fn, label = _GUARD_SELFTEST_CLI[args.cmd]
@@ -29587,14 +29935,20 @@ def _cli(argv=None):
         if args.json:
             print(json.dumps(r, indent=2))
         else:
+            bulk = 0
             for s in r['scenarios']:
+                if s['pass'] and re.match(r'^\w+guard check \d+$', s['name']):
+                    bulk += 1
+                    continue
                 print(f"  [{'PASS' if s['pass'] else 'FAIL'}] {s['name']}: "
                       f"expect={s['expect']} got={s['got']}")
-            sc = r['scapy']
-            if sc.get('ran'):
+            if bulk:
+                print(f"  [PASS] {bulk} vendored module self-test checks")
+            sc = r.get('scapy')
+            if sc and sc.get('ran'):
                 print(f"  [{'PASS' if sc.get('pass') else 'FAIL'}] scapy-e2e: "
                       f"verdict={sc.get('verdict')} codes={sc.get('codes')}")
-            else:
+            elif sc:
                 print(f"  [skip] scapy-e2e: {sc.get('reason')}")
             print(f"{label} Guard self-test: {'OK' if r['success'] else 'FAILED'}")
         return 0 if r['success'] else 1
