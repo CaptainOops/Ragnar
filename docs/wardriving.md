@@ -438,6 +438,36 @@ This speeds up the start; it doesn't create signal. A puck that can't hear
 satellites (behind coated glass, next to the Alfa) still needs a better spot:
 put it on a 1–2 m USB extension, face up, away from the Pi/hub/Wi-Fi adapter.
 
+### Clock from GPS (offline boots)
+
+A Raspberry Pi has no real-time clock. Booted away from Wi-Fi it starts at the
+last saved time (systemd-timesyncd's clock file) and keeps that wrong time
+until NTP can reach a server, so every sighting in a session is stamped hours
+off. In the field a whole walk was recorded 2 h 38 min early and looked
+"missing" from the session list.
+
+With **Config → Wardriving → Set Clock from GPS** (`wardriving_gps_set_clock`,
+default on):
+
+- **GPS sets the clock.** Once GPS time agrees with itself over 3 fixes and
+  differs from the system clock by more than 2 s, and only while the kernel
+  reports the clock *not* NTP-synced, `GPSManager` sets the system clock from
+  GPS time (once per reader start). This works for gpsd (`TPV.time`) and
+  direct serial (RMC time + date). NTP stays in charge whenever it is synced.
+  The Diagnostics panel shows a **Clock from GPS** row (`gps.clock_set`:
+  `{at, delta, changed}`).
+- **The running session is repaired.** A 1 Hz watch compares wall-clock time
+  with monotonic time. When the clock steps **forward** by 10 s or more during a
+  session (the GPS set above, or NTP syncing once Wi-Fi is back), every
+  timestamp recorded before the step is shifted by it: `first_seen` and
+  `last_seen` in networks, observations, Bluetooth, cells and Zigbee, the GPS
+  track, and the session start. `session_info.clock_steps` records each
+  repair. Backward steps are only logged, because old and new stamps would
+  overlap.
+
+Data recorded before a fix, while the clock was still wrong, is corrected by
+the same repair when the step happens.
+
 ### Status Fields (`/api/wardriving/gps`)
 
 | Field | Meaning |
@@ -457,6 +487,7 @@ put it on a 1–2 m USB extension, face up, away from the Pi/hub/Wi-Fi adapter.
 | `last_sentence` | Epoch of last *any* parsed NMEA |
 | `assist` | What the assisted start pre-loaded: `{at, items[], via, frames}`, or `null` |
 | `aid_saved` | Last orbit-data save: `{at, alm, eph}` (SV counts), or `null` |
+| `clock_set` | Clock set from GPS: `{at, delta, changed}` (`changed: false` = clock was already right), or `null` |
 | `error` | Last error string, or `null` |
 
 ### Wardriving GPS Card (UI)

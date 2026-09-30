@@ -433,6 +433,9 @@
         gps.searching_seconds > 120 ? 'warn' : null],
       ['Assisted start', (gps.assist && (gps.assist.items || []).length)
         ? gps.assist.items.join(', ') + ' · ' + fmtAge(gps.assist.at) : null],
+      ['Clock from GPS', gps.clock_set ? (gps.clock_set.changed
+        ? 'set ' + (gps.clock_set.delta > 0 ? '+' : '') + gps.clock_set.delta + 's · ' + fmtAge(gps.clock_set.at)
+        : 'clock already correct') : null],
       ['GPS error', gps.error, 'warn']
     ]);
 

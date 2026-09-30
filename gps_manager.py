@@ -11,6 +11,7 @@ import socket
 import struct
 import threading
 import logging
+from datetime import datetime, timezone
 
 import gps_assist
 
@@ -96,6 +97,22 @@ def ubx_enable_nmea_frames(save=True):
 def ubx_enable_nmea_sequence(save=True):
     """The same frames as one byte string (drift check against the script)."""
     return b''.join(ubx_enable_nmea_frames(save))
+
+
+def _rmc_epoch(line):
+    """UTC epoch from an RMC sentence's time (field 1) and date (field 9),
+    or None. The RMC regex stops before the date, so split the fields."""
+    try:
+        f = line.split('*')[0].split(',')
+        hms, dmy = f[1], f[9]
+        if len(hms) < 6 or len(dmy) != 6:
+            return None
+        frac = float(hms[6:] or 0) if hms[6:] not in ('', '.') else 0.0
+        return datetime(2000 + int(dmy[4:6]), int(dmy[2:4]), int(dmy[0:2]),
+                        int(hms[0:2]), int(hms[2:4]), int(hms[4:6]),
+                        tzinfo=timezone.utc).timestamp() + frac
+    except (IndexError, ValueError):
+        return None
 
 
 def _nmea_to_decimal(raw, direction):
@@ -280,7 +297,7 @@ class GPSManager:
     """Manages a GPS source (gpsd socket or direct NMEA serial), providing real-time position data."""
 
     def __init__(self, port=None, baudrate=9600, exclude_ports=None,
-                 state_file=None, assist=True):
+                 state_file=None, assist=True, set_clock=True):
         self.port = port
         self.baudrate = baudrate
         self._exclude_ports = set(exclude_ports or [])
@@ -344,6 +361,13 @@ class GPSManager:
         self._gpsd_device = None
         self._assist_done = False
         self._assist_status = None       # {'at', 'items', 'via'} once sent
+        # Set the system clock from GPS time while NTP isn't synced. A Pi has
+        # no RTC: booted away from Wi-Fi it starts at the last saved time, and
+        # every sighting in the session was stamped hours off (seen in the
+        # field: 2 h 38 min). GPS time is exact once there is a fix.
+        self.set_clock = bool(set_clock)
+        self.clock_set = None            # {'at', 'delta'} once the clock was set
+        self._clock_samples = []
         self._aid_saved = None           # {'at', 'alm', 'eph'} after a save
         self._aid_next_save = 0.0
         self._aid_saves = 0              # successful saves this reader run
@@ -583,6 +607,42 @@ class GPSManager:
             self._aid_busy = True
             self._run_bg(self._capture_aid)
 
+    # GPS time must agree with itself over this many fixes before it is
+    # trusted (a receiver can briefly report a bogus epoch right after a
+    # cold start), and must differ from the clock by more than the minimum
+    # step to be worth a clock change.
+    _CLOCK_SAMPLES = 3
+    _CLOCK_MIN_STEP_S = 2.0
+
+    def _maybe_set_clock(self, gps_epoch):
+        """Set the system clock from GPS time, once per reader run, and only
+        while NTP has not synchronized it (NTP stays in charge when present)."""
+        if not self.set_clock or self.clock_set or gps_epoch is None:
+            return
+        if gps_epoch < 1704067200:              # before 2024: not a real time
+            self._clock_samples.clear()
+            return
+        delta = gps_epoch - time.time()
+        if abs(delta) < self._CLOCK_MIN_STEP_S:
+            self.clock_set = {'at': time.time(), 'delta': round(delta, 1), 'changed': False}
+            return
+        if gps_assist.clock_is_synced():
+            return
+        self._clock_samples = (self._clock_samples + [delta])[-self._CLOCK_SAMPLES:]
+        if (len(self._clock_samples) < self._CLOCK_SAMPLES
+                or max(self._clock_samples) - min(self._clock_samples) > 1.0):
+            return
+        step = sorted(self._clock_samples)[self._CLOCK_SAMPLES // 2]
+        try:
+            time.clock_settime(time.CLOCK_REALTIME, time.time() + step)
+        except (OSError, AttributeError) as e:
+            logger.warning(f"GPS clock set failed (needs root/CAP_SYS_TIME): {e}")
+            self.set_clock = False
+            return
+        self.clock_set = {'at': time.time(), 'delta': round(step, 1), 'changed': True}
+        logger.warning(f"System clock was {step:+.1f} s off and not NTP-synced — "
+                       f"set it from GPS time")
+
     @staticmethod
     def _run_bg(fn):
         threading.Thread(target=fn, daemon=True, name="gps-assist").start()
@@ -724,6 +784,7 @@ class GPSManager:
                 'last_sentence': self.last_sentence,
                 'last_known': self.last_known,
                 'assist': self._assist_status,
+                'clock_set': self.clock_set,
                 'aid_saved': self._aid_saved,
                 'error': self.error
             }
@@ -879,6 +940,12 @@ class GPSManager:
             else:
                 self.fix_quality = 0
             self.last_sentence = now
+        if mode >= 2 and obj.get('time'):
+            try:
+                self._maybe_set_clock(datetime.fromisoformat(
+                    obj['time'].replace('Z', '+00:00')).timestamp())
+            except ValueError:
+                pass
 
     # gpsd gnssid -> NMEA talker code, so the gpsd path keys its per-constellation
     # bookkeeping the same way the direct-NMEA GSV path does (see _parse_nmea).
@@ -1154,6 +1221,7 @@ class GPSManager:
                     self._record_position(now)
                     self.last_sentence = now
                     self._external_source = None
+                self._maybe_set_clock(_rmc_epoch(line))
             else:
                 with self._lock:
                     self.last_sentence = now

@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import subprocess
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("Wardriving")
 
@@ -560,6 +560,52 @@ class WardrivingSession:
                 "INSERT OR REPLACE INTO session_info (key, value) VALUES (?, ?)",
                 ('start_time', datetime.now(timezone.utc).isoformat())
             )
+
+    _TIMED_TABLES = ('networks', 'network_observations', 'bluetooth_devices',
+                     'cell_towers', 'zigbee_devices')
+
+    def shift_times(self, delta, cutoff_epoch):
+        """Move every timestamp recorded before a wall-clock step forward by
+        the step.
+
+        A Pi has no RTC: booted away from Wi-Fi it runs on the last saved
+        time until NTP or GPS corrects it, and everything recorded until then
+        is stamped with the wrong clock. When the clock steps forward by
+        `delta` seconds, rows stamped before `cutoff_epoch` (the moment of the
+        step on the OLD clock) are shifted, so the session reads in real time.
+        Rows written after the step already carry the corrected clock.
+        """
+        def _shift_iso(v):
+            if not v:
+                return v
+            try:
+                t = datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except ValueError:
+                return v
+            if t.timestamp() >= cutoff_epoch:
+                return v
+            return (t + timedelta(seconds=delta)).isoformat()
+
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.create_function('ragnar_shift_iso', 1, _shift_iso)
+                for t in self._TIMED_TABLES:
+                    try:
+                        conn.execute(f"UPDATE {t} SET first_seen = ragnar_shift_iso(first_seen), "
+                                     f"last_seen = ragnar_shift_iso(last_seen)")
+                    except sqlite3.OperationalError:
+                        pass                    # table absent in an old session
+                conn.execute("UPDATE gps_track SET timestamp = timestamp + ? WHERE timestamp < ?",
+                             (delta, cutoff_epoch))
+                conn.execute("UPDATE session_info SET value = ragnar_shift_iso(value) "
+                             "WHERE key = 'start_time'")
+                prev = conn.execute("SELECT value FROM session_info WHERE key = 'clock_steps'").fetchone()
+                note = f"{datetime.now(timezone.utc).isoformat()} {delta:+.1f}s"
+                conn.execute("INSERT OR REPLACE INTO session_info (key, value) VALUES ('clock_steps', ?)",
+                             ((prev[0] + '; ' if prev else '') + note,))
+            if self.start_time < cutoff_epoch:
+                self.start_time += delta
+            self._stats_cache = None
 
     def upsert_network(self, bssid, ssid, security, channel, frequency,
                        rssi, lat, lon, alt, speed, hdop, interface=''):
@@ -2264,7 +2310,8 @@ class WardrivingEngine:
         self._gps = GPSManager(
             port=gps_port, exclude_ports=esp_exclude,
             state_file=os.path.join(self.data_dir, 'last_gps.json'),
-            assist=self.shared_data.config.get('wardriving_gps_assist', True))
+            assist=self.shared_data.config.get('wardriving_gps_assist', True),
+            set_clock=self.shared_data.config.get('wardriving_gps_set_clock', True))
         gps_ok = self._gps.start()
         if not gps_ok:
             logger.warning(f"GPS not available: {self._gps.error}. Wardriving without GPS.")
@@ -2297,6 +2344,11 @@ class WardrivingEngine:
         # Start scanning threads
         self._thread = threading.Thread(target=self._scan_loop, daemon=True, name="wardriving")
         self._thread.start()
+
+        # Repair the session when the wall clock steps (NTP or GPS correcting
+        # an RTC-less Pi that booted on a stale time).
+        threading.Thread(target=self._clock_watch_loop, daemon=True,
+                         name="wardriving-clock").start()
 
         # Start Bluetooth scanning thread
         self._bt_thread = threading.Thread(target=self._bt_scan_loop, daemon=True, name="wardriving-bt")
@@ -3341,6 +3393,41 @@ class WardrivingEngine:
         except OSError:
             pass
         return False
+
+    # A wall-clock step at least this large during a session is treated as
+    # a correction (NTP sync, or the clock set from GPS) and repaired. Smaller
+    # wobble is ignored. Checked every second so rows written after the step
+    # are never mistaken for pre-step ones.
+    _CLOCK_STEP_MIN_S = 10.0
+
+    def _clock_watch_loop(self):
+        """Detect wall-clock steps (wall − monotonic changing) and shift the
+        running session's earlier timestamps by the step."""
+        ref = time.time() - time.monotonic()
+        while self._running:
+            time.sleep(1)
+            new_ref = time.time() - time.monotonic()
+            step = new_ref - ref
+            if abs(step) < self._CLOCK_STEP_MIN_S:
+                ref = new_ref if abs(step) > 0.5 else ref
+                continue
+            cutoff = time.monotonic() + ref          # "now" on the old clock
+            ref = new_ref
+            session = self.session
+            if session is None:
+                continue
+            if step < 0:
+                # A backwards step makes old and new stamps overlap; there is
+                # no safe way to tell them apart, so only report it.
+                logger.warning(f"Wall clock stepped {step:+.0f} s backwards during a "
+                               f"wardriving session; earlier timestamps left as recorded")
+                continue
+            try:
+                session.shift_times(step, cutoff)
+                logger.warning(f"Wall clock corrected by {step:+.0f} s during the session "
+                               f"(Pi has no RTC) — shifted this session's earlier timestamps")
+            except Exception as e:
+                logger.error(f"Session clock repair failed: {e}")
 
     def _scan_loop(self):
         """Main scanning loop — runs fast continuous scans."""
