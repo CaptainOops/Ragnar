@@ -56,6 +56,7 @@ It is split into three sub-tabs: **Diagnostics**, **Switch & L2/L3**, and
 | [ICMP Watch](#icmp-watch) | Switch & L2/L3 | `GET /api/net/icmp-watch`, `POST /api/net/icmp-baseline` |
 | [SNMP Watch](#snmp-watch) | Diagnostics | `GET /api/net/snmp-watch`, `POST /api/net/snmp-baseline` |
 | [Cert Watch](#cert-watch) | Diagnostics | `POST /api/net/cert-watch`, `POST /api/net/cert-baseline` |
+| [APC Guard](#apc-guard) | Diagnostics | `GET /api/net/apc-guard` |
 | [STP/BPDU Watch](#stpbpdu-watch) | Switch & L2/L3 | `GET /api/net/stp-watch`, `POST /api/net/stp-baseline` |
 | [DTP Watch](#dtp-watch) | Switch & L2/L3 | `GET /api/net/dtp-watch`, `POST /api/net/dtp-baseline` |
 | [CDP Watch](#cdp-watch) | Switch & L2/L3 | `GET /api/net/cdp-watch`, `POST /api/net/cdp-baseline` |
@@ -3326,7 +3327,7 @@ admits PAPI behind an extension header (**`ARB-008`**).
 - CLI: `python3 network_diagnostics.py aruba-guard [--iface I] [--seconds N] [--json]`
 
 #### APC Guard
-**APC / Schneider Network Management Cards** (NMC1, NMC2, NMC3 — rack PDUs, rack ATS, NMC-equipped
+*Card: **Diagnostics** sub-tab (after Cert Watch).* **APC / Schneider Network Management Cards** (NMC1, NMC2, NMC3 — rack PDUs, rack ATS, NMC-equipped
 UPS) against **Ripple20**, the Treck TCP/IP stack bugs. The detection engine is the vendored
 standalone module `python/apcguard.py` (pure Python over raw frames). The in-app scan captures a
 bounded window with `tcpdump` using the module's own filter

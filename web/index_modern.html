@@ -2163,6 +2163,24 @@
                         </div>
                         <div id="cert-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                     </div>
+                    <!-- APC Guard (APC / Schneider NMC — Ripple20) -->
+                    <div class="glass rounded-xl p-4 sm:p-6 md:col-span-2">
+                        <h3 class="text-lg font-semibold mb-1">APC Guard <span class="text-xs font-normal text-gray-500">(APC / Schneider NMC · rack PDU · ATS · UPS)</span></h3>
+                        <p class="text-xs text-amber-300/90 mb-2">Passive APC Network Management Card guard for <strong>Ripple20</strong> (Treck TCP/IP stack) — <strong>detection-only</strong>, never transmits. Reads the card's <strong>SNMP sysDescr</strong> and gates the <strong>NMC1 / NMC2 / NMC3</strong> AOS version against Schneider's per-application table (<strong>APC-001/002/003</strong>, version in range — never "vulnerable", sysDescr can't prove patch state). Flags the attack shapes against a known card: <strong>fragmented IP-in-IP</strong> and an <strong>inner length shorter than the data</strong> (APC-101/102, CVE-2020-11896), a <strong>protocol-unreachable that quotes bytes not in the packet</strong> — heap disclosure (APC-106, CVE-2020-11898), <strong>IPv6-in-IPv4</strong> to a card (APC-105, CVE-2020-11902), and <strong>malformed DNS answers</strong> — CNAME overrun, looping or overlong names (APC-111/112, CVE-2020-11901). Tunnel and DNS attempts are only analysed against cards it knows: cards seen answering SNMP are <strong>remembered across scans</strong>, and you can <strong>declare cards</strong> below (add a MAC only where the tap sees the card's own frames). IPv4 + IPv6.</p>
+                        <p class="text-sm text-gray-400 mb-3">One short passive capture on the segment (a SPAN/mirror of the management VLAN sees the SNMP polls and any tunnel traffic).</p>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <select id="apc-guard-iface" title="Interface for the capture — LAN-only: pick the LAN/uplink NIC or a SPAN/mirror port (Wi-Fi is ignored)" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                                <option value="">Auto (LAN connections)</option>
+                            </select>
+                            <input id="apc-guard-secs" type="number" min="5" max="60" value="20" title="capture seconds" class="w-20 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+                            <button onclick="runAPCGuard()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan APC</button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2 mt-2">
+                            <input id="apc-guard-cards" type="text" oninput="this.dataset.dirty='1'" placeholder="Declared cards: 192.0.2.10=02:aa:bb:cc:dd:10, 2001:db8::10" autocomplete="off" spellcheck="false" title="Cards to always analyse: ADDR or ADDR=MAC, comma-separated (IPv4 or IPv6). Saved on the next scan; clear the box and scan to remove them." class="w-full sm:flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm font-mono text-gray-300">
+                            <label class="flex items-center gap-1 text-xs text-gray-400 whitespace-nowrap" title="Clear the cards learned from SNMP replies on the next scan"><input type="checkbox" id="apc-guard-forget"> Forget learned cards</label>
+                        </div>
+                        <div id="apc-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
+                    </div>
                 </div>
             </div><!-- /#net-sub-diagnostics -->
 
@@ -2773,24 +2791,6 @@
                         <button onclick="runArubaGuard()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan Aruba</button>
                     </div>
                     <div id="aruba-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
-                </div>
-                <!-- APC Guard (APC / Schneider NMC — Ripple20) -->
-                <div class="glass rounded-xl p-4 sm:p-6 mt-6">
-                    <h3 class="text-lg font-semibold mb-1">APC Guard <span class="text-xs font-normal text-gray-500">(APC / Schneider NMC · rack PDU · ATS · UPS)</span></h3>
-                    <p class="text-xs text-amber-300/90 mb-2">Passive APC Network Management Card guard for <strong>Ripple20</strong> (Treck TCP/IP stack) — <strong>detection-only</strong>, never transmits. Reads the card's <strong>SNMP sysDescr</strong> and gates the <strong>NMC1 / NMC2 / NMC3</strong> AOS version against Schneider's per-application table (<strong>APC-001/002/003</strong>, version in range — never "vulnerable", sysDescr can't prove patch state). Flags the attack shapes against a known card: <strong>fragmented IP-in-IP</strong> and an <strong>inner length shorter than the data</strong> (APC-101/102, CVE-2020-11896), a <strong>protocol-unreachable that quotes bytes not in the packet</strong> — heap disclosure (APC-106, CVE-2020-11898), <strong>IPv6-in-IPv4</strong> to a card (APC-105, CVE-2020-11902), and <strong>malformed DNS answers</strong> — CNAME overrun, looping or overlong names (APC-111/112, CVE-2020-11901). Tunnel and DNS attempts are only analysed against cards it knows: cards seen answering SNMP are <strong>remembered across scans</strong>, and you can <strong>declare cards</strong> below (add a MAC only where the tap sees the card's own frames). IPv4 + IPv6.</p>
-                    <p class="text-sm text-gray-400 mb-3">One short passive capture on the segment (a SPAN/mirror of the management VLAN sees the SNMP polls and any tunnel traffic).</p>
-                    <div class="flex flex-wrap items-center gap-2">
-                        <select id="apc-guard-iface" title="Interface for the capture — LAN-only: pick the LAN/uplink NIC or a SPAN/mirror port (Wi-Fi is ignored)" class="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
-                            <option value="">Auto (LAN connections)</option>
-                        </select>
-                        <input id="apc-guard-secs" type="number" min="5" max="60" value="20" title="capture seconds" class="w-20 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
-                        <button onclick="runAPCGuard()" class="w-full sm:w-auto bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Scan APC</button>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-2 mt-2">
-                        <input id="apc-guard-cards" type="text" oninput="this.dataset.dirty='1'" placeholder="Declared cards: 192.0.2.10=02:aa:bb:cc:dd:10, 2001:db8::10" autocomplete="off" spellcheck="false" title="Cards to always analyse: ADDR or ADDR=MAC, comma-separated (IPv4 or IPv6). Saved on the next scan; clear the box and scan to remove them." class="w-full sm:flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm font-mono text-gray-300">
-                        <label class="flex items-center gap-1 text-xs text-gray-400 whitespace-nowrap" title="Clear the cards learned from SNMP replies on the next scan"><input type="checkbox" id="apc-guard-forget"> Forget learned cards</label>
-                    </div>
-                    <div id="apc-guard-results" class="hidden mt-3 overflow-x-auto text-sm"></div>
                 </div>
                 <!-- Dell SmartFabric OS10 Guard (standalone daemon — enable/disable switch) -->
                 <div class="glass rounded-xl p-4 sm:p-6 mt-6">
