@@ -35,7 +35,7 @@ sudo chmod +x install_ragnar.sh && sudo ./install_ragnar.sh
 
 Prefer containers? Run the headless web UI on any Linux host with `docker compose up -d --build`, then open **http://<host-ip>:8000**. Pi-only hardware (e-Paper, GPS, SDR, Wi-Fi monitor mode) isn't available in a container — see the [Docker Guide](docs/DOCKER.md).
 
-More: [Install Guide](docs/INSTALL.md) · [AP Mode / getting on a network](docs/RagnarAP.md) · [Updating Ragnar](docs/updates.md) · [Release Notes](docs/RELEASE_NOTES.md).
+More: [Install Guide](docs/INSTALL.md) · [AP Mode / getting on a network](docs/RagnarAP.md) · [Updating Ragnar](docs/updates.md) · [Releases (per-PR log)](docs/releases.md) · [Release Notes](docs/RELEASE_NOTES.md).
 
 ---
 
