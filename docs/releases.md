@@ -8,7 +8,7 @@
 *Merged 2026-10-01 · branch `docs/releases-log` · 3 file(s)*
 
 - New `docs/releases.md`: one entry per PR merged to `main`, newest on top, with summary and doc links
-- Backfilled the last 150 merged PRs (#737–#892) from the merge history
+- Backfilled the last 500 merged PRs (#366–#892) from the merge history
 - Linked from the root README and the docs index
 - **Docs:** [releases.md](releases.md), [README (root)](../README.md), [docs index](README.md)
 
@@ -866,4 +866,2062 @@
 *Merged 2026-09-11 · branch `docs/rf-waterfall-guide` · 2 file(s), +131 / −1*
 
 - **Docs:** [docs index](README.md), [rf-waterfall-guide.md](rf-waterfall-guide.md)
+
+### 2026-09-10
+
+#### [#736](https://github.com/PierreGode/Ragnar/pull/736) — feat(rf-waterfall): measurement layer — markers, SNR/noise, trace math, CFAR signal list
+*Merged 2026-09-10 · branch `feature/rf-waterfall-palettes` · 6 file(s), +1143 / −63*
+
+- feat(rf-waterfall): SigMF raw-IQ capture (GNU Radio / inspectrum / URH interop)
+- feat(rf-waterfall): persistence (digital-phosphor) display + click-to-decode
+- feat(rf-waterfall): spectrum baseline + anomaly detection -> Watchtower
+- feat(rf-waterfall): reference-carrier frequency (PPM) calibration
+- fix(rf-waterfall): make the page phone-friendly
+- fix(rf-waterfall): sweep-restart race crashed Calibrate ('NoneType' has no stdout)
+- **Docs:** [rf-waterfall.md](rf-waterfall.md)
+
+#### [#735](https://github.com/PierreGode/Ragnar/pull/735) — feat(rf-waterfall): selectable waterfall colour palettes (Aurora default)
+*Merged 2026-09-10 · branch `feature/rf-waterfall-palettes` · 2 file(s), +67 / −9*
+
+- **Docs:** [rf-waterfall.md](rf-waterfall.md)
+
+#### [#734](https://github.com/PierreGode/Ragnar/pull/734) — feat(rtl-sdr): real-time IQ FFT waterfall for the sub-GHz SIGINT view
+*Merged 2026-09-10 · branch `feature/rtl-iq-waterfall` · 4 file(s), +357 / −13*
+
+- **Docs:** [rf-waterfall.md](rf-waterfall.md), [sdr-subghz.md](sdr-subghz.md)
+
+#### [#733](https://github.com/PierreGode/Ragnar/pull/733) — feat(guards): VXLAN/NGOAM detection in the in-app Cisco & Juniper CVE guards
+*Merged 2026-09-10 · branch `feature/guards-vxlan` · 3 file(s), +244 / −8*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#732](https://github.com/PierreGode/Ragnar/pull/732) — dashboard: rename Console to Activity Log and drop the double timestamp
+*Merged 2026-09-10 · branch `fix/dashboard-logs-panel` · 2 file(s), +205 / −127*
+
+- dashboard: one unified, filterable Activity Log (stop the mode-jumping)
+- dashboard: double the Activity Log panel height (16rem -> 32rem)
+
+### 2026-09-09
+
+#### [#730](https://github.com/PierreGode/Ragnar/pull/730) — db: actually collapse duplicate real-MAC host rows (stop 400+ log warnings)
+*Merged 2026-09-09 · branch `fix/db-dedup-multiple-real-macs` · 2 file(s), +36 / −38*
+
+- env_manager: quiet the per-construction path logs (INFO -> DEBUG)
+
+#### [#729](https://github.com/PierreGode/Ragnar/pull/729) — WiFi Defense: persist scan-option checkboxes across a browser refresh
+*Merged 2026-09-09 · branch `fix/wifidef-persist-checkboxes` · 2 file(s), +38 / −1*
+
+#### [#728](https://github.com/PierreGode/Ragnar/pull/728) — WiFi Defense: only flag genuine findings on the Signal Intelligence pivot
+*Merged 2026-09-09 · branch `fix/wifidef-benign-ap-selection` · 4 file(s), +83 / −39*
+
+- Signal Intelligence: prefer a managed survey radio (wlan1 > wlan0 > monitor)
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#727](https://github.com/PierreGode/Ragnar/pull/727) — Fix epd2in13b_V4 (tri-color) e-Paper display not working (#585)
+*Merged 2026-09-09 · branch `fix/epd2in13b-v4-driver` · 1 file(s), +13 / −4*
+
+#### [#726](https://github.com/PierreGode/Ragnar/pull/726) — Asset Inventory: permanently ignore warnings from a device
+*Merged 2026-09-09 · branch `feature/asset-inventory-ignore-warnings` · 6 file(s), +114 / −21*
+
+- **Docs:** [README (root)](../README.md), [asset-inventory.md](asset-inventory.md)
+
+#### [#725](https://github.com/PierreGode/Ragnar/pull/725) — wifi analyzer: timeshare the radio to survey the Alfa while monitor is on
+*Merged 2026-09-09 · branch `fix/survey-timeshare-monitor` · 1 file(s), +68 / −9*
+
+#### [#724](https://github.com/PierreGode/Ragnar/pull/724) — wifidef: revert fragile survey auto-toggle; make duplicate_ssid informational
+*Merged 2026-09-09 · branch `fix/wifidef-survey-and-flag-noise` · 4 file(s), +18 / −59*
+
+### 2026-09-08
+
+#### [#723](https://github.com/PierreGode/Ragnar/pull/723) — wifi analyzer: honor the selected radio when it's in monitor mode
+*Merged 2026-09-08 · branch `fix/dedupe-rogue-ap-swarm` · 1 file(s), +54 / −19*
+
+#### [#722](https://github.com/PierreGode/Ragnar/pull/722) — scorers: stop a duplicate-SSID swarm faking a HaleHound/PineAP verdict
+*Merged 2026-09-08 · branch `fix/dedupe-rogue-ap-swarm` · 3 file(s), +108 / −32*
+
+#### [#721](https://github.com/PierreGode/Ragnar/pull/721) — wifi analyzer: auto-survey on the free radio when the target is in monitor
+*Merged 2026-09-08 · branch `feat/wifidef-info-threat` · 1 file(s), +21 / −1*
+
+#### [#720](https://github.com/PierreGode/Ragnar/pull/720) — wifi_defense: add an "info" threat level below "warning"
+*Merged 2026-09-08 · branch `feat/wifidef-info-threat` · 5 file(s), +80 / −12*
+
+- web: fix inline WiFi Defense cards never showing (hidden class vs attribute)
+- fix: stop PineAP false-positive incidents on randomized/invalid BSSIDs
+
+#### [#719](https://github.com/PierreGode/Ragnar/pull/719) — wifi_defense: deep scan opt-in + capture only EAPOL, not all data
+*Merged 2026-09-08 · branch `fix/wpa3-downgrade-false-positives` · 3 file(s), +12 / −7*
+
+#### [#718](https://github.com/PierreGode/Ragnar/pull/718) — wifi_defense: stop WPA3 downgrade false positives
+*Merged 2026-09-08 · branch `fix/wpa3-downgrade-false-positives` · 2 file(s), +66 / −51*
+
+#### [#717](https://github.com/PierreGode/Ragnar/pull/717) — wifi_defense: detect WPA3-strip downgrade in the panel scan
+*Merged 2026-09-08 · branch `feature/wifidef-full-wifiwatch` · 6 file(s), +333 / −23*
+
+- wifi_defense: fold wifiwatch's client/handshake detectors into a deep scan
+
+### 2026-09-07
+
+#### [#715](https://github.com/PierreGode/Ragnar/pull/715) — web: bump JS cache-buster + show PineAP card on tab open
+*Merged 2026-09-07 · branch `fix/pineap-card-cachebuster` · 2 file(s), +9 / −1*
+
+#### [#714](https://github.com/PierreGode/Ragnar/pull/714) — Add PineAP / Wi-Fi Pineapple detection (pineap_watch)
+*Merged 2026-09-07 · branch `feature/pineap-detection` · 9 file(s), +1264 / −3*
+
+- tests: fix stale halehound BLE-flood threshold (8 -> 20)
+- pineap: add opt-in active probe-response test (the one that transmits)
+- docs: mention Wi-Fi Pineapple / PineAP in WiFi Defense description
+- web: add PineAP panel + active-probe button to WiFi Defense tab
+- **Docs:** [README (root)](../README.md)
+
+#### [#713](https://github.com/PierreGode/Ragnar/pull/713) — docs: slim the README to summaries + links, add a docs index and 3 missing guides
+*Merged 2026-09-07 · branch `docs/readme-slim-and-index` · 5 file(s), +348 / −249*
+
+- Update README.md
+- Fix link in README for scanning and actions
+- Revise multi-source threat intelligence description
+- **Docs:** [README (root)](../README.md), [docs index](README.md), [adv-scan.md](adv-scan.md), [pager.md](pager.md), [scanning-and-attacks.md](scanning-and-attacks.md)
+
+#### [#712](https://github.com/PierreGode/Ragnar/pull/712) — Replace image in nettools.md
+*Merged 2026-09-07 · branch `PierreGode-patch-1` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#711](https://github.com/PierreGode/Ragnar/pull/711) — docs(ptp): document PTP Watch in Watchtower feed list + cross-link the two PTP cards
+*Merged 2026-09-07 · branch `docs/ptp-watch-watchtower-crossref` · 2 file(s), +14 / −2*
+
+- **Docs:** [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#710](https://github.com/PierreGode/Ragnar/pull/710) — Replace visibility matrix image with new image
+*Merged 2026-09-07 · branch `PierreGode-matrix` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+### 2026-09-06
+
+#### [#709](https://github.com/PierreGode/Ragnar/pull/709) — fix(ptp): unique element IDs for PTP Watch card (was colliding with PTP presence card)
+*Merged 2026-09-06 · branch `fix/ptp-watch-dup-element-id` · 2 file(s), +8 / −8*
+
+#### [#708](https://github.com/PierreGode/Ragnar/pull/708) — feat(ptp): passive PTP/gPTP timing-plane watcher (IEEE-1588 v2, 42 codes)
+*Merged 2026-09-06 · branch `feature/ptp-watch-v2` · 6 file(s), +2894 / −2*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#707](https://github.com/PierreGode/Ragnar/pull/707) — fix(bfd,guards): handle IPv6 Authentication Header (AH, proto 51) in ext-header walks
+*Merged 2026-09-06 · branch `fix/bfd-v2-ah-and-guard-extheaders` · 3 file(s), +68 / −21*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#706](https://github.com/PierreGode/Ragnar/pull/706) — fix(cisco,juniper): dual-stack guard capture via next-header-qualified ip6[6] BPF
+*Merged 2026-09-06 · branch `fix/cisco-guard-dhcpv6-ipv6-capture` · 2 file(s), +89 / −17*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#705](https://github.com/PierreGode/Ragnar/pull/705) — feat(juniper): dual-stack Juniper guard + shared IPv6 guard-parse infra
+*Merged 2026-09-06 · branch `feature/juniper-guard-v2-ipv6` · 3 file(s), +116 / −13*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#704](https://github.com/PierreGode/Ragnar/pull/704) — feat(vpn,snmp,mac,cisco): dual-stack VPN egress, SNMP-over-IPv6, MAC EUI-64 identity, Cisco IKEv2/DHCPv6/RH0 CVEs
+*Merged 2026-09-06 · branch `feature/vpn-snmp-mac-cisco-v2` · 4 file(s), +353 / −48*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+### 2026-09-05
+
+#### [#703](https://github.com/PierreGode/Ragnar/pull/703) — feat(ntp,eigrp): NTP on-path forgery + version/stratum sanity; EIGRP IPv6 route TLVs (RFC 7868)
+*Merged 2026-09-05 · branch `feature/ntp-v3-eigrp-v4-watch` · 4 file(s), +201 / −21*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#702](https://github.com/PierreGode/Ragnar/pull/702) — feat(isis): IPv6 reachability content checks for IS-IS Watch (RFC 5308 TLV 236/237)
+*Merged 2026-09-05 · branch `feature/isis-watch-v4-ipv6` · 4 file(s), +185 / −13*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#701](https://github.com/PierreGode/Ragnar/pull/701) — feat(fhrp): IPv6 dual-stack for FHRP Watch (HSRPv6/VRRPv3/GLBPv6)
+*Merged 2026-09-05 · branch `feature/fhrp-watch-v4-dualstack` · 4 file(s), +303 / −41*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#700](https://github.com/PierreGode/Ragnar/pull/700) — feat(bgp): MP-BGP IPv6 dual-stack for passive BGP Path Watch + receive-only collector
+*Merged 2026-09-05 · branch `feature/bgp-pathwatch-v3-dualstack` · 5 file(s), +275 / −45*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#699](https://github.com/PierreGode/Ragnar/pull/699) — fix(net): auto-select interface for LACP/RPC/BFD/SR-MPLS watch cards
+*Merged 2026-09-05 · branch `fix/watch-card-auto-iface` · 1 file(s), +4 / −0*
+
+#### [#698](https://github.com/PierreGode/Ragnar/pull/698) — ICMP Watch v3: add ICMPv6 Redirect (type 137) dual-stack detection
+*Merged 2026-09-05 · branch `feature/ipv6-dualstack-v3-watch` · 6 file(s), +1099 / −103*
+
+- DNS Doctor v3: dual-stack cross-family hijack detection (AAAA)
+- OSPF Watch v3: parse OSPFv3 (IPv6) so its packets reach the detectors
+- DHCP Doctor v2: add zero-config DNS6_LINKLOCAL mitm6 tell to IPv6 First-Hop Watch
+- docs(README): note IPv6 dual-stack coverage for ICMP/OSPF/DNS/DHCPv6 watchers
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#697](https://github.com/PierreGode/Ragnar/pull/697) — BFD Watch: passive failover-manipulation detector (forged teardown / CVE-2018-0155)
+*Merged 2026-09-05 · branch `feature/bfd-srmpls-arpv3-igmpv3-watch` · 10 file(s), +6193 / −49*
+
+- SR-MPLS Watch: passive MPLS/SR-MPLS/SRv6 label & segment-injection detector
+- IGMP Watch v3: add MLD (IPv6 multicast) to the in-app watcher
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+### 2026-09-04
+
+#### [#696](https://github.com/PierreGode/Ragnar/pull/696) — LACP Watch + RPC/NetLogon Watch: two new passive in-app watchers
+*Merged 2026-09-04 · branch `feature/lacp-rpc-netlogon-watch` · 10 file(s), +5273 / −5*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+### 2026-09-03
+
+#### [#695](https://github.com/PierreGode/Ragnar/pull/695) — SMB & Kerberos Watch v2
+*Merged 2026-09-03 · branch `feature/smb-kerberos-watch-v2` · 6 file(s), +388 / −18*
+
+- SMB & Kerberos Watch v2: KDC-error recon (K7), NTLM relay tells (N2/N3), RC4-offer refinement (K2), Watchtower feed
+- **Docs:** [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+### 2026-09-02
+
+#### [#694](https://github.com/PierreGode/Ragnar/pull/694) — fix(display): dedicated landscape layout for 2.13" e-paper lying down (90°/270°)
+*Merged 2026-09-02 · branch `fix/epaper-2in13-horizontal-122` · 0 file(s), +0 / −0*
+
+- fix(display): fill the 2.13" landscape lower zone (mood + big speech + framed sprite)
+
+#### [#692](https://github.com/PierreGode/Ragnar/pull/692) — fix(display): dedicated landscape layout for 2.13" e-paper lying down (90°/270°)
+*Merged 2026-09-02 · branch `fix/epaper-2in13-horizontal-122` · 2 file(s), +207 / −0*
+
+- fix(display): fill the 2.13" landscape lower zone (mood + big speech + framed sprite)
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#691](https://github.com/PierreGode/Ragnar/pull/691) — docs(homeassistant): add captive-portal → LED-strip-red automation example
+*Merged 2026-09-02 · branch `docs/ha-hue-captive-portal-example` · 1 file(s), +194 / −5*
+
+- docs(homeassistant): fix HA automation triggers — event ENTITY needs a state trigger
+- docs(homeassistant): captive-portal → red LED worked example + state-trigger fix
+- **Docs:** [homeassistant.md](homeassistant.md)
+
+#### [#690](https://github.com/PierreGode/Ragnar/pull/690) — ICMP Watch v2 (redirect/ARP-poison) + BGP Path Watch v2 (convergence) in-app
+*Merged 2026-09-02 · branch `feature/bgp-icmp-watch-v2` · 9 file(s), +2508 / −46*
+
+- Update image in Authority Verification suite
+- **Docs:** [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#689](https://github.com/PierreGode/Ragnar/pull/689) — Detect HaleHound-CYD attack multitool (Wi-Fi + LAN + BLE fusion)
+*Merged 2026-09-02 · branch `feature/halehound-detection` · 16 file(s), +3254 / −30*
+
+- HaleHound card: use compiled fuchsia classes (pink was purged)
+- HaleHound: drop "Cheap Yellow Display" wording
+- HaleHound: move correlation card to the bottom of the WiFi Defense tab
+- HaleHound: reframe as general ESP32 attack-tool detector (Marauder/Bruce)
+- HaleHound card: drop dog emoji, add HaleHound wordmark logo in heading
+- HaleHound card: plain heading, use logo inline for HaleHound-CYD in description
+- …and 21 more commit(s)
+- **Docs:** [asset-inventory.md](asset-inventory.md), [incident-correlation.md](incident-correlation.md), [wifi-defense.md](wifi-defense.md)
+
+### 2026-08-31
+
+#### [#688](https://github.com/PierreGode/Ragnar/pull/688) — pager: add 929.9375 + 931.0625 MHz US FLEX channels to preset dropdown
+*Merged 2026-08-31 · branch `feature/pager-preset-929937` · 1 file(s), +2 / −0*
+
+### 2026-08-30
+
+#### [#687](https://github.com/PierreGode/Ragnar/pull/687) — pager: add POCSAG baud / FLEX demod selector + invert + cleaner FM demod
+*Merged 2026-08-30 · branch `feature/pager-baud-demod-selector` · 4 file(s), +124 / −16*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#686](https://github.com/PierreGode/Ragnar/pull/686) — acars: fix silent panel — use acarsdec -o 4 (msg JSON), not -o 5 (route JSON)
+*Merged 2026-08-30 · branch `feature/vdl2-atn-decode` · 1 file(s), +7 / −3*
+
+#### [#685](https://github.com/PierreGode/Ragnar/pull/685) — install_dumpvdl2: add required libglib2.0-dev + apt lock timeout
+*Merged 2026-08-30 · branch `feature/vdl2-atn-decode` · 1 file(s), +10 / −5*
+
+#### [#684](https://github.com/PierreGode/Ragnar/pull/684) — install_dumpvdl2: surface real build errors + auto -j1 fallback for low-RAM Pis
+*Merged 2026-08-30 · branch `feature/vdl2-atn-decode` · 2 file(s), +74 / −27*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#683](https://github.com/PierreGode/Ragnar/pull/683) — VDL Mode 2 / ATN decoding on the ADS-B radar (dumpvdl2 + libacars)
+*Merged 2026-08-30 · branch `feature/vdl2-atn-decode` · 7 file(s), +884 / −11*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#682](https://github.com/PierreGode/Ragnar/pull/682) — Add Flipper One (RK3576 ARM64 Linux) feasibility & porting notes
+*Merged 2026-08-30 · branch `feature/flipper-one-support` · 2 file(s), +121 / −0*
+
+- **Docs:** [README (root)](../README.md), [flipper-one.md](flipper-one.md)
+
+#### [#681](https://github.com/PierreGode/Ragnar/pull/681) — ADS-B: click a contact for a world-map flight route (FlightAware-style)
+*Merged 2026-08-30 · branch `feature/adsb-flight-routes` · 4 file(s), +1010 / −40*
+
+- ADS-B route map: use Leaflet + Esri tiles like the Mesh Map
+- ADS-B: real live position + aircraft type + IP-geo location fallback
+- ADS-B: fix empty radar diagnosis + stop demo feed fighting a live SDR
+- ADS-B: use the box GPS as the primary receiver location (then browser, then IP)
+- ADS-B: internet fallback when SDR is deaf + flag stale filed routes
+- ADS-B: fix empty radar when SDR runs but is deaf (regression vs main)
+- …and 4 more commit(s)
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+### 2026-08-28
+
+#### [#680](https://github.com/PierreGode/Ragnar/pull/680) — Add SPI TFT kiosk installer for MPI3501 / ILI9486 3.5" display
+*Merged 2026-08-28 · branch `screen35` · 3 file(s), +354 / −0*
+
+### 2026-08-27
+
+#### [#679](https://github.com/PierreGode/Ragnar/pull/679) — Replace image in nettools documentation
+*Merged 2026-08-27 · branch `PierreGode-patch-5` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#678](https://github.com/PierreGode/Ragnar/pull/678) — Signal Intelligence tools: open in the same tab, not a new one
+*Merged 2026-08-27 · branch `feature/si-back-link` · 1 file(s), +6 / −6*
+
+#### [#677](https://github.com/PierreGode/Ragnar/pull/677) — Signal Intelligence tools: '← Ragnar' returns to the Signal Intelligence tab
+*Merged 2026-08-27 · branch `feature/si-back-link` · 6 file(s), +6 / −6*
+
+#### [#676](https://github.com/PierreGode/Ragnar/pull/676) — Mesh Nodes: node map 20% narrower
+*Merged 2026-08-27 · branch `feature/mesh-map` · 1 file(s), +19 / −7*
+
+- Mesh Nodes: narrow the Node map CARD so the Nodes table gets width (no scroll)
+- Mesh Nodes: table scroll box fills the card height (was a short 360px box)
+- Mesh Nodes messages: Follow checkbox, timestamps, highlight the latest
+
+#### [#675](https://github.com/PierreGode/Ragnar/pull/675) — Mesh: full-screen Leaflet map (/mesh-map) + Full map view button
+*Merged 2026-08-27 · branch `feature/mesh-map` · 6 file(s), +583 / −29*
+
+- Mesh map: drop CARTO (needs API key) for key-free tile providers
+- Mesh map: 🌍 World view — public worldwide mesh nodes
+- Mesh map: decode encrypted MQTT (real node data) + viewport-prioritised loading
+- Mesh map: World is a proper toggle — second click hides the public nodes
+- Mesh MQTT: fix 'no nodes' + 'super slow' (harden decoder + throttle firehose)
+- Mesh MQTT: fix disconnect deadlock ('MQTT won't stop')
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#674](https://github.com/PierreGode/Ragnar/pull/674) — Mesh Nodes: serve /mesh-nodes unconditionally (fix 'Not Found' with no hardware)
+*Merged 2026-08-27 · branch `feature/mesh-page-always` · 1 file(s), +5 / −20*
+
+#### [#673](https://github.com/PierreGode/Ragnar/pull/673) — Signal Intelligence: fix invisible VOR button + always show Mesh Nodes
+*Merged 2026-08-27 · branch `feature/si-button-fixes` · 2 file(s), +7 / −8*
+
+#### [#672](https://github.com/PierreGode/Ragnar/pull/672) — Meshtastic: MQTT Internet source + transmit (the full mesh suite)
+*Merged 2026-08-27 · branch `feature/meshtastic-mqtt` · 5 file(s), +453 / −53*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+### 2026-08-26
+
+#### [#671](https://github.com/PierreGode/Ragnar/pull/671) — APRS: ham packet RX + messaging (off-air SDR + APRS-IS worldwide)
+*Merged 2026-08-26 · branch `feature/aprs-messaging` · 8 file(s), +1341 / −8*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#670](https://github.com/PierreGode/Ragnar/pull/670) — Add RoomScan: touchscreen floor-plan tracer for Coverage Heatmap
+*Merged 2026-08-26 · branch `feature/roomscan-s3-lcd` · 13 file(s), +1674 / −13*
+
+- Coverage Heatmap: transcode TIFF/BMP floorplans to PNG on upload
+- Coverage Heatmap: move + resize the uploaded floorplan image
+- **Docs:** [README (root)](../README.md), [roomscan.md](roomscan.md)
+
+#### [#669](https://github.com/PierreGode/Ragnar/pull/669) — Pager: add Motorola QCII two-tone decode; new VOR radial decoder
+*Merged 2026-08-26 · branch `feature/qcii-vor` · 12 file(s), +1480 / −421*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#668](https://github.com/PierreGode/Ragnar/pull/668) — Asset Inventory: stop false-positive vendor-change "spoof" alerts
+*Merged 2026-08-26 · branch `fix/asset-vendor-change-false-positive` · 2 file(s), +47 / −8*
+
+- **Docs:** [asset-inventory.md](asset-inventory.md)
+
+### 2026-08-25
+
+#### [#667](https://github.com/PierreGode/Ragnar/pull/667) — Add Docker installation (headless web UI)
+*Merged 2026-08-25 · branch `feature/docker-install` · 12 file(s), +758 / −22*
+
+- Docker: install git + sudo, document in-container update behavior
+- Fix orchestrator never starting without NetworkManager (containers)
+- Installer: add Docker container as a menu option
+- Updater: rebuild Docker deployment instead of native flow when detected
+- CI: publish multi-arch Docker image to GHCR on release/tag
+- Docker: sharpen positioning + optional hardware-passthrough overlay
+- **Docs:** [README (root)](../README.md), [DOCKER.md](DOCKER.md)
+
+#### [#666](https://github.com/PierreGode/Ragnar/pull/666) — Add Asset Inventory + SIEM/outbound forwarding
+*Merged 2026-08-25 · branch `feature/asset-inventory-siem` · 10 file(s), +2608 / −2*
+
+- Move Assets from top-level tab to Network sub-tab (after AP Archive)
+- Asset Inventory: gateway classification, broadcast filter, vendor cleanup
+- Assets tab: mobile-friendly layout
+- **Docs:** [README (root)](../README.md), [asset-inventory.md](asset-inventory.md), [siem.md](siem.md)
+
+### 2026-08-24
+
+#### [#665](https://github.com/PierreGode/Ragnar/pull/665) — RF Waterfall: Mesh/LoRa overlay dropdown on HackRF too (full panel parity)
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 3 file(s), +85 / −22*
+
+- RF Waterfall: fix HackRF narrow-span floor streaks (code-review follow-up)
+- **Docs:** [rf-waterfall.md](rf-waterfall.md)
+
+#### [#664](https://github.com/PierreGode/Ragnar/pull/664) — RF Waterfall: manual free-tune on both panels + all sub-GHz presets on HackRF
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 3 file(s), +130 / −14*
+
+- RF Waterfall: show all presets in the RTL demo panel too (band-aware synth)
+- **Docs:** [rf-waterfall.md](rf-waterfall.md)
+
+#### [#663](https://github.com/PierreGode/Ragnar/pull/663) — RF Waterfall: add AM (medium-wave) + Shortwave HF band scopes
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 2 file(s), +12 / −3*
+
+#### [#662](https://github.com/PierreGode/Ragnar/pull/662) — RF Waterfall: FM/Airband band scopes + click-a-peak-to-tune the radio
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 2 file(s), +22 / −1*
+
+#### [#661](https://github.com/PierreGode/Ragnar/pull/661) — Signal Intelligence: Dome is the default view, moved before Bar
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 2 file(s), +6 / −6*
+
+#### [#654](https://github.com/PierreGode/Ragnar/pull/654) — Fix Pwangotchi Captures Paneel showing 0 handshakes
+*Merged 2026-08-24 · branch `main` · 1 file(s), +2 / −2*
+
+#### [#660](https://github.com/PierreGode/Ragnar/pull/660) — Feature/rtl sdr radio presets
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 2 file(s), +43 / −10*
+
+- ADS-B: show ICAO airline designator alongside IATA in the Airline column
+- RF Waterfall radio: custom presets — save/remember your own stations
+
+#### [#659](https://github.com/PierreGode/Ragnar/pull/659) — Rename WiFi Analyzer / WiFi Spectrum Analyzer -> Signal Intelligence
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 3 file(s), +17 / −17*
+
+#### [#658](https://github.com/PierreGode/Ragnar/pull/658) — Feature/rtl sdr
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 7 file(s), +494 / −29*
+
+- ADS-B: correct IATA wording — it's an ICAO->IATA cross-reference, not derived
+- ADS-B Radar: click a contact to highlight it on the radar
+- Mesh Nodes: click a node to highlight + zoom to it on the map
+- RF Waterfall: Local Radio (FM/AM) with live audio you can listen to
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#657](https://github.com/PierreGode/Ragnar/pull/657) — ADS-B: force max gain, recognise R860 (NESDR SMArt v5), on-radar no-RX hint
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 3 file(s), +34 / −3*
+
+#### [#656](https://github.com/PierreGode/Ragnar/pull/656) — SDR pages: full-width on desktop, mobile unchanged
+*Merged 2026-08-24 · branch `feature/rtl-sdr-support-fullscreen` · 4 file(s), +9 / −7*
+
+- ADS-B Radar: shrink radar ~20%, give Contacts the freed width
+
+### 2026-08-23
+
+#### [#655](https://github.com/PierreGode/Ragnar/pull/655) — ADS-B ACARS panel + IATA-next-to-ICAO + pager full-text; airline DB x1.5
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 11 file(s), +714 / −20*
+
+- ADS-B: reception diagnostics + robust dump1090 launch (no-hits triage)
+- Show Mesh Nodes button when any SDR present (collaborator couldn't see it)
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#653](https://github.com/PierreGode/Ragnar/pull/653) — ADS-B: build dump1090 from source ('can't find the package' fix)
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 14 file(s), +806 / −55*
+
+- Pager Decode: POCSAG/FLEX via rtl_fm | multimon-ng
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#652](https://github.com/PierreGode/Ragnar/pull/652) — Fix blank ADS-B Radar / Mesh Nodes pages (404 before the install button)
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 1 file(s), +25 / −15*
+
+#### [#651](https://github.com/PierreGode/Ragnar/pull/651) — Feature/rtl sdr
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 14 file(s), +2524 / −13*
+
+- RF Waterfall: 315/40/27 MHz bands, PPM+gain tuning, PNG snapshot
+- ADS-B Radar: live aircraft (1090 MHz) on a PPI radar screen
+- SDR: session record/replay + ADS-B ICAO/IATA/tail-registration
+- Mesh Nodes: real Meshtastic enumeration via a USB companion node
+- Fix ADS-B Radar button colour (bg-teal purged from tailwind.css)
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#650](https://github.com/PierreGode/Ragnar/pull/650) — Mesh overlay: Meshtastic / MeshCore / LoRaWAN spectrum view (energy-only)
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 4 file(s), +190 / −34*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#649](https://github.com/PierreGode/Ragnar/pull/649) — Feature/rtl sdr
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 3 file(s), +161 / −17*
+
+- Z-Wave Spectrum: region-aware sub-GHz energy view (nobody scans this)
+- RF Waterfall: switch heat colormap to eye-kinder 'Aurora' (drop yellow)
+
+#### [#648](https://github.com/PierreGode/Ragnar/pull/648) — RTL-SDR: fix 433 band never loading (single-crop sweep finalization)
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 1 file(s), +17 / −3*
+
+#### [#647](https://github.com/PierreGode/Ragnar/pull/647) — SDR check: one-click Install button to fix tools-missing / DVB-held
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 5 file(s), +133 / −2*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#646](https://github.com/PierreGode/Ragnar/pull/646) — RTL-SDR: guarantee rtl-sdr/rtl-433 install in installer + updater
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 2 file(s), +36 / −18*
+
+#### [#645](https://github.com/PierreGode/Ragnar/pull/645) — RTL-SDR: lsusb VID:PID detection fallback + better 'not detected' diagnostics
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 5 file(s), +294 / −6*
+
+- SDR check: inline diagnostic button in the Wi-Fi Spectrum Analyzer
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#644](https://github.com/PierreGode/Ragnar/pull/644) — RF Waterfall: per-panel full-screen buttons + broad RTL-SDR dongle support
+*Merged 2026-08-23 · branch `feature/rtl-sdr-support-fullscreen` · 8 file(s), +212 / −12*
+
+- Make ups.py and ups_api.py executable (755)
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#643](https://github.com/PierreGode/Ragnar/pull/643) — Sub-GHz SDR tab: doc + front-end (RTL-SDR ISM/waterfall)
+*Merged 2026-08-23 · branch `feature/subghz-sdr-tab` · 3 file(s), +361 / −0*
+
+- **Docs:** [sdr-subghz.md](sdr-subghz.md)
+
+#### [#642](https://github.com/PierreGode/Ragnar/pull/642) — RF Waterfall: pro upgrades — decode, occupancy+log, zoom, click-to-tune
+*Merged 2026-08-23 · branch `fix/rf-waterfall-scroll-and-back` · 4 file(s), +443 / −310*
+
+#### [#641](https://github.com/PierreGode/Ragnar/pull/641) — RF Waterfall: stop scroll from resetting the waterfall + add Return to Ragnar
+*Merged 2026-08-23 · branch `fix/rf-waterfall-scroll-and-back` · 1 file(s), +15 / −4*
+
+#### [#640](https://github.com/PierreGode/Ragnar/pull/640) — Feature/sdr waterfall
+*Merged 2026-08-23 · branch `feature/sdr-waterfall-demo` · 10 file(s), +1507 / −6*
+
+- Add hidden synthetic RF Waterfall demo (opt-in, no SDR required)
+- RF Waterfall page: promote to real feature with live HackRF + RTL-SDR
+- Install rtl-sdr + rtl-433 for the RF Waterfall sub-GHz (RTL-SDR) path
+- **Docs:** [rf-waterfall.md](rf-waterfall.md)
+
+#### [#639](https://github.com/PierreGode/Ragnar/pull/639) — RuSense flasher: add fixed CSI channel field to Provision WiFi
+*Merged 2026-08-23 · branch `feature/rusense-flasher-channel` · 3 file(s), +22 / −4*
+
+### 2026-08-22
+
+#### [#638](https://github.com/PierreGode/Ragnar/pull/638) — Move observatory layer controls to compact top-right icon buttons on mobile
+*Merged 2026-08-22 · branch `observatory-mobile-chips` · 4 file(s), +28 / −16*
+
+- Lift the observatory no-fix note above the scrubber and fade it to 15% opacity
+- Tune observatory overlay opacities: note 80%, slider 60%, layer buttons 70% transparent
+- **Docs:** [diagnostics.md](diagnostics.md)
+
+#### [#637](https://github.com/PierreGode/Ragnar/pull/637) — up
+*Merged 2026-08-22 · branch `3gss` · 3 file(s), +16 / −6*
+
+#### [#636](https://github.com/PierreGode/Ragnar/pull/636) — Feed SSH Watch and Telnet Watch into Watchtower + Network Integrity Monitor
+*Merged 2026-08-22 · branch `feature/ssh-telnet-monitor-watchtower` · 7 file(s), +149 / −3*
+
+- **Docs:** [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#635](https://github.com/PierreGode/Ragnar/pull/635) — Make the GNSS observatory mobile/touch friendly
+*Merged 2026-08-22 · branch `observatory-mobile` · 4 file(s), +101 / −12*
+
+- **Docs:** [diagnostics.md](diagnostics.md)
+
+#### [#634](https://github.com/PierreGode/Ragnar/pull/634) — Add SSH Watch and Telnet Watch passive observers
+*Merged 2026-08-22 · branch `feature/ssh-telnet-watch` · 9 file(s), +3983 / −4*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#633](https://github.com/PierreGode/Ragnar/pull/633) — sgs
+*Merged 2026-08-22 · branch `3gss` · 15 file(s), +2276 / −40*
+
+- 3gss
+- hs
+- https
+- threee
+- cont
+- plan
+- …and 14 more commit(s)
+
+#### [#632](https://github.com/PierreGode/Ragnar/pull/632) — Starview: satellites follow the time scrubber + one consistent sat set
+*Merged 2026-08-22 · branch `patchingnss` · 4 file(s), +174 / −25*
+
+- **Docs:** [diagnostics.md](diagnostics.md)
+
+### 2026-08-21
+
+#### [#631](https://github.com/PierreGode/Ragnar/pull/631) — Comware Guard: stop the default role from self-flagging every scan
+*Merged 2026-08-21 · branch `feature/comware-role-default` · 3 file(s), +25 / −12*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#630](https://github.com/PierreGode/Ragnar/pull/630) — Fix typo in RuSense section header
+*Merged 2026-08-21 · branch `PierreGode-patch-4` · 1 file(s), +1 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#629](https://github.com/PierreGode/Ragnar/pull/629) — Ragnar Starview: turn the easter egg into a GNSS observatory
+*Merged 2026-08-21 · branch `feature/starview-observatory` · 7 file(s), +632 / −25*
+
+- **Docs:** [README (root)](../README.md), [diagnostics.md](diagnostics.md)
+
+#### [#628](https://github.com/PierreGode/Ragnar/pull/628) — TLS Watch v3: name SWEET32 / CVE-2016-2183 on the wire
+*Merged 2026-08-21 · branch `feature/tls-watch-v3` · 3 file(s), +132 / −3*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#627](https://github.com/PierreGode/Ragnar/pull/627) — Add Clear button to the Watchtower card
+*Merged 2026-08-21 · branch `feature/watchtower-clear-button` · 5 file(s), +55 / −2*
+
+- Mirror the Watchtower Clear button on the Dashboard summary card
+- Clear the correlated incidents too, not just the raw alerts
+
+### 2026-08-20
+
+#### [#626](https://github.com/PierreGode/Ragnar/pull/626) — LDAP Watch v3: detect LDAPNightmare external-referral vector (CVE-2024-49112/49113)
+*Merged 2026-08-20 · branch `feature/ldap-watch-v3-referral` · 4 file(s), +152 / −6*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#625](https://github.com/PierreGode/Ragnar/pull/625) — Gate vendor switch/router guards to LAN-only in the Net-Integrity auto rotation
+*Merged 2026-08-20 · branch `fix/vendor-guards-lan-only` · 4 file(s), +40 / −12*
+
+- **Docs:** [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#624](https://github.com/PierreGode/Ragnar/pull/624) — fix
+*Merged 2026-08-20 · branch `smallpatch` · 6 file(s), +1046 / −48*
+
+- ff
+- rt
+- gs
+- gss
+- inf
+- ju
+- …and 3 more commit(s)
+
+### 2026-08-19
+
+#### [#623](https://github.com/PierreGode/Ragnar/pull/623) — RuSense: persistent Calibrated badge + quality % on node rows
+*Merged 2026-08-19 · branch `feature/rusense-nodecal-quality` · 5 file(s), +67 / −16*
+
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#622](https://github.com/PierreGode/Ragnar/pull/622) — RuSense: bump loader.js cache-bust tag in ragnar_modern.js
+*Merged 2026-08-19 · branch `fix/rusense-nodecal-cachebust` · 5 file(s), +8 / −8*
+
+- RuSense: node calibration recording lasts 15s (was 6s)
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#621](https://github.com/PierreGode/Ragnar/pull/621) — RuSense: per-node proximity calibration button in Nodes tab
+*Merged 2026-08-19 · branch `feature/rusense-node-proximity-calibration` · 4 file(s), +281 / −9*
+
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#620](https://github.com/PierreGode/Ragnar/pull/620) — security: triage & remediate CodeQL code-scanning alerts
+*Merged 2026-08-19 · branch `fix/codeql-advanced-setup` · 7 file(s), +107 / −25*
+
+#### [#619](https://github.com/PierreGode/Ragnar/pull/619) — ci: add advanced CodeQL workflow (python + js, build-mode none)
+*Merged 2026-08-19 · branch `fix/codeql-advanced-setup` · 1 file(s), +61 / −0*
+
+#### [#618](https://github.com/PierreGode/Ragnar/pull/618) — comware guard: passive HPE Comware / Huawei VRF-hopping monitor + Watchtower feed
+*Merged 2026-08-19 · branch `feature/hpe-comware-guard` · 7 file(s), +726 / −11*
+
+- ntp watch card: name the detected Autokey CVEs explicitly
+- **Docs:** [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#617](https://github.com/PierreGode/Ragnar/pull/617) — observatory: refine the activity blob (smoothing, single blob, fingerprinting)
+*Merged 2026-08-19 · branch `feature/observatory-blob-refine` · 7 file(s), +254 / −5*
+
+- observatory: expand fingerprint calibration to a 9-point floor grid
+- observatory: persist fingerprints server-side (shared across browsers)
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#616](https://github.com/PierreGode/Ragnar/pull/616) — rusense: coarse multi-node Observatory localization (blob follows activity)
+*Merged 2026-08-19 · branch `feature/rusense-activity-localization` · 3 file(s), +45 / −1*
+
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#615](https://github.com/PierreGode/Ragnar/pull/615) — rusense: add Restart button to the Sensing backend card
+*Merged 2026-08-19 · branch `feature/sensing-restart-button` · 4 file(s), +57 / −1*
+
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#614](https://github.com/PierreGode/Ragnar/pull/614) — rusense: refresh sensing-server to upstream RuView + fix LAN UDP bind
+*Merged 2026-08-19 · branch `feature/rusense-upstream-refresh` · 5 file(s), +49 / −3*
+
+- **Docs:** [rusense.md](rusense.md)
+
+#### [#613](https://github.com/PierreGode/Ragnar/pull/613) — ntp watch: Autokey extension-field detection (CVE-2014-9295 crypto_recv RCE)
+*Merged 2026-08-19 · branch `feature/vendor-guards-arista-juniper-cisco` · 5 file(s), +1626 / −25*
+
+- vendor guards: passive Cisco / Juniper / Arista router+switch CVE monitors
+- vendor guards: rename Cisco card to 'Cisco Switch and Router Guard'
+- **Docs:** [nettools.md](nettools.md)
+
+### 2026-08-18
+
+#### [#612](https://github.com/PierreGode/Ragnar/pull/612) — Feature/cyberdeck cm5 kiosk DezusAZ update
+*Merged 2026-08-18 · branch `feature/cyberdeck-cm5-kiosk` · 12 file(s), +361 / −6*
+
+- Kiosk: escape hatch + small-screen scaling for handheld decks (Hackberry Pi CM5)
+- Kiosk: handheld (CM5) toggle + display-scale field in Settings → On-screen Display
+- **Docs:** [README (root)](../README.md), [kiosk.md](kiosk.md)
+
+#### [#610](https://github.com/PierreGode/Ragnar/pull/610) — docs: add Hackberry Pi CM5 community port to Supported Platforms
+*Merged 2026-08-18 · branch `docs/hackberry-cm5-port` · 1 file(s), +10 / −0*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#609](https://github.com/PierreGode/Ragnar/pull/609) — Fix HackRF waterfall dying after a few seconds (USB re-probe during sweep)
+*Merged 2026-08-18 · branch `fix/sdr-waterfall-smooth` · 1 file(s), +61 / −5*
+
+#### [#608](https://github.com/PierreGode/Ragnar/pull/608) — Sharpen SDR waterfall: 512 columns, 600 rows, finer sweep bins
+*Merged 2026-08-18 · branch `fix/sdr-waterfall-smooth` · 4 file(s), +14 / −7*
+
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#607](https://github.com/PierreGode/Ragnar/pull/607) — Smooth SDR waterfall: dwell-integrate hackrf_sweep into a steady frame rate
+*Merged 2026-08-18 · branch `fix/sdr-waterfall-smooth` · 4 file(s), +66 / −8*
+
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#606](https://github.com/PierreGode/Ragnar/pull/606) — Fix headless install blanking DPI/HDMI panels (HackBerry Pi)
+*Merged 2026-08-18 · branch `fix/headless-epd-guard` · 5 file(s), +54 / −2*
+
+- **Docs:** [INSTALL.md](INSTALL.md)
+
+#### [#605](https://github.com/PierreGode/Ragnar/pull/605) — Update install_ragnar.sh
+*Merged 2026-08-18 · branch `PierreGode-patch-3` · 1 file(s), +1 / −1*
+
+#### [#604](https://github.com/PierreGode/Ragnar/pull/604) — Update README.md
+*Merged 2026-08-18 · branch `PierreGode-patch-2` · 1 file(s), +2 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#603](https://github.com/PierreGode/Ragnar/pull/603) — mac watch: HSRP/VRRP/GLBP virtual-MAC awareness + VIP-hijack detection
+*Merged 2026-08-18 · branch `feature/mac-watch-fhrp-awareness` · 5 file(s), +188 / −24*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#602](https://github.com/PierreGode/Ragnar/pull/602) — install: skip Pi-only display/GPIO steps on non-Pi headless hosts
+*Merged 2026-08-18 · branch `fix/headless-ubuntu-display-drivers` · 2 file(s), +61 / −8*
+
+- **Docs:** [INSTALL.md](INSTALL.md)
+
+### 2026-08-17
+
+#### [#601](https://github.com/PierreGode/Ragnar/pull/601) — net integrity monitor: cover MAC Watch + rank CDPwn critical (Pushover)
+*Merged 2026-08-17 · branch `fix/integrity-monitor-mac-cdpwn` · 4 file(s), +14 / −8*
+
+- watchtower: complete the source list on both cards + docs
+- web: refresh Network Integrity Monitor card to match actual coverage
+- **Docs:** [watchtower.md](watchtower.md)
+
+#### [#600](https://github.com/PierreGode/Ragnar/pull/600) — detector self-test: add MAC Watch + DHCP Guardian (both with Scapy e2e)
+*Merged 2026-08-17 · branch `fix/selftest-mac-dhcp` · 3 file(s), +190 / −9*
+
+#### [#597](https://github.com/PierreGode/Ragnar/pull/597) — Fix battetry green filling icon
+*Merged 2026-08-17 · branch `main` · 4 file(s), +293 / −219*
+
+- moving UPS 1.2 lite to system tab
+- **Docs:** [UPS_INTEGRATION.md](UPS_INTEGRATION.md)
+
+#### [#599](https://github.com/PierreGode/Ragnar/pull/599) — Networking updates
+*Merged 2026-08-17 · branch `thefixes` · 13 file(s), +1365 / −54*
+
+- isiswatch: bound TLV walk by IS-IS PDU Length (Ethernet-padding false positive)
+- netdiag watchers: add trailing-data / Etherleak detector (CDP/DTP/VTP/EIGRP/FHRP/OSPF)
+- docs: document PDU-length bounding + trailing-data/Etherleak detection
+- cdpwatch: add CDPwn byte-level exploit-shape + CVE-screening detectors
+- web: surface CDPwn on the CDP Watch card
+- arp_guard: FHRP (HSRP/VRRP) virtual-MAC awareness + fhrpwatch cross-pivot
+- …and 9 more commit(s)
+- **Docs:** [arp_guard.md](arp_guard.md), [isiswatch.md](isiswatch.md), [nettools.md](nettools.md)
+
+### 2026-08-16
+
+#### [#598](https://github.com/PierreGode/Ragnar/pull/598) — Observatory: vendor Three.js so it loads under the hardening CSP
+*Merged 2026-08-16 · branch `feature/observatory-demo-flag` · 6 file(s), +120 / −13*
+
+- Observatory: flag demo data + label placeholder node 'demo' until a real node connects
+- Observatory: pin DEMO flag to top-left on phones so it no longer overlaps the scenario dropdown
+- Observatory: fix dead fullscreen button + mobile hardening
+- Observatory: stack auto-cycle under the DEMO flag; it rises when a node connects
+- **Docs:** [rusense.md](rusense.md)
+
+### 2026-08-15
+
+#### [#596](https://github.com/PierreGode/Ragnar/pull/596) — Move UPS Power card from Config tab to System tab below Power
+*Merged 2026-08-15 · branch `ups-move-to-system` · 1 file(s), +30 / −33*
+
+#### [#595](https://github.com/PierreGode/Ragnar/pull/595) — Add ups lite clone(MJ) 1.2 and other that use diffrient adress
+*Merged 2026-08-15 · branch `main` · 6 file(s), +611 / −0*
+
+- Added UPS lite 1.2 clone
+- Create ups-api.service
+- **Docs:** [UPS_INTEGRATION.md](UPS_INTEGRATION.md)
+
+### 2026-08-14
+
+#### [#593](https://github.com/PierreGode/Ragnar/pull/593) — Observatory: vendor Three.js so it loads under the hardening CSP
+*Merged 2026-08-14 · branch `security/zap-hardening-headers` · 14 file(s), +55617 / −11*
+
+- **Docs:** [SECURITY.md](SECURITY.md)
+
+#### [#592](https://github.com/PierreGode/Ragnar/pull/592) — Mesh/share: confirm dialog dismisses on Confirm, not just Cancel
+*Merged 2026-08-14 · branch `feature/mesh-secret` · 2 file(s), +9 / −3*
+
+#### [#591](https://github.com/PierreGode/Ragnar/pull/591) — Mesh: add opt-in per-mesh secret as a second factor over the tag
+*Merged 2026-08-14 · branch `feature/mesh-secret` · 7 file(s), +455 / −27*
+
+- Mesh secret: default the Join form to Generate a new secret
+- Mesh secret: add a Show mesh secret reveal for when the one-time display was missed
+- Mesh secret: keep the generated key on screen, move armed note to the page bottom
+- Mesh secret: download the generated key once, never show it in the UI
+- Mesh secret: modal + auto-download together, refresh gated on Done
+- Mesh/share: fix Copy on plain-HTTP Ragnars (non-secure context)
+- **Docs:** [mesh.md](mesh.md)
+
+### 2026-08-13
+
+#### [#590](https://github.com/PierreGode/Ragnar/pull/590) — Mesh: share-only guest role (tag:ragnar-share)
+*Merged 2026-08-13 · branch `feature/mesh-share-guest` · 10 file(s), +1573 / −79*
+
+- Mesh Share: token-based remote shares (Ragnar<->Ragnar across tailnets)
+- Mesh Share: one-click 'Join a tailnet (share-only)' from the web UI
+- Mesh Share: share-only Join can switch tailnets (logout-first)
+- docs: add detailed Mesh Share & File Transfer guide (docs/mesh-share.md)
+- Mesh Share: share-only guest reads as 'share-only', not a mistagged mesh node
+- Mesh Share: a share-only guest no longer sees the host mesh
+- …and 9 more commit(s)
+- **Docs:** [README (root)](../README.md), [mesh-share.md](mesh-share.md), [mesh.md](mesh.md)
+
+#### [#589](https://github.com/PierreGode/Ragnar/pull/589) — Inbox Save: make the Vault option reflect the Vault's lock state
+*Merged 2026-08-13 · branch `fix/inbox-vault-option` · 2 file(s), +25 / −3*
+
+- Inbox: stop the 2s poll from wiping the destination dropdown
+
+#### [#588](https://github.com/PierreGode/Ragnar/pull/588) — Fix: confirm dialog invisible when triggered from another tab
+*Merged 2026-08-13 · branch `feature/files-nav-flag` · 2 file(s), +8 / −2*
+
+### 2026-08-12
+
+#### [#587](https://github.com/PierreGode/Ragnar/pull/587) — Flag the Files nav tab when a file is sent to this unit
+*Merged 2026-08-12 · branch `feature/files-nav-flag` · 2 file(s), +70 / −2*
+
+- Files nav flag: also cover shared-to-mesh + the mobile Files entry
+
+#### [#586](https://github.com/PierreGode/Ragnar/pull/586) — Update nettools.md
+*Merged 2026-08-12 · branch `PierreGode-patch-1` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#584](https://github.com/PierreGode/Ragnar/pull/584) — Mesh transfer: stronger validation of transferred files
+*Merged 2026-08-12 · branch `filshare` · 9 file(s), +706 / −17*
+
+- File Management: move files/folders between folders
+- Add Mesh Share — a folder published to the whole mesh
+- Add a Mesh Share shortcut to the Files-tab Directories list
+- **Docs:** [mesh.md](mesh.md), [vault.md](vault.md)
+
+#### [#583](https://github.com/PierreGode/Ragnar/pull/583) — Fix mesh transfer failing with 'Invalid chunk header'
+*Merged 2026-08-12 · branch `fix/mesh-transfer-chunked` · 2 file(s), +40 / −16*
+
+#### [#582](https://github.com/PierreGode/Ragnar/pull/582) — Mesh file transfer: send files between Ragnar units over Tailscale
+*Merged 2026-08-12 · branch `feature/mesh-file-transfer` · 7 file(s), +966 / −4*
+
+- Mesh File Transfer: send a file already on this unit (Ragnar→Ragnar)
+- Mesh transfer: show the failure reason inline + clearer send errors
+- Mesh transfer picker: show the Vault when unlocked
+- Fix: uploaded/deleted/cleared files not showing until manual refresh
+- **Docs:** [mesh.md](mesh.md)
+
+#### [#581](https://github.com/PierreGode/Ragnar/pull/581) — Rename Safe→Vault, add file/folder rename, Back/Up nav, MB/GB size input
+*Merged 2026-08-12 · branch `feature/vault-rename-nav-rename` · 6 file(s), +352 / −129*
+
+- Vault size: bring back the slider, show GB once past 999 MB
+- **Docs:** [README (root)](../README.md), [vault.md](vault.md)
+
+#### [#580](https://github.com/PierreGode/Ragnar/pull/580) — Add encrypted Safe vault to Files tab
+*Merged 2026-08-12 · branch `feature/files-safe-vault` · 8 file(s), +1718 / −93*
+
+- Make File Management tab mobile-friendly
+- Add full-screen viewer for image previews
+- Show unlocked Safe as a folder in Directories + Lock/Unlock button
+- Fix: image full-screen viewer could not be closed on mobile
+- Fix: image preview modal overflowed on phones, hiding the close button
+- Add subfolders + upload-into-folder for Uploads and the Safe
+- …and 5 more commit(s)
+- **Docs:** [README (root)](../README.md)
+
+### 2026-08-11
+
+#### [#579](https://github.com/PierreGode/Ragnar/pull/579) — Fix AI endpoint scan crashing on Pi Zero (interpreter shutdown) (#462)
+*Merged 2026-08-11 · branch `fix/ai-discover-threadpool-pizero` · 1 file(s), +70 / −16*
+
+- Use safe thread pool for mesh update-all fan-out (#462)
+
+#### [#578](https://github.com/PierreGode/Ragnar/pull/578) — Support self-hosted / OpenAI-compatible AI endpoints (#462)
+*Merged 2026-08-11 · branch `feature/selfhosted-ai-462` · 7 file(s), +725 / −26*
+
+- Add Connect + model dropdown for self-hosted AI endpoints (#462)
+- Normalize self-hosted AI base URLs + port hint (#462)
+- Adapt AI label to active model + cloud fallback on endpoint loss (#462)
+- Add Scan Network: auto-discover Ollama on tailnet + local subnet (#462)
+- Fix Scan Network button/badges stripped by Tailwind purge (#462)
+- **Docs:** [README (root)](../README.md), [AI_INTEGRATION.md](AI_INTEGRATION.md)
+
+#### [#577](https://github.com/PierreGode/Ragnar/pull/577) — Add per-host scan ignore-list button on the Network tab (#459)
+*Merged 2026-08-11 · branch `feature/web-ignore-list-459` · 5 file(s), +181 / −13*
+
+- Harden ignore-list client against non-JSON responses (#459)
+- **Docs:** [README (root)](../README.md), [spec.md](spec.md)
+
+#### [#576](https://github.com/PierreGode/Ragnar/pull/576) — Harden web server: security headers, no wildcard CORS, vendor CDN libs
+*Merged 2026-08-11 · branch `security/zap-hardening-headers` · 15 file(s), +861 / −13*
+
+- **Docs:** [SECURITY.md](SECURITY.md)
+
+#### [#575](https://github.com/PierreGode/Ragnar/pull/575) — Update INSTALL.md
+*Merged 2026-08-11 · branch `Solarflere-patch-2` · 1 file(s), +1 / −1*
+
+- **Docs:** [INSTALL.md](INSTALL.md)
+
+#### [#574](https://github.com/PierreGode/Ragnar/pull/574) — Update README.md
+*Merged 2026-08-11 · branch `Solarflere-patch-1` · 1 file(s), +3 / −3*
+
+- **Docs:** [README (root)](../README.md)
+
+### 2026-08-10
+
+#### [#573](https://github.com/PierreGode/Ragnar/pull/573) — UI: collapse main nav to hamburger by window size, wrap items to a second row
+*Merged 2026-08-10 · branch `menu-responsive-wrap` · 2 file(s), +30 / −53*
+
+- Fix: restore closing </script> tag dropped in nav-wrap cache-buster bump
+- UI: move connection status dot under brand name, drop the text label
+- UI: keep wrapping nav out of the brand-name area (logo shrink-0, nav flex-1/min-w-0)
+
+#### [#572](https://github.com/PierreGode/Ragnar/pull/572) — Mesh: expand the Viking name pool with historic names
+*Merged 2026-08-10 · branch `mesh-name-unnumbered-units` · 2 file(s), +106 / −14*
+
+- Mesh: keep auto-derived names on the frozen legacy pool (no renames)
+- **Docs:** [mesh.md](mesh.md)
+
+#### [#571](https://github.com/PierreGode/Ragnar/pull/571) — Mesh: dice-roll a Viking name + gender choice for custom names
+*Merged 2026-08-10 · branch `mesh-name-unnumbered-units` · 3 file(s), +206 / −10*
+
+#### [#570](https://github.com/PierreGode/Ragnar/pull/570) — Mesh: name which reachable units have no unit number
+*Merged 2026-08-10 · branch `mesh-name-unnumbered-units` · 4 file(s), +117 / −5*
+
+- Mesh: let a joined unit set its number/identity after onboarding
+
+### 2026-08-09
+
+#### [#569](https://github.com/PierreGode/Ragnar/pull/569) — Power panel: reconcile under-voltage vs healthy estimated headroom
+*Merged 2026-08-09 · branch `power-warning-dashboard` · 3 file(s), +17 / −2*
+
+- **Docs:** [power.md](power.md)
+
+#### [#568](https://github.com/PierreGode/Ragnar/pull/568) — Mark power_budget.py and mesh_scan.py executable (top-level .py = 755)
+*Merged 2026-08-09 · branch `power-warning-dashboard` · 2 file(s), +0 / −0*
+
+#### [#567](https://github.com/PierreGode/Ragnar/pull/567) — Dashboard power badge: surface real under-voltage on the main dashboard
+*Merged 2026-08-09 · branch `power-warning-dashboard` · 7 file(s), +711 / −8*
+
+- Power badge: add always-on Power card + detail panel to the System tab
+- **Docs:** [README (root)](../README.md), [diagnostics.md](diagnostics.md), [power.md](power.md)
+
+#### [#566](https://github.com/PierreGode/Ragnar/pull/566) — AI insights: never wedge on "Analyzing…" — always resolve to data or retry
+*Merged 2026-08-09 · branch `fix-ai-insights-background-compute` · 4 file(s), +75 / −36*
+
+- AI insights: run analyses sequentially in the background (tiny-board safe)
+
+#### [#565](https://github.com/PierreGode/Ragnar/pull/565) — Dashboard AI insights: compute in background so slow boards never block
+*Merged 2026-08-09 · branch `fix-ai-insights-background-compute` · 4 file(s), +148 / −66*
+
+- **Docs:** [AI_INTEGRATION.md](AI_INTEGRATION.md)
+
+#### [#564](https://github.com/PierreGode/Ragnar/pull/564) — Dashboard AI insights: survive shared-key rate limits + per-call timeout
+*Merged 2026-08-09 · branch `fix-ai-insights-shared-key-resilience` · 4 file(s), +68 / −19*
+
+- **Docs:** [AI_INTEGRATION.md](AI_INTEGRATION.md)
+
+#### [#563](https://github.com/PierreGode/Ragnar/pull/563) — Dashboard AI insights: parallelize calls + stop silent hang
+*Merged 2026-08-09 · branch `fix-dashboard-ai-insights-latency` · 4 file(s), +62 / −21*
+
+- **Docs:** [AI_INTEGRATION.md](AI_INTEGRATION.md)
+
+#### [#562](https://github.com/PierreGode/Ragnar/pull/562) — WiFi Analyzer: fix Report button ignoring Bluetooth/Zigbee + AI
+*Merged 2026-08-09 · branch `fix-wifi-report-bt-ai-shadow` · 2 file(s), +88 / −12*
+
+- Bump ragnar_modern.js cache-bust for WiFi report BT/AI fix
+
+#### [#561](https://github.com/PierreGode/Ragnar/pull/561) — Adv Scan: ZAP auto-resolves a live web port for bare-host targets
+*Merged 2026-08-09 · branch `zap-target-port-autoresolve` · 3 file(s), +188 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#560](https://github.com/PierreGode/Ragnar/pull/560) — WiFi Analyzer: fold BT/Zigbee 2.4 GHz overlays into AI + spectrum report
+*Merged 2026-08-09 · branch `ai-bt-zigbee-coexistence` · 9 file(s), +590 / −27*
+
+- WiFi Defense: unified AI read across all 3 modules + report inclusion
+- **Docs:** [AI_INTEGRATION.md](AI_INTEGRATION.md), [wifi-analyzer.md](wifi-analyzer.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#559](https://github.com/PierreGode/Ragnar/pull/559) — Adv Scan: explain the default port in connect-failure error
+*Merged 2026-08-09 · branch `zap-delegate-tunnel` · 8 file(s), +220 / −10*
+
+- Recon: add web-port discovery + operator-selectable ports for ZAP handoff
+- **Docs:** [README (root)](../README.md), [superpowers/specs/2026-05-27-web-recon-subsystem-design.md](superpowers/specs/2026-05-27-web-recon-subsystem-design.md)
+
+#### [#558](https://github.com/PierreGode/Ragnar/pull/558) — Adv Scan: show scan egress (tunnel vs LAN) — confirms ZAP tunnels too
+*Merged 2026-08-09 · branch `zap-delegate-tunnel` · 2 file(s), +47 / −12*
+
+- Adv Scan: clear error for invalid dotted-quad targets (712.20.10.1)
+- Adv Scan: accept uppercase URL schemes (HTTP:// / Http://)
+- Adv Scan: auto-add http scheme for bare IPs; drop ZAP's default :80 from host
+
+#### [#557](https://github.com/PierreGode/Ragnar/pull/557) — Adv Scan: show scan egress (tunnel vs LAN) — confirms ZAP tunnels too
+*Merged 2026-08-09 · branch `zap-delegate-tunnel` · 4 file(s), +57 / −5*
+
+### 2026-08-05
+
+#### [#555](https://github.com/PierreGode/Ragnar/pull/555) — config: export/import settings for fleet deployment
+*Merged 2026-08-05 · branch `config-export-import` · 5 file(s), +294 / −6*
+
+- config: fix export download on iOS Safari
+- **Docs:** [README (root)](../README.md), [mesh.md](mesh.md)
+
+#### [#554](https://github.com/PierreGode/Ragnar/pull/554) — mesh: add Update mesh card to fan the git update across the fleet
+*Merged 2026-08-05 · branch `mesh-fleet-update` · 4 file(s), +359 / −4*
+
+- mesh: show available-unit and pending-update counts on Update mesh card
+- **Docs:** [mesh.md](mesh.md)
+
+#### [#553](https://github.com/PierreGode/Ragnar/pull/553) — install: add Firefox as a required package (ZAP AJAX spider)
+*Merged 2026-08-05 · branch `install-require-firefox` · 2 file(s), +21 / −0*
+
+#### [#552](https://github.com/PierreGode/Ragnar/pull/552) — advtools: install nikto via git fallback when apt lacks it (Debian non-free)
+*Merged 2026-08-05 · branch `advtools-nikto-debian-fallback` · 3 file(s), +145 / −2*
+
+- **Docs:** [INSTALL.md](INSTALL.md)
+
+### 2026-08-04
+
+#### [#550](https://github.com/PierreGode/Ragnar/pull/550) — Mesh: enable IP forwarding when advertising subnet routes
+*Merged 2026-08-04 · branch `advscan-unhide-zap-gate` · 3 file(s), +73 / −3*
+
+#### [#549](https://github.com/PierreGode/Ragnar/pull/549) — RuSense flasher: fix u.FL antenna checkbox overflow on mobile
+*Merged 2026-08-04 · branch `advscan-unhide-zap-gate` · 1 file(s), +10 / −3*
+
+#### [#548](https://github.com/PierreGode/Ragnar/pull/548) — Displays: show the mesh Viking name in the header (abbreviated + fit)
+*Merged 2026-08-04 · branch `advscan-unhide-zap-gate` · 5 file(s), +106 / −14*
+
+- espnow bridge: select XIAO ESP32-C6 external u.FL antenna
+- RuSense flasher: external u.FL antenna checkbox (XIAO ESP32-C6)
+- RuSense flasher: add legal/ethical monitoring notice
+
+#### [#547](https://github.com/PierreGode/Ragnar/pull/547) — Adv Scan: show tab on any board, gate only OWASP ZAP on 8GB RAM
+*Merged 2026-08-04 · branch `advscan-unhide-zap-gate` · 21 file(s), +1962 / −143*
+
+- Adv Scan: fix whole-form grey-out, add on-demand nuclei install
+- Adv Scan: make the nuclei Install a real, always-visible button
+- Adv Scan: show nuclei template download progress after install
+- Recon engine: run on any board, drop the server-mode gate
+- Adv Scan: relabel recon handoff "to scan" (not ZAP-specific)
+- Nuclei: auto-download templates when installed but missing
+- …and 18 more commit(s)
+- **Docs:** [README (root)](../README.md), [PWNAGOTCHI.md](PWNAGOTCHI.md), [grade.md](grade.md)
+
+### 2026-08-03
+
+#### [#546](https://github.com/PierreGode/Ragnar/pull/546) — homeassistant: organise device card via entity categories
+*Merged 2026-08-03 · branch `ha-card-organization` · 2 file(s), +51 / −4*
+
+- homeassistant: revert diagnostic entity categories so all entities stay visible
+- **Docs:** [homeassistant.md](homeassistant.md)
+
+#### [#545](https://github.com/PierreGode/Ragnar/pull/545) — homeassistant: add connectivity + mesh-fleet-health entities
+*Merged 2026-08-03 · branch `ha-phase2-defense-connectivity` · 9 file(s), +179 / −7*
+
+- **Docs:** [README (root)](../README.md), [homeassistant.md](homeassistant.md)
+
+#### [#544](https://github.com/PierreGode/Ragnar/pull/544) — homeassistant: add HACS custom integration for RuSense + security alerts
+*Merged 2026-08-03 · branch `homeassistant-integration` · 17 file(s), +1097 / −0*
+
+- homeassistant: import DeviceInfo from device_registry (fixes setup crash)
+- docs: add Home Assistant integration guide (docs/homeassistant.md)
+- **Docs:** [README (root)](../README.md), [homeassistant.md](homeassistant.md)
+
+#### [#543](https://github.com/PierreGode/Ragnar/pull/543) — pwnagotchi: install undeclared prctl dep so the service stops exit-code looping
+*Merged 2026-08-03 · branch `pwn-reinstall-service-fix` · 3 file(s), +31 / −11*
+
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#542](https://github.com/PierreGode/Ragnar/pull/542) — pwnagotchi: verify runtime before claiming reinstall success
+*Merged 2026-08-03 · branch `pwn-reinstall-service-fix` · 3 file(s), +120 / −2*
+
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+### 2026-08-02
+
+#### [#541](https://github.com/PierreGode/Ragnar/pull/541) — PCAP monitor capture: channel-hop by default for a real survey
+*Merged 2026-08-02 · branch `pcap-monitor-channel-hop` · 4 file(s), +53 / −13*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#540](https://github.com/PierreGode/Ragnar/pull/540) — PCAP capture: show 'Analyzing…' after the window + grey out monitor when unsupported
+*Merged 2026-08-02 · branch `pcap-capture-ui-polish` · 2 file(s), +40 / −1*
+
+#### [#539](https://github.com/PierreGode/Ragnar/pull/539) — PCAP capture: add Wi-Fi monitor-mode (802.11) capture
+*Merged 2026-08-02 · branch `pcap-monitor-mode` · 4 file(s), +100 / −22*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#538](https://github.com/PierreGode/Ragnar/pull/538) — PCAP capture: explain 0-packet Wi-Fi captures accurately
+*Merged 2026-08-02 · branch `pcap-zero-packet-wifi-note` · 1 file(s), +40 / −3*
+
+#### [#537](https://github.com/PierreGode/Ragnar/pull/537) — PCAP: fix 500 on capture — expert loop clobbered the summary dict
+*Merged 2026-08-02 · branch `pcap-summary-clobber-fix` · 1 file(s), +3 / −3*
+
+#### [#536](https://github.com/PierreGode/Ragnar/pull/536) — PCAP AI: calibrate severity to volume; drop normal TCP teardown noise
+*Merged 2026-08-02 · branch `pcap-ai-calibration` · 2 file(s), +35 / −13*
+
+#### [#535](https://github.com/PierreGode/Ragnar/pull/535) — PCAP capture: robust Auto interface (LAN > USB LAN > wlan1 > wlan0)
+*Merged 2026-08-02 · branch `pcap-auto-iface-fallback` · 2 file(s), +60 / −8*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#534](https://github.com/PierreGode/Ragnar/pull/534) — PCAP Analyzer: capture interface picker now matches the L2/L3 selectors
+*Merged 2026-08-02 · branch `pcap-iface-static` · 4 file(s), +40 / −18*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#533](https://github.com/PierreGode/Ragnar/pull/533) — PCAP AI: instruct model to use only valid Wireshark filter syntax
+*Merged 2026-08-02 · branch `pcap-ai-valid-filters` · 1 file(s), +5 / −1*
+
+#### [#532](https://github.com/PierreGode/Ragnar/pull/532) — PCAP Analyzer: match capture interface selector to ARP scan styling
+*Merged 2026-08-02 · branch `pcap-iface-selector` · 2 file(s), +3 / −3*
+
+#### [#531](https://github.com/PierreGode/Ragnar/pull/531) — PCAP Analyzer: include AI analysis in the PDF report
+*Merged 2026-08-02 · branch `pcap-pdf-ai-summary` · 3 file(s), +36 / −4*
+
+- PCAP Analyzer: rename PDF 'AI analysis' section to 'Analysis'
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#530](https://github.com/PierreGode/Ragnar/pull/530) — PCAP Analyzer: add Export as PDF report
+*Merged 2026-08-02 · branch `pcap-export-pdf` · 3 file(s), +100 / −3*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#529](https://github.com/PierreGode/Ragnar/pull/529) — PCAP Analyzer: move card up to sit below ARP Scan
+*Merged 2026-08-02 · branch `pcap-reorder-below-arp` · 1 file(s), +16 / −16*
+
+#### [#528](https://github.com/PierreGode/Ragnar/pull/528) — PCAP Analyzer: browse stored captures + capture live traffic
+*Merged 2026-08-02 · branch `pcap-capture-and-browse` · 5 file(s), +394 / −46*
+
+- PCAP Analyzer: make the stored-pcap list mobile-friendly
+- PCAP Analyzer: make Protocol hierarchy mobile-friendly
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#527](https://github.com/PierreGode/Ragnar/pull/527) — pcap ai: generalize root-cause analysis beyond Wi-Fi client-drops
+*Merged 2026-08-02 · branch `pcap-ai-analysis` · 2 file(s), +47 / −19*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#526](https://github.com/PierreGode/Ragnar/pull/526) — sdr: fix Waterfall not activating — probe HackRF once, handle probe timeout
+*Merged 2026-08-02 · branch `sdr-hackrf-not-activating` · 1 file(s), +20 / −5*
+
+### 2026-08-01
+
+#### [#525](https://github.com/PierreGode/Ragnar/pull/525) — lcd144: netsignal card — strongest SSID on top, shorter signal bar
+*Merged 2026-08-01 · branch `lcd144-netsignal-tweaks` · 1 file(s), +9 / −1*
+
+#### [#524](https://github.com/PierreGode/Ragnar/pull/524) — rusense: fix #503 node time-sync — report Pi arrival-time alignment
+*Merged 2026-08-01 · branch `fix-503-node-sync` · 6 file(s), +75 / −11*
+
+- **Docs:** [rusense.md](rusense.md)
+
+### 2026-07-31
+
+#### [#523](https://github.com/PierreGode/Ragnar/pull/523) — wardriving: add printable Wi-Fi survey report export (HTML→PDF)
+*Merged 2026-07-31 · branch `feature-report-export` · 10 file(s), +867 / −6*
+
+- reports: add printable WIDS + spectrum reports; share one report engine
+- **Docs:** [README (root)](../README.md), [wardriving.md](wardriving.md), [wifi-analyzer.md](wifi-analyzer.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#522](https://github.com/PierreGode/Ragnar/pull/522) — wardriving: switch display to wardriving mode on manual start (starting state)
+*Merged 2026-07-31 · branch `fix-wardriving-display-mode` · 3 file(s), +67 / −8*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#521](https://github.com/PierreGode/Ragnar/pull/521) — pwnagotchi: harden clean reinstall (keep config, ignore-installed pydrive2)
+*Merged 2026-07-31 · branch `pwn-install-healthcheck` · 4 file(s), +32 / −13*
+
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#520](https://github.com/PierreGode/Ragnar/pull/520) — pwnagotchi: self-heal a status stuck at 'installing' when the install is healthy
+*Merged 2026-07-31 · branch `pwn-install-healthcheck` · 5 file(s), +118 / −13*
+
+- pwnagotchi: add always-available Reinstall (clean) button
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#519](https://github.com/PierreGode/Ragnar/pull/519) — pwnagotchi: require stable portal readiness before offering the swap link
+*Merged 2026-07-31 · branch `pwn-install-healthcheck` · 5 file(s), +249 / −22*
+
+- pwnagotchi: add ragnar_return web plugin to redirect the browser back to :8000
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#518](https://github.com/PierreGode/Ragnar/pull/518) — pwnagotchi: validate install components + Repair button; disable pwn self-updater
+*Merged 2026-07-31 · branch `pwn-install-healthcheck` · 5 file(s), +260 / −6*
+
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+### 2026-07-30
+
+#### [#517](https://github.com/PierreGode/Ragnar/pull/517) — wifi-defense: harden legacy PHY/airtime accuracy + add WPS posture detection
+*Merged 2026-07-30 · branch `investigate/legacy-wps-watch` · 29 file(s), +3791 / −99*
+
+- legacywatch: standalone passive 802.11 legacy/cipher/airtime detector
+- wpswatch: standalone passive WPS/WSC posture + EAP-WSC attack detector
+- legacywatch/wpswatch: Watchtower wiring, systemd units, conformance + hwsim lab
+- wifi-defense: make Airtime & link-quality tables mobile-friendly
+- wifi-defense: per-panel wlan* interface selector for Airtime + Isolation
+- wifi-defense: fix per-panel iface dropdown hiding USB/PCI wireless adapters
+- …and 2 more commit(s)
+- **Docs:** [README (root)](../README.md), [AI_INTEGRATION.md](AI_INTEGRATION.md), [RELEASE_NOTES.md](RELEASE_NOTES.md), [legacywatch.md](legacywatch.md), [spec.md](spec.md), [wifi-defense.md](wifi-defense.md), [wpswatch.md](wpswatch.md)
+
+#### [#516](https://github.com/PierreGode/Ragnar/pull/516) — wifi-defense: pinpoint 2.4 GHz airtime starvation (legacy 802.11b client tax)
+*Merged 2026-07-30 · branch `investigate/airtime-starvation-detection` · 5 file(s), +570 / −16*
+
+- wifi-defense: add per-AP encryption + 802.11 generation to airtime panel
+- wifi-defense: name the legacy client — fuse radio PHY with host inventory
+- wifi-defense: add SSID column + SSID filter to per-client airtime table
+- wifi-defense: bump backend _BUILD to match UI (20260729-airtime-ssid-filter)
+- **Docs:** [wifi-defense.md](wifi-defense.md)
+
+### 2026-07-29
+
+#### [#515](https://github.com/PierreGode/Ragnar/pull/515) — display: add 3.5" SPI TFT (ILI9486/ILI9488) driver support
+*Merged 2026-07-29 · branch `investigate/display-tft-epaper` · 7 file(s), +442 / −30*
+
+- **Docs:** [README (root)](../README.md), [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#514](https://github.com/PierreGode/Ragnar/pull/514) — Remove Ragnar mobile app section from README
+*Merged 2026-07-29 · branch `PierreGode-patch-6` · 1 file(s), +0 / −7*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#513](https://github.com/PierreGode/Ragnar/pull/513) — Update image in nettools documentation
+*Merged 2026-07-29 · branch `PierreGode-matrix` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+### 2026-07-28
+
+#### [#512](https://github.com/PierreGode/Ragnar/pull/512) — web: hide the Bluetooth Provisioning settings section
+*Merged 2026-07-28 · branch `chore/hide-ble-provisioning` · 1 file(s), +6 / −2*
+
+#### [#511](https://github.com/PierreGode/Ragnar/pull/511) — docs: mobile app connects over the mesh, not Bluetooth
+*Merged 2026-07-28 · branch `feat/ragnarmobile-tailscale` · 3 file(s), +53 / −10*
+
+- docs: mobile app discovers the mesh via /api/mesh/status, no token
+- **Docs:** [README (root)](../README.md), [ble_provisioning.md](ble_provisioning.md), [mesh.md](mesh.md)
+
+### 2026-07-27
+
+#### [#510](https://github.com/PierreGode/Ragnar/pull/510) — Fix Discord badge link in README
+*Merged 2026-07-27 · branch `PierreGode-patch-5` · 1 file(s), +1 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#509](https://github.com/PierreGode/Ragnar/pull/509) — Discord
+*Merged 2026-07-27 · branch `PierreGode-patch-4` · 1 file(s), +1 / −0*
+
+- Update README.md
+- **Docs:** [README (root)](../README.md)
+
+#### [#508](https://github.com/PierreGode/Ragnar/pull/508) — Add Ragnar Mesh: a controller-free unit mesh over Tailscale
+*Merged 2026-07-27 · branch `feat/tailscale-fleet` · 14 file(s), +6025 / −13*
+
+- Fix mesh serve hanging when tailnet HTTPS certs are disabled
+- Make HTTP the default mesh publish path, HTTPS opt-in
+- Add a self-service "Install Tailscale" button to the Mesh tab
+- Diagnose "on the tailnet but not in the mesh" in the Mesh tab
+- Fix false "Ragnar not answering"; one-click enable data sharing
+- Add a Diagnose probe that names why a mesh peer is degraded
+- …and 26 more commit(s)
+- **Docs:** [README (root)](../README.md), [mesh.md](mesh.md)
+
+### 2026-07-26
+
+#### [#507](https://github.com/PierreGode/Ragnar/pull/507) — Only record a listening port a host actually served from
+*Merged 2026-07-26 · branch `fix-passive-listening-ports` · 5 file(s), +459 / −29*
+
+- **Docs:** [traffic-analysis.md](traffic-analysis.md)
+
+#### [#506](https://github.com/PierreGode/Ragnar/pull/506) — Make Traffic Analysis available on every board, not just servers
+*Merged 2026-07-26 · branch `traffic-analysis-everywhere` · 11 file(s), +641 / −60*
+
+- **Docs:** [README (root)](../README.md), [grade.md](grade.md), [traffic-analysis.md](traffic-analysis.md)
+
+#### [#505](https://github.com/PierreGode/Ragnar/pull/505) — Make the on-screen kiosk a Ragnar Pi server feature
+*Merged 2026-07-26 · branch `kiosk-server-only` · 9 file(s), +358 / −24*
+
+- **Docs:** [README (root)](../README.md), [kiosk.md](kiosk.md)
+
+#### [#504](https://github.com/PierreGode/Ragnar/pull/504) — ip_intel: attribute a hostile IP — country, ASN, network owner, abuse contact
+*Merged 2026-07-26 · branch `isp` · 8 file(s), +844 / −1*
+
+- fix(ui): restore Whois to its grid position
+- Update ip_intel.py
+- Add 'allocated' field and update confidence scoring
+- Fix allocation assignment in ip_intel.py
+- Update ragnar_modern.js
+- Update index_modern.html
+- …and 5 more commit(s)
+- **Docs:** [ip-intel.md](ip-intel.md), [nettools.md](nettools.md)
+
+#### [#501](https://github.com/PierreGode/Ragnar/pull/501) — Kiosk: find the Xorg log, and tell a live kiosk from a dead one
+*Merged 2026-07-26 · branch `fix/kiosk-mode` · 3 file(s), +72 / −14*
+
+- **Docs:** [kiosk.md](kiosk.md)
+
+#### [#500](https://github.com/PierreGode/Ragnar/pull/500) — Give the kiosk somewhere real to look when it shows nothing
+*Merged 2026-07-26 · branch `fix/kiosk-mode` · 7 file(s), +467 / −93*
+
+- Make the kiosk toggle do what running the installer by hand does
+- Kiosk service mode: stop passing Xorg a flag it refuses
+- **Docs:** [kiosk.md](kiosk.md)
+
+#### [#499](https://github.com/PierreGode/Ragnar/pull/499) — Stop the update card sticking on "Finishing update: network tools..."
+*Merged 2026-07-26 · branch `fix/update-robustness` · 4 file(s), +106 / −7*
+
+- **Docs:** [updates.md](updates.md)
+
+#### [#498](https://github.com/PierreGode/Ragnar/pull/498) — Stop fresh installs from reporting "Needs attention"
+*Merged 2026-07-26 · branch `fix/update-robustness` · 6 file(s), +204 / −27*
+
+- **Docs:** [INSTALL.md](INSTALL.md), [updates.md](updates.md)
+
+#### [#497](https://github.com/PierreGode/Ragnar/pull/497) — Update year in license statement to 2025
+*Merged 2026-07-26 · branch `PierreGode-patch-3` · 1 file(s), +1 / −1*
+
+- **Docs:** [INSTALL.md](INSTALL.md)
+
+#### [#496](https://github.com/PierreGode/Ragnar/pull/496) — Fix license year in README.md
+*Merged 2026-07-26 · branch `PierreGode-patch-2` · 1 file(s), +1 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#495](https://github.com/PierreGode/Ragnar/pull/495) — Make the in-app update rock solid instead of "error"
+*Merged 2026-07-26 · branch `fix/update-robustness` · 10 file(s), +2283 / −889*
+
+- Remove empty line in README.md
+- **Docs:** [README (root)](../README.md), [INSTALL.md](INSTALL.md), [updates.md](updates.md)
+
+### 2026-07-25
+
+#### [#494](https://github.com/PierreGode/Ragnar/pull/494) — WiFi analyzer: make the spectrum readable at full size
+*Merged 2026-07-25 · branch `fullspectrum` · 4 file(s), +961 / −85*
+
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#493](https://github.com/PierreGode/Ragnar/pull/493) — BT overlay: scan the controller we chose, not a cold-start stand-in
+*Merged 2026-07-25 · branch `fix/ble-adv-register-failed` · 3 file(s), +90 / −5*
+
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#492](https://github.com/PierreGode/Ragnar/pull/492) — BLE provisioning: confirm Invalid Parameters is the controller, not us
+*Merged 2026-07-25 · branch `fix/ble-adv-register-failed` · 3 file(s), +116 / −4*
+
+- **Docs:** [ble_provisioning.md](ble_provisioning.md)
+
+#### [#491](https://github.com/PierreGode/Ragnar/pull/491) — BLE provisioning: name the real reason a controller refuses to advertise
+*Merged 2026-07-25 · branch `fix/ble-adv-register-failed` · 3 file(s), +528 / −31*
+
+- BLE provisioning: detect the raw-HCI scan BlueZ can't see
+- **Docs:** [ble_provisioning.md](ble_provisioning.md)
+
+#### [#490](https://github.com/PierreGode/Ragnar/pull/490) — BLE provisioning: survive a controller that refuses the advertisement
+*Merged 2026-07-25 · branch `fix/ble-adv-register-failed` · 5 file(s), +452 / −23*
+
+- **Docs:** [ble_provisioning.md](ble_provisioning.md)
+
+#### [#489](https://github.com/PierreGode/Ragnar/pull/489) — Serve the dashboard, not the captive portal, on a 192.168.4.0/24 LAN
+*Merged 2026-07-25 · branch `fix/wifi-portal-blocks-dashboard` · 5 file(s), +501 / −33*
+
+- AP fallback: honour diagnostic mode, and fix the reconnect cadence
+- AP recovery: gate on connected clients, not on a 3-minute clock
+- Keep the setup AP up instead of flapping it every 3 minutes
+- Split AP and client across radios when a Wi-Fi dongle is present
+- Document AP mode in docs/RagnarAP.md
+- **Docs:** [README (root)](../README.md), [INSTALL.md](INSTALL.md), [RagnarAP.md](RagnarAP.md)
+
+#### [#488](https://github.com/PierreGode/Ragnar/pull/488) — Kiosk: add a doctor, and stop crash-looping against a running X server
+*Merged 2026-07-25 · branch `fix/kiosk-doctor` · 4 file(s), +276 / −1*
+
+- **Docs:** [kiosk.md](kiosk.md)
+
+#### [#487](https://github.com/PierreGode/Ragnar/pull/487) — BLE provisioning: fix the leak behind RegisterApplication AlreadyExists
+*Merged 2026-07-25 · branch `fix/ble-already-exists` · 3 file(s), +92 / −4*
+
+- **Docs:** [ble_provisioning.md](ble_provisioning.md)
+
+#### [#486](https://github.com/PierreGode/Ragnar/pull/486) — Kiosk: stop calling a slow install a failure, and report the real error
+*Merged 2026-07-25 · branch `fix/kiosk-install-progress` · 4 file(s), +106 / −3*
+
+- **Docs:** [kiosk.md](kiosk.md)
+
+#### [#485](https://github.com/PierreGode/Ragnar/pull/485) — Install display support for every screen, not just the one selected
+*Merged 2026-07-25 · branch `fix/installer-repairs-tarball-install` · 8 file(s), +399 / −90*
+
+- Offer every supported screen in the installer menus
+- Fix the two package failures a fresh install actually reports
+- Repair an interrupted dpkg state instead of failing on it
+- BLE provisioning: stop reporting a slow start as a permanent 'Enabling...'
+- **Docs:** [INSTALL.md](INSTALL.md), [ble_provisioning.md](ble_provisioning.md)
+
+#### [#484](https://github.com/PierreGode/Ragnar/pull/484) — Installer: repair a tarball install instead of skipping it
+*Merged 2026-07-25 · branch `fix/installer-repairs-tarball-install` · 2 file(s), +38 / −3*
+
+- **Docs:** [INSTALL.md](INSTALL.md)
+
+#### [#483](https://github.com/PierreGode/Ragnar/pull/483) — Installer: don't fail a fresh install over optional security tools
+*Merged 2026-07-25 · branch `fix/install-package-resilience` · 4 file(s), +212 / −25*
+
+- Installer: stop a broken git from wrecking the install layout
+- **Docs:** [INSTALL.md](INSTALL.md), [ble_provisioning.md](ble_provisioning.md)
+
+### 2026-07-24
+
+#### [#482](https://github.com/PierreGode/Ragnar/pull/482) — BLE provisioning: add a 'doctor' command to diagnose why it won't advertise
+*Merged 2026-07-24 · branch `feat/ble-provisioning-doctor` · 1 file(s), +70 / −0*
+
+#### [#481](https://github.com/PierreGode/Ragnar/pull/481) — BLE provisioning: surface an under-voltage warning
+*Merged 2026-07-24 · branch `feat/license-provenance` · 3 file(s), +29 / −0*
+
+#### [#480](https://github.com/PierreGode/Ragnar/pull/480) — Ble
+*Merged 2026-07-24 · branch `feat/license-provenance` · 1 file(s), +21 / −10*
+
+- BLE provisioning: actionable error when python3-gi is missing
+- BLE provisioning: stop exposing the hostname over Classic Bluetooth
+
+#### [#479](https://github.com/PierreGode/Ragnar/pull/479) — Mob
+*Merged 2026-07-24 · branch `feat/license-provenance` · 3 file(s), +165 / −2*
+
+- License restrictions, embedded authorship, and origin verification
+
+#### [#477](https://github.com/PierreGode/Ragnar/pull/477) — BLE provisioning: web-config toggle + adapter picker, prefer built-in radio
+*Merged 2026-07-24 · branch `feat/ble-provisioning-config` · 5 file(s), +342 / −17*
+
+- BLE provisioning: auto-stop after provisioning to free the adapter
+- **Docs:** [ble_provisioning.md](ble_provisioning.md)
+
+#### [#476](https://github.com/PierreGode/Ragnar/pull/476) — README: mention the mobile app and BLE provisioning
+*Merged 2026-07-24 · branch `feat/ble-provisioning` · 1 file(s), +7 / −0*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#475](https://github.com/PierreGode/Ragnar/pull/475) — Add BLE provisioning peripheral for the mobile app
+*Merged 2026-07-24 · branch `feat/ble-provisioning` · 5 file(s), +912 / −4*
+
+- **Docs:** [ble_provisioning.md](ble_provisioning.md)
+
+#### [#473](https://github.com/PierreGode/Ragnar/pull/473) — Net-diag LCD: add BT and ZIGBEE scan cards to the 1.44" HAT
+*Merged 2026-07-24 · branch `netdiag-bt-zigbee-cards` · 5 file(s), +214 / −19*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [nettools.md](nettools.md)
+
+### 2026-07-23
+
+#### [#472](https://github.com/PierreGode/Ragnar/pull/472) — Wardriving LCD: add GPS SKY VIEW as a paged screen on the 1.44" HAT
+*Merged 2026-07-23 · branch `wardrive-lcd-skyview` · 5 file(s), +95 / −12*
+
+- **Docs:** [README (root)](../README.md), [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#471](https://github.com/PierreGode/Ragnar/pull/471) — Wardriving and On-Screen Network Diagnostic mode are mutually exclusive
+*Merged 2026-07-23 · branch `wardrive-netdiag-exclusive` · 4 file(s), +64 / −0*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [wardriving.md](wardriving.md)
+
+#### [#470](https://github.com/PierreGode/Ragnar/pull/470) — WiFi Analyzer: auto-refresh also re-runs BT + Zigbee overlays
+*Merged 2026-07-23 · branch `bluespectrum` · 2 file(s), +13 / −3*
+
+#### [#468](https://github.com/PierreGode/Ragnar/pull/468) — WiFi Analyzer: Zigbee/802.15.4 overlay via on-demand HuginnESP sniff
+*Merged 2026-07-23 · branch `bluespectrum` · 7 file(s), +846 / −3*
+
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#467](https://github.com/PierreGode/Ragnar/pull/467) — WiFi Analyzer: Bluetooth/BLE 2.4 GHz interference overlay
+*Merged 2026-07-23 · branch `bluespectrum` · 9 file(s), +1929 / −8*
+
+- WiFi Analyzer: make Bluetooth device rows selectable on the spectrum
+- WiFi Analyzer: true-RF Waterfall view via HackRF SDR
+- WiFi Analyzer: clearer disabled Waterfall button on mobile
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+### 2026-07-22
+
+#### [#466](https://github.com/PierreGode/Ragnar/pull/466) — Wardriving: per-Huginn role switch (WiFi+BLE vs Zigbee/Thread-only)
+*Merged 2026-07-22 · branch `wardrive-companion-role-switch` · 5 file(s), +139 / −19*
+
+- Wardriving UI: role-aware companion stats (2.4/5/BLE vs Zigbee)
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#465](https://github.com/PierreGode/Ragnar/pull/465) — Wardriving: classify Thread vs Zigbee (proto) and rename the card
+*Merged 2026-07-22 · branch `wardrive-thread-zigbee-proto` · 5 file(s), +52 / −22*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#464](https://github.com/PierreGode/Ragnar/pull/464) — Wardriving: show companion mode as 'wardrive', not stuck 'ble-all'
+*Merged 2026-07-22 · branch `wardrive-companion-mode-label` · 1 file(s), +13 / −2*
+
+#### [#463](https://github.com/PierreGode/Ragnar/pull/463) — Wardriving: opt-in to include Zigbee in WiGLE CSV export
+*Merged 2026-07-22 · branch `wardrive-web-zigbee-counts` · 5 file(s), +48 / −5*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#461](https://github.com/PierreGode/Ragnar/pull/461) — Wardriving web: surface Zigbee/802.15.4 counts on both pages
+*Merged 2026-07-22 · branch `wardrive-web-zigbee-counts` · 4 file(s), +75 / −3*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#460](https://github.com/PierreGode/Ragnar/pull/460) — Wardriving: count and store Zigbee/802.15.4 devices from Huginn
+*Merged 2026-07-22 · branch `claude/huginn-zigbee-support-y7ntke` · 4 file(s), +230 / −5*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+### 2026-07-21
+
+#### [#458](https://github.com/PierreGode/Ragnar/pull/458) — Diagnostics: explain 'tracking N satellites but no fix'
+*Merged 2026-07-21 · branch `gps-nofix-hint` · 2 file(s), +31 / −0*
+
+- **Docs:** [diagnostics.md](diagnostics.md)
+
+#### [#457](https://github.com/PierreGode/Ragnar/pull/457) — Wardriving: hot-plug WiFi adapters mid-session, no restart needed
+*Merged 2026-07-21 · branch `wardriving-hotplug-iface` · 2 file(s), +83 / −4*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#456](https://github.com/PierreGode/Ragnar/pull/456) — Wardriving phone-AP: run on the built-in radio, not the Alfa
+*Merged 2026-07-21 · branch `wardriving-ap-alfa` · 2 file(s), +57 / −3*
+
+#### [#455](https://github.com/PierreGode/Ragnar/pull/455) — GPS sky view: make the fullscreen view actually live (1 Hz, uncached)
+*Merged 2026-07-21 · branch `gps-sky-view` · 6 file(s), +51 / −11*
+
+- **Docs:** [diagnostics.md](diagnostics.md)
+
+#### [#454](https://github.com/PierreGode/Ragnar/pull/454) — GPS sky view: fullscreen planetarium with real starfield
+*Merged 2026-07-21 · branch `gps-sky-view` · 9 file(s), +566 / −14*
+
+- GPS sky view: persist last-known position, use it before a fix
+- GPS sky view: populate constellations + sky view on the gpsd path
+- GPS: stop DOP-only gpsd SKY reports from zeroing satellite counts
+- **Docs:** [README (root)](../README.md), [diagnostics.md](diagnostics.md)
+
+#### [#453](https://github.com/PierreGode/Ragnar/pull/453) — docs: add Diagnostics panel guide, move cell.md into docs/
+*Merged 2026-07-21 · branch `gps-sky-view` · 4 file(s), +166 / −1*
+
+- **Docs:** [README (root)](../README.md), [cell.md](cell.md), [diagnostics.md](diagnostics.md), [wardriving.md](wardriving.md)
+
+#### [#452](https://github.com/PierreGode/Ragnar/pull/452) — Wardriving GPS sky view: per-satellite azimuth/elevation polar plot
+*Merged 2026-07-21 · branch `gps-sky-view` · 6 file(s), +202 / −11*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#451](https://github.com/PierreGode/Ragnar/pull/451) — Add cell.md: ModemManager-supported cellular modems for wardriving cell capture
+*Merged 2026-07-21 · branch `docs-cell-modems` · 1 file(s), +70 / −0*
+
+### 2026-07-20
+
+#### [#450](https://github.com/PierreGode/Ragnar/pull/450) — rusense flasher CI: pin ESP32 core 3.3.0 + -fpermissive for the coordinator build
+*Merged 2026-07-20 · branch `rusense-flasher-coordinator-egg` · 1 file(s), +18 / −4*
+
+#### [#449](https://github.com/PierreGode/Ragnar/pull/449) — Remove extra newline before License section
+*Merged 2026-07-20 · branch `PierreGode-patch-1` · 1 file(s), +0 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#448](https://github.com/PierreGode/Ragnar/pull/448) — rusense flasher: hidden Piglet Coordinator forge behind the Skál rune
+*Merged 2026-07-20 · branch `rusense-flasher-coordinator-egg` · 5 file(s), +245 / −5*
+
+#### [#447](https://github.com/PierreGode/Ragnar/pull/447) — wardriving diagnostics: detect stalled feeds, fix USB attribution and Pi-5-only row
+*Merged 2026-07-20 · branch `wardriving-diag-stale` · 5 file(s), +104 / −24*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#446](https://github.com/PierreGode/Ragnar/pull/446) — wardriving diagnostics: radios + power + richer GPS, and fix a raw timestamp
+*Merged 2026-07-20 · branch `wardriving-diag-power` · 7 file(s), +754 / −12*
+
+- wardriving diagnostics: bump the ragnar_modern.js cache-buster
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#445](https://github.com/PierreGode/Ragnar/pull/445) — wardriving: diagnostics panel on the main dashboard tab too
+*Merged 2026-07-20 · branch `wardriving-web-diagnostics` · 4 file(s), +241 / −3*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [wardriving.md](wardriving.md)
+
+#### [#444](https://github.com/PierreGode/Ragnar/pull/444) — wardriving AP: restart-service button + stop hijacking the phone's internet
+*Merged 2026-07-20 · branch `wardriving-ap-network` · 4 file(s), +332 / −23*
+
+- wardriving AP page: collapsible diagnostics panel
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#443](https://github.com/PierreGode/Ragnar/pull/443) — wardriving: LCD HAT wardriving layer — joystick screen carousel + key map
+*Merged 2026-07-20 · branch `wardriving-lcd-pages` · 5 file(s), +443 / −51*
+
+- **Docs:** [README (root)](../README.md), [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#442](https://github.com/PierreGode/Ragnar/pull/442) — wardriving: Exit Wardriving button on the phone AP page
+*Merged 2026-07-20 · branch `wardriving-exit-button` · 3 file(s), +105 / −2*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#441](https://github.com/PierreGode/Ragnar/pull/441) — wifi analyzer: detect Wi-Fi 7 from raw EHT extension IEs (iw scan -u)
+*Merged 2026-07-20 · branch `wifi7-eht-detection` · 3 file(s), +90 / −17*
+
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#440](https://github.com/PierreGode/Ragnar/pull/440) — wardriving: show GPS speed on the 1.44" ST7735S compact page
+*Merged 2026-07-20 · branch `wardriving-st7735s-speed` · 2 file(s), +13 / −3*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#439](https://github.com/PierreGode/Ragnar/pull/439) — wardriving: add mph/kph speed unit switch in Config
+*Merged 2026-07-20 · branch `gps-ubx-recovery-pacing` · 5 file(s), +101 / −6*
+
+- wardriving: promote speed unit to a dedicated card toggle
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#438](https://github.com/PierreGode/Ragnar/pull/438) — gps: make the UBX auto-recovery survive real u-blox 7 clones
+*Merged 2026-07-20 · branch `gps-ubx-recovery-pacing` · 3 file(s), +220 / −6*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+### 2026-07-19
+
+#### [#437](https://github.com/PierreGode/Ragnar/pull/437) — wardriving: auto-fit band counts on ST7735S compact page
+*Merged 2026-07-19 · branch `wardriving-st7735s-autofit` · 2 file(s), +24 / −3*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#436](https://github.com/PierreGode/Ragnar/pull/436) — wardriving: compact header-less layout for 1.44" ST7735S LCD
+*Merged 2026-07-19 · branch `wardriving-st7735s-compact` · 2 file(s), +114 / −0*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md)
+
+#### [#435](https://github.com/PierreGode/Ragnar/pull/435) — nettools: Switch Discovery gets the interface dropdown
+*Merged 2026-07-19 · branch `Wifi` · 4 file(s), +69 / −15*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#434](https://github.com/PierreGode/Ragnar/pull/434) — wardriving: split companion network counts into 2.4 GHz and 5 GHz
+*Merged 2026-07-19 · branch `Wifi` · 5 file(s), +58 / −5*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#433](https://github.com/PierreGode/Ragnar/pull/433) — chmod +x incident_engine.py and watchtower.py (top-level .py must be executable)
+*Merged 2026-07-19 · branch `Wifi` · 21 file(s), +1166 / −58*
+
+- netdiag: egress tests get interface priority (eth > USB eth > wlan1 > wlan0) + joystick IFACE card
+- airsnitch: auto-detect victim/attacker radios from spare adapters
+- wardriving: show 6 GHz count in the web More card
+- wardriving: union nmcli+sysfs for adapter detection so a third radio is seen
+- wardriving: protect the uplink radio from NM claim + warn on under-voltage
+- install/update: enable persistent journald so crashes leave evidence
+- …and 5 more commit(s)
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [airsnitch.md](airsnitch.md), [nettools.md](nettools.md), [wardriving.md](wardriving.md)
+
+#### [#432](https://github.com/PierreGode/Ragnar/pull/432) — nettools: Locate Port and L2 Link Health get the interface dropdown
+*Merged 2026-07-19 · branch `Wifi` · 4 file(s), +69 / −20*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#431](https://github.com/PierreGode/Ragnar/pull/431) — nettools: ARP Scan card gets interface dropdown like the other L2/L3 cards
+*Merged 2026-07-19 · branch `Wifi` · 4 file(s), +44 / −19*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#430](https://github.com/PierreGode/Ragnar/pull/430) — wifi-analyzer: filter AP list by Wi-Fi generation (7/6E/6/5/4/legacy)
+*Merged 2026-07-19 · branch `Wifi` · 3 file(s), +22 / −7*
+
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#429](https://github.com/PierreGode/Ragnar/pull/429) — wifi-analyzer: cover Wi-Fi 7 (802.11be/EHT) labeling and 320 MHz width in selftest
+*Merged 2026-07-19 · branch `Wifi` · 2 file(s), +40 / −6*
+
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md)
+
+### 2026-07-18
+
+#### [#428](https://github.com/PierreGode/Ragnar/pull/428) — webapp: no-store cache headers for index/HTML/manifest so rebrand isn't pinned by stale browser/PWA cache
+*Merged 2026-07-18 · branch `note` · 1 file(s), +17 / −4*
+
+#### [#427](https://github.com/PierreGode/Ragnar/pull/427) — docs: cross-reference wifiwatch's WPA handshake/PNL layer from WiFi Defense docs and README
+*Merged 2026-07-18 · branch `docs/wifiwatch-crossref` · 2 file(s), +8 / −2*
+
+- **Docs:** [README (root)](../README.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#426](https://github.com/PierreGode/Ragnar/pull/426) — wifi defense: SSID column in airtime table; all three tables pivot to analyzer
+*Merged 2026-07-18 · branch `feat/wids-analyzer-pivot` · 4 file(s), +38 / −20*
+
+- **Docs:** [wifi-defense.md](wifi-defense.md)
+
+#### [#425](https://github.com/PierreGode/Ragnar/pull/425) — wifi defense → analyzer pivot: click a flagged BSSID to highlight it in the spectrum
+*Merged 2026-07-18 · branch `feat/wids-analyzer-pivot` · 5 file(s), +116 / −11*
+
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md), [wifi-defense.md](wifi-defense.md)
+
+### 2026-07-17
+
+#### [#424](https://github.com/PierreGode/Ragnar/pull/424) — incident engine: cross-signal correlation into attack-chain incidents
+*Merged 2026-07-17 · branch `feat/incident-correlation-engine` · 8 file(s), +792 / −1*
+
+- **Docs:** [incident-correlation.md](incident-correlation.md), [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#423](https://github.com/PierreGode/Ragnar/pull/423) — wifiwatch: WPA handshake/PMKID harvest, WPA3 downgrade, PNL leak
+*Merged 2026-07-17 · branch `feat/wifiwatch-handshake-pnl` · 3 file(s), +432 / −25*
+
+- **Docs:** [wifiwatch.md](wifiwatch.md)
+
+#### [#422](https://github.com/PierreGode/Ragnar/pull/422) — fix(speedtest): pin the device (SO_BINDTODEVICE), not the source address
+*Merged 2026-07-17 · branch `fix/speedtest-multihomed-bind` · 3 file(s), +210 / −51*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#421](https://github.com/PierreGode/Ragnar/pull/421) — fix(speedtest): don't bind egress to an interface with no route to the internet
+*Merged 2026-07-17 · branch `fix/speedtest-egress-route` · 2 file(s), +71 / −10*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#420](https://github.com/PierreGode/Ragnar/pull/420) — watchtower: unified alert pane for the standalone passive watchers
+*Merged 2026-07-17 · branch `feat/watchtower-unified-alerts` · 10 file(s), +1179 / −16*
+
+- watchtower: dashboard card + on by default
+- watchtower: fix Open pane navigation + move card above Last Sync
+- speedtest: interface selector, wired-first by default
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md), [watchtower.md](watchtower.md)
+
+#### [#419](https://github.com/PierreGode/Ragnar/pull/419) — ndpwatch: standalone passive IPv6 Neighbor Discovery attack monitor
+*Merged 2026-07-17 · branch `ndp` · 9 file(s), +1342 / −0*
+
+- ndpwatch validation lab: ndpwatch-lab.sh + ndp_inject.py + conftest_packets.py
+- **Docs:** [ndpwatch.md](ndpwatch.md), [nettools.md](nettools.md)
+
+#### [#418](https://github.com/PierreGode/Ragnar/pull/418) — web update: make one click reliable — serialize git ops, spare live locks, verify on dropped connection
+*Merged 2026-07-17 · branch `web-update-oneclick` · 7 file(s), +237 / −118*
+
+- repo hygiene: stop the tree from going permanently dirty after every update
+
+### 2026-07-16
+
+#### [#416](https://github.com/PierreGode/Ragnar/pull/416) — installer: fix stall after iputils-ping — debconf prompt in iperf3 blocked apt
+*Merged 2026-07-16 · branch `installer-noninteractive-apt` · 1 file(s), +4 / −2*
+
+#### [#415](https://github.com/PierreGode/Ragnar/pull/415) — OSPF Watch: fix LSA seq/age parsing on real tcpdump (MaxSeq/MaxAge/fight-back were dead)
+*Merged 2026-07-16 · branch `ospf-lsa-parse-fix` · 11 file(s), +1013 / −73*
+
+- BGP: per-peer multi-carrier collector — name which ISP a convergence event hit
+- arp_guard: standalone layered live ARP-poisoning detector
+- ARP Poisoning: add interface selection (scope to one segment)
+- **Docs:** [arp_guard.md](arp_guard.md), [nettools.md](nettools.md)
+
+#### [#414](https://github.com/PierreGode/Ragnar/pull/414) — Network Integrity Monitor: persist alert memory so findings don't re-page
+*Merged 2026-07-16 · branch `hardening` · 58 file(s), +7411 / −262*
+
+- EIGRP FRR namespace lab: validate eigrp-watch against real FRR + injected attacks
+- certwatch: passive standalone TLS certificate triage
+- IS-IS Watch: detect LSP purge, overload bit, seq-number attack, mixed-auth
+- isiswatch: standalone passive IS-IS security scanner (binary TLV parser)
+- IGMP Watch: detect spoofed querier, bad TTL, bogus groups, join/leave flap, leave flood
+- igmpwatch: standalone passive IGMP-snooping security monitor (package)
+- …and 7 more commit(s)
+- **Docs:** [README (root)](../README.md), [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [certwatch.md](certwatch.md), [eigrp_lab.md](eigrp_lab.md), [igmpwatch.md](igmpwatch.md), [isiswatch.md](isiswatch.md), [nettools.md](nettools.md), [snmpwatch.md](snmpwatch.md) (+2 more)
+
+### 2026-07-15
+
+#### [#411](https://github.com/PierreGode/Ragnar/pull/411) — Provision WiFi: normalize + validate the Server IP field
+*Merged 2026-07-15 · branch `provision-ip-validation` · 2 file(s), +26 / −2*
+
+#### [#410](https://github.com/PierreGode/Ragnar/pull/410) — Skald's Ear: survive device resets — auto-reconnect + boot-loop detection
+*Merged 2026-07-15 · branch `skalds-ear-reconnect` · 2 file(s), +76 / −28*
+
+#### [#409](https://github.com/PierreGode/Ragnar/pull/409) — RuSense flasher: Seeed XIAO ESP32S3 + XIAO ESP32S3 Plus support, S3 board dropdown
+*Merged 2026-07-15 · branch `xiao-flasher` · 11 file(s), +151 / −46*
+
+- **Docs:** [README (root)](../README.md), [rusense.md](rusense.md)
+
+#### [#408](https://github.com/PierreGode/Ragnar/pull/408) — Network Integrity Monitor: capture on a link-up wired port by default
+*Merged 2026-07-15 · branch `eth` · 7 file(s), +203 / −86*
+
+- Network Integrity Monitor: don't repeat Pushover alerts for the same finding
+- Update image in nettools documentation
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#406](https://github.com/PierreGode/Ragnar/pull/406) — Fix manual network scan detection over Ethernet
+*Merged 2026-07-15 · branch `fix/manual-scan-ethernet-detection` · 1 file(s), +12 / −0*
+
+#### [#407](https://github.com/PierreGode/Ragnar/pull/407) — LDAP Watch: passive Active Directory / LDAP security watch
+*Merged 2026-07-15 · branch `ldapwatch` · 9 file(s), +1972 / −54*
+
+- FHRP Watch: add GLBP byte decoder + AVG/AVF two-plane hijack detection
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+### 2026-07-14
+
+#### [#405](https://github.com/PierreGode/Ragnar/pull/405) — SMB Watch: add passive Kerberos downgrade/roasting watch (Part 3)
+*Merged 2026-07-14 · branch `smbw` · 5 file(s), +607 / −30*
+
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#404](https://github.com/PierreGode/Ragnar/pull/404) — Added small readme fixes
+*Merged 2026-07-14 · branch `SolarFlere` · 2 file(s), +6 / −4*
+
+- Update README.md
+- Update hardware-gen2.md
+- **Docs:** [README (root)](../README.md), [hardware-gen2.md](hardware-gen2.md)
+
+#### [#402](https://github.com/PierreGode/Ragnar/pull/402) — Create CODEOWNERS
+*Merged 2026-07-14 · branch `SolarFlere` · 1 file(s), +2 / −0*
+
+#### [#401](https://github.com/PierreGode/Ragnar/pull/401) — docs: add Ragnar Gen 2 minimal hardware requirements
+*Merged 2026-07-14 · branch `Heatmap` · 2 file(s), +80 / −0*
+
+- docs: credit Solarflere collaboration on Gen 2 hardware
+- **Docs:** [README (root)](../README.md), [hardware-gen2.md](hardware-gen2.md)
+
+#### [#400](https://github.com/PierreGode/Ragnar/pull/400) — fix(display): LCD spectrum scans the widest-band adapter (Alfa), not just onboard
+*Merged 2026-07-14 · branch `Heatmap` · 4 file(s), +79 / −19*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [nettools.md](nettools.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#399](https://github.com/PierreGode/Ragnar/pull/399) — feat(display): WiFi Spectrum Analyzer SPECTRUM card on the 1.44" LCD HAT
+*Merged 2026-07-14 · branch `Heatmap` · 6 file(s), +155 / −28*
+
+- fix(display): drop the 'NET CARDS' title from the KEY2 card menu
+- Update nettools.md
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [nettools.md](nettools.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#398](https://github.com/PierreGode/Ragnar/pull/398) — feat(locate-port): add traffic-burst method (ACTIVITY LED) alongside link flap
+*Merged 2026-07-14 · branch `Heatmap` · 4 file(s), +129 / −40*
+
+- **Docs:** [nettools.md](nettools.md)
+
+### 2026-07-13
+
+#### [#397](https://github.com/PierreGode/Ragnar/pull/397) — feat(net-identity): per-interface scope for gateway + nameservers + domains
+*Merged 2026-07-13 · branch `Heatmap` · 4 file(s), +153 / −38*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#396](https://github.com/PierreGode/Ragnar/pull/396) — feat(wifi-defense): passive AP/mesh client-isolation observer
+*Merged 2026-07-13 · branch `Heatmap` · 6 file(s), +523 / −12*
+
+- fix(wifi-defense): live countdown + progress bar on all capture buttons
+- **Docs:** [README (root)](../README.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#395](https://github.com/PierreGode/Ragnar/pull/395) — feat(wifi-analyzer): true-to-scale heatmap — square plan, metre rulers, floor size, zoom/pan
+*Merged 2026-07-13 · branch `Heatmap` · 5 file(s), +525 / −141*
+
+- fix
+- paint
+- fixes
+- better
+- ui fix
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#394](https://github.com/PierreGode/Ragnar/pull/394) — fix(wifi-defense): reliable monitor re-enable + stop continuous on disable
+*Merged 2026-07-13 · branch `screen` · 10 file(s), +834 / −21*
+
+- tools(wifi-defense): add wifidef_doctor.sh monitor-mode diagnostic
+- fix(wifi-defense): free the radio (base iface down) so monitor can capture
+- fix(wifi-defense): stop NM/wpa_supplicant resetting the adapter on re-enable
+- fix(wifi-defense): never treat the monitor vif (ragmon0) as a base adapter
+- fix(wifi-defense): stop other features deleting ragmon0; flag stale service
+- feat(wifi-defense): dedicated boot-time monitor mode (switch-mode, regdomain, 6 GHz)
+- …and 1 more commit(s)
+- **Docs:** [wifi-defense.md](wifi-defense.md)
+
+### 2026-07-12
+
+#### [#393](https://github.com/PierreGode/Ragnar/pull/393) — fix(wifi-defense): auto-rebuild ragmon0 when it dies mid-capture (ENODEV)
+*Merged 2026-07-12 · branch `screen` · 2 file(s), +74 / −24*
+
+- **Docs:** [wifi-defense.md](wifi-defense.md)
+
+#### [#392](https://github.com/PierreGode/Ragnar/pull/392) — This pull request introduces major new features and enhancements to the WiFi Analyzer and Defense tools, focusing on active survey capabilities (throughput/latency tests), mesh/ESS coverage mapping, predictive/design coverage planning, and improved diagnostics. It also adds supporting UI controls, API endpoints, and documentation, along with minor dependency updates.
+*Merged 2026-07-12 · branch `screen` · 9 file(s), +1716 / −64*
+
+- feat(wifi-analyzer): active survey — throughput + latency per heatmap point
+- feat(wifi-analyzer): predictive coverage + wall drawing (design mode)
+- feat(wifi-defense): passive airtime / retry / PHY-rate / roaming diagnostics
+- feat(wifi-analyzer): printable survey report (save as PDF)
+- fix(wifi-analyzer): widen the iperf3 server input so the label is not cut off
+- feat(wifi-analyzer): mesh survey — per-node coverage + serving-node / hand-off maps
+- …and 6 more commit(s)
+- **Docs:** [wifi-analyzer.md](wifi-analyzer.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#391](https://github.com/PierreGode/Ragnar/pull/391) — feat(wifi-defense): 802.11 frame monitor / WIDS backend
+*Merged 2026-07-12 · branch `screen` · 12 file(s), +2821 / −114*
+
+- feat(wifi-defense): WiFi Defense top-level tab (WIDS UI)
+- docs(wifi-defense): guide, README bullet, declare scapy dependency
+- feat(wifi-analyzer): enterprise AP enrichment + SNR + measured TX-power radius
+- feat(wifi-analyzer): AP grouping (ESS + physical radios) + width advice
+- feat(wifi-analyzer): enterprise AP table — badges, filter/sort, networks, CSV
+- feat(wifi-analyzer): persistent AP history — new/gone/weakened change alerts + RSSI sparklines
+- …and 13 more commit(s)
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md), [wifi-analyzer.md](wifi-analyzer.md), [wifi-defense.md](wifi-defense.md)
+
+#### [#390](https://github.com/PierreGode/Ragnar/pull/390) — feat(lcd-hat): WiFi + Signal net-diag pages; reverse joystick axes
+*Merged 2026-07-12 · branch `screen` · 6 file(s), +357 / −81*
+
+- Add files via upload
+- feat(lcd-hat): card-based net-diag navigation per joystick diagram
+- docs(lcd-hat): document the card-based net-diag navigation
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [nettools.md](nettools.md)
+
+### 2026-07-11
+
+#### [#389](https://github.com/PierreGode/Ragnar/pull/389) — feat(wifi-analyzer): passive tri-band spectrum analyzer backend
+*Merged 2026-07-11 · branch `screen` · 9 file(s), +1655 / −2*
+
+- feat(wifi-analyzer): WiFi Analyzer sub-tab with Bar + Dome spectrum
+- feat(wifi-analyzer): coverage heatmap, docs, and iw dependency
+- fix(wifi-analyzer): show every wireless dongle in the interface list
+- **Docs:** [README (root)](../README.md), [wifi-analyzer.md](wifi-analyzer.md)
+
+#### [#387](https://github.com/PierreGode/Ragnar/pull/387) — Replace image in nettools.md
+*Merged 2026-07-11 · branch `PierreGode-patch-1` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#386](https://github.com/PierreGode/Ragnar/pull/386) — Update nettools.md
+*Merged 2026-07-11 · branch `screen` · 1 file(s), +2 / −1*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#385](https://github.com/PierreGode/Ragnar/pull/385) — This pull request expands the passive network security monitoring and detection capabilities by adding support for three new protocols—NDP (IPv6 Neighbor Discovery Protocol), CDP (Cisco Discovery Protocol), and VTP (VLAN Trunking Protocol)—across the documentation, API, and web UI. These additions close important detection gaps for IPv6 neighbor spoofing and Cisco-specific attacks, and provide new self-tests and mitigation guidance. The summary below highlights the most important changes.
+*Merged 2026-07-11 · branch `screen` · 6 file(s), +2008 / −113*
+
+- feat(ndp-watch): passive IPv6 Neighbor Discovery spoofing detector
+- feat(cdp-watch): passive Cisco Discovery Protocol flood/spoof/leak scanner
+- feat(vtp-watch): passive VTP bomb / rogue-server scanner
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#384](https://github.com/PierreGode/Ragnar/pull/384) — Restore API tools description in nettools.md
+*Merged 2026-07-11 · branch `screen` · 1 file(s), +6 / −8*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#383](https://github.com/PierreGode/Ragnar/pull/383) — refactor: rename active TLS Watch -> Cert Watch, freeing "TLS Watch" for a passive observer
+*Merged 2026-07-11 · branch `screen` · 11 file(s), +1625 / −78*
+
+- feat(tls-watch): M1 passive ClientHello parser + JA3/JA4 client fingerprints
+- feat(tls-watch): M2 ServerHello + JA3S + TLS1.2 cert findings
+- feat(tls-watch): M3 passive QUIC Initial recovery (RFC 9001/9369)
+- feat(tls-watch): M4a/b live capture, verdict, JA4S (license-gated)
+- feat(tls-watch): M4c wire passive TLS Watch into network_diagnostics
+- feat(tls-watch): M4d/e web card, monitor rotation, docs
+- …and 1 more commit(s)
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+#### [#382](https://github.com/PierreGode/Ragnar/pull/382) — fix(arp-scan): resolve duplicate arp-results id so scan results render
+*Merged 2026-07-11 · branch `screen` · 3 file(s), +7 / −3*
+
+- Add image and update tool index section in nettools.md
+- **Docs:** [nettools.md](nettools.md)
+
+### 2026-07-10
+
+#### [#381](https://github.com/PierreGode/Ragnar/pull/381) — lcd fix
+*Merged 2026-07-10 · branch `screen` · 1 file(s), +59 / −10*
+
+#### [#380](https://github.com/PierreGode/Ragnar/pull/380) — nettools: add IPv6 First-Hop Watch (rogue RA / DHCPv6 / mitm6 scanner)
+*Merged 2026-07-10 · branch `lcdhat` · 7 file(s), +10155 / −1001*
+
+- nettools: add NTP Watch — passive rogue-NTP / clock-injection scanner
+- nettools: add ICMP Watch — passive ICMP-redirect / L3-injection scanner
+- nettools: add SNMP Watch — passive v1/v2c cleartext-exposure scanner
+- nettools: add TLS Watch — active cert/TLS hygiene checker + passive discovery
+- docs: trim README Network Tools bullet, keep detail in docs/nettools.md
+- ui: move TLS Watch card to the Diagnostics tab (was Switch & L2/L3)
+- …and 12 more commit(s)
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md)
+
+### 2026-07-09
+
+#### [#379](https://github.com/PierreGode/Ragnar/pull/379) — lcdhat: joystick press toggles page autoscroll; KEY3 hold restarts
+*Merged 2026-07-09 · branch `lcdhat` · 3 file(s), +78 / −20*
+
+- **Docs:** [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [nettools.md](nettools.md)
+
+#### [#378](https://github.com/PierreGode/Ragnar/pull/378) — docs: consolidate all markdown under docs/ and de-clutter the repo root
+*Merged 2026-07-09 · branch `lcdhat` · 13 file(s), +96 / −2005*
+
+- **Docs:** [README (root)](../README.md), [RELEASE_NOTES.md](RELEASE_NOTES.md), [espreadme.md](espreadme.md), [grade.md](grade.md)
+
+#### [#377](https://github.com/PierreGode/Ragnar/pull/377) — lcdhat: KEY1 toggles On-Screen Network Diagnostic Mode + rename
+*Merged 2026-07-09 · branch `lcdhat` · 6 file(s), +83 / −38*
+
+- **Docs:** [README (root)](../README.md), [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [nettools.md](nettools.md)
+
+#### [#376](https://github.com/PierreGode/Ragnar/pull/376) — display: add Waveshare 1.44" ST7735S LCD HAT (128x128) with keys + joystick
+*Merged 2026-07-09 · branch `lcdhat` · 15 file(s), +4719 / −22*
+
+- nettools: add IGMP Watch — passive IGMP-snooping security scanner (Switch & L2)
+- nettools: add OSPF Security Scanner — passive routing-security scanner (Switch & L2)
+- nettools: add BGP Path Watch + rename tab to Switch & L2/L3
+- nettools: one-click Scapy install + Detector Self-Test panel (Switch & L2/L3)
+- nettools: BGP Path Watch ASN enrichment via Team Cymru (soft-fail, per Solarflere)
+- nettools: add receive-only BGP collector + path-asymmetry (OWD) with control-plane↔data-plane correlator
+- …and 7 more commit(s)
+- **Docs:** [README (root)](../README.md), [DISPLAY_CONTROLS.md](DISPLAY_CONTROLS.md), [INSTALL.md](INSTALL.md), [nettools.md](nettools.md)
+
+### 2026-07-08
+
+#### [#374](https://github.com/PierreGode/Ragnar/pull/374) — Dhcp doctor
+*Merged 2026-07-08 · branch `DHCPDoctor` · 15 file(s), +1511 / −57*
+
+- Diagnostics: add DHCP Guardian (rogue-DHCP + starvation, DHCP snooping)
+- install/update: enable the Pi hardware watchdog (auto-reboot on hard hang)
+- Fix: Network Integrity "Check now" hung on the slow DHCP scan
+- Move DHCP Guardian card from Diagnostics to Switch & L2
+- Switch & L2: add inline-bridge DHCP Snooping (2-NIC, trusted/untrusted)
+- UI: unify toggle switches to match the Wardriving switch style
+- …and 4 more commit(s)
+- **Docs:** [README (root)](../README.md), [kiosk.md](kiosk.md), [nettools.md](nettools.md)
+
+#### [#373](https://github.com/PierreGode/Ragnar/pull/373) — docs(readme): list the newer Network Tools in the feature summary
+*Merged 2026-07-08 · branch `MACwatch` · 1 file(s), +1 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#372](https://github.com/PierreGode/Ragnar/pull/372) — Ma cwatch
+*Merged 2026-07-08 · branch `MACwatch` · 1 file(s), +56 / −2*
+
+- docs(nettools): document MAC Watch (spoof + randomization + tracking)
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#371](https://github.com/PierreGode/Ragnar/pull/371) — Diagnostics: add CSV export to MAC Watch
+*Merged 2026-07-08 · branch `MACwatch` · 2 file(s), +19 / −2*
+
+#### [#370](https://github.com/PierreGode/Ragnar/pull/370) — Ma cwatch
+*Merged 2026-07-08 · branch `MACwatch` · 4 file(s), +620 / −1*
+
+- Diagnostics: add MAC Watch card — detection-only spoof + randomization + tracking
+- Diagnostics: add interface selector to MAC Watch (scan WiFi or LAN)
+- Diagnostics: list every MAC observed in MAC Watch results
+
+### 2026-07-07
+
+#### [#369](https://github.com/PierreGode/Ragnar/pull/369) — docs(nettools): document DNS poisoning + ARP poisoning + integrity monitor, e-Paper key pad, VPN egress check
+*Merged 2026-07-07 · branch `Keys` · 1 file(s), +142 / −12*
+
+- **Docs:** [nettools.md](nettools.md)
+
+#### [#368](https://github.com/PierreGode/Ragnar/pull/368) — Net integrity monitor: ARP-spoof detection + passive DNS/ARP watch with alerts
+*Merged 2026-07-07 · branch `Keys` · 6 file(s), +483 / −1*
+
+- DNS Doctor: explicit note that it checks for DNS poisoning/hijacking
+- Diagnostics: give ARP poisoning its own card (on-demand check)
+
+#### [#367](https://github.com/PierreGode/Ragnar/pull/367) — Net diag: 2.7" HAT key pad for diagnostic mode + DNS poisoning detection
+*Merged 2026-07-07 · branch `Keys` · 6 file(s), +533 / −39*
+
+### 2026-07-06
+
+#### [#366](https://github.com/PierreGode/Ragnar/pull/366) — Network tools: re-enable VPN indicators — known-VPN egress-IP list catches VPN/Tor on the router
+*Merged 2026-07-06 · branch `features07` · 6 file(s), +306 / −19*
+
+- RuSense: self-heal data ownership so CSI recording survives root-run updates
+- Network tools: per-interface VPN egress check + stop hiding NICs without an address
 
