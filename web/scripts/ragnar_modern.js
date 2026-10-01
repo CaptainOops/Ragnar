@@ -709,6 +709,10 @@ document.addEventListener('DOMContentLoaded', function() {
     applyRusenseTabVisibility();
     applyTerminalVisibility();
     applyMeshTabVisibility();
+    // Ensure pentest tab is hidden initially (will be unhidden if manual_mode is enabled)
+    document.querySelectorAll('.pentest-nav-btn').forEach(btn => {
+        btn.classList.add('hidden');
+    });
     // localStorage gave us an instant paint above; now reconcile with the
     // server (the shared source of truth) without blocking startup.
     syncRusenseTabFromServer();
@@ -799,6 +803,10 @@ function initializeSocket() {
             displayConfigForm(config);
         }
         updateAttackWarningBanner(Boolean(config && config.enable_attacks));
+        // Ensure Pentest tab visibility is updated when config changes
+        if (config && typeof config.manual_mode !== 'undefined') {
+            syncManualModeUI(Boolean(config.manual_mode));
+        }
     });
 
     socket.on('scan_started', function(data) {
@@ -11775,6 +11783,10 @@ async function loadInitialData() {
             // Update both stats and status from single response
             updateDashboardStats(quickData);
             updateDashboardStatus(quickData);
+            // Ensure Pentest tab visibility is set based on manual_mode on initial load
+            if (typeof quickData.manual_mode !== 'undefined') {
+                syncManualModeUI(Boolean(quickData.manual_mode));
+            }
         }
         
         // OPTIMIZATION: Defer WiFi + LAN status to after dashboard is visible
@@ -23399,9 +23411,14 @@ async function saveConfig(form) {
 
         // If manual_mode was changed, refresh the dashboard to update UI
         if (config.hasOwnProperty('manual_mode')) {
+            console.log('manual_mode setting changed to:', config.manual_mode);
             setTimeout(() => {
                 refreshDashboard();
             }, 500);
+            // Also directly update the UI to ensure tab visibility updates immediately
+            setTimeout(() => {
+                syncManualModeUI(Boolean(config.manual_mode));
+            }, 100);
         }
         
     } catch (error) {
