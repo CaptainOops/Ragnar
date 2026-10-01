@@ -17,7 +17,10 @@ failed). Saving keys or a webhook switches notifications on automatically.
 
 The trigger checkboxes (new device, new vulnerability, new credential, device
 offline / back online, wardrive auto-upload summary, [cellular failover](cellular-uplink.md))
-apply to all channels. The
+apply to all channels. **Cellular Failover** sends a high-priority alert when the
+uplink fails over to a tethered hotspot, a restore alert with the outage window
+and the cellular data used, and a single warning if the primary is down but
+the cellular link fails its heartbeat too. The
 same channels also carry Network Integrity, Watchtower, incident-correlation and
 RuSense alerts — each gated by its own toggle in its tab.
 

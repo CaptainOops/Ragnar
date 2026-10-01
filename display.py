@@ -1499,7 +1499,7 @@ class Display:
             lldp = data.get('lldp') or {}
             if not lldp.get('installed', True):
                 self._draw_stat_rows(draw, y, [("LLDP", "not installed"),
-                                               ("Enable via", "Switch tab")])
+                                               ("Enable via", "Diag > L2")])
                 return
             n = lldp.get('neighbor')
             if not n:

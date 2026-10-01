@@ -575,6 +575,14 @@ const configMetadata = {
         label: "GPS Baud Rate",
         description: "Serial baud rate for the GPS module. Most USB GPS modules use 9600. Some high-speed modules use 38400 or 115200."
     },
+    wardriving_gps_assist: {
+        label: "GPS Assisted Start",
+        description: "Pre-load the GPS with its last-known position, the NTP time and its own saved almanac/ephemeris at start, so a battery-less u-blox puck starts warm instead of cold and fixes much faster on a weak sky. Time is only sent when the clock is NTP-synced."
+    },
+    wardriving_gps_set_clock: {
+        label: "Set Clock from GPS",
+        description: "When the Pi's clock isn't NTP-synced (no RTC — e.g. booted away from Wi-Fi), set it from GPS time once there is a fix, and repair the running session's earlier timestamps when the clock is corrected. Without this, sessions recorded offline are stamped with the stale boot time."
+    },
     wardriving_auto_export: {
         label: "Auto Export on Stop",
         description: "Automatically export a WiGLE CSV file when a wardriving session is stopped."
@@ -701,6 +709,10 @@ document.addEventListener('DOMContentLoaded', function() {
     applyRusenseTabVisibility();
     applyTerminalVisibility();
     applyMeshTabVisibility();
+    // Ensure pentest tab is hidden initially (will be unhidden if manual_mode is enabled)
+    document.querySelectorAll('.pentest-nav-btn').forEach(btn => {
+        btn.classList.add('hidden');
+    });
     // localStorage gave us an instant paint above; now reconcile with the
     // server (the shared source of truth) without blocking startup.
     syncRusenseTabFromServer();
@@ -791,6 +803,10 @@ function initializeSocket() {
             displayConfigForm(config);
         }
         updateAttackWarningBanner(Boolean(config && config.enable_attacks));
+        // Ensure Pentest tab visibility is updated when config changes
+        if (config && typeof config.manual_mode !== 'undefined') {
+            syncManualModeUI(Boolean(config.manual_mode));
+        }
     });
 
     socket.on('scan_started', function(data) {
@@ -919,7 +935,7 @@ function initializeTabs() {
 function routeFromHash() {
     const raw = (window.location.hash || '').replace(/^#/, '').trim();
     if (!raw) return false;
-    const [tab, sub] = raw.split('/');
+    const [tab, sub, layer] = raw.split('/');
     const known = new Set([
         'dashboard', 'network', 'wifidef', 'discovered', 'rusense', 'pentest',
         'threat-intel', 'traffic', 'adv-vuln', 'wardriving', 'epaper', 'files',
@@ -936,13 +952,8 @@ function routeFromHash() {
             const anchor = onDiag[sub];
             // Let the network tab finish mounting before selecting a subtab.
             setTimeout(() => {
-                try { showNetworkSubtab(realSub); } catch (e) {}
-                if (anchor) {
-                    setTimeout(() => {
-                        const el = document.getElementById(anchor);
-                        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }, 120);
-                }
+                try { showNetworkSubtab(realSub, layer); } catch (e) {}
+                if (anchor) setTimeout(() => revealNetCard(anchor), 120);
             }, 60);
         }
         return true;
@@ -1442,11 +1453,14 @@ function showConfigSubtab(name) {
     try { localStorage.setItem('cfg-subtab', name); } catch (e) { /* ignore */ }
 }
 
-function showNetworkSubtab(name) {
+function showNetworkSubtab(name, layer) {
+    // Diagnostics and the old "Switch & L2/L3" sub-tab are one Diagnostics view now,
+    // split into OSI-layer panels. 'switch' stays as an alias (its cards were mostly L2/L3).
+    if (name === 'switch') { name = 'diagnostics'; layer = layer || 'l2'; }
     const views = {
         hosts: 'net-sub-hosts', archive: 'net-sub-archive', assets: 'net-sub-assets',
         map: 'net-sub-map',
-        diagnostics: 'net-sub-diagnostics', switch: 'net-sub-switch', interfaces: 'net-sub-interfaces',
+        diagnostics: 'net-sub-diagnostics', interfaces: 'net-sub-interfaces',
         wifi: 'net-sub-wifi'
     };
     Object.keys(views).forEach(key => {
@@ -1462,9 +1476,19 @@ function showNetworkSubtab(name) {
         if (!_mapInitialized) { loadNetworkMap(); }
     } else if (name === 'hosts') {
         loadNetworkData();
-    } else if (name === 'switch') {
+    } else if (name === 'diagnostics') {
+        // Pick the layer panel first so a failing picker fill can't leave it blank.
+        showNetLayer(layer || _netLayerSaved());
+        populateMtrSources();
+        syncNetDiagDisplayFromServer();
+        syncNetIntegrityFromServer();
+        syncWatchtowerFromServer();
+        _macWatchFillIfaces();
+        _ntpFillIfaces();
+        _snmpFillIfaces();
+        _certFillIfaces();
+        _tlsFillIfaces();
         _lldpFillIfaces();
-        loadLldp();
         _arpScanFillIfaces();
         _pcapCapFillIfaces();
         _locateFillIfaces();
@@ -1485,25 +1509,65 @@ function showNetworkSubtab(name) {
         _isisFillIfaces();
         _fhrpFillIfaces();
         _bgpFillIfaces();
-        dhcpSnoopStatus();
     } else if (name === 'interfaces') {
         loadNetworkIdentity();
         loadInterfaces();
         loadCellularUplink();
     } else if (name === 'wifi') {
         wifiInit();
-    } else if (name === 'diagnostics') {
-        populateMtrSources();
-        syncNetDiagDisplayFromServer();
-        syncNetIntegrityFromServer();
-        syncWatchtowerFromServer();
-        _macWatchFillIfaces();
-        _ntpFillIfaces();
-        _snmpFillIfaces();
-        _certFillIfaces();
-        _tlsFillIfaces();
     }
-    // Diagnostics tools run on demand; we only prefill the MTR start-point list.
+    // Diagnostics tools run on demand; opening the view only prefills interface pickers.
+}
+
+// ---- Diagnostics: one panel per OSI layer ----------------------------------
+const NET_LAYERS = ['overview', 'l7', 'l6', 'l5', 'l4', 'l3', 'l2', 'l1'];
+const _NET_LAYER_ON = ['bg-Ragnar-600', 'text-white'];
+const _NET_LAYER_OFF = ['text-slate-400', 'hover:bg-slate-700', 'hover:text-white'];
+
+function _netLayerSaved() {
+    try {
+        const v = localStorage.getItem('ragnar.netLayer');
+        return NET_LAYERS.includes(v) ? v : 'overview';
+    } catch (e) { return 'overview'; }
+}
+
+function showNetLayer(layer) {
+    if (!NET_LAYERS.includes(layer)) layer = 'overview';
+    NET_LAYERS.forEach(l => {
+        const panel = document.getElementById('net-layer-' + l);
+        if (panel) panel.classList.toggle('hidden', l !== layer);
+        const btn = document.getElementById('net-layer-btn-' + l);
+        if (btn) {
+            _NET_LAYER_ON.forEach(c => btn.classList.toggle(c, l === layer));
+            _NET_LAYER_OFF.forEach(c => btn.classList.toggle(c, l !== layer));
+            btn.setAttribute('aria-pressed', l === layer ? 'true' : 'false');
+        }
+    });
+    const panel = document.getElementById('net-layer-' + layer);
+    const desc = document.getElementById('net-layer-desc');
+    if (desc && panel) desc.textContent = (panel.dataset.desc || '') + ' Modules that act on more than one layer sit at the one they mostly watch.';
+    try { localStorage.setItem('ragnar.netLayer', layer); } catch (e) {}
+    // The two views that talk to the network when opened, only when you look at them.
+    if (layer === 'l2') loadLldp();
+    if (layer === 'l7') dhcpSnoopStatus();
+}
+
+// Visibility-matrix reference cards load their image the first time they are opened.
+function netMatrixLoad(d) {
+    if (!d || !d.open) return;
+    d.querySelectorAll('img[data-src]').forEach(img => {
+        img.src = img.dataset.src;
+        img.removeAttribute('data-src');
+    });
+}
+
+// Scroll to a Diagnostics card, switching to the layer panel that holds it.
+function revealNetCard(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const panel = el.closest('.net-layer');
+    if (panel) showNetLayer(panel.id.replace('net-layer-', ''));
+    setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
 }
 
 // ============================================================================
@@ -5737,7 +5801,7 @@ async function wifidefProbePortal(ssid) {
 }
 
 // ============================================================================
-// Network diagnostics (Diagnostics / Switch & L2 / Interfaces sub-tabs)
+// Network diagnostics (Diagnostics — per-OSI-layer panels — and Interfaces sub-tabs)
 // Backend: /api/net/* (see network_diagnostics.py)
 // ============================================================================
 
@@ -6753,7 +6817,7 @@ async function analyzeStoredPcap(el) {
 
 // PCAP source #3 — capture live traffic on an interface into a new pcap. The
 // interface <select> is static in the page (with "Auto (wired first)") and is
-// pre-filled on tab load like every other Switch & L2/L3 picker, so opening the
+// pre-filled on tab load like every other Diagnostics picker, so opening the
 // form just reveals it — no async populate.
 function _pcapCapFillIfaces() {
     const sel = document.getElementById('pcap-cap-iface');
@@ -7110,6 +7174,11 @@ async function loadCellularUplink() {
         set('cell-metric', 'value', d.metric);
         set('cell-force', 'value', (d.force_ifaces || []).join(' '));
         set('cell-exclude', 'value', (d.exclude_ifaces || []).join(' '));
+        set('cell-hb-enabled', 'checked', !!d.heartbeat_enabled);
+        set('cell-hb-targets', 'value', (d.heartbeat_targets || []).join(' '));
+        set('cell-hb-minok', 'value', d.heartbeat_min_ok);
+        set('cell-hb-fail', 'value', d.failover_after);
+        set('cell-hb-back', 'value', d.failback_after);
         const pill = (txt, cls) => `<span class="px-2 py-0.5 rounded text-xs ${cls}">${escapeHtml(txt)}</span>`;
         const uplink = d.active_uplink
             ? (d.on_cellular ? pill('on cellular: ' + d.active_uplink, 'bg-amber-900/50 text-amber-300')
@@ -7118,6 +7187,7 @@ async function loadCellularUplink() {
         const hooks = (d.nm_conf_installed || d.dhcpcd_hook_installed)
             ? '' : ' ' + pill('route hooks not installed', 'bg-slate-700 text-slate-400');
         let html = `<div class="flex flex-wrap items-center gap-2 mb-3">${uplink}${d.enabled ? '' : ' ' + pill('fallback pinning off', 'bg-red-900/50 text-red-300')}${hooks}</div>`;
+        html += _cellHeartbeatHtml(d, pill);
         if (!(d.interfaces || []).length) {
             html += '<p class="text-gray-400">No cellular device plugged in. Connect a hotspot or phone to a USB port and turn on its <strong>USB tethering</strong>; it shows up here within a few seconds.</p>';
         } else {
@@ -7147,6 +7217,38 @@ async function loadCellularUplink() {
     }
 }
 
+function _cellHeartbeatHtml(d, pill) {
+    const hb = d.heartbeat;
+    if (!d.heartbeat_enabled) return '<p class="text-xs text-gray-500 mb-3">Heartbeat failover off — cellular takes over only when Ethernet/Wi-Fi lose their link.</p>';
+    if (!hb) return '';
+    const t = ts => ts ? new Date(ts * 1000).toLocaleTimeString() : '—';
+    const dur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + (s % 60) + 's'; };
+    let state;
+    if (hb.state === 'failover') {
+        state = pill(`FAILED OVER since ${t(hb.failover_at)} — fail back ${hb.good_streak}/${d.failback_after}`, 'bg-amber-900/50 text-amber-300');
+    } else if (hb.bad_streak) {
+        state = pill(`primary failing ${hb.bad_streak}/${d.failover_after}`, 'bg-red-900/50 text-red-300');
+    } else if (Object.keys(hb.last_round || {}).length) {
+        state = pill('primary healthy', 'bg-green-900/50 text-green-300');
+    } else {
+        state = pill('idle — no cellular link to fail over to', 'bg-slate-700 text-slate-400');
+    }
+    const rounds = Object.entries(hb.last_round || {}).map(([iface, r]) => {
+        const good = r.total && r.ok >= d.heartbeat_min_ok;
+        const rtt = (r.results || []).filter(x => x.ok && x.ms != null).map(x => x.ms);
+        const detail = (r.results || []).map(x => `${x.target} ${x.ok ? '✓' : '✗'}`).join(' · ');
+        return `<div class="flex flex-wrap justify-between gap-2"><span class="font-mono">${escapeHtml(iface)}</span>`
+            + `<span class="${good ? 'text-green-400' : 'text-red-400'}">${r.ok}/${r.total} targets${rtt.length ? ' · ' + Math.min(...rtt) + ' ms' : ''}</span></div>`
+            + (detail ? `<div class="text-xs text-gray-500 break-all">${escapeHtml(detail)}</div>` : '')
+            + ((r.skipped || []).length ? `<div class="text-xs text-amber-300 break-all">skipped: ${escapeHtml(r.skipped.join(', '))}</div>` : '');
+    }).join('');
+    const lo = hb.last_outage;
+    const last = lo ? `<div class="text-xs text-gray-400 mt-2">Last outage: ${t(lo.start)} → ${t(lo.end)} (${dur(lo.duration)}), cellular carried ${formatBytes(lo.cellular_bytes || 0)}</div>` : '';
+    return `<div class="bg-slate-900/40 border border-slate-700 rounded-lg p-3 mb-3 space-y-1 min-w-0">
+        <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-semibold">Heartbeat</span>${state}</div>
+        ${rounds || '<div class="text-xs text-gray-500">No primary uplink with a default route.</div>'}${last}</div>`;
+}
+
 async function saveCellularUplink() {
     const st = document.getElementById('cell-save-status');
     const payload = {
@@ -7154,7 +7256,12 @@ async function saveCellularUplink() {
         allow_scan: document.getElementById('cell-allow-scan').checked,
         metric: parseInt(document.getElementById('cell-metric').value, 10),
         force_ifaces: document.getElementById('cell-force').value,
-        exclude_ifaces: document.getElementById('cell-exclude').value
+        exclude_ifaces: document.getElementById('cell-exclude').value,
+        heartbeat_enabled: document.getElementById('cell-hb-enabled').checked,
+        heartbeat_targets: document.getElementById('cell-hb-targets').value,
+        heartbeat_min_ok: parseInt(document.getElementById('cell-hb-minok').value, 10),
+        failover_after: parseInt(document.getElementById('cell-hb-fail').value, 10),
+        failback_after: parseInt(document.getElementById('cell-hb-back').value, 10)
     };
     try {
         const d = await postAPI('/api/cellular/settings', payload);
@@ -8639,7 +8746,11 @@ async function _runGuard(module, label, btn) {
         _guardFillIfaces(module + '-guard-iface');
         const roleEl = document.getElementById(module + '-guard-role');
         const roleQs = (roleEl && roleEl.value) ? '&role=' + encodeURIComponent(roleEl.value) : '';
-        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + roleQs;
+        const cardsEl = document.getElementById(module + '-guard-cards');
+        const forgetEl = document.getElementById(module + '-guard-forget');
+        const cardsQs = (cardsEl && cardsEl.dataset.dirty === '1') ? '&cards=' + encodeURIComponent(cardsEl.value) : '';
+        const forgetQs = (forgetEl && forgetEl.checked) ? '&forget=1' : '';
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + roleQs + cardsQs + forgetQs;
         const d = await fetchAPI('/api/net/' + module + '-guard' + qs);
         if (!d || d.success === false) {
             const msg = (d && d.error) || 'failed';
@@ -8649,6 +8760,16 @@ async function _runGuard(module, label, btn) {
             return;
         }
         out.innerHTML = _renderGuardResult(d);
+        if (d.cards) {
+            if (cardsEl) { cardsEl.value = d.cards.declared || ''; cardsEl.dataset.dirty = '0'; }
+            if (forgetEl) forgetEl.checked = false;
+            const learned = d.cards.learned || [];
+            const fresh = d.cards.new || [];
+            out.insertAdjacentHTML('beforeend', '<p class="text-xs text-gray-400 mt-2 break-words">Known cards: '
+                + (d.cards.declared ? 'declared <span class="font-mono">' + escapeHtml(d.cards.declared) + '</span> · ' : 'none declared · ')
+                + learned.length + ' learned from SNMP' + (learned.length ? ' (<span class="font-mono">' + escapeHtml(learned.slice(0, 12).join(', ')) + (learned.length > 12 ? ', …' : '') + '</span>)' : '')
+                + (fresh.length ? ' · <span class="text-emerald-300">new: ' + escapeHtml(fresh.join(', ')) + '</span>' : '') + '</p>');
+        }
     } catch (e) {
         out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(e.message) + '</p>';
     } finally {
@@ -8661,6 +8782,7 @@ function runAristaGuard() { _runGuard('arista', 'Arista', (typeof event !== 'und
 function runComwareGuard() { _runGuard('comware', 'Comware', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runMikroTikGuard() { _runGuard('mikrotik', 'MikroTik', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runArubaGuard() { _runGuard('aruba', 'Aruba', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
+function runAPCGuard() { _runGuard('apc', 'APC', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 // --- Dell Guard daemon control (standalone systemd sensor; enable/disable switch) ---
 function _dellGuardRender(d) {
     if (!d) return '<span class="text-red-400">No status returned.</span>';
@@ -11082,7 +11204,7 @@ async function runRoutingSelftest() {
                         bfd: 'BFD Watch (failover manipulation)', ptp: 'PTP Watch (IEEE-1588 grandmaster takeover)', srmpls: 'SR-MPLS Watch (MPLS segment injection)', ipsec: 'IPsec/IKE Watch (D(HE)at / weak-DH / SWEET32)',
                         dns_passive: 'DNS Watch (KeyTrap / NSEC3 / NXNSAttack / MaginotDNS / SAD DNS)',
                         cisco_guard: 'Cisco Guard (IOS/IOS-XE/NX-OS CVEs)', juniper_guard: 'Juniper Guard (J-Web/SSR/Space CVEs)', arista_guard: 'Arista Guard (EOS CVEs)', comware_guard: 'Comware Guard (VRF-hop / MPLS CVEs)',
-                        mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
+                        mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', apc_guard: 'APC Guard (NMC Ripple20)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
                         bgp_speaker: 'BGP Speaker (codec/FSM/RIB)', path_asymmetry: 'Path Asymmetry (OWD)' };
         const overall = d.success
             ? '<div class="mb-2 px-3 py-2 rounded border bg-green-950/40 border-green-900 text-green-400 text-sm">✓ All detector self-tests passed' + (d.scapy_available ? ' (including Scapy end-to-end)' : ' — install Scapy for the end-to-end leg') + '</div>'
@@ -11091,7 +11213,7 @@ async function runRoutingSelftest() {
             '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
             '<tr class="text-left text-gray-500"><th class="px-2 py-1">Scanner</th><th class="px-2 py-1">Scenarios</th><th class="px-2 py-1">End-to-end</th><th class="px-2 py-1">Result</th></tr>' +
             '</thead><tbody>';
-        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
+        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'apc_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
         // Append any suite the backend returned that isn't in the preferred order,
         // so a newly-wired detector can never again be counted toward pass/fail yet
         // stay invisible in the table.
@@ -11661,6 +11783,10 @@ async function loadInitialData() {
             // Update both stats and status from single response
             updateDashboardStats(quickData);
             updateDashboardStatus(quickData);
+            // Ensure Pentest tab visibility is set based on manual_mode on initial load
+            if (typeof quickData.manual_mode !== 'undefined') {
+                syncManualModeUI(Boolean(quickData.manual_mode));
+            }
         }
         
         // OPTIMIZATION: Defer WiFi + LAN status to after dashboard is visible
@@ -21355,6 +21481,8 @@ function scUpdateWriteUI(st, mode) {
         if (box) box.checked = aw;
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !aw);
+        const row = document.getElementById('sc-script-row');
+        if (row) row.classList.remove('hidden');
         if (aw) scLoadScripts();
         // update share label to reflect write state
         const lbl = document.getElementById('sc-share-label');
@@ -21370,7 +21498,11 @@ function scUpdateWriteUI(st, mode) {
         }
         const bar = document.getElementById('sc-cmd-bar');
         if (bar) bar.classList.toggle('hidden', !remoteWrite);
-        if (remoteWrite) scLoadScripts();
+        // Scripts run on the target unit through the mesh gateway (mesh
+        // secret); a console that is only *shared* relays single commands.
+        const row = document.getElementById('sc-script-row');
+        if (row) row.classList.toggle('hidden', mode !== 'gateway');
+        if (remoteWrite && mode === 'gateway') scLoadScripts();
     }
 }
 
@@ -21435,12 +21567,16 @@ async function scSendCmd() {
 }
 
 let scScriptsLoadedAt = 0;
+let scScriptsUnit = null;
 async function scLoadScripts(force) {
     // Called from every poll tick: throttle, and never clobber the user's pick.
+    // A unit switch always reloads — scripts come from the unit being viewed.
+    if (scScriptsUnit !== scState.unit) force = true;
     if (!force && Date.now() - scScriptsLoadedAt < 15000) return;
     scScriptsLoadedAt = Date.now();
+    scScriptsUnit = scState.unit;
     try {
-        const d = await fetchAPI('/api/serial-console/scripts');
+        const d = await fetchAPI('/api/serial-console/scripts', scOpts());
         const sel = document.getElementById('sc-script-sel');
         if (!sel) return;
         const scripts = d.scripts || [];
@@ -21479,7 +21615,7 @@ async function scRunScript() {
 async function scPollScriptStatus() {
     const statusEl = document.getElementById('sc-script-status');
     try {
-        const r = await fetchAPI('/api/serial-console/script-status');
+        const r = await fetchAPI('/api/serial-console/script-status', scOpts());
         if (r.running) {
             if (statusEl) statusEl.innerHTML = `<span class="text-amber-300">Step ${r.step}/${r.total}…</span>`;
             setTimeout(scPollScriptStatus, 500);
@@ -23153,7 +23289,7 @@ function displayConfigForm(config) {
     // Render wardriving config settings into the dedicated Wardriving section slot
     const wdSlot = document.getElementById('wardriving-config-slot');
     if (wdSlot) {
-        const wdKeys = ['wardriving_scan_interval', 'wardriving_gps_port', 'wardriving_gps_baudrate', 'wardriving_auto_export', 'wardriving_wigle_include_zigbee'];
+        const wdKeys = ['wardriving_scan_interval', 'wardriving_gps_port', 'wardriving_gps_baudrate', 'wardriving_gps_assist', 'wardriving_gps_set_clock', 'wardriving_auto_export', 'wardriving_wigle_include_zigbee'];
         let wdHtml = '<form id="wardriving-config-form" class="bg-slate-800 bg-opacity-50 rounded-lg p-4 mt-4"><h4 class="text-md font-bold mb-4 text-gray-300">Settings</h4><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
         wdKeys.forEach(key => {
             const hasKey = Object.prototype.hasOwnProperty.call(config, key);
@@ -23275,9 +23411,14 @@ async function saveConfig(form) {
 
         // If manual_mode was changed, refresh the dashboard to update UI
         if (config.hasOwnProperty('manual_mode')) {
+            console.log('manual_mode setting changed to:', config.manual_mode);
             setTimeout(() => {
                 refreshDashboard();
             }, 500);
+            // Also directly update the UI to ensure tab visibility updates immediately
+            setTimeout(() => {
+                syncManualModeUI(Boolean(config.manual_mode));
+            }, 100);
         }
         
     } catch (error) {
@@ -30471,6 +30612,19 @@ function _wdFetchDiagExtra(force) {
         .finally(() => { _wdDiagExtraBusy = false; });
 }
 
+// "position, time (NTP), almanac 31 SV · 2m ago" — what gps_assist pre-loaded
+// at start, plus when orbit data was last saved for the next cold start.
+function _wdAssist(gps) {
+    const parts = [];
+    if (gps.assist && (gps.assist.items || []).length) {
+        parts.push(`${gps.assist.items.join(', ')} · ${_wdAge(gps.assist.at)}`);
+    }
+    if (gps.aid_saved) {
+        parts.push(`saved alm ${gps.aid_saved.alm} / eph ${gps.aid_saved.eph} SV ${_wdAge(gps.aid_saved.at)}`);
+    }
+    return parts.length ? parts.join(' · ') : null;
+}
+
 function _wdHas(v) { return v !== undefined && v !== null && v !== ''; }
 
 function _wdAge(ts) {
@@ -30657,6 +30811,10 @@ function renderWardrivingDiagnostics(status) {
         ['Searching for', _wdHas(gps.searching_seconds)
             ? `${_wdDur(gps.searching_seconds)} (no fix yet)` : null,
             gps.searching_seconds > 120 ? 'warn' : null],
+        ['Assisted start', _wdAssist(gps)],
+        ['Clock from GPS', gps.clock_set
+            ? (gps.clock_set.changed ? `set ${gps.clock_set.delta > 0 ? '+' : ''}${gps.clock_set.delta}s · ${_wdAge(gps.clock_set.at)}`
+                                     : 'clock already correct') : null],
         ['GPS error', gps.error, 'warn']
     ]));
 

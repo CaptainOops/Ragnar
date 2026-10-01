@@ -382,6 +382,92 @@ above covers the case where wardriving is started *after* the orchestrator is
 already running (or scans are triggered manually). Scans launched directly from
 a shell (`nmap`, `lynis` over SSH) are outside Ragnar and are not affected.
 
+### Assisted start (position / time / orbit pre-load)
+
+The common u-blox 7 USB pucks (VK-172 class) have **no battery-backed RAM**, so
+every power-up is a full *cold start*: the receiver doesn't know where it is,
+what time it is, or where any satellite is. Before it can fix it has to
+download ~30 s of uninterrupted ephemeris per satellite, and without an almanac
+it also has to search the whole sky blind. On a marginal sky (a window, a
+dashboard, a Wi-Fi adapter right next to the puck) that often never completes.
+The same receiver fixes fine once it has *started*, because tracking needs far
+less signal than acquisition.
+
+Ragnar already knows most of what the receiver is missing, so
+[`gps_assist.py`](../gps_assist.py) hands it over at start (toggle:
+**Config → Wardriving → GPS Assisted Start**, `wardriving_gps_assist`, default on):
+
+- **Position** — the persisted last-known fix (`data/last_gps.json`),
+  declared as ±100 km so a fix from another town doesn't mislead it.
+- **Time** — the system clock, **only when the kernel reports it NTP-synced**
+  (`adjtimex`). A Pi has no RTC; booted offline it runs on fake-hwclock, and a
+  wrong time is worse than none, so an unsynced boot sends no time.
+- **Orbit data** — 5 s after the session's first fix, again 1 min later, then
+  every 5 min, Ragnar polls the receiver's own almanac (`AID-ALM`), ephemeris
+  (`AID-EPH`) and health/UTC/iono (`AID-HUI`) and saves them to
+  `data/gps_aid.json`. The schedule runs from the *first* fix, whether or not
+  the fix is still held: the receiver keeps what it decoded when a marginal fix
+  flickers. A poll that returns nothing is retried a minute later. Saves
+  **merge per satellite**, so a later poll that reports fewer satellites never
+  shrinks the saved set. Each ephemeris entry keeps its own timestamp.
+  At the next start the data is re-injected if fresh: ephemeris entries ≤ 4 h old
+  (a reboot mid-drive becomes a *hot* start), almanac/HUI ≤ 30 days (a *warm*
+  start). The status `aid_saved` counts show what is on disk in total.
+  **Orbit data is injected even on an offline boot** (no NTP), which is the
+  normal wardriving case. The receiver learns GPS time from the first
+  satellite within seconds and checks each ephemeris against its own
+  reference time, ignoring expired ones. fake-hwclock only runs *behind* real
+  time, so data that is already too old by the local clock is still skipped.
+
+It runs once per reader start, 3 s in, and only if there's no fix yet, so a
+receiver that is still tracking (service restart mid-drive) is left alone.
+Frames are standard UBX: `AID-INI`/`HUI`/`ALM`/`EPH` for u-blox 6/7/M8, plus
+`MGA-INI-POS_LLH`/`TIME_UTC` for M8/M9/M10 (a receiver ignores the class it
+doesn't implement). With gpsd they are written through gpsd's control socket
+(`/run/gpsd.sock`, `&<device>=<hex>`) and replies are read from a raw
+(`"raw":2`) watch, so Ragnar never fights gpsd for the port; on direct serial
+they go down the open port. The journal logs e.g.
+`GPS assist: pre-loaded position 59.3066,18.0256 (±100 km), time (NTP), almanac 31 SV via gpsd`,
+and the Diagnostics panel shows an **Assisted start** row.
+
+Validated on a u-blox 7 (PROTVER 14.00) via gpsd: after injection the receiver's
+own `AID-INI` readback showed the injected GPS week/TOW and position with
+100 km accuracy (before: firmware defaults, week 1691, 6 496 km).
+
+This speeds up the start; it doesn't create signal. A puck that can't hear
+satellites (behind coated glass, next to the Alfa) still needs a better spot:
+put it on a 1–2 m USB extension, face up, away from the Pi/hub/Wi-Fi adapter.
+
+### Clock from GPS (offline boots)
+
+A Raspberry Pi has no real-time clock. Booted away from Wi-Fi it starts at the
+last saved time (systemd-timesyncd's clock file) and keeps that wrong time
+until NTP can reach a server, so every sighting in a session is stamped hours
+off. In the field a whole walk was recorded 2 h 38 min early and looked
+"missing" from the session list.
+
+With **Config → Wardriving → Set Clock from GPS** (`wardriving_gps_set_clock`,
+default on):
+
+- **GPS sets the clock.** Once GPS time agrees with itself over 3 fixes and
+  differs from the system clock by more than 2 s, and only while the kernel
+  reports the clock *not* NTP-synced, `GPSManager` sets the system clock from
+  GPS time (once per reader start). This works for gpsd (`TPV.time`) and
+  direct serial (RMC time + date). NTP stays in charge whenever it is synced.
+  The Diagnostics panel shows a **Clock from GPS** row (`gps.clock_set`:
+  `{at, delta, changed}`).
+- **The running session is repaired.** A 1 Hz watch compares wall-clock time
+  with monotonic time. When the clock steps **forward** by 10 s or more during a
+  session (the GPS set above, or NTP syncing once Wi-Fi is back), every
+  timestamp recorded before the step is shifted by it: `first_seen` and
+  `last_seen` in networks, observations, Bluetooth, cells and Zigbee, the GPS
+  track, and the session start. `session_info.clock_steps` records each
+  repair. Backward steps are only logged, because old and new stamps would
+  overlap.
+
+Data recorded before a fix, while the clock was still wrong, is corrected by
+the same repair when the step happens.
+
 ### Status Fields (`/api/wardriving/gps`)
 
 | Field | Meaning |
@@ -399,6 +485,9 @@ a shell (`nmap`, `lynis` over SSH) are outside Ragnar and are not affected.
 | `speed_kmh` / `course` | Velocity / heading |
 | `last_update` | Epoch of last GGA/RMC with position info |
 | `last_sentence` | Epoch of last *any* parsed NMEA |
+| `assist` | What the assisted start pre-loaded: `{at, items[], via, frames}`, or `null` |
+| `aid_saved` | Last orbit-data save: `{at, alm, eph}` (SV counts), or `null` |
+| `clock_set` | Clock set from GPS: `{at, delta, changed}` (`changed: false` = clock was already right), or `null` |
 | `error` | Last error string, or `null` |
 
 ### Wardriving GPS Card (UI)

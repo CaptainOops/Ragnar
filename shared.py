@@ -797,6 +797,15 @@ class SharedData:
             # Space/comma-separated overrides for detection by driver/vendor.
             "cellular_force_ifaces": "",
             "cellular_exclude_ifaces": "",
+            # Heartbeat failover: probe public targets THROUGH each primary
+            # uplink every ~10 s; fail over after N bad rounds (only if the
+            # cellular link passes too), fail back after M good rounds.
+            "cellular_heartbeat_enabled": True,
+            "cellular_heartbeat_targets": "1.1.1.1:443 8.8.8.8:443 9.9.9.9:443",
+            "cellular_heartbeat_min_ok": 1,
+            "cellular_failover_after": 3,
+            "cellular_failback_after": 6,
+            "cellular_promoted_metric": 50,
             # When True, the e-Paper shows an Ethernet-focused network
             # diagnostic screen (link / IP / switch port), auto-cycling pages
             # every 5s. Web-toggled from Network > Diagnostics. e-Paper only.
@@ -975,6 +984,8 @@ class SharedData:
             "wardriving_scan_interval": 2,
             "wardriving_gps_port": "auto",
             "wardriving_gps_baudrate": 9600,
+            "wardriving_gps_assist": True,
+            "wardriving_gps_set_clock": True,
             "wardriving_interfaces": [],
             "wardriving_auto_export": True,
             "wardriving_wigle_include_zigbee": False,

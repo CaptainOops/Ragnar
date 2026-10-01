@@ -181,7 +181,7 @@ try:
 except Exception:  # pragma: no cover - defensive; never block startup
     pass
 
-# Register Network > Diagnostics / Switch & L2 / Interfaces API routes.
+# Register Network > Diagnostics / Interfaces API routes.
 # Kept in a separate module (network_diagnostics.py) to keep this file lean;
 # wrapped in try/except so a problem there can never take down the web app.
 try:
@@ -14255,10 +14255,10 @@ def cellular_uplink_monitor_loop():
         logger.warning(f"[cellular] hook install failed: {exc}")
     while not getattr(shared_data, 'webapp_should_exit', False):
         try:
-            for msg in _cellular_monitor.tick(shared_data.config):
+            for t in _cellular_monitor.tick(shared_data.config):
                 po = _rusense_pushover()
                 if po:
-                    po.notify_cellular_uplink(msg)
+                    po.notify_cellular_uplink(t['msg'], priority=t.get('priority', 0))
         except Exception as exc:                                # noqa: BLE001
             logger.debug(f"[cellular] tick failed: {exc}")
         time.sleep(10)
@@ -14270,6 +14270,7 @@ def api_cellular_status():
         import cellular_uplink
         data = cellular_uplink.status(shared_data.config)
         data['events'] = list(_cellular_monitor.events[-20:]) if _cellular_monitor else []
+        data['heartbeat'] = _cellular_monitor.snapshot() if _cellular_monitor else None
         return jsonify(data)
     except Exception as e:
         logger.error(f"Cellular status error: {e}")
@@ -14298,10 +14299,30 @@ def api_cellular_settings():
             if key in body:
                 names = cellular_uplink._split_list(body[key])
                 cfg[f'cellular_{key}'] = ' '.join(sorted(names))
+        if 'heartbeat_enabled' in body:
+            cfg['cellular_heartbeat_enabled'] = bool(body['heartbeat_enabled'])
+        if 'heartbeat_targets' in body:
+            targets = cellular_uplink.parse_targets(body['heartbeat_targets'])
+            if not targets:
+                return jsonify({'success': False, 'error': 'give at least one public IPv4 '
+                                'target, e.g. 1.1.1.1:443'}), 400
+            cfg['cellular_heartbeat_targets'] = ' '.join(f'{ip}:{port}' for ip, port in targets)
+        for key, cfg_key, lo, hi in (('heartbeat_min_ok', 'cellular_heartbeat_min_ok', 1, 8),
+                                     ('failover_after', 'cellular_failover_after', 1, 60),
+                                     ('failback_after', 'cellular_failback_after', 1, 360)):
+            if key in body:
+                try:
+                    val = int(body[key])
+                except (TypeError, ValueError):
+                    return jsonify({'success': False, 'error': f'{key} must be a number'}), 400
+                if not lo <= val <= hi:
+                    return jsonify({'success': False, 'error': f'{key} must be {lo}-{hi}'}), 400
+                cfg[cfg_key] = val
         shared_data.save_config()
         changes = cellular_uplink.install(cfg)
         actions = cellular_uplink.enforce(cfg)
         data = cellular_uplink.status(cfg)
+        data['heartbeat'] = _cellular_monitor.snapshot() if _cellular_monitor else None
         data['applied'] = changes + actions
         return jsonify(data)
     except Exception as e:
@@ -15972,7 +15993,9 @@ def _start_gps_manager(engine):
         port=gps_port,
         baudrate=shared_data.config.get('wardriving_gps_baudrate', 9600),
         exclude_ports=esp_exclude,
-        state_file=os.path.join(engine.data_dir, 'last_gps.json'))
+        state_file=os.path.join(engine.data_dir, 'last_gps.json'),
+        assist=shared_data.config.get('wardriving_gps_assist', True),
+        set_clock=shared_data.config.get('wardriving_gps_set_clock', True))
     return engine._gps.start()
 
 

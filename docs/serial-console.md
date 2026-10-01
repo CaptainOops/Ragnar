@@ -60,7 +60,7 @@ Tick **Allow write** to enable the gated write path:
 - A **command input bar** (`cmd>`) appears below the output pane. Type a command and
   press Enter (or click Send); a `\r` is appended automatically.
 - The badge changes from **READ-ONLY** to **READ-WRITE**.
-- The setting is persisted in the config and remembered across restarts.
+- The setting is saved in `data/serial_console.json` and remembered across restarts.
 - Untick **Allow write** to return to read-only at any time.
 
 In both modes:
@@ -146,22 +146,53 @@ the unit on your desk.
   what the page has received (up to 20,000 lines) as a timestamped text file.
 - If the cable is unplugged, the viewer shows *disconnected* and resumes by itself
   when it returns. It also resumes after a Ragnar restart if it was running.
+- All console settings live in **`data/serial_console.json`**, not in
+  `shared_config.json`: the assigned `port`, `baud` (or `auto`), whether it was
+  running (`enabled`), `allow_write` and `share_mesh`. Delete the file to reset
+  the console to unassigned and read-only.
 
 ## Console scripts
 
-With **Allow write** enabled a **Run script** picker appears beside the command
-input. Select a script and click **Run Script** — each command is sent
-sequentially with the inter-command delay defined in the script file.
+With **Allow write** enabled a **Run script** picker appears below the command
+input. Select a script and click **Run Script**, then confirm. Each command is
+sent in order, followed by the delay defined in the script file. The status next
+to the button shows *Step 3/7…*, then *Done*, or *Failed at step N* with the
+reason.
 
-Five built-in scripts ship in `data/console_scripts/`:
+- **One script at a time** per unit. A second run is refused while one is
+  running.
+- **To abort** a running script, untick **Allow write**. The port reopens
+  read-only, the next command is refused, and the script stops with
+  *Failed at step N*. There is no separate stop button.
+- Scripts are **fire-and-forget**: the delay is a fixed pause, not a wait for
+  the device's prompt. A slow device (for example a `write memory` on a large
+  config) needs a longer delay after that command.
+- **On another mesh unit**, scripts run on *that* unit (the list and progress
+  also come from it), which requires the
+  [mesh secret](#viewing-a-console-on-another-mesh-unit) (gateway mode). A
+  console that is only *shared* with the mesh relays single commands; the
+  script picker is hidden there.
 
-| Script | Vendor | What it does |
+Five built-in scripts are created in `data/console_scripts/` the first time
+the script list is read:
+
+| Script (file) | Vendor | Sends |
 |---|---|---|
-| Reboot Device | Cisco | `enable` → `write memory` → `reload` confirm |
-| Monitor Logs | Cisco | `terminal monitor` + `show logging last 50` |
-| Version Info | Generic | `show version` + `show inventory` |
-| Configure VLANs | Cisco | Creates VLAN 10 (Management) and VLAN 20 (Users) |
-| Interface Status | Generic | `show ip interface brief` + counters + errors |
+| Reboot Device (`reboot_device`) | Cisco | Enter → `enable` → `write memory` → `reload` → `yes` (confirms the reload prompt). **Reboots the device.** |
+| Monitor Logs (`monitor_logs`) | Cisco | Enter → `enable` → `terminal monitor` → `terminal length 0` → `show logging last 50` |
+| Version Info (`version_info`) | Generic | Enter → `show version` → `show inventory` |
+| Configure VLANs (`configure_vlans`) | Cisco | Enter → `enable` → `configure terminal` → VLAN 10 *Management*, VLAN 20 *Users* → `end` → `write memory` → `show vlan brief`. **Changes and saves the running config.** |
+| Interface Status (`interface_status`) | Generic | Enter → `show ip interface brief` → `show interfaces status` → `show interfaces counters errors` |
+
+Every built-in starts with an empty command, which sends a bare Enter to wake
+the prompt. `enable` assumes no enable password is set; if one is, the next
+command lands on the password prompt. Add your own script with the password
+step, or run `enable` by hand first.
+
+A built-in script is only created when its file is **missing**. Your edits to a
+built-in are never overwritten by an update. Deleting a built-in brings back
+the default on the next read; to hide one for good, replace its contents
+instead.
 
 **Create your own:** add a `.json` file to `data/console_scripts/` (or upload one
 via **Files > console_scripts** in the dashboard). The format:
@@ -179,9 +210,18 @@ via **Files > console_scripts** in the dashboard). The format:
 }
 ```
 
-Each `cmd` is sent with a `\r` appended; `delay` (seconds) is the pause before
-the next command. A script refuses to run unless write is enabled and the console
-is started. You can also edit existing scripts directly from the dashboard: open
+- The **file name is the script's id**: `my_script.json` is listed and run as
+  `my_script`. It may contain only letters, digits, `_` and `-`. The `id` field
+  inside the file is informational only.
+- `name`, `description` and `vendor` are shown in the picker. If `name` is
+  missing, the file name is used.
+- Each `cmd` is sent with a `\r` appended; `""` sends a bare Enter. `delay`
+  (seconds, default `0.5`) is the pause *after* that command. A command can
+  also be a plain string (`"commands": ["show clock", "show users"]`), which
+  uses the default delay.
+- A file that isn't valid JSON is skipped in the list.
+
+A script refuses to run unless write is enabled and the console is started. You can also edit existing scripts directly from the dashboard: open
 the file in **Files > console_scripts**, click **Edit**, make your changes, and
 **Save**.
 
@@ -205,8 +245,8 @@ the file in **Files > console_scripts**, click **Edit**, make your changes, and
 | GET | `/api/serial-console/peer-output?unit=ID&since=N` | this unit fetches a peer's *shared* output over the mesh |
 | POST | `/api/serial-console/peer-write` | `{unit, data}` — relay a write command to a peer's shared-write console |
 | GET | `/api/serial-console/scripts` | list available console scripts |
-| POST | `/api/serial-console/run-script` | `{script_id}` — run a script (requires allow_write + console running) |
-| GET | `/api/serial-console/script-status` | current script execution progress |
+| POST | `/api/serial-console/run-script` | `{script_id}` — the file stem; run a script (requires allow_write + console running; one at a time) |
+| GET | `/api/serial-console/script-status` | `{running, script_id, step, total, error}` for the current or last run |
 
 Any of the `/api/serial-console/*` calls can be sent to another unit with the
 `X-Ragnar-Target` header (mesh secret required). Self-test:

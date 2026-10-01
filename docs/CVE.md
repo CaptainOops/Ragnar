@@ -10,9 +10,9 @@ detector works is in [nettools.md](nettools.md).
 
 ## Summary
 
-- **260** distinct CVE IDs
-- **220** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
-- **31** context only: posture advisories and reference tables for byte-level parser bugs the text-based watchers cannot reconstruct, plus related CVEs attached to a shared attack shape (named for patch guidance, not identified per-CVE)
+- **266** distinct CVE IDs
+- **225** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
+- **32** context only: posture advisories and reference tables for byte-level parser bugs the text-based watchers cannot reconstruct, plus related CVEs attached to a shared attack shape (named for patch guidance, not identified per-CVE)
 - **6** active check: probed by the BLE Pentest action, which transmits (not part of the passive suite)
 - **3** card text only: named in a detector card's description as related context, not detected
 - Range **CVE-1999-0113** → **CVE-2026-86060**
@@ -34,7 +34,7 @@ detector works is in [nettools.md](nettools.md).
 | 2017 | 6 |
 | 2018 | 8 |
 | 2019 | 11 |
-| 2020 | 15 |
+| 2020 | 21 |
 | 2021 | 14 |
 | 2022 | 19 |
 | 2023 | 36 |
@@ -46,6 +46,7 @@ detector works is in [nettools.md](nettools.md).
 
 | Detector | CVEs |
 |---|---|
+| APC Guard | 6 |
 | Arista Guard | 9 |
 | ARP Watch | 4 |
 | Aruba Guard | 42 |
@@ -158,6 +159,12 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2020-3120](https://nvd.nist.gov/vuln/detail/CVE-2020-3120) | CDPwn | detected | CDP Watch | — |
 | [CVE-2020-8616](https://nvd.nist.gov/vuln/detail/CVE-2020-8616) | NXNSAttack | detected | DNS Watch | — |
 | [CVE-2020-11868](https://nvd.nist.gov/vuln/detail/CVE-2020-11868) | NTP zero-origin sync block | detected | NTP Watch | — |
+| [CVE-2020-11896](https://nvd.nist.gov/vuln/detail/CVE-2020-11896) | Ripple20 IPv4 tunnelling RCE | detected | APC Guard | — |
+| [CVE-2020-11897](https://nvd.nist.gov/vuln/detail/CVE-2020-11897) | Ripple20 IPv6 OOB write (not APC) | context only | APC Guard | — |
+| [CVE-2020-11898](https://nvd.nist.gov/vuln/detail/CVE-2020-11898) | Ripple20 ICMPv4 heap leak | detected | APC Guard | — |
+| [CVE-2020-11899](https://nvd.nist.gov/vuln/detail/CVE-2020-11899) | Ripple20 IPv6 OOB read | detected | APC Guard | — |
+| [CVE-2020-11901](https://nvd.nist.gov/vuln/detail/CVE-2020-11901) | Ripple20 DNS resolver RCE | detected | APC Guard | — |
+| [CVE-2020-11902](https://nvd.nist.gov/vuln/detail/CVE-2020-11902) | Ripple20 IPv6-in-IPv4 OOB read | detected | APC Guard | — |
 | [CVE-2020-12243](https://nvd.nist.gov/vuln/detail/CVE-2020-12243) | OpenLDAP nested-filter DoS | detected | LDAP Watch | — |
 | [CVE-2020-16898](https://nvd.nist.gov/vuln/detail/CVE-2020-16898) | Bad Neighbor | detected | ICMP Watch | — |
 | [CVE-2020-16899](https://nvd.nist.gov/vuln/detail/CVE-2020-16899) | RA DNSSL DoS | detected | ICMP Watch | — |
