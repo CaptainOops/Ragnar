@@ -1,23 +1,5 @@
 # Ragnar Releases
 
-A per-PR log of everything merged into `main`. **Newest release is always on top** — add new entries directly under the "Releases" heading (inside the newest date section), above the previous one.
-
-Each entry is a pull request merged to `main`: the PR link and title, merge date, branch and diff size, a short summary of what changed, and links to the documentation it added or updated. The backfilled history starts at PR #737 (2026-09-11). For the older feature-by-feature narrative see [RELEASE_NOTES.md](RELEASE_NOTES.md).
-
-## Adding an entry (every PR)
-
-Before opening a PR, add an entry at the top of the newest date section (create a new `### YYYY-MM-DD` section above the others if the date is new):
-
-```markdown
-#### [#NNN](https://github.com/PierreGode/Ragnar/pull/NNN) — type(scope): PR title
-*Merged YYYY-MM-DD · branch `feature/x` · N file(s), +A / −D*
-
-- One-line summary of each notable change
-- **Docs:** [feature.md](feature.md), [README (root)](../README.md)
-```
-
-Link every `.md` file the PR adds or changes (paths are relative to `docs/`). If the PR number is not known yet, open the PR first and then push the entry to the same branch.
-
 ## Releases
 
 ### 2026-10-01
