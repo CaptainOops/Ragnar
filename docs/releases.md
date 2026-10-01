@@ -8,7 +8,7 @@
 *Merged 2026-10-01 · branch `docs/releases-log` · 3 file(s)*
 
 - New `docs/releases.md`: one entry per PR merged to `main`, newest on top, with summary and doc links
-- Backfilled the last 500 merged PRs (#366–#892) from the merge history
+- Backfilled the last 600 merged PRs (#209–#892) from the merge history
 - Linked from the root README and the docs index
 - **Docs:** [releases.md](releases.md), [README (root)](../README.md), [docs index](README.md)
 
@@ -2924,4 +2924,636 @@
 
 - RuSense: self-heal data ownership so CSI recording survives root-run updates
 - Network tools: per-interface VPN egress check + stop hiding NICs without an address
+
+### 2026-07-05
+
+#### [#364](https://github.com/PierreGode/Ragnar/pull/364) — Rusense and Net tools
+*Merged 2026-07-05 · branch `View` · 148 file(s), +21404 / −320*
+
+- Bundle WiFi-CSI sensing backend + RuSense dashboard fixes
+- Observatory fullscreen + branding cleanup; fix RuSense Training tab
+- Sync pending working-tree changes to install/pager/wifi scripts and assets
+- Gitignore secrets and runtime data (zap api key, auth db, scan state)
+- Replace Piglet flasher Pages with RuSense CSI-node flasher (ESP32-S3/C6)
+- Update README.md
+- …and 141 more commit(s)
+- **Docs:** [README (root)](../README.md), [nettools.md](nettools.md), [rusense.md](rusense.md)
+
+### 2026-06-10
+
+#### [#360](https://github.com/PierreGode/Ragnar/pull/360) — real
+*Merged 2026-06-10 · branch `export` · 4 file(s), +10 / −8*
+
+- hy
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#359](https://github.com/PierreGode/Ragnar/pull/359) — Rows whose position was estimated via backfill_gps_from_track
+*Merged 2026-06-10 · branch `export` · 5 file(s), +139 / −33*
+
+- Rows whose position was estimated via backfill_gps_from_track (gps_backfilled = 1) are excluded. Interpolated coordinates are not actual observations, so they're omitted from WiGLE submissions to avoid polluting the dataset with synthetic positions.
+- **Docs:** [wardriving.md](wardriving.md)
+
+### 2026-06-07
+
+#### [#357](https://github.com/PierreGode/Ragnar/pull/357) — huginn
+*Merged 2026-06-07 · branch `Huginn` · 8 file(s), +868 / −35*
+
+- paper
+- wee
+- claims
+- fixes
+- auto
+
+### 2026-06-03
+
+#### [#354](https://github.com/PierreGode/Ragnar/pull/354) — patch
+*Merged 2026-06-03 · branch `overview` · 2 file(s), +12 / −0*
+
+#### [#353](https://github.com/PierreGode/Ragnar/pull/353) — gps
+*Merged 2026-06-03 · branch `overview` · 6 file(s), +241 / −7*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#352](https://github.com/PierreGode/Ragnar/pull/352) — sate
+*Merged 2026-06-03 · branch `overview` · 1 file(s), +19 / −4*
+
+### 2026-06-02
+
+#### [#351](https://github.com/PierreGode/Ragnar/pull/351) — zap fixes
+*Merged 2026-06-02 · branch `overview` · 2 file(s), +194 / −5*
+
+### 2026-06-01
+
+#### [#350](https://github.com/PierreGode/Ragnar/pull/350) — str
+*Merged 2026-06-01 · branch `structure` · 5 file(s), +139 / −95*
+
+- clean
+
+#### [#348](https://github.com/PierreGode/Ragnar/pull/348) — grade
+*Merged 2026-06-01 · branch `grade` · 0 file(s), +0 / −0*
+
+- dd
+- gt
+- kl
+
+### 2026-05-31
+
+#### [#347](https://github.com/PierreGode/Ragnar/pull/347) — patch
+*Merged 2026-05-31 · branch `grades` · 0 file(s), +0 / −0*
+
+- fix
+
+#### [#346](https://github.com/PierreGode/Ragnar/pull/346) — patch
+*Merged 2026-05-31 · branch `bughunt` · 2 file(s), +16 / −3*
+
+#### [#345](https://github.com/PierreGode/Ragnar/pull/345) — CIS PCI DSS
+*Merged 2026-05-31 · branch `grades` · 17 file(s), +1190 / −322*
+
+- Update grade.md
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#344](https://github.com/PierreGode/Ragnar/pull/344) — server network
+*Merged 2026-05-31 · branch `servers` · 14 file(s), +320 / −313*
+
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#343](https://github.com/PierreGode/Ragnar/pull/343) — pwnss
+*Merged 2026-05-31 · branch `pwnss` · 9 file(s), +243 / −36*
+
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+### 2026-05-30
+
+#### [#342](https://github.com/PierreGode/Ragnar/pull/342) — Update README.md
+*Merged 2026-05-30 · branch `PierreGode-patch-2` · 1 file(s), +2 / −0*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#341](https://github.com/PierreGode/Ragnar/pull/341) — Stop web portal during wardriving without WiFi; reconnect on device disconnect
+*Merged 2026-05-30 · branch `claude/ragnar-wifi-auto-connect-e5k4Z` · 4 file(s), +179 / −6*
+
+#### [#340](https://github.com/PierreGode/Ragnar/pull/340) — sort
+*Merged 2026-05-30 · branch `comp` · 3 file(s), +135 / −174*
+
+#### [#339](https://github.com/PierreGode/Ragnar/pull/339) — companions
+*Merged 2026-05-30 · branch `comp` · 4 file(s), +478 / −527*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#338](https://github.com/PierreGode/Ragnar/pull/338) — nuclei
+*Merged 2026-05-30 · branch `nuclei` · 7 file(s), +576 / −184*
+
+### 2026-05-29
+
+#### [#337](https://github.com/PierreGode/Ragnar/pull/337) — names
+*Merged 2026-05-29 · branch `netscanner` · 3 file(s), +101 / −15*
+
+### 2026-05-28
+
+#### [#336](https://github.com/PierreGode/Ragnar/pull/336) — feat(pwn-bridge): add _execute_pwn_git_update helper and PWN_REPO_PATH
+*Merged 2026-05-28 · branch `pwns` · 4 file(s), +703 / −1*
+
+- fix(pwn-bridge): address Task 1 review issues
+- feat(pwn-bridge): add /api/pwn/check-updates endpoint
+- fix(pwn-bridge): address Task 2 review issues
+- feat(pwn-bridge): add /api/pwn/update endpoint
+- feat(pwn-bridge): add /api/pwn/stash-update endpoint
+- feat(pwn-bridge): add Pwnagotchi Updates card to Bridge section
+- …and 7 more commit(s)
+
+#### [#335](https://github.com/PierreGode/Ragnar/pull/335) — network
+*Merged 2026-05-28 · branch `NetworkScan` · 9 file(s), +1478 / −112*
+
+- **Docs:** [spec.md](spec.md)
+
+#### [#334](https://github.com/PierreGode/Ragnar/pull/334) — traffic
+*Merged 2026-05-28 · branch `2628` · 11 file(s), +2152 / −12*
+
+- data
+- alerts
+- no false irc
+
+### 2026-05-27
+
+#### [#333](https://github.com/PierreGode/Ragnar/pull/333) — zap
+*Merged 2026-05-27 · branch `2628` · 9 file(s), +1685 / −1*
+
+- **Docs:** [superpowers/specs/2026-05-27-web-recon-subsystem-design.md](superpowers/specs/2026-05-27-web-recon-subsystem-design.md)
+
+### 2026-05-26
+
+#### [#332](https://github.com/PierreGode/Ragnar/pull/332) — gps from piglet
+*Merged 2026-05-26 · branch `pigletgps` · 2 file(s), +115 / −1*
+
+- gps
+
+### 2026-05-25
+
+#### [#330](https://github.com/PierreGode/Ragnar/pull/330) — Love to Hamspiced
+*Merged 2026-05-25 · branch `Hamspiced` · 1 file(s), +2 / −2*
+
+- Update wardriving.md
+- **Docs:** [wardriving.md](wardriving.md)
+
+#### [#329](https://github.com/PierreGode/Ragnar/pull/329) — Love Hamspiced, Update Piglet (USB) mode description for clarity
+*Merged 2026-05-25 · branch `Hamspiced` · 1 file(s), +1 / −1*
+
+- **Docs:** [wardriving.md](wardriving.md)
+
+### 2026-05-24
+
+#### [#328](https://github.com/PierreGode/Ragnar/pull/328) — Update README.md
+*Merged 2026-05-24 · branch `PierreGode-patch-1` · 1 file(s), +1 / −1*
+
+- **Docs:** [README (root)](../README.md)
+
+#### [#323](https://github.com/PierreGode/Ragnar/pull/323) — Fix command to delete monitor interface
+*Merged 2026-05-24 · branch `fix-services-script-typo` · 1 file(s), +1 / −1*
+
+#### [#324](https://github.com/PierreGode/Ragnar/pull/324) — bug: Pwnagotchi swap status not clearing after switching back to Ragnar
+*Merged 2026-05-24 · branch `fix-pwnagotchi-handout` · 1 file(s), +3 / −1*
+
+- bug: Fix ragnar to pwngotchi handout
+
+#### [#327](https://github.com/PierreGode/Ragnar/pull/327) — Ragnar Piglet Coordinator
+*Merged 2026-05-24 · branch `Ragnar-piglet-coordinator` · 15 file(s), +3368 / −83*
+
+- web
+- site
+- branch
+- Read this for wardriving
+- **Docs:** [wardriving.md](wardriving.md)
+
+### 2026-05-23
+
+#### [#321](https://github.com/PierreGode/Ragnar/pull/321) — mobile fit
+*Merged 2026-05-23 · branch `2623` · 3 file(s), +111 / −60*
+
+- mobile
+
+### 2026-05-22
+
+#### [#318](https://github.com/PierreGode/Ragnar/pull/318) — Auto-detect WiGLE 1.6 column shift
+*Merged 2026-05-22 · branch `piglet` · 6 file(s), +1263 / −18*
+
+- update
+- piglet parsing
+- parse
+- updates
+- external scanning
+- external scan
+- …and 5 more commit(s)
+
+### 2026-05-21
+
+#### [#317](https://github.com/PierreGode/Ragnar/pull/317) — settings
+*Merged 2026-05-21 · branch `2621` · 8 file(s), +291 / −15*
+
+- data fixes
+- fixes
+
+### 2026-05-20
+
+#### [#316](https://github.com/PierreGode/Ragnar/pull/316) — Revert power warning feature entirely
+*Merged 2026-05-20 · branch `2620` · 4 file(s), +3 / −110*
+
+- den
+
+#### [#315](https://github.com/PierreGode/Ragnar/pull/315) — Power warning: lower EXT5V thresholds to match real Pi 5 readings
+*Merged 2026-05-20 · branch `gps` · 1 file(s), +3 / −3*
+
+#### [#314](https://github.com/PierreGode/Ragnar/pull/314) — Wardriving card: power-health warning banner
+*Merged 2026-05-20 · branch `gps` · 3 file(s), +109 / −2*
+
+#### [#313](https://github.com/PierreGode/Ragnar/pull/313) — Backfill: use endpoint speeds for constant-accel interpolation
+*Merged 2026-05-20 · branch `gps` · 3 file(s), +163 / −34*
+
+- docs: update wardriving guide with current behavior
+- docs: highlight GPS recovery during dropouts
+- **Docs:** [README (root)](../README.md), [wardriving.md](wardriving.md)
+
+#### [#312](https://github.com/PierreGode/Ragnar/pull/312) — Bump Huginn serial baud to 460800
+*Merged 2026-05-20 · branch `gps` · 4 file(s), +64 / −34*
+
+- Always drive Huginn with its fast wardrive loop
+- Strip explanatory comments
+- Don't null GPS columns when stronger RSSI lands without a fix
+
+#### [#311](https://github.com/PierreGode/Ragnar/pull/311) — Gps updates
+*Merged 2026-05-20 · branch `gps` · 3 file(s), +102 / −15*
+
+- Fix GPS parser to surface pre-fix state (sats in view + alive signal)
+- Wardriving GPS card: show satellites in view + SNR
+
+### 2026-05-17
+
+#### [#309](https://github.com/PierreGode/Ragnar/pull/309) — Add gpsd and native serial port GPS support
+*Merged 2026-05-17 · branch `claude/add-serial-gps-support-d6vhm` · 1 file(s), +172 / −21*
+
+### 2026-05-14
+
+#### [#308](https://github.com/PierreGode/Ragnar/pull/308) — fields
+*Merged 2026-05-14 · branch `e-paper` · 1 file(s), +35 / −20*
+
+#### [#307](https://github.com/PierreGode/Ragnar/pull/307) — Count only unique WiFi networks for HuginnESP display
+*Merged 2026-05-14 · branch `claude/filter-duplicate-networks-hn3Ls` · 1 file(s), +11 / −6*
+
+### 2026-05-13
+
+#### [#306](https://github.com/PierreGode/Ragnar/pull/306) — companions
+*Merged 2026-05-13 · branch `kiosk` · 1 file(s), +18 / −0*
+
+### 2026-05-12
+
+#### [#304](https://github.com/PierreGode/Ragnar/pull/304) — Kiosk mode for ON display
+*Merged 2026-05-12 · branch `kiosk` · 9 file(s), +1224 / −4*
+
+- test
+- fix
+- kiosk
+- site
+- xorg
+
+### 2026-05-11
+
+#### [#303](https://github.com/PierreGode/Ragnar/pull/303) — Expand camera detection: add SSID pattern matching + more OUIs
+*Merged 2026-05-11 · branch `claude/investigate-camera-detection-IRHvc` · 2 file(s), +38 / −4*
+
+#### [#302](https://github.com/PierreGode/Ragnar/pull/302) — map
+*Merged 2026-05-11 · branch `ward` · 5 file(s), +279 / −12*
+
+- wardrive
+
+#### [#301](https://github.com/PierreGode/Ragnar/pull/301) — wigle: header-driven CSV parser for Piglet (1.4 + 1.6 compatible)
+*Merged 2026-05-11 · branch `huginn` · 1 file(s), +123 / −46*
+
+#### [#300](https://github.com/PierreGode/Ragnar/pull/300) — Better wifi
+*Merged 2026-05-11 · branch `huginn` · 7 file(s), +1045 / −56*
+
+- wardriving: WiFi adapter details + fix USB serial conflicts
+- fix: suppress Pylance import-not-found for pyserial (Pi-only dep)
+- revert: remove type: ignore comments, keep get_shared_data bugfix
+- multiple wifi-antenas
+- wifi pach
+- wifi
+- …and 12 more commit(s)
+
+### 2026-05-10
+
+#### [#299](https://github.com/PierreGode/Ragnar/pull/299) — wardriving: active full-channel sweep for faster stationary discovery
+*Merged 2026-05-10 · branch `huginn` · 1 file(s), +53 / −3*
+
+#### [#298](https://github.com/PierreGode/Ragnar/pull/298) — GPS updates
+*Merged 2026-05-10 · branch `huginn` · 4 file(s), +319 / −107*
+
+- sec
+- GPS fix
+
+#### [#297](https://github.com/PierreGode/Ragnar/pull/297) — update
+*Merged 2026-05-10 · branch `huginn` · 2 file(s), +50 / −30*
+
+#### [#296](https://github.com/PierreGode/Ragnar/pull/296) — patch
+*Merged 2026-05-10 · branch `huginn` · 3 file(s), +96 / −20*
+
+### 2026-05-09
+
+#### [#293](https://github.com/PierreGode/Ragnar/pull/293) — Wardrive
+*Merged 2026-05-09 · branch `huginn` · 3 file(s), +9 / −27*
+
+#### [#292](https://github.com/PierreGode/Ragnar/pull/292) — huginn
+*Merged 2026-05-09 · branch `huginn` · 1 file(s), +55 / −12*
+
+#### [#291](https://github.com/PierreGode/Ragnar/pull/291) — huginn
+*Merged 2026-05-09 · branch `huginn` · 5 file(s), +283 / −1*
+
+### 2026-05-08
+
+#### [#288](https://github.com/PierreGode/Ragnar/pull/288) — fix: blacklisted hosts were still written to DB during scans
+*Merged 2026-05-08 · branch `devel/blacklist` · 3 file(s), +67 / −25*
+
+- fix: enforce blacklist across all remaining upsert_host call sites
+- fix: filter blacklisted hosts when loading existing DB entries in update_netkb
+
+#### [#287](https://github.com/PierreGode/Ragnar/pull/287) — Issue #284 fix: web preview no longer rotated when screen_reversed is set
+*Merged 2026-05-08 · branch `devel/webdisplay` · 1 file(s), +6 / −6*
+
+- fix: web preview no longer rotated when screen_reversed is set
+
+#### [#290](https://github.com/PierreGode/Ragnar/pull/290) — WarDriving
+*Merged 2026-05-08 · branch `wardriving` · 3 file(s), +45 / −10*
+
+#### [#289](https://github.com/PierreGode/Ragnar/pull/289) — ward
+*Merged 2026-05-08 · branch `wardriving` · 15 file(s), +4938 / −26*
+
+- fix wardriving: robust freq/channel parsing, SSID sanitization, WPA/WEP detection
+- feat: wardriving display mode for all screens (EPD, GC9A01, SSD1306, LCD1602, MAX7219)
+- fix: sanitize literal \\xNN escape sequences in SSIDs from iw scan
+- fix: wardriving start/stop button reliability and tab refresh
+- fix: wardriving toggle button + fix indent syntax error in wardriving.py
+- feat: add GPS column to wardriving network table
+- …and 53 more commit(s)
+- **Docs:** [wardriving.md](wardriving.md)
+
+### 2026-05-05
+
+#### [#286](https://github.com/PierreGode/Ragnar/pull/286) — fixes
+*Merged 2026-05-05 · branch `260505` · 8 file(s), +108 / −33*
+
+#### [#285](https://github.com/PierreGode/Ragnar/pull/285) — not rotate in ui
+*Merged 2026-05-05 · branch `260505` · 7 file(s), +60 / −28*
+
+- path fix
+- scroll fix
+
+### 2026-04-27
+
+#### [#281](https://github.com/PierreGode/Ragnar/pull/281) — Waveshare EPD  driver "epd2in13b_V4" (black/white/red) added.
+*Merged 2026-04-27 · branch `epd2in13b_V4-driver` · 3 file(s), +284 / −23*
+
+- Update shared.py
+- Update install_ragnar.sh
+
+### 2026-04-22
+
+#### [#280](https://github.com/PierreGode/Ragnar/pull/280) — Wifi updates
+*Merged 2026-04-22 · branch `wifi` · 4 file(s), +151 / −47*
+
+- wifi
+- fix
+- wifi fix
+- patch
+- button
+- del
+
+#### [#279](https://github.com/PierreGode/Ragnar/pull/279) — Support for open WiFi networks
+*Merged 2026-04-22 · branch `wifi` · 1 file(s), +8 / −7*
+
+- open networks
+
+#### [#278](https://github.com/PierreGode/Ragnar/pull/278) — Install fixes
+*Merged 2026-04-22 · branch `merge` · 2 file(s), +386 / −16*
+
+- install fixes
+- **Docs:** [PWNAGOTCHI.md](PWNAGOTCHI.md)
+
+#### [#277](https://github.com/PierreGode/Ragnar/pull/277) — min
+*Merged 2026-04-22 · branch `merge` · 1 file(s), +1 / −1*
+
+#### [#267](https://github.com/PierreGode/Ragnar/pull/267) — fix: stop auto-scroll caused by password manager extension
+*Merged 2026-04-22 · branch `fix/auto-scroll-password-manager-extension` · 2 file(s), +17 / −16*
+
+- fix: stop auto-scroll caused by password manager extension reacting to frequent DOM mutations
+
+#### [#268](https://github.com/PierreGode/Ragnar/pull/268) — fix: resolve permanent 'Loading...' in Data Management card (Config tab)
+*Merged 2026-04-22 · branch `fix/data-management-loading-duplicate-id` · 2 file(s), +3 / −1*
+
+- fix: resolve permanent 'Loading...' in Data Management card
+
+#### [#269](https://github.com/PierreGode/Ragnar/pull/269) — feat: display human-readable temperature sensor names
+*Merged 2026-04-22 · branch `feat/temperature-sensor-labels` · 1 file(s), +33 / −1*
+
+#### [#271](https://github.com/PierreGode/Ragnar/pull/271) — fix: show filter-aware empty state in Vulnerabilities by Host
+*Merged 2026-04-22 · branch `fix/vuln-filter-empty-state` · 1 file(s), +8 / −2*
+
+### 2026-04-07
+
+#### [#272](https://github.com/PierreGode/Ragnar/pull/272) — fix: prevent XSS in onclick handlers and innerHTML
+*Merged 2026-04-07 · branch `fix/xss-escaping` · 1 file(s), +25 / −11*
+
+- fix: prevent XSS in onclick handlers and innerHTML (Critical/High)
+- fix: escape file.name in innerHTML (XSS follow-up)
+
+#### [#273](https://github.com/PierreGode/Ragnar/pull/273) — chore: update socket.io client from 4.5.4 to 4.8.3
+*Merged 2026-04-07 · branch `chore/update-socketio-4.8.3` · 1 file(s), +1 / −1*
+
+### 2026-03-31
+
+#### [#266](https://github.com/PierreGode/Ragnar/pull/266) — docs: add attribution for brAinphreAk's Loki/PagerBjorn pager work (closes #265)
+*Merged 2026-03-31 · branch `fix/issue-265-pager-attribution` · 1 file(s), +13 / −0*
+
+- docs: add attribution for brAinphreAk's Loki/PagerBjorn pager work (issue #265)
+- **Docs:** [README (root)](../README.md)
+
+### 2026-03-23
+
+#### [#262](https://github.com/PierreGode/Ragnar/pull/262) — test
+*Merged 2026-03-23 · branch `Fixes` · 12 file(s), +289 / −177*
+
+- fa
+- flip
+- 90
+- up
+
+### 2026-03-22
+
+#### [#261](https://github.com/PierreGode/Ragnar/pull/261) — update
+*Merged 2026-03-22 · branch `Fixes` · 7 file(s), +152 / −28*
+
+- nr
+- nrf
+- test
+- fix
+- df
+- hm
+- …and 4 more commit(s)
+
+#### [#239](https://github.com/PierreGode/Ragnar/pull/239) — feat: add LCD1602 16x2 I2C character display support
+*Merged 2026-03-22 · branch `pr/lcd1602-upstream` · 6 file(s), +574 / −38*
+
+- feat: redesign LCD1602 display with rotating info pages
+- fix: skip EPD buffer validation for character displays (lcd1602)
+- fix: use f-string in logger.info for character display init message
+- fix: handle None epd_helper for character displays in Display init
+- fix: f-string logger calls and increase EN pulse timing in lcd1602
+- feat: redesign lcd1602 display with independent top/bottom timers
+- …and 5 more commit(s)
+
+### 2026-03-21
+
+#### [#260](https://github.com/PierreGode/Ragnar/pull/260) — patch
+*Merged 2026-03-21 · branch `Fixes` · 4 file(s), +33 / −16*
+
+#### [#259](https://github.com/PierreGode/Ragnar/pull/259) — fix: add timeout to epd4in26 ReadBusy to prevent startup hang
+*Merged 2026-03-21 · branch `claude/fix-epaper-startup-BkBHf` · 1 file(s), +7 / −2*
+
+#### [#258](https://github.com/PierreGode/Ragnar/pull/258) — fix(web): start web server before EPD display init to prevent startup delays
+*Merged 2026-03-21 · branch `claude/fix-web-startup-8pYL9` · 2 file(s), +15 / −10*
+
+#### [#257](https://github.com/PierreGode/Ragnar/pull/257) — Claude/add spi clock config 7 u gw m
+*Merged 2026-03-21 · branch `claude/add-spi-clock-config-7UGwM` · 4 file(s), +45 / −5*
+
+- Add configurable SPI clock speed for e-paper display
+- Rebuild minified JS after SPI clock config addition
+
+### 2026-03-20
+
+#### [#256](https://github.com/PierreGode/Ragnar/pull/256) — Add Waveshare 4.26" e-paper (epd4in26) support
+*Merged 2026-03-20 · branch `claude/add-epaper-426-support-7OyQh` · 7 file(s), +247 / −14*
+
+### 2026-03-19
+
+#### [#254](https://github.com/PierreGode/Ragnar/pull/254) — Bundle vulners.nse NSE script for Pineapple Pager vuln scanning
+*Merged 2026-03-19 · branch `funcs` · 4 file(s), +442 / −0*
+
+### 2026-03-18
+
+#### [#252](https://github.com/PierreGode/Ragnar/pull/252) — fix(pager): readable fonts + pager-only settings (no ethernet/websrv)
+*Merged 2026-03-18 · branch `Pineapple` · 2 file(s), +107 / −89*
+
+- fix
+
+#### [#250](https://github.com/PierreGode/Ragnar/pull/250) — feat(pager): add 4 interactive settings pages to pager display
+*Merged 2026-03-18 · branch `Pineapple` · 1 file(s), +393 / −18*
+
+#### [#240](https://github.com/PierreGode/Ragnar/pull/240) — feat: add MAX7219 LED matrix display support (4-panel and 8-panel)
+*Merged 2026-03-18 · branch `pr/max7219-upstream` · 9 file(s), +427 / −17*
+
+- feat: add display_brightness config for non-e-ink displays
+- fix: skip EPD init for MAX7219 display types in shared.py
+- fix: guard epd_helper.init_partial_update() in Display.__init__
+- fix: skip wipe_epd for non-EPD displays; use sudo pip3 for luma install
+- fix: MAX7219 all-pixels-on on startup
+- fix: correct MAX7219 block_orientation default to -90 for horizontal strips
+- …and 3 more commit(s)
+- **Docs:** [README (root)](../README.md)
+
+#### [#243](https://github.com/PierreGode/Ragnar/pull/243) — feat(ui): rename E-Paper to Display across all user-facing web UI text
+*Merged 2026-03-18 · branch `pr/display-rename` · 2 file(s), +36 / −36*
+
+- feat(ui): rename E-Paper → Display across all user-facing web UI text
+
+#### [#244](https://github.com/PierreGode/Ragnar/pull/244) — feat(ui): add AP Archive tab — browse collected data per access point
+*Merged 2026-03-18 · branch `pr/ap-archive` · 3 file(s), +430 / −1*
+
+- feat(networks): add /api/networks/all and /api/networks/<slug>/files endpoints
+- feat(networks): add All Scanned Networks tab to web UI
+- fix(qa): restore missing wrapper divs in Network Map tab
+- fix(networks): escape JSON strings in onclick to prevent HTML attribute breakage
+- feat(networks): rename 'Networks' tab to 'AP Archive' across all user-facing UI
+
+#### [#245](https://github.com/PierreGode/Ragnar/pull/245) — fix(discovered): fix View Full Report 404 for per-network scans
+*Merged 2026-03-18 · branch `pr/fix-view-full-report` · 1 file(s), +34 / −19*
+
+### 2026-03-17
+
+#### [#248](https://github.com/PierreGode/Ragnar/pull/248) — Claude/optimize pager deploy y pd ax
+*Merged 2026-03-17 · branch `claude/optimize-pager-deploy-yPdAx` · 3 file(s), +69 / −5*
+
+- Fix Resolve Git Conflicts button in Settings
+- Rebuild minified JS with terser
+
+#### [#247](https://github.com/PierreGode/Ragnar/pull/247) — Pinapple Pager
+*Merged 2026-03-17 · branch `pagers` · 15 file(s), +998 / −175*
+
+- pager
+- ui
+- fix
+- Organise pager files, fix vuln display, slim deployment
+- Fix pager crash on Exit from main menu
+- pinapple
+
+### 2026-03-14
+
+#### [#242](https://github.com/PierreGode/Ragnar/pull/242) — fix(airsnitch): correct interface order and wire client.conf credentials
+*Merged 2026-03-14 · branch `claude/add-airsnitch-tool-oWS7y` · 5 file(s), +63 / −7*
+
+#### [#241](https://github.com/PierreGode/Ragnar/pull/241) — airsnitch tool
+*Merged 2026-03-14 · branch `claude/add-airsnitch-tool-oWS7y` · 8 file(s), +1123 / −2*
+
+- feat: integrate AirSnitch Wi-Fi client isolation testing tool
+- feat: add AirSnitch UI panel to the Pentest tab
+- chore: rebuild minified JS bundle
+- fix: move AirSnitch above Bluetooth, fix install reliability, add live install log
+- fix: install libnl-3/openssl build deps before running AirSnitch setup.sh
+- fix: correct airsnitch.py path and clone submodules
+- …and 3 more commit(s)
+- **Docs:** [README (root)](../README.md), [airsnitch.md](airsnitch.md)
+
+### 2026-03-11
+
+#### [#235](https://github.com/PierreGode/Ragnar/pull/235) — feat: add GC9A01 1.28" 240x240 round TFT LCD display support
+*Merged 2026-03-11 · branch `screens` · 9 file(s), +1264 / −40*
+
+- feat: add GC9A01 TFT LCD as install-time display option
+- fix: prevent GPIO27 'already in use' on repeated init() calls
+- feat(gc9a01): fix flashing + add round display UI
+- fix(gc9a01): correct mirrored display + wifi label
+- feat(gc9a01): animated mascot using status BMP frame sequences
+- feat(gc9a01): revert mascot to flat tint colorization
+- …and 13 more commit(s)
+
+### 2026-03-09
+
+#### [#229](https://github.com/PierreGode/Ragnar/pull/229) — fix: display selection during install ignored when reinstalling
+*Merged 2026-03-09 · branch `fix/epd-type-install-overwrite` · 1 file(s), +25 / −18*
+
+- fix: epd_type selection ignored on install when not epd2in13_V4
+
+#### [#233](https://github.com/PierreGode/Ragnar/pull/233) — req
+*Merged 2026-03-09 · branch `deptpatch` · 3 file(s), +28 / −6*
+
+### 2026-03-06
+
+#### [#226](https://github.com/PierreGode/Ragnar/pull/226) — pwn
+*Merged 2026-03-06 · branch `pi` · 6 file(s), +587 / −2*
+
+- test
+- pw
+- ok
+- low
+- page
+- fix
+- …and 3 more commit(s)
+
+### 2026-03-03
+
+#### [#210](https://github.com/PierreGode/Ragnar/pull/210) — fixed ZAP
+*Merged 2026-03-03 · branch `releases` · 2 file(s), +225 / −50*
+
+- zap fix
+- zapfix
+- fixes
+
+#### [#209](https://github.com/PierreGode/Ragnar/pull/209) — faster
+*Merged 2026-03-03 · branch `releases` · 2 file(s), +9 / −2*
 
