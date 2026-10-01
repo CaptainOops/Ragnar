@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ragnar Status</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --card2:#172033; --border:#334155;
+    --muted:#64748b; --dim:#94a3b8; --text:#e2e8f0;
+    --cyan:#7dd3fc; --green:#22c55e; --blue:#0284c7; --amber:#f59e0b; --red:#f87171;
+    --glow:0 0 8px rgba(125,211,252,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:
+     radial-gradient(1200px 500px at 20% -10%,#132036,transparent),var(--bg);
+    color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  body{display:flex;flex-direction:column;padding:7px;gap:6px}
+  /* header */
+  .top{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;gap:8px}
+  .brand{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:clamp(14px,4vw,20px);letter-spacing:2px;color:var(--cyan);text-shadow:var(--glow)}
+  .brand svg,.btn .ic svg{display:block}
+  .brand small{color:var(--muted);font-weight:400;letter-spacing:1px;font-size:.5em}
+  .hdr-r{display:flex;align-items:center;gap:7px}
+  .pill{display:flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);
+    font-size:clamp(10px,2.6vw,13px);font-weight:700;letter-spacing:1px}
+  .pill.ragnar{color:var(--cyan);border-color:#1e4e6b;background:#0b2436}
+  .pill.pwn{color:var(--green);border-color:#1f5134;background:#0c2417}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green)}
+  .tchip{padding:3px 9px;border-radius:6px;border:1px solid var(--border);background:var(--card);
+    font-weight:700;font-size:clamp(11px,3vw,15px)}
+  /* main */
+  .main{flex:1 1 auto;display:flex;gap:7px;min-height:0}
+  .mascot{flex:0 0 34%;max-width:170px;border:1px solid var(--border);border-radius:8px;
+    background:#0a1526;box-shadow:inset 0 0 20px rgba(0,0,0,.5),0 0 10px rgba(125,211,252,.12);
+    overflow:hidden;display:flex;align-items:center;justify-content:center;position:relative}
+  .mascot img{width:100%;height:100%;object-fit:contain;image-rendering:auto}
+  .mascot .scan{position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(0,0,0,.14) 3px 4px)}
+  .right{flex:1 1 auto;display:flex;flex-direction:column;gap:6px;min-width:0}
+  .say{border-left:3px solid var(--cyan);background:var(--card2);border-radius:4px;
+    padding:5px 8px;font-size:clamp(10px,2.7vw,13px);color:var(--dim);
+    overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .say b{color:var(--cyan)}
+  .act{background:var(--card2);border-left:3px solid var(--cyan);border-radius:4px;
+    padding:5px 8px;display:flex;flex-direction:column;gap:5px}
+  .actrow{display:flex;align-items:baseline;gap:7px;overflow:hidden;white-space:nowrap}
+  .op{font-weight:700;font-size:clamp(11px,3vw,15px);color:var(--green);flex:0 0 auto}
+  .op.busy{color:var(--amber)}
+  .tgt{color:var(--dim);font-weight:400;font-size:.85em;margin-left:6px}
+  .qt{color:var(--muted);font-size:clamp(9px,2.3vw,12px);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
+  .bar{height:9px;border-radius:5px;background:#0a1526;border:1px solid var(--border);
+    overflow:hidden;position:relative}
+  .bar{display:none}
+  .bar.show{display:block}
+  .bar .fill{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:5px;
+    background:linear-gradient(90deg,#0284c7,var(--cyan));transition:width .5s ease}
+  .pct{position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:8px;
+    font-weight:700;color:#04243a;letter-spacing:.5px}
+  .chips{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+  .chip{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:4px 5px;overflow:hidden}
+  .chip .k{font-size:clamp(7px,1.9vw,9px);color:var(--muted);letter-spacing:.5px;text-transform:uppercase}
+  .chip .v{font-size:clamp(12px,3.6vw,18px);font-weight:700;line-height:1.15;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .v.cyan{color:var(--cyan)} .v.green{color:var(--green)} .v.amber{color:var(--amber)} .v.red{color:var(--red)}
+  .chips.sys .chip{border-color:#24405c}
+  /* buttons */
+  .btns{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+  .btn{appearance:none;border:1.5px solid var(--border);border-radius:9px;background:var(--card);
+    color:var(--text);font-family:inherit;font-weight:700;letter-spacing:.3px;
+    font-size:clamp(10px,2.7vw,14px);padding:12px 4px;min-height:74px;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+    transition:transform .05s}
+  .btn .ic{display:flex;align-items:center;justify-content:center;line-height:1}
+  .btn:active{transform:scale(.95)}
+  .btn.wardrive{border-color:#1e4e6b;color:var(--cyan)}
+  .btn.wardrive.on{background:#0c2417;border-color:#1f5134;color:var(--green)}
+  .btn.ap{border-color:#5c3a1a;color:var(--amber)}
+  .btn.scan{border-color:#1e4e6b;color:var(--cyan)}
+  .btn.scan.stopping{border-color:#5c1a1a;background:#2a0f0f;color:var(--red)}
+  .btn.cams{border-color:#4b2e6b;color:#c4b5fd}
+  .btn.armed{background:#3b0d0d;border-color:#b91c1c;color:#fca5a5}
+  #toast{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);background:#0b2436;
+    border:1px solid var(--cyan);color:var(--cyan);padding:7px 14px;border-radius:6px;font-size:13px;
+    box-shadow:var(--glow);opacity:0;transition:opacity .2s;pointer-events:none;max-width:92vw;text-align:center}
+  #toast.show{opacity:1}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="14" y2="14"/><line x1="20" y1="4" x2="10" y2="14"/><line x1="4" y1="20" x2="8.5" y2="15.5"/><line x1="20" y1="20" x2="15.5" y2="15.5"/></svg>RAGNAR <small>CYBERVIKING</small></div>
+    <div class="hdr-r">
+      <div id="pill" class="pill ragnar"><span class="dot"></span><span id="mode">RAGNAR</span></div>
+      <div class="tchip" id="temp">—°</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="mascot">
+      <img src="/web/images/ragnar-240x320-tools.gif" alt="Ragnar">
+      <div class="scan"></div>
+    </div>
+    <div class="right">
+      <div class="act">
+        <div class="actrow"><span class="op" id="op">IDLE</span><span class="tgt" id="tgt"></span><span class="qt" id="says"></span></div>
+        <div class="bar" id="bar"><div class="fill" id="fill"></div><span class="pct" id="pct"></span></div>
+      </div>
+      <div class="chips sys">
+        <div class="chip"><div class="k">CPU</div><div class="v cyan" id="cpu">—</div></div>
+        <div class="chip"><div class="k">Mem</div><div class="v cyan" id="mem">—</div></div>
+        <div class="chip"><div class="k">Uptime</div><div class="v" id="up">—</div></div>
+        <div class="chip"><div class="k">Disk</div><div class="v" id="disk">—</div></div>
+      </div>
+      <div class="chips">
+        <div class="chip"><div class="k">Targets</div><div class="v cyan" id="tgts">—</div></div>
+        <div class="chip"><div class="k">Open Ports</div><div class="v" id="ports">—</div></div>
+        <div class="chip"><div class="k">Vulns</div><div class="v amber" id="vuln">—</div></div>
+        <div class="chip"><div class="k">Creds</div><div class="v green" id="cred">—</div></div>
+      </div>
+      <div class="say" style="border-color:var(--muted)"><span id="net" style="color:var(--dim)">—</span></div>
+    </div>
+  </div>
+
+  <div class="btns">
+    <button class="btn wardrive" id="bWar"><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 19l4.5-4.5"/><path d="M11 13a6 6 0 0 1 6 6"/><path d="M11 9a10 10 0 0 1 10 10"/></svg></span><span class="lbl">WARDRIVE</span></button>
+    <button class="btn cams"     id="bCams"><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="18" height="12.5" rx="2"/><circle cx="12" cy="12.8" r="3.2"/><path d="M8 6.5l1.4-2h5.2l1.4 2"/></svg></span><span class="lbl">LIVE CAMS</span></button>
+    <button class="btn scan"     id="bScan"><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 12l7-3.3"/></svg></span><span class="lbl">SCAN</span></button>
+    <button class="btn ap"       id="bAp" ><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M8.3 14a5.2 5.2 0 0 1 7.4 0"/><path d="M5.5 11.2a9.2 9.2 0 0 1 13 0"/></svg></span><span class="lbl">AP MODE</span></button>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id)}, tT, toast=$("toast");
+  function note(m,ok){toast.textContent=m;
+    toast.style.borderColor=ok===false?"#f87171":"var(--cyan)";
+    toast.style.color=ok===false?"#fca5a5":"var(--cyan)";
+    toast.classList.add("show");clearTimeout(tT);
+    tT=setTimeout(function(){toast.classList.remove("show")},2800);}
+  function post(u,b){return fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(b||{})}).then(function(r){return r.json().catch(function(){return{success:r.ok}})});}
+  function gj(u){return fetch(u,{cache:"no-store"}).then(function(r){return r.json()})}
+
+  var warRunning=false, scanActive=false, scanStart=0, SCAN_EST=45000;
+
+  function pullStatus(){ gj("/api/status").then(function(d){
+    var isPwn=(d.pwnagotchi_mode||"ragnar").toLowerCase()==="pwnagotchi";
+    $("mode").textContent=isPwn?"PWNAGOTCHI":"RAGNAR";
+    $("pill").className="pill "+(isPwn?"pwn":"ragnar");
+    var op=(d.ragnar_status||"IDLE"), t2=(d.ragnar_status2||"");
+    var busy=!!op && !/^(idle|standby|ready|online|)$/i.test(op);
+    $("op").textContent=op; $("op").className="op"+(busy?" busy":"");
+    $("tgt").textContent=t2?("→ "+t2):"";
+    $("says").textContent=d.ragnar_says||"";
+    // scan progress — time estimate (Ragnar exposes no true %); only while a scan runs
+    if(scanActive){
+      var el=Date.now()-scanStart, pct=Math.min(100,Math.round(el/SCAN_EST*100));
+      $("bar").classList.add("show"); $("fill").style.width=pct+"%"; $("pct").textContent=pct+"%";
+      $("says").textContent="network scan "+pct+"%";
+      if(pct>=100){ scanActive=false; updateScanBtn();
+        setTimeout(function(){ if(!scanActive){$("bar").classList.remove("show");$("fill").style.width="0";$("pct").textContent="";} },900); }
+    } else { $("bar").classList.remove("show"); }
+    $("tgts").textContent=nz(d.target_count);
+    $("ports").textContent=nz(d.port_count);
+    $("vuln").textContent=nz(d.vulnerability_count);
+    $("cred").textContent=nz(d.credential_count);
+  }).catch(function(){$("op").textContent="LINK DOWN"}); }
+
+  function pullSys(){ gj("/api/system/status").then(function(d){
+    var t=(d.temperatures&&(d.temperatures.cpu_thermal_||d.temperatures.cpu_thermal))||0;
+    var tc=$("temp"); tc.textContent=Math.round(t)+"°"; tc.className="tchip";
+    tc.style.color=t>=78?"var(--red)":t>=65?"var(--amber)":"var(--green)";
+    $("cpu").textContent=Math.round((d.cpu&&d.cpu.percent)||0)+"%";
+    $("mem").textContent=Math.round((d.memory&&d.memory.percent)||0)+"%";
+    $("up").textContent=(d.uptime&&d.uptime.formatted)||"—";
+    $("disk").textContent=Math.round((d.disk&&d.disk.percent)||0)+"%";
+    var nis=d.network_interfaces||[];
+    function ipOf(n){var i=nis.filter(function(x){return x.name===n})[0]; if(!i)return null;
+      var a=(i.addresses||[]).filter(function(x){return x.family==="2"||x.family===2})[0]; return a&&a.address;}
+    var lan=ipOf("wlan0")||ipOf("eth0"), ts=ipOf("tailscale0");
+    $("net").innerHTML=(lan?('LAN <b style="color:var(--cyan)">'+lan+':8000</b>'):"offline")
+      +(ts?('  ·  TS <b style="color:var(--green)">'+ts+':8000</b>'):"");
+  }).catch(function(){}); }
+
+  function pullWar(){ gj("/api/wardriving/status").then(function(d){
+    warRunning=!!d.running;   // only "running", not the persistent "enabled" flag
+    $("bWar").classList.toggle("on",warRunning);
+    $("bWar").querySelector(".lbl").textContent=warRunning?"WARDRIVE·ON":"WARDRIVE";
+  }).catch(function(){}); }
+
+  function nz(v){return v!=null?v:"—"}
+
+  // --- buttons ---
+  $("bWar").onclick=function(){ location.href="/web/wardrive.html"; };
+  $("bCams").onclick=function(){ location.href="/web/livecams.html"; };
+  // AP MODE = 2-tap confirm (it takes the box onto its own AP and drops the LAN)
+  var apArmed=false, apT;
+  $("bAp").onclick=function(){
+    if(!apArmed){ apArmed=true; this.classList.add("armed"); this.querySelector(".lbl").textContent="CONFIRM?";
+      note("AP mode drops the LAN — tap again to confirm"); clearTimeout(apT);
+      apT=setTimeout(function(){apArmed=false;$("bAp").classList.remove("armed");$("bAp").querySelector(".lbl").textContent="AP MODE";},4000);
+      return; }
+    apArmed=false; this.classList.remove("armed"); this.querySelector(".lbl").textContent="AP MODE";
+    note("Entering AP mode — join Ragnar's WiFi"); post("/api/wifi/ap/start",{});
+  };
+  function updateScanBtn(){ var b=$("bScan"); b.classList.toggle("stopping",scanActive);
+    b.querySelector(".lbl").textContent=scanActive?"STOP":"SCAN"; }
+  $("bScan").onclick=function(){
+    if(!scanActive){ note("Starting network scan…");
+      post("/api/manual/scan/network",{}).then(function(r){
+        if(r&&r.success){scanActive=true;scanStart=Date.now();updateScanBtn();pullStatus();}
+        else note("Scan failed: "+((r&&r.error)||"?"),false); }); }
+    else { note("Stopping scan…");
+      post("/api/manual/orchestrator/stop",{}).then(function(){
+        scanActive=false;updateScanBtn();
+        $("bar").classList.remove("show");$("fill").style.width="0";$("pct").textContent="";
+        note("Scan stopped",true); }); }
+  };
+
+  function tick(){ pullStatus(); }
+  pullStatus(); pullSys(); pullWar();
+  setInterval(pullStatus,2000);
+  setInterval(pullSys,6000);
+  setInterval(pullWar,7000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ragnar Wardrive</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--card2:#172033;--border:#334155;--muted:#64748b;
+    --dim:#94a3b8;--text:#e2e8f0;--cyan:#7dd3fc;--green:#22c55e;--amber:#f59e0b;--red:#f87171;
+    --glow:0 0 8px rgba(125,211,252,.35);}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:radial-gradient(1200px 500px at 20% -10%,#132036,transparent),var(--bg);
+    color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  body{display:flex;flex-direction:column;padding:7px;gap:7px}
+  .top{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;gap:8px}
+  .back{appearance:none;border:1px solid var(--border);background:var(--card);color:var(--cyan);
+    font-family:inherit;font-weight:700;font-size:15px;border-radius:8px;padding:7px 13px;cursor:pointer}
+  .back:active{transform:scale(.95)}
+  .title{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:clamp(15px,4.3vw,21px);letter-spacing:2px;color:var(--cyan);text-shadow:var(--glow)}
+  .title svg{display:block}
+  .pill{display:flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;border:1px solid var(--border);
+    font-size:clamp(11px,3vw,14px);font-weight:700;letter-spacing:1px;color:var(--muted)}
+  .pill.run{color:var(--green);border-color:#1f5134;background:#0c2417}
+  .pill.idle{color:var(--dim)}
+  .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .bar{height:7px;border-radius:5px;background:#0a1526;border:1px solid var(--border);overflow:hidden;position:relative;flex:0 0 auto}
+  .bar .fill{position:absolute;top:0;bottom:0;left:-32%;width:32%;border-radius:5px;
+    background:linear-gradient(90deg,transparent,var(--cyan) 50%,transparent);opacity:0}
+  .bar.active .fill{opacity:1;animation:sweep 1.2s linear infinite}
+  @keyframes sweep{to{left:100%}}
+  .grid{flex:1 1 auto;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:1fr 1fr;gap:7px;min-height:0}
+  .tile{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:7px 9px;
+    display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+  .tile .k{font-size:clamp(8px,2.1vw,10px);color:var(--muted);letter-spacing:1px;text-transform:uppercase}
+  .tile .v{font-size:clamp(17px,5vw,26px);font-weight:700;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tile .s{font-size:clamp(8px,2vw,10px);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .v.cyan{color:var(--cyan)}.v.green{color:var(--green)}.v.amber{color:var(--amber)}.v.red{color:var(--red)}.v.dim{color:var(--muted)}
+  .tile.mini{justify-content:center;gap:0;padding:4px 9px}
+  .tile.mini .k{margin-bottom:2px}
+  .tile.mini .row{display:flex;justify-content:space-between;align-items:baseline;
+    font-size:clamp(9px,2.4vw,12px);line-height:1.32}
+  .tile.mini .row .lab{color:var(--dim)}
+  .tile.mini .row .num{font-weight:700;font-size:1.12em}
+  .num.cyan{color:var(--cyan)}.num.green{color:var(--green)}.num.amber{color:var(--amber)}
+  .status{flex:0 0 auto;border-left:3px solid var(--amber);background:var(--card2);border-radius:4px;
+    padding:5px 9px;font-size:clamp(10px,2.6vw,13px);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .status.ok{border-color:var(--green);color:var(--green)}
+  .status b{color:var(--amber)}
+  .ctl{flex:0 0 auto}
+  .act{appearance:none;width:100%;border:1.5px solid #1f5134;border-radius:10px;background:#0c2417;color:var(--green);
+    font-family:inherit;font-weight:700;letter-spacing:1px;font-size:clamp(14px,4vw,19px);padding:15px;min-height:62px;cursor:pointer}
+  .act.stop{border-color:#5c1a1a;background:#2a0f0f;color:var(--red)}
+  .act:active{transform:scale(.98)}
+  #toast{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);background:#0b2436;border:1px solid var(--cyan);
+    color:var(--cyan);padding:7px 14px;border-radius:6px;font-size:13px;box-shadow:var(--glow);opacity:0;
+    transition:opacity .2s;pointer-events:none;max-width:92vw;text-align:center}
+  #toast.show{opacity:1}
+</style>
+</head>
+<body>
+  <div class="top">
+    <button class="back" id="back">← BACK</button>
+    <div class="title"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 19l4.5-4.5"/><path d="M11 13a6 6 0 0 1 6 6"/><path d="M11 9a10 10 0 0 1 10 10"/></svg>WARDRIVE</div>
+    <div class="pill idle" id="pill"><span class="dot"></span><span id="state">IDLE</span></div>
+  </div>
+  <div class="bar" id="bar"><div class="fill"></div></div>
+
+  <div class="grid">
+    <div class="tile"><div class="k">GPS</div><div class="v dim" id="gps">—</div><div class="s" id="gpss">no device</div></div>
+    <div class="tile"><div class="k">WiFi nets</div><div class="v cyan" id="wifi">0</div><div class="s" id="wifis">this scan 0</div></div>
+    <div class="tile mini"><div class="k">Bands</div>
+      <div class="row"><span class="lab">2.4 GHz</span><span class="num cyan" id="b24">0</span></div>
+      <div class="row"><span class="lab">5 GHz</span><span class="num cyan" id="b5">0</span></div>
+      <div class="row"><span class="lab">6 GHz</span><span class="num cyan" id="b6">0</span></div>
+    </div>
+    <div class="tile"><div class="k">Radios</div><div class="v" id="radio">0</div><div class="s" id="radios">scanning</div></div>
+    <div class="tile"><div class="k">BLE</div><div class="v" id="ble">0</div><div class="s" id="bles">+esp 0</div></div>
+    <div class="tile mini"><div class="k">Security</div>
+      <div class="row"><span class="lab">Open/WEP</span><span class="num amber" id="sOpen">0</span></div>
+      <div class="row"><span class="lab">WPA2</span><span class="num cyan" id="sWpa2">0</span></div>
+      <div class="row"><span class="lab">WPA3</span><span class="num green" id="sWpa3">0</span></div>
+    </div>
+  </div>
+
+  <div class="status" id="status"><b id="stlbl">—</b> <span id="stmsg"></span></div>
+  <div class="ctl"><button class="act" id="toggle">▶ START WARDRIVE</button></div>
+  <div id="toast"></div>
+
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)}, tT, toast=$("toast");
+  function note(m,ok){toast.textContent=m;toast.style.borderColor=ok===false?"#f87171":"var(--cyan)";
+    toast.style.color=ok===false?"#fca5a5":"var(--cyan)";toast.classList.add("show");clearTimeout(tT);
+    tT=setTimeout(function(){toast.classList.remove("show")},3000);}
+  function gj(u){return fetch(u,{cache:"no-store"}).then(function(r){return r.json()})}
+  function post(u,b){return fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(b||{})}).then(function(r){return r.json().catch(function(){return{success:r.ok}})})}
+  $("back").onclick=function(){location.href="/web/kiosk_status.html"};
+
+  var running=false, blocker="";
+  function pull(){ gj("/api/wardriving/status").then(function(d){
+    running=!!d.running; var starting=!!d.starting;
+    $("state").textContent=starting?"STARTING":(running?"RUNNING":"IDLE");
+    $("pill").className="pill "+(running||starting?"run":"idle");
+    $("bar").classList.toggle("active",running||starting);
+    // GPS
+    var g=d.gps||{}; var ge=$("gps");
+    if(g.has_fix){ge.textContent="FIX";ge.className="v green";$("gpss").textContent=g.port||"locked"}
+    else if(g.connected){ge.textContent="NO FIX";ge.className="v amber";$("gpss").textContent=g.port||"searching"}
+    else{ge.textContent="NONE";ge.className="v red";$("gpss").textContent=(g.error||"no device")}
+    // wifi
+    $("wifi").textContent=d.total_networks||0;
+    $("wifis").textContent="this scan "+(d.networks_this_scan||0);
+    // radios
+    var nif=(d.interfaces&&d.interfaces.length)||0;
+    var rv=$("radio"); rv.textContent=nif; rv.className="v "+(nif?"green":"red");
+    $("radios").textContent=nif?"scanning":"none free";
+    // ble
+    $("ble").textContent=(d.bluetooth_count||0); $("bles").textContent="+esp "+(d.esp_ble_count||0);
+    // status line
+    if(running){ $("status").className="status ok"; $("stlbl").textContent="SCANNING";
+      $("stmsg").textContent="· "+(d.scans_completed||0)+" scans · "+(d.serial_connected?"companion ok":"no companion"); }
+    else { $("status").className="status"; $("stlbl").textContent="STOPPED";
+      $("stmsg").textContent=blocker?("· "+blocker):(d.error?("· "+d.error):""); }
+    // button
+    var b=$("toggle");
+    if(running||starting){b.className="act stop";b.textContent="■ STOP WARDRIVE"}
+    else{b.className="act";b.textContent="▶ START WARDRIVE"}
+  }).catch(function(){$("status").className="status";$("stlbl").textContent="LINK DOWN";$("stmsg").textContent=""}); }
+
+  function pullDiag(){ gj("/api/wardriving/diagnostics").then(function(d){
+    var errs=(d.errors||[]).filter(function(e){return e.severity==="error"});
+    blocker=errs.length?errs[0].message:"";
+  }).catch(function(){}); }
+
+  function pullNets(){ gj("/api/wardriving/networks").then(function(d){
+    var nets=(d.networks||[]), b24=0,b5=0,b6=0,op=0,w2=0,w3=0;
+    for(var i=0;i<nets.length;i++){ var n=nets[i];
+      var band=(n.band||"")+"";
+      if(band.indexOf("2.4")>=0)b24++; else if(band.indexOf("6")>=0)b6++; else if(band.indexOf("5")>=0)b5++;
+      var s=((n.security||"")+"").toUpperCase();
+      if(s.indexOf("WPA3")>=0)w3++; else if(s.indexOf("WPA")>=0)w2++; else op++;
+    }
+    $("b24").textContent=b24;$("b5").textContent=b5;$("b6").textContent=b6;
+    $("sOpen").textContent=op;$("sWpa2").textContent=w2;$("sWpa3").textContent=w3;
+  }).catch(function(){}); }
+
+  $("toggle").onclick=function(){
+    if(running){ note("Stopping wardrive…");
+      post("/api/wardriving/stop",{}).then(function(r){note(r&&r.success?"Wardrive stopped":"Stop failed",r&&r.success);setTimeout(pull,800)}); }
+    else{ note("Starting wardrive…");
+      post("/api/wardriving/start",{}).then(function(r){
+        note(r&&r.success?"Wardrive started":("Can't start: "+((r&&(r.error||r.message))||blocker||"no radio")),r&&r.success);
+        setTimeout(function(){pullDiag();pull()},1200);
+      }).catch(function(){note("Start request failed",false)}); }
+  };
+
+  pullDiag(); pull(); pullNets();
+  setInterval(pull,2500); setInterval(pullDiag,9000); setInterval(pullNets,10000);
+})();
+</script>
+</body>
+</html>
