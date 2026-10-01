@@ -4,6 +4,13 @@
 
 ### 2026-10-01
 
+#### [#879](https://github.com/PierreGode/Ragnar/pull/879) — fix(display): don't error when an interface (e.g. usb0) is absent
+*Merged 2026-10-01 · branch `fix/usb0-missing-interface` · 2 file(s), +15 / −12*
+
+- `is_interface_connected()` returns `False` quietly when `/sys/class/net/<iface>` is missing; stops the per-poll `Cannot find device "usb0"` error on non-USB-gadget boxes (Wi-Fi / HAT / dongle, Pi Zero 2 W, VMs)
+- `is_usb_connected()` now reuses it (one code path); unchanged behaviour when `usb0` exists
+- **Docs:** [releases.md](releases.md)
+
 #### [#893](https://github.com/PierreGode/Ragnar/pull/893) — docs: per-PR release log (docs/releases.md)
 *Merged 2026-10-01 · branch `docs/releases-log` · 3 file(s)*
 
