@@ -2,6 +2,90 @@
 (() => {
   'use strict';
   const guides = {
+    ping: {
+      mode: "Sends ICMP probes",
+      what: "Five ping probes to one host with round-trip timing and packet-loss stats. The fastest way to confirm a host is reachable from the Pi.",
+      steps: ["Enter a hostname or IP (LAN or public).", "Run the tool.", "Read output.txt for replies, timing and 0% vs 100% loss."],
+      example: "192.168.86.1",
+      result: "Steady low times mean a healthy path. Rising times or loss suggest congestion or a flaky link.",
+      tip: "No reply does NOT mean the host is down \u2014 many devices (and most Windows hosts) firewall or drop ICMP. Confirm with a port or service check before concluding it is offline."
+    },
+    trace: {
+      mode: "Traces the network path",
+      what: "A numeric, bounded route trace (up to 16 hops) showing each router between the Pi and a target. Useful for locating where a path slows or stops.",
+      steps: ["Enter a hostname or IP.", "Run the tool.", "Read the hop list \u2014 each line is one router toward the target."],
+      example: "1.1.1.1",
+      result: "Hops that answer show their IP and timing. The trace ends at the target or the last router that replies.",
+      tip: "Lines of * * * are normal \u2014 many routers hide from traceroute. A trace that stalls partway usually means a firewall ahead, not a broken network."
+    },
+    dns: {
+      mode: "Queries DNS records",
+      what: "Looks up A, AAAA, MX, NS, TXT and CAA records for a hostname in one shot \u2014 how a name resolves and who runs its mail and DNS.",
+      steps: ["Enter a domain name (not an IP).", "Run the tool.", "Read output.txt for each record type."],
+      example: "example.com",
+      result: "A and AAAA are addresses, MX is mail, NS is the authoritative servers, TXT often holds SPF or verification strings.",
+      tip: "Empty sections just mean that record type is not set \u2014 not an error. Enter a name, not an IP; use WHOIS for ownership of an IP."
+    },
+    whois: {
+      mode: "Looks up registration data",
+      what: "Registration and allocation details for a domain or IP \u2014 registrar, org, dates, and the network block an IP belongs to.",
+      steps: ["Enter a domain or public IP.", "Run the tool.", "Read output.txt for registrar or org and dates."],
+      example: "example.com",
+      result: "Domains show registrar and expiry; IPs show the owning organization and network range.",
+      tip: "Private LAN IPs (192.168.x.x) and reserved ranges have no public WHOIS. Many registrars redact personal contacts by privacy policy."
+    },
+    interfaces: {
+      mode: "Reads local configuration",
+      what: "The Pi\u2019s own network picture: interface addresses, link state (up, down, no-carrier) and routes. Your first stop for choosing which interface to point a tool at.",
+      steps: ["Run the tool (no target needed).", "See which interfaces are UP and carry an IP.", "Note the interface that sits on your target LAN."],
+      result: "Each interface shows its addresses and state; the default route shows which one reaches the internet.",
+      tip: "An interface showing NO-CARRIER has nothing plugged in (common on eth0). Point tools at the interface actually on the LAN you want \u2014 the uplink is not always it."
+    },
+    neighbors: {
+      mode: "Reads the neighbor table",
+      what: "The ARP and IPv6 neighbor table for a chosen interface \u2014 devices the Pi has recently talked to on that link. A passive, no-probe view of nearby hosts.",
+      steps: ["Pick the interface on your target LAN.", "Run the tool.", "Read the IP-to-MAC entries and their state."],
+      result: "Each entry pairs an IP with a MAC and a state (REACHABLE, STALE and so on). It reflects recent traffic, not a full scan.",
+      tip: "A sparse table is normal right after boot or on a quiet link \u2014 it only lists hosts the Pi has actually contacted. Run a ping or service scan first to populate it, and pick the LAN interface, not the uplink."
+    },
+    services: {
+      mode: "Scans TCP ports",
+      what: "A focused Nmap scan of the top 100 TCP ports on one host with light service and version detection. The go-to for what a device is running.",
+      steps: ["Enter one host IP on your LAN.", "Run the tool (quiet pacing is available).", "Preview output for open ports and detected services."],
+      example: "192.168.86.1",
+      result: "Open ports list the service Nmap detected. Closed or filtered ports are omitted.",
+      tip: "All-filtered results usually mean a host firewall (common on Windows and phones), not an empty host. Scan one host at a time, and make sure you targeted a LAN IP, not the Pi itself."
+    },
+    tls_certificate: {
+      mode: "Inspects a TLS certificate",
+      what: "Opens a TLS handshake to one host and port and shows the certificate chain \u2014 issuer, subject, validity dates and SANs. Great for spotting expiring or mismatched certs.",
+      steps: ["Enter a hostname (port defaults to 443).", "Run the tool.", "Preview output for the certificate dates and issuer."],
+      example: "example.com",
+      result: "The chain shows each certificate\u2019s subject and issuer and its notBefore and notAfter dates. A self-signed or expired cert shows in the handshake text.",
+      tip: "Use the hostname, not the IP, so SNI presents the right cert. If it hangs or fails, the host may not speak TLS on that port \u2014 try the real port (8443, 993 and so on)."
+    },
+    ms17_check: {
+      mode: "Runs one detection script",
+      what: "Checks a host for the MS17-010 (EternalBlue) SMB flaw with Nmap\u2019s detection script. Detection only \u2014 it never exploits.",
+      steps: ["Enter one host IP that has SMB (port 445).", "Run the tool.", "Preview output for the script\u2019s verdict."],
+      example: "192.168.86.50",
+      result: "Reports VULNERABLE, patched, or could-not-determine \u2014 the last is common and not a clean bill of health.",
+      tip: "No result usually means port 445 is closed or filtered, or the host is not Windows SMB. Confirm 445 is open first with Service inventory. Only run against hosts in your own lab."
+    },
+    capture: {
+      mode: "Captures packets",
+      what: "A bounded packet capture on one interface \u2014 all traffic or a filter (DNS, DHCP, LLDP/CDP, mDNS/SSDP). Saves a PCAP to this network\u2019s loot.",
+      steps: ["Pick the interface on the LAN you want to observe.", "Choose a filter and duration, then Run.", "When it finishes, use Capture summary or download the PCAP."],
+      result: "A PCAP plus packet counts. Filtered captures such as DHCP stay quiet unless that traffic occurs during the window.",
+      tip: "Nothing captured is usually the wrong interface or a quiet window \u2014 pick the LAN interface (not a down eth0), lengthen the duration, or generate the traffic you filtered for. A monitor-mode radio will not see normal LAN traffic."
+    },
+    capture_summary: {
+      mode: "Reads a saved capture",
+      what: "Summarizes the first 200 packets of a previous Toolkit capture \u2014 protocols, talkers and services \u2014 without touching the network.",
+      steps: ["Run a Packet capture first.", "Select that completed capture job here.", "Run and Preview the protocol and host breakdown."],
+      result: "A readable rollup of who talked to whom and which protocols appeared in the sampled packets.",
+      tip: "It needs an existing capture job to read \u2014 run Packet capture first. It samples only the first 200 packets, so a large capture is summarized from its opening, not its entirety."
+    },
     internetdb: {
       mode: 'Looks up indexed data',
       what: 'A quick first look at what Shodan has already observed about a public IPv4 address. Useful for checking your internet-facing address without running a scan from the Pi.',

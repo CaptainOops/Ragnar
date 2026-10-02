@@ -23046,6 +23046,16 @@ def trigger_network_scan():
         shared_data.ragnarstatustext2 = f"Failed to start scan"
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# Lightweight per-target status for manual checks; independent of display text.
+_manual_vuln_jobs = {}
+_manual_vuln_lock = threading.Lock()
+
+@app.route('/api/manual/scan/vulnerability/status')
+def manual_vulnerability_job_status():
+    target = (request.args.get('ip') or '').strip()
+    with _manual_vuln_lock:
+        return jsonify(dict(_manual_vuln_jobs.get(target, {'state': 'unknown', 'message': 'No check tracked since service start'})))
+
 @app.route('/api/manual/scan/vulnerability', methods=['POST'])
 def trigger_vulnerability_scan():
     """Trigger a manual vulnerability scan using the proper NmapVulnScanner method"""
@@ -23064,6 +23074,16 @@ def trigger_vulnerability_scan():
             target_found = any(t.get('ip') == target_ip for t in available_targets)
             if not target_found:
                 return jsonify({'success': False, 'error': f'Target {target_ip} not found'}), 404
+
+        job_key = 'all' if is_all_targets else target_ip
+        with _manual_vuln_lock:
+            if any(j.get('state') == 'running' for j in _manual_vuln_jobs.values()):
+                return jsonify({'success': False, 'error': 'A manual vulnerability check is already running'}), 409
+            _manual_vuln_jobs[job_key] = {'state': 'running', 'ip': job_key, 'started': time.time(), 'message': 'Starting vulnerability check'}
+
+        def job_update(**fields):
+            with _manual_vuln_lock:
+                _manual_vuln_jobs[job_key].update(fields)
 
         status_target = 'All Targets' if is_all_targets else target_ip
 
@@ -23084,6 +23104,7 @@ def trigger_vulnerability_scan():
                 def progress_callback(event_type, data):
                     """Real-time callback for vulnerability scan progress"""
                     try:
+                        job_update(message=str(data.get("message") or event_type.replace("_", " ")))
                         if event_type == "scan_started":
                             shared_data.ragnarstatustext2 = f"Scanning {data.get('total_hosts', 0)} hosts"
                             broadcast_status_update()
@@ -23127,12 +23148,18 @@ def trigger_vulnerability_scan():
                         )
                         logger.info(f"Single host vulnerability scan completed for {target_ip}: {result}")
 
+                if not is_all_targets and str(result).lower() in {"failed", "error"}:
+                    job_update(state="failed", finished=time.time(), message="Scanner reported failure; inspect the saved report or logs")
+                else:
+                    job_update(state="completed", finished=time.time(), message="Check finished; refresh saved results below")
+
                 # Update status when scan completes
                 shared_data.ragnarstatustext = "IDLE"
                 shared_data.ragnarstatustext2 = "Vulnerability scan completed"
                 broadcast_status_update()
                 
             except Exception as e:
+                job_update(state="failed", finished=time.time(), message=str(e))
                 logger.error(f"Error executing vulnerability scan: {e}")
                 # Reset status on error
                 shared_data.ragnarstatustext = "IDLE"

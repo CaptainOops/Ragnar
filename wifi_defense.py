@@ -157,6 +157,10 @@ def _iw_dev_list():
         m = re.match(r"^(phy#\d+)", line)
         if m:
             cur_phy = m.group(1).replace("#", "")
+            cur = None
+            continue
+        if line.strip().startswith("Unnamed/non-netdev interface"):
+            cur = None
             continue
         m = re.match(r"^\s*Interface\s+(\S+)", line)
         if m:
@@ -186,8 +190,14 @@ def _resolve_monitor(interface, auto_enable=True):
     """
     state = _load_state()
     mon = state.get("mon_iface")
-    if mon and _iface_exists(mon):
+    devs = _iw_dev_list()
+    if mon and _iface_exists(mon) and devs.get(mon, {}).get("type") == "monitor":
         return mon
+    # Reuse a monitor already prepared by the mode-switch helper. Avoid
+    # tearing down a working USB radio just because our saved state is empty.
+    if devs.get(interface, {}).get("type") == "monitor":
+        _save_state({"mon_iface": interface, "base_iface": interface, "mode": "switch"})
+        return interface
     # A dedicated (boot-managed) monitor should still be present; if it vanished
     # (adapter re-plugged), re-claim the same interface in dedicated switch-mode
     # rather than adding a vif.
@@ -330,6 +340,19 @@ def enable_monitor(iface):
     # captures nothing. Take the managed base down while we monitor — this is what
     # makes capture reliable on mt7921u and friends. disable_monitor restores it.
     _run(["ip", "link", "set", iface, "down"], timeout=5)
+
+    # The out-of-tree ALFA driver does not reliably support an extra
+    # monitor VIF. Use the same single-interface path as Pwnagotchi.
+    driver = os.path.basename(os.path.realpath(
+        "/sys/class/net/" + iface + "/device/driver"))
+    if driver in {"rtl8812au", "8812au"}:
+        rc, _, err = _run([_IW, "dev", iface, "set", "type", "monitor"], timeout=8)
+        up_rc, _, up_err = _run(["ip", "link", "set", iface, "up"], timeout=5)
+        if rc == 0 and up_rc == 0 and _iw_dev_list().get(iface, {}).get("type") == "monitor":
+            _save_state({"mon_iface": iface, "base_iface": iface, "mode": "switch"})
+            return {"mon_iface": iface, "mode": "switch"}
+        _restore_iface(iface)
+        return {"error": "ALFA monitor setup failed: " + (err or up_err or "driver rejected monitor mode").strip()}
 
     # Try a concurrent monitor vif first.
     rc, _, err = _run([_IW, "phy", phy, "interface", "add", mon,
