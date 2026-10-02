@@ -21363,13 +21363,119 @@ async function runManualLynisPentest() {
 // RUBBER DUCKY SCRIPT EXECUTOR
 // ============================================================================
 
+// Which Ragnar the Rubber Ducky card drives. 'local' = this unit; otherwise a
+// mesh peer id, sent as X-Ragnar-Target so this unit's secret-gated mesh gateway
+// relays each call there (the peer must also tick "Allow mesh units to run
+// payloads"). Mirrors the Device Console's scState.
+const duckyState = { unit: 'local', units: [], gateway: false };
+
+function rdTarget() {
+    return (duckyState.unit && duckyState.unit !== 'local') ? duckyState.unit : null;
+}
+
+// fetch() that tags the request for the selected mesh unit when one is picked.
+function rdFetch(url, opts = {}) {
+    const t = rdTarget();
+    if (!t) return fetch(url, opts);
+    const o = Object.assign({}, opts);
+    o.headers = Object.assign({}, opts.headers || {}, { 'X-Ragnar-Target': t });
+    return fetch(url, o);
+}
+
 async function rubberDuckyInit() {
     /**Initialize rubber ducky UI on pentest tab load*/
+    await rubberDuckyRefreshUnits();
+    await rubberDuckyLoadMeshAllow();
     await rubberDuckyRefreshScripts();
     await rubberDuckyRefreshDevices();
     await rubberDuckyGadgetStatus();
     rubberDuckyLoadLibrary();
     revshellInit();
+}
+
+async function rubberDuckyRefreshUnits() {
+    /**Populate the "Run on" picker with this unit + mesh peers that have HID.*/
+    const sel = document.getElementById('rubber-ducky-unit');
+    if (!sel) return;
+    try {
+        const u = await (await fetch('/api/rubber-ducky/units')).json();
+        duckyState.units = u.units || [];
+        duckyState.gateway = !!u.gateway_ready;
+        const keep = duckyState.unit;
+        sel.innerHTML = duckyState.units.map(x => {
+            const tag = x.local ? 'This unit' : (x.name || x.id);
+            let note = '';
+            if (!x.local) {
+                if (!x.online) note = ' — offline';
+                else if (!x.reachable) note = ' — unreachable';
+                else if (!x.has_gadget) note = ' — no HID';
+                else note = x.mesh_allow ? ' — HID, mesh-allowed' : ' — HID (not allowed)';
+            } else if (!x.has_gadget) {
+                note = ' — no HID gadget';
+            }
+            return `<option value="${escapeHtml(x.id)}">${escapeHtml(tag + note)}</option>`;
+        }).join('');
+        sel.value = duckyState.units.some(x => x.id === keep) ? keep : 'local';
+        duckyState.unit = sel.value;
+    } catch (e) { /* mesh off/unavailable: stay on this unit */ }
+    rubberDuckyUpdateUnitNote();
+}
+
+function rubberDuckyCurrentUnit() {
+    return duckyState.units.find(x => x.id === duckyState.unit) || { id: duckyState.unit, local: duckyState.unit === 'local' };
+}
+
+function rubberDuckyUpdateUnitNote() {
+    /**Explain why a selected peer can't be driven yet (no secret / not allowed).*/
+    const note = document.getElementById('rubber-ducky-unit-note');
+    if (!note) return;
+    const u = rubberDuckyCurrentUnit();
+    let msg = '';
+    if (!u.local) {
+        if (!duckyState.gateway) msg = 'Driving another unit needs the mesh secret armed on both units (Config → Mesh).';
+        else if (u.online === false) msg = 'That unit is offline.';
+        else if (u.reachable === false) msg = 'That unit is unreachable over the mesh.';
+        else if (!u.has_gadget) msg = 'That unit has no USB HID gadget configured.';
+        else if (!u.mesh_allow) msg = 'That unit has not ticked “Allow mesh units to run payloads”. Enable it on that unit’s Rubber Ducky card.';
+    }
+    note.textContent = msg;
+    note.classList.toggle('hidden', !msg);
+}
+
+function rubberDuckyUnitChanged() {
+    const sel = document.getElementById('rubber-ducky-unit');
+    duckyState.unit = sel ? sel.value : 'local';
+    rubberDuckyUpdateUnitNote();
+    // Re-pull everything from the newly-selected unit.
+    rubberDuckyRefreshScripts();
+    rubberDuckyRefreshDevices();
+    rubberDuckyGadgetStatus();
+    rubberDuckyLoadLibrary();
+    const sea = document.getElementById('rubber-ducky-preview');
+    if (sea) sea.classList.add('hidden');
+}
+
+async function rubberDuckyLoadMeshAllow() {
+    /**Reflect THIS unit's "allow mesh HID" flag in the checkbox (always local).*/
+    const cb = document.getElementById('rubber-ducky-mesh-allow');
+    if (!cb) return;
+    try {
+        const d = await (await fetch('/api/rubber-ducky/mesh-allow')).json();
+        cb.checked = !!d.mesh_allow;
+    } catch (e) { /* leave unchecked */ }
+}
+
+async function rubberDuckyMeshAllowChanged() {
+    /**Set THIS unit's opt-in (never relayed — each unit governs its own HID).*/
+    const cb = document.getElementById('rubber-ducky-mesh-allow');
+    if (!cb) return;
+    try {
+        const r = await fetch('/api/rubber-ducky/mesh-allow', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ allow: cb.checked }) });
+        const d = await r.json();
+        if (!d.success) { cb.checked = !cb.checked; }
+    } catch (e) { cb.checked = !cb.checked; }
 }
 
 async function _rdJson(r) {
@@ -21394,8 +21500,8 @@ async function rubberDuckyLoadLibrary() {
         // Fetch both sources; a failure of either (e.g. no RagnarScripts clone)
         // must not blank the whole list, so each falls back to empty.
         const [libData, ragData] = await Promise.all([
-            fetch('/api/rubber-ducky/library').then(_rdJson).catch(() => ({ payloads: [] })),
-            fetch('/api/rubber-ducky/ragnar-scripts').then(_rdJson).catch(() => ({ available: false, scripts: [] })),
+            rdFetch('/api/rubber-ducky/library').then(_rdJson).catch(() => ({ payloads: [] })),
+            rdFetch('/api/rubber-ducky/ragnar-scripts').then(_rdJson).catch(() => ({ available: false, scripts: [] })),
         ]);
         const rows = [];
         ((libData && libData.payloads) || []).forEach(p =>
@@ -21430,7 +21536,7 @@ async function rubberDuckyLoadLibrary() {
 async function rubberDuckyInstall(name) {
     /**Copy a library payload into the scripts folder and select it*/
     try {
-        const r = await fetch('/api/rubber-ducky/library/install', {
+        const r = await rdFetch('/api/rubber-ducky/library/install', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name })
         });
@@ -21448,7 +21554,7 @@ async function rubberDuckyInstallRagnar(name) {
     /**Install a RagnarScripts payload (routed here from the combined Payload
        Library list), then select it and refresh the list's Install/Reinstall.*/
     try {
-        const r = await fetch('/api/rubber-ducky/ragnar-scripts/install', {
+        const r = await rdFetch('/api/rubber-ducky/ragnar-scripts/install', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name })
         });
@@ -21477,7 +21583,7 @@ async function rubberDuckyEditLoad() {
     const name = document.getElementById('rubber-ducky-script-select').value;
     if (!name) { alert('Select a script first'); return; }
     try {
-        const r = await fetch(`/api/files/preview?path=${encodeURIComponent('/rubber-ducky/' + name)}`);
+        const r = await rdFetch(`/api/files/preview?path=${encodeURIComponent('/rubber-ducky/' + name)}`);
         const data = await r.json();
         if (data.type !== 'text') throw new Error('not a text file');
         document.getElementById('rubber-ducky-edit-name').value = name;
@@ -21494,7 +21600,7 @@ async function rubberDuckyEditSave() {
     const statusDiv = document.getElementById('rubber-ducky-status');
     const statusMsg = document.getElementById('rubber-ducky-status-message');
     try {
-        const r = await fetch('/api/rubber-ducky/save', {
+        const r = await rdFetch('/api/rubber-ducky/save', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, content })
         });
@@ -21543,7 +21649,7 @@ function rubberDuckyRenderGadget(data) {
 async function rubberDuckyGadgetStatus() {
     /**Fetch and render the HID gadget status*/
     try {
-        const r = await fetch('/api/rubber-ducky/gadget/status');
+        const r = await rdFetch('/api/rubber-ducky/gadget/status');
         rubberDuckyRenderGadget(await r.json());
     } catch (e) {
         rubberDuckyRenderGadget({ ok: false, error: e.message });
@@ -21555,7 +21661,7 @@ async function rubberDuckyGadget(action) {
     const el = document.getElementById('rubber-ducky-gadget-status');
     if (el) { el.textContent = action === 'enable' ? 'Enabling…' : 'Disabling…'; el.className = 'text-xs text-blue-300 mt-1'; }
     try {
-        const r = await fetch(`/api/rubber-ducky/gadget/${action}`, { method: 'POST' });
+        const r = await rdFetch(`/api/rubber-ducky/gadget/${action}`, { method: 'POST' });
         rubberDuckyRenderGadget(await r.json());
     } catch (e) {
         rubberDuckyRenderGadget({ ok: false, error: e.message });
@@ -21567,7 +21673,7 @@ async function rubberDuckyGadget(action) {
 async function rubberDuckyRefreshScripts() {
     /**Fetch and populate script list*/
     try {
-        const response = await fetch('/api/rubber-ducky/scripts');
+        const response = await rdFetch('/api/rubber-ducky/scripts');
         const data = await response.json();
 
         if (!data.success) {
@@ -21628,7 +21734,7 @@ async function rubberDuckyUploadScript(input) {
 async function rubberDuckyRefreshDevices() {
     /**Fetch and populate HID device list*/
     try {
-        const response = await fetch('/api/rubber-ducky/devices');
+        const response = await rdFetch('/api/rubber-ducky/devices');
         const data = await response.json();
 
         if (!data.success) {
@@ -21671,7 +21777,7 @@ async function rubberDuckyOnScriptSelect() {
             return;
         }
 
-        const response = await fetch('/api/rubber-ducky/preview', {
+        const response = await rdFetch('/api/rubber-ducky/preview', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ script: scriptName })
@@ -21719,7 +21825,7 @@ async function rubberDuckyExecute() {
         statusMsg.className = 'rounded-lg border border-blue-700 bg-blue-900/70 px-4 py-3 text-sm text-blue-200';
         statusDiv.classList.remove('hidden');
 
-        const response = await fetch('/api/rubber-ducky/execute', {
+        const response = await rdFetch('/api/rubber-ducky/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

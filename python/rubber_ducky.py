@@ -8,6 +8,7 @@ Only use on systems you own or have explicit permission to test.
 """
 
 import os
+import json
 import time
 import logging
 from typing import List, Dict, Optional, Tuple
@@ -420,6 +421,50 @@ def list_hid_devices() -> List[Dict]:
 # Resolve from this module's location so the executor and the web upload target
 # always agree regardless of the process working directory.
 DEFAULT_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / 'files' / 'rubber-ducky'
+
+# ---------------------------------------------------------------------------
+# Mesh HID control opt-in.
+#
+# By default a Ragnar's USB HID gadget is driven only from its OWN dashboard.
+# When this unit is plugged into a host PC via USB-OTG its Ethernet/OTG port is
+# taken, so it runs on Wi-Fi — and another Ragnar on the mesh can drive its HID
+# over the tailnet. That cross-unit control is OFF until the operator ticks
+# "Allow mesh units to run payloads" here, mirroring the Device Console's
+# share/allow-write gate. The relayed request still has to clear the mesh
+# secret (the web-server gateway), so this flag is a second, per-unit opt-in on
+# top of that, never the only thing standing between a peer and the keyboard.
+# ---------------------------------------------------------------------------
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'data' / 'rubber_ducky.json'
+
+
+def _load_config() -> Dict:
+    try:
+        return json.loads(_CONFIG_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _save_config(cfg: Dict) -> bool:
+    try:
+        _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
+        return True
+    except Exception as e:
+        logger.error(f"Error saving rubber ducky config: {e}")
+        return False
+
+
+def mesh_allowed() -> bool:
+    """True when this unit lets mesh peers run payloads on its HID gadget."""
+    return bool(_load_config().get('mesh_allow'))
+
+
+def set_mesh_allowed(value) -> Dict:
+    """Enable/disable mesh-driven HID control on this unit."""
+    cfg = _load_config()
+    cfg['mesh_allow'] = bool(value)
+    ok = _save_config(cfg)
+    return {'success': ok, 'mesh_allow': bool(value)}
 
 
 def list_scripts(scripts_dir=None) -> List[Dict]:

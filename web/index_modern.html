@@ -4682,6 +4682,19 @@
                     </div>
                     <span class="text-xs text-yellow-200 bg-yellow-900/50 px-3 py-1 rounded-full">Requires HID Gadget</span>
                 </div>
+                <!-- Mesh: drive another Ragnar's HID over the tailnet (e.g. a unit
+                     whose OTG port is busy on a host PC so it rides Wi-Fi). -->
+                <div class="flex flex-wrap items-center gap-2 mb-3">
+                    <label class="text-xs uppercase tracking-wide text-gray-400">Run on</label>
+                    <select id="rubber-ducky-unit" onchange="rubberDuckyUnitChanged()" title="Which Ragnar's USB HID to drive" class="bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-sm text-gray-300">
+                        <option value="local">This unit</option>
+                    </select>
+                    <button onclick="rubberDuckyRefreshUnits()" title="Rescan mesh units" class="bg-slate-700 hover:bg-slate-600 text-white px-2 py-1.5 rounded text-sm">↻</button>
+                    <label class="flex items-center gap-1 text-xs text-gray-400 sm:ml-auto" title="Let another Ragnar on the mesh run Ducky payloads on THIS unit's USB HID. Requires the mesh secret armed on both units.">
+                        <input type="checkbox" id="rubber-ducky-mesh-allow" onchange="rubberDuckyMeshAllowChanged()"> Allow mesh units to run payloads on this unit
+                    </label>
+                </div>
+                <p id="rubber-ducky-unit-note" class="text-xs text-amber-300/80 mb-3 hidden"></p>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                         <label class="text-xs uppercase tracking-wide text-gray-400">Select Script</label>
@@ -9367,7 +9380,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20261002-ragnarscripts-merged"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20261002-ducky-mesh"></script>
 
 
 

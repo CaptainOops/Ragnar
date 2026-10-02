@@ -4,6 +4,15 @@
 
 ### 2026-10-02
 
+#### [#905](https://github.com/PierreGode/Ragnar/pull/905) — feat(ducky): drive the Rubber Ducky HID across the mesh
+*branch `feat/ducky-mesh` · 6 file(s)*
+
+- A Ragnar plugged into a host PC via USB-OTG can't use wired Ethernet at the same time, so it rides Wi-Fi — and now a **second Ragnar on the mesh can run Ducky payloads on its HID**, the same way the Device Console is driven across the mesh
+- **Run on** picker added to the Rubber Ducky card (this unit + mesh peers, each showing HID/allowed state); selecting a peer tags every script/device/preview/execute/install call with `X-Ragnar-Target` so this unit's secret-gated gateway relays it (`duckyState` + `rdFetch` in ragnar_modern.js)
+- **Allow mesh units to run payloads on this unit** checkbox (off by default), persisted in `data/rubber_ducky.json` (`mesh_allowed()` / `set_mesh_allowed()` in `python/rubber_ducky.py`). `_ducky_mesh_write_guard()` refuses a *relayed* execute / gadget enable-disable / save / install unless the target unit ticked it — so the two gates are independent: the **mesh secret** authorises transport, the **checkbox** is the target's per-unit opt-in
+- New endpoints: `GET /api/rubber-ducky/units`, `GET/POST /api/rubber-ducky/mesh-allow`, and the peer-discovery `GET /api/mesh/rubber-ducky/status`
+- **Docs:** [rubber-ducky.md](rubber-ducky.md) "Driving another unit over the mesh"
+
 #### [#904](https://github.com/PierreGode/Ragnar/pull/904) — feat(scripts): install ducky + console scripts from the external RagnarScripts library
 *branch `feat/ragnarscripts-install-library` · 12 file(s)*
 

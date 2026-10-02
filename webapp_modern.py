@@ -20656,6 +20656,115 @@ def pentest_get_report():
         return jsonify({'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Rubber Ducky — mesh HID control
+# ---------------------------------------------------------------------------
+# A Ragnar plugged into a host PC via USB-OTG can't use its wired port at the
+# same time, so it rides Wi-Fi — and another Ragnar on the mesh can drive its
+# HID keyboard over the tailnet, exactly the way the Device Console is driven
+# across the mesh. Transport is the existing secret-gated web gateway
+# (X-Ragnar-Target relayed to the peer); on top of that each unit must opt in
+# with "Allow mesh units to run payloads" (rubber_ducky.mesh_allowed()), which
+# _ducky_mesh_write_guard() enforces on every state-changing, relayed request.
+
+def _rubber_ducky_summary():
+    """This unit's HID/ducky posture, for the unit picker and peer discovery."""
+    from python.rubber_ducky import (list_hid_devices, hid_gadget_ready,
+                                     list_scripts, mesh_allowed)
+    devices = list_hid_devices()
+    ready = hid_gadget_ready()
+    return {'has_gadget': bool(devices) or bool(ready),
+            'gadget_ready': bool(ready),
+            'script_count': len(list_scripts()),
+            'mesh_allow': mesh_allowed()}
+
+
+def _ducky_mesh_write_guard():
+    """For a ducky request relayed from a mesh peer (``g.mesh_gateway``), refuse
+    a state-changing op unless this unit ticked "Allow mesh units to run
+    payloads". Returns a Flask response to short-circuit, or None to proceed."""
+    if not getattr(g, 'mesh_gateway', False):
+        return None
+    try:
+        from python.rubber_ducky import mesh_allowed
+        if mesh_allowed():
+            return None
+    except Exception as e:
+        logger.error(f"ducky mesh guard error: {e}")
+    return jsonify({'success': False, 'error': (
+        'This unit has not enabled mesh HID control. Tick "Allow mesh units to '
+        'run payloads" on its Rubber Ducky card.')}), 403
+
+
+@app.route('/api/mesh/rubber-ducky/status', methods=['GET'])
+def api_mesh_rubber_ducky_status():
+    """Peer-readable (GET under /api/mesh/): lets a hub discover which mesh units
+    have a USB HID gadget and whether they've opted into mesh control. No control
+    here — running a payload goes through the secret-gated gateway + the guard."""
+    try:
+        out = _rubber_ducky_summary()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    out.update({'success': True, 'name': _mesh_viking_name() or socket.gethostname()})
+    return jsonify(out)
+
+
+@app.route('/api/rubber-ducky/units', methods=['GET'])
+def api_rubber_ducky_units():
+    """This unit plus every mesh peer with its HID summary, so the Rubber Ducky
+    card can run a payload on any Ragnar wired to a host. Driving a peer relays
+    through the mesh gateway, which needs the mesh secret."""
+    units = []
+    try:
+        local = _rubber_ducky_summary()
+    except Exception as e:
+        local = {'has_gadget': False, 'error': str(e)}
+    local.update({'id': 'local', 'name': (_mesh_viking_name() if mesh_available else None)
+                  or socket.gethostname(), 'local': True, 'reachable': True})
+    units.append(local)
+    gateway_ready = False
+    if mesh_available and _mesh_enabled():
+        gateway_ready = bool(_mesh_secret())
+        peers = _mesh_tagged_peers()
+        results = {}
+
+        def _poll(node):
+            results[node.get('id')] = mesh_manager.poll_peer(
+                node, port=_mesh_node_port(), timeout=4,
+                path='/api/mesh/rubber-ducky/status')
+
+        threads = [threading.Thread(target=_poll, args=(p,), daemon=True)
+                   for p in peers if p.get('online') and p.get('id')]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=6)
+        for p in peers:
+            r = results.get(p.get('id')) or {}
+            units.append({'id': p.get('id'), 'local': False,
+                          'name': r.get('name') or p.get('hostname') or p.get('dns_name'),
+                          'online': bool(p.get('online')),
+                          'reachable': bool(r.get('reachable')) and bool(r.get('success')),
+                          'has_gadget': bool(r.get('has_gadget')),
+                          'gadget_ready': bool(r.get('gadget_ready')),
+                          'mesh_allow': bool(r.get('mesh_allow')),
+                          'script_count': r.get('script_count'),
+                          'error': r.get('error') if not r.get('reachable') else None})
+    return jsonify({'units': units, 'gateway_ready': gateway_ready,
+                    'mesh_enabled': bool(mesh_available and _mesh_enabled())})
+
+
+@app.route('/api/rubber-ducky/mesh-allow', methods=['GET', 'POST'])
+def api_rubber_ducky_mesh_allow():
+    """Get or set THIS unit's opt-in to mesh-driven HID control (the checkbox).
+    Always local — never relayed — so each unit governs its own HID."""
+    from python.rubber_ducky import mesh_allowed, set_mesh_allowed
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        return jsonify(set_mesh_allowed(bool(data.get('allow'))))
+    return jsonify({'success': True, 'mesh_allow': mesh_allowed()})
+
+
 # Rubber Ducky Routes
 @app.route('/api/rubber-ducky/scripts', methods=['GET'])
 def rubber_ducky_list_scripts():
@@ -20748,6 +20857,9 @@ def rubber_ducky_execute():
     global ``enable_attacks`` flag.
     """
     try:
+        guard = _ducky_mesh_write_guard()
+        if guard:
+            return guard
         data = request.get_json() or {}
         script_name = data.get('script')
         device_path = data.get('device')
@@ -20838,6 +20950,9 @@ def rubber_ducky_gadget_status():
 @app.route('/api/rubber-ducky/gadget/enable', methods=['POST'])
 def rubber_ducky_gadget_enable():
     """Bring the HID keyboard gadget up on demand (adds hid.usb0, binds)."""
+    guard = _ducky_mesh_write_guard()
+    if guard:
+        return guard
     payload, status = _rubber_ducky_gadget('up')
     logger.info(f"Rubber Ducky gadget enable: {payload}")
     return jsonify(payload), status
@@ -20846,6 +20961,9 @@ def rubber_ducky_gadget_enable():
 @app.route('/api/rubber-ducky/gadget/disable', methods=['POST'])
 def rubber_ducky_gadget_disable():
     """Tear the HID keyboard gadget down on demand (removes hid.usb0)."""
+    guard = _ducky_mesh_write_guard()
+    if guard:
+        return guard
     payload, status = _rubber_ducky_gadget('down')
     logger.info(f"Rubber Ducky gadget disable: {payload}")
     return jsonify(payload), status
@@ -20867,6 +20985,9 @@ def rubber_ducky_library():
 def rubber_ducky_library_install():
     """Copy a library payload into the editable scripts folder."""
     try:
+        guard = _ducky_mesh_write_guard()
+        if guard:
+            return guard
         from python.rubber_ducky import install_payload
         name = (request.get_json() or {}).get('name')
         result = install_payload(name)
@@ -20891,6 +21012,9 @@ def rubber_ducky_ragnar_scripts():
 def rubber_ducky_ragnar_scripts_install():
     """Install a ducky payload from the RagnarScripts repo into files/rubber-ducky/."""
     try:
+        guard = _ducky_mesh_write_guard()
+        if guard:
+            return guard
         from python.rubber_ducky import install_ragnar_script
         name = (request.get_json(silent=True) or {}).get('name')
         result = install_ragnar_script(name)
@@ -20904,6 +21028,9 @@ def rubber_ducky_ragnar_scripts_install():
 def rubber_ducky_save():
     """Create or overwrite a script in the editable scripts folder."""
     try:
+        guard = _ducky_mesh_write_guard()
+        if guard:
+            return guard
         from python.rubber_ducky import save_script
         data = request.get_json() or {}
         result = save_script(data.get('name'), data.get('content', ''))
