@@ -20611,13 +20611,323 @@ def pentest_get_report():
     try:
         if not BLUETOOTH_PENTEST_AVAILABLE or bluetooth_pentest is None:
             return jsonify({'error': 'Bluetooth pentest module not available'}), 503
-        
+
         report = bluetooth_pentest.generate_report()
-        
+
         return jsonify(report)
-        
+
     except Exception as e:
         logger.error(f"Error generating report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Rubber Ducky Routes
+@app.route('/api/rubber-ducky/scripts', methods=['GET'])
+def rubber_ducky_list_scripts():
+    """List available rubber ducky scripts"""
+    try:
+        from python.rubber_ducky import list_scripts
+        scripts = list_scripts()
+        return jsonify({
+            'success': True,
+            'scripts': scripts,
+            'count': len(scripts)
+        })
+    except Exception as e:
+        logger.error(f"Error listing scripts: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/devices', methods=['GET'])
+def rubber_ducky_list_devices():
+    """List available HID keyboard gadget devices"""
+    try:
+        from python.rubber_ducky import list_hid_devices, hid_gadget_ready
+        devices = list_hid_devices()
+        return jsonify({
+            'success': True,
+            'devices': devices,
+            'count': len(devices),
+            'gadget_ready': hid_gadget_ready(),
+            'hint': ('No USB HID keyboard gadget found. Configure the HID gadget '
+                     '(reinstall or update Ragnar) and plug the device into the '
+                     'target host via USB.') if not devices else ''
+        })
+    except Exception as e:
+        logger.error(f"Error listing HID devices: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/preview', methods=['POST'])
+def rubber_ducky_preview():
+    """Preview a rubber ducky script"""
+    try:
+        data = request.get_json() or {}
+        script_name = data.get('script')
+
+        if not script_name:
+            return jsonify({'error': 'Script name required'}), 400
+
+        from python.rubber_ducky import RubberDuckyScript, list_scripts
+
+        # Find script
+        scripts = list_scripts()
+        script_path = None
+        for script in scripts:
+            if script['name'] == script_name:
+                script_path = script['path']
+                break
+
+        if not script_path:
+            return jsonify({'error': f'Script not found: {script_name}'}), 404
+
+        # Read script content
+        with open(script_path, 'r') as f:
+            content = f.read()
+
+        # Parse based on file extension
+        duck = RubberDuckyScript()
+        if script_path.endswith('.ducky'):
+            success = duck.parse_ducky_format(content)
+        else:
+            success = duck.parse_text_format(content)
+
+        return jsonify({
+            'success': success,
+            'preview': duck.get_preview(),
+            'command_count': len(duck.commands),
+            'errors': duck.errors
+        })
+
+    except Exception as e:
+        logger.error(f"Error previewing script: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/execute', methods=['POST'])
+def rubber_ducky_execute():
+    """Execute a rubber ducky script on a device.
+
+    Gated only by Pentest Mode (the tab is hidden otherwise), exactly like the
+    other manual Pentest-tab tools — it deliberately does NOT depend on the
+    global ``enable_attacks`` flag.
+    """
+    try:
+        data = request.get_json() or {}
+        script_name = data.get('script')
+        device_path = data.get('device')
+
+        if not script_name or not device_path:
+            return jsonify({'error': 'Script and device required'}), 400
+
+        from python.rubber_ducky import RubberDuckyScript, list_scripts
+
+        # Validate device path (security check): only the HID keyboard gadget
+        # node may be written to, never an arbitrary file.
+        if not device_path.startswith('/dev/hidg') or '..' in device_path:
+            return jsonify({'error': 'Invalid device path'}), 400
+
+        # Find script
+        scripts = list_scripts()
+        script_path = None
+        for script in scripts:
+            if script['name'] == script_name:
+                script_path = script['path']
+                break
+
+        if not script_path:
+            return jsonify({'error': f'Script not found: {script_name}'}), 404
+
+        # Read script content
+        with open(script_path, 'r') as f:
+            content = f.read()
+
+        # Parse based on file extension
+        duck = RubberDuckyScript()
+        if script_path.endswith('.ducky'):
+            success = duck.parse_ducky_format(content)
+        else:
+            success = duck.parse_text_format(content)
+
+        if not success:
+            return jsonify({
+                'success': False,
+                'error': 'Script parsing failed',
+                'errors': duck.errors
+            }), 400
+
+        # Execute (sync for now, could be async later)
+        result = duck.execute_on_device(device_path, timeout=30)
+
+        logger.info(f"Rubber Ducky execution on {device_path}: {result}")
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error executing script: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def _rubber_ducky_gadget(cmd):
+    """Run scripts/hid_gadget.sh <cmd> and return (parsed_json, http_status).
+
+    On-demand control of the HID keyboard gadget (status/up/down). The webapp
+    runs as root in production; fall back to sudo -n otherwise.
+    """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', 'hid_gadget.sh')
+    if not os.path.exists(script):
+        return {'ok': False, 'error': 'scripts/hid_gadget.sh missing — update Ragnar'}, 500
+    argv = ['bash', script, cmd]
+    if os.geteuid() != 0:
+        argv = ['sudo', '-n'] + argv
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        out = (proc.stdout or '').strip()
+        try:
+            payload = json.loads(out.splitlines()[-1]) if out else {}
+        except (ValueError, IndexError):
+            payload = {'ok': False, 'error': (proc.stderr or out or 'no output').strip()[:300]}
+        return payload, (200 if payload.get('ok') else 500)
+    except Exception as e:
+        logger.error(f"HID gadget {cmd} failed: {e}")
+        return {'ok': False, 'error': str(e)}, 500
+
+
+@app.route('/api/rubber-ducky/gadget/status', methods=['GET'])
+def rubber_ducky_gadget_status():
+    """Report HID keyboard gadget state (UDC / bound / hidg0 / attached)."""
+    payload, status = _rubber_ducky_gadget('status')
+    return jsonify(payload), status
+
+
+@app.route('/api/rubber-ducky/gadget/enable', methods=['POST'])
+def rubber_ducky_gadget_enable():
+    """Bring the HID keyboard gadget up on demand (adds hid.usb0, binds)."""
+    payload, status = _rubber_ducky_gadget('up')
+    logger.info(f"Rubber Ducky gadget enable: {payload}")
+    return jsonify(payload), status
+
+
+@app.route('/api/rubber-ducky/gadget/disable', methods=['POST'])
+def rubber_ducky_gadget_disable():
+    """Tear the HID keyboard gadget down on demand (removes hid.usb0)."""
+    payload, status = _rubber_ducky_gadget('down')
+    logger.info(f"Rubber Ducky gadget disable: {payload}")
+    return jsonify(payload), status
+
+
+@app.route('/api/rubber-ducky/library', methods=['GET'])
+def rubber_ducky_library():
+    """List the bundled payload library."""
+    try:
+        from python.rubber_ducky import list_library
+        payloads = list_library()
+        return jsonify({'success': True, 'payloads': payloads, 'count': len(payloads)})
+    except Exception as e:
+        logger.error(f"Error listing payload library: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/library/install', methods=['POST'])
+def rubber_ducky_library_install():
+    """Copy a library payload into the editable scripts folder."""
+    try:
+        from python.rubber_ducky import install_payload
+        name = (request.get_json() or {}).get('name')
+        result = install_payload(name)
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Error installing payload: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/save', methods=['POST'])
+def rubber_ducky_save():
+    """Create or overwrite a script in the editable scripts folder."""
+    try:
+        from python.rubber_ducky import save_script
+        data = request.get_json() or {}
+        result = save_script(data.get('name'), data.get('content', ''))
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Error saving script: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Reverse shell generator + catch listener (Pentest-tab tool)
+@app.route('/api/revshell/generate', methods=['POST'])
+def revshell_generate():
+    """Generate reverse-shell one-liners for an LHOST/LPORT."""
+    try:
+        from python.revshell import generate, get_lan_ip
+        data = request.get_json() or {}
+        ip = (data.get('ip') or '').strip() or get_lan_ip()
+        try:
+            port = int(data.get('port') or 4444)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Invalid port'}), 400
+        if not (1 <= port <= 65535):
+            return jsonify({'error': 'Port must be 1-65535'}), 400
+        shell = data.get('shell') or '/bin/bash'
+        return jsonify({'success': True, 'ip': ip, 'port': port,
+                        'payloads': generate(ip, port, shell)})
+    except Exception as e:
+        logger.error(f"Error generating reverse shell: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/revshell/lan-ip', methods=['GET'])
+def revshell_lan_ip():
+    """Return the box's primary LAN IP (default LHOST)."""
+    try:
+        from python.revshell import get_lan_ip
+        return jsonify({'success': True, 'ip': get_lan_ip()})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/revshell/listener/start', methods=['POST'])
+def revshell_listener_start():
+    """Start the catch listener on a port."""
+    try:
+        from python.revshell import LISTENER
+        port = (request.get_json() or {}).get('port', 4444)
+        result = LISTENER.start(port)
+        logger.info(f"Reverse shell listener start: {result}")
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Error starting listener: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/revshell/listener/status', methods=['GET'])
+def revshell_listener_status():
+    """Listener state + captured output."""
+    try:
+        from python.revshell import LISTENER
+        return jsonify(LISTENER.status())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/revshell/listener/send', methods=['POST'])
+def revshell_listener_send():
+    """Send a command line to the connected session."""
+    try:
+        from python.revshell import LISTENER
+        result = LISTENER.send((request.get_json() or {}).get('data', ''))
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/revshell/listener/stop', methods=['POST'])
+def revshell_listener_stop():
+    """Stop the catch listener."""
+    try:
+        from python.revshell import LISTENER
+        return jsonify(LISTENER.stop())
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
@@ -23723,7 +24033,8 @@ def list_files_api():
                 {'name': 'logs', 'is_directory': True, 'path': '/logs'},
                 {'name': 'backups', 'is_directory': True, 'path': '/backups'},
                 {'name': 'uploads', 'is_directory': True, 'path': '/uploads'},
-                {'name': 'console_scripts', 'is_directory': True, 'path': '/console_scripts'}
+                {'name': 'console_scripts', 'is_directory': True, 'path': '/console_scripts'},
+                {'name': 'rubber-ducky', 'is_directory': True, 'path': '/rubber-ducky'}
             ])
         
         # Map paths to actual directories
@@ -23763,6 +24074,12 @@ def list_files_api():
             try:
                 actual_path = _resolve_legacy_path('/console_scripts',
                     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), path)
+            except ValueError:
+                return jsonify({'error': 'Invalid path'}), 400
+        elif path == '/rubber-ducky' or path.startswith('/rubber-ducky/'):
+            try:
+                actual_path = _resolve_legacy_path('/rubber-ducky',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), path)
             except ValueError:
                 return jsonify({'error': 'Invalid path'}), 400
         else:
@@ -23869,6 +24186,12 @@ def preview_file_api():
                     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid path'}), 400
+        elif file_path == '/rubber-ducky' or file_path.startswith('/rubber-ducky/'):
+            try:
+                actual_path = _resolve_legacy_path('/rubber-ducky',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid path'}), 400
         else:
             return jsonify({'error': 'Invalid path'}), 400
 
@@ -23883,7 +24206,8 @@ def preview_file_api():
         ext = os.path.splitext(actual_path)[1].lower()
 
         TEXT_EXTENSIONS = {'.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml',
-                           '.md', '.conf', '.cfg', '.ini', '.nmap', '.gnmap', '.sh', '.py'}
+                           '.md', '.conf', '.cfg', '.ini', '.nmap', '.gnmap', '.sh', '.py',
+                           '.ducky'}
         IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'}
 
         if ext == '.pdf' or mime_type == 'application/pdf':
@@ -23931,7 +24255,7 @@ EDITABLE_EXTENSIONS = {'.txt', '.log', '.json', '.xml', '.yaml', '.yml',
                        '.md', '.conf', '.cfg', '.ini', '.sh', '.py',
                        '.csv', '.env', '.toml', '.html', '.css', '.js',
                        '.bat', '.ps1', '.rb', '.pl', '.lua', '.sql',
-                       '.nmap', '.gnmap', '.rules'}
+                       '.nmap', '.gnmap', '.rules', '.ducky'}
 
 @app.route('/api/files/save', methods=['POST'])
 def save_file_api():
@@ -24019,6 +24343,12 @@ def download_file_api():
                     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid file path'}), 400
+        elif file_path == '/rubber-ducky' or file_path.startswith('/rubber-ducky/'):
+            try:
+                actual_path = _resolve_legacy_path('/rubber-ducky',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid file path'}), 400
         else:
             return jsonify({'error': 'Invalid file path'}), 400
 
@@ -24100,6 +24430,12 @@ def delete_file_api():
                     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
             except ValueError:
                 return jsonify({'error': 'Invalid file path'}), 400
+        elif file_path == '/rubber-ducky' or file_path.startswith('/rubber-ducky/'):
+            try:
+                actual_path = _resolve_legacy_path('/rubber-ducky',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), file_path)
+            except ValueError:
+                return jsonify({'error': 'Invalid file path'}), 400
         else:
             return jsonify({'error': 'Invalid file path'}), 400
 
@@ -24132,6 +24468,9 @@ def _resolve_upload_target(target_path):
         return _resolve_legacy_path('/uploads', shared_data.upload_dir, target_path)
     if target_path == '/backups' or target_path.startswith('/backups/'):
         return _resolve_legacy_path('/backups', shared_data.backupdir, target_path)
+    if target_path == '/rubber-ducky' or target_path.startswith('/rubber-ducky/'):
+        return _resolve_legacy_path('/rubber-ducky',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), target_path)
     raise ValueError('Invalid upload path')
 
 
@@ -24163,6 +24502,9 @@ def _resolve_readable_path(file_path):
     if file_path == '/console_scripts' or file_path.startswith('/console_scripts/'):
         return _resolve_legacy_path('/console_scripts',
             os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), file_path)
+    if file_path == '/rubber-ducky' or file_path.startswith('/rubber-ducky/'):
+        return _resolve_legacy_path('/rubber-ducky',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), file_path)
     raise ValueError('Invalid path')
 
 
@@ -25143,7 +25485,8 @@ def safe_preview_api():
         ext = os.path.splitext(name)[1].lower()
 
         TEXT_EXTENSIONS = {'.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml',
-                           '.md', '.conf', '.cfg', '.ini', '.nmap', '.gnmap', '.sh', '.py'}
+                           '.md', '.conf', '.cfg', '.ini', '.nmap', '.gnmap', '.sh', '.py',
+                           '.ducky'}
         IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'}
 
         if ext == '.pdf' or mime == 'application/pdf':

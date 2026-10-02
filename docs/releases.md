@@ -2,7 +2,42 @@
 
 ## Releases
 
+### 2026-10-02
+
+#### [#900](https://github.com/PierreGode/Ragnar/pull/900) — docs(pentest): Rubber Ducky card shows supported boards + GPIO-powering note
+*branch `fix/ducky-board-power-info` · 2 file(s)*
+
+- Added a collapsible **Supported boards & powering** panel to the Rubber Ducky Script Executor card: a board-compatibility table (Zero 2 W ✅ / 3A+ ✅ / Pi 4 ✅ / Pi 5 ⚠️ / 3B ❌) and the key caveat that on **Pi 4 / Pi 5** the single USB-C port is both power and the OTG/data port
+- Documents the fix: **power the Pi from the 5V GPIO pins** (pin 2/4 + pin 6 GND) and keep USB-C plugged into the target, so the data link doesn't have to also power the Pi ("steal" the port) — the Pi-4-style workaround; includes the unfused-rail safety caveat
+- Mirrored the same guidance into [rubber-ducky.md](rubber-ducky.md) (board table + new "Powering via the GPIO pins" section)
+- **Docs:** [rubber-ducky.md](rubber-ducky.md), [releases.md](releases.md)
+
+#### [#899](https://github.com/PierreGode/Ragnar/pull/899) — fix(ui): clipboard "Copy" buttons work over plain HTTP
+*branch `fix/revshell-copy-http` · 3 file(s)*
+
+- **Root cause:** `navigator.clipboard` is exposed by browsers only in a secure context (HTTPS/localhost). On a plain-HTTP LAN/Tailscale Ragnar (`http://192.168.x`/`100.x`) it is `undefined`, so copy handlers calling it directly either threw a synchronous `TypeError` (uncaught by their `.catch()`) or silently no-op'd
+- Hardened the shared `copyToClipboard()` helper: non-flashing `execCommand('copy')` fallback, returns a success boolean, honest "Copy failed" toast, and an optional `{ silent }` mode for callers that render their own feedback
+- Routed **four** copy buttons through it:
+  - Pentest → **Reverse Shell** one-liners (`revshellCopy`)
+  - Scan → captured-credential **password** copy (`copyCredToClipboard`)
+  - Account → **2FA recovery codes** copy (`copyRecoveryCodes`) — previously a lock-out risk when set up over HTTP
+  - WiFi map → **BSSID** copy (`wifiFsCopy`)
+- Bumped the `ragnar_modern.js` cache-bust (`?v=20261002-clipboard-http`) so returning browsers load the fix
+- **Docs:** [releases.md](releases.md)
+
 ### 2026-10-01
+
+#### [#895](https://github.com/PierreGode/Ragnar/pull/895) — feat(pentest): Rubber Ducky script executor (USB HID keystroke injection)
+*branch `work/2026-10-01` · 13 file(s)*
+
+- New Pentest-tab card: pick a script, pick the `/dev/hidg0` keyboard-gadget target, preview the actions, and run — gated by Pentest Mode only (no dependency on the global `enable_attacks` flag, matching the other manual tools)
+- `python/rubber_ducky.py`: parses official `.ducky` syntax and plain-text scripts, Shift-aware typing, streams HID reports to the gadget node (opens once; handles `GUI r`-style modifier combos)
+- **Opt-in** HID gadget setup in installer/updater (`RAGNAR_HID_GADGET=1` + `/etc/ragnar/hid_gadget.enabled` marker): adds the `dwc2,dr_mode=peripheral` overlay, drops the conflicting legacy `g_ether`, and adds `hid.usb0` — default off so the Cardputer/plain-ECM boxes are untouched; also fixes the non-idempotent `cmdline.txt` edit
+- On-demand **Enable/Disable** gadget control in the card (`scripts/hid_gadget.sh` + `/api/rubber-ducky/gadget/*`): brings `/dev/hidg0` up/down live, preserving `usb0` networking
+- `files/rubber-ducky/` surfaced as its own folder in the Files tab for uploads, with a bundled safe demo (`demo_hello.ducky`) for end-to-end validation; `.ducky` files are editable text in the Files tab
+- Ducky card gains a **Refresh/Upload** for scripts, a **payload library** (`resources/ducky_payloads/`: Win/Linux/macOS recon, Wi-Fi-profile dump, reverse-shell template) with one-click Install, and an **inline editor**; `.ducky` parser now handles multi-modifier combos (`CTRL ALT t`)
+- New **Reverse Shell** card: generates connect-back one-liners (Bash/nc/Python/PowerShell/Perl/PHP) + a built-in catch listener (`python/revshell.py`)
+- **Docs:** [rubber-ducky.md](rubber-ducky.md), [reverse-shell.md](reverse-shell.md), [scanning-and-attacks.md](scanning-and-attacks.md), [docs index](README.md), [releases.md](releases.md)
 
 #### [#879](https://github.com/PierreGode/Ragnar/pull/879) — fix(display): don't error when an interface (e.g. usb0) is absent
 *Merged 2026-10-01 · branch `fix/usb0-missing-interface` · 2 file(s), +15 / −12*
