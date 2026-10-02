@@ -161,12 +161,10 @@ function displayCredentials(data) {
     if (countEl) countEl.textContent = `Showing ${rows.length} of ${data.length} credential${data.length !== 1 ? 's' : ''}`;
 }
 
-function copyCredToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => {
-        addConsoleMessage('Password copied to clipboard', 'success');
-    }).catch(() => {
-        addConsoleMessage('Copy failed — check browser permissions', 'warning');
-    });
+async function copyCredToClipboard(text) {
+    // copyToClipboard has the execCommand fallback needed on plain-HTTP.
+    const ok = await copyToClipboard(text, { silent: true });
+    addConsoleMessage(ok ? 'Password copied to clipboard' : 'Copy failed — check browser permissions', ok ? 'success' : 'warning');
 }
 
 function exportCredentialsCSV() {
@@ -3492,9 +3490,10 @@ function _wifiApDetailHtml(a) {
     ${radHtml}`;
 }
 
-function wifiFsCopy(bssid) {
-    if (navigator.clipboard) navigator.clipboard.writeText(bssid).catch(() => {});
-    _wifiSetStatus('copied ' + bssid);
+async function wifiFsCopy(bssid) {
+    // copyToClipboard has the execCommand fallback needed on plain-HTTP.
+    const ok = await copyToClipboard(bssid, { silent: true });
+    _wifiSetStatus(ok ? 'copied ' + bssid : 'copy failed');
 }
 
 function wifiFsClearSelection() {
@@ -15216,16 +15215,16 @@ async function handleAuthSetup(event) {
     }
 }
 
-function copyRecoveryCodes() {
-    if (window._tempRecoveryCodes) {
-        const text = window._tempRecoveryCodes.join('\n');
-        navigator.clipboard.writeText(text).then(() => {
-            const btn = document.getElementById('copy-codes-btn');
-            btn.textContent = 'Copied!';
-            setTimeout(() => { btn.textContent = 'Copy All Codes'; }, 2000);
-        }).catch(() => {
-            addConsoleMessage('Failed to copy - please select and copy manually', 'warning');
-        });
+async function copyRecoveryCodes() {
+    if (!window._tempRecoveryCodes) return;
+    const text = window._tempRecoveryCodes.join('\n');
+    // copyToClipboard has the execCommand fallback needed on plain-HTTP.
+    const ok = await copyToClipboard(text, { silent: true });
+    if (ok) {
+        const btn = document.getElementById('copy-codes-btn');
+        if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy All Codes'; }, 2000); }
+    } else {
+        addConsoleMessage('Failed to copy - please select and copy manually', 'warning');
     }
 }
 
@@ -21758,8 +21757,8 @@ async function revshellGenerate() {
 async function revshellCopy(text, btn) {
     // Route through copyToClipboard: a plain-HTTP Ragnar (http://192.168.x/100.x)
     // has no navigator.clipboard, so this needs the execCommand fallback.
-    try { await copyToClipboard(text); } catch (e) { /* copyToClipboard handles UX */ }
-    if (btn) { const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = t; }, 1200); }
+    const ok = await copyToClipboard(text, { silent: true });
+    if (btn) { const t = btn.textContent; btn.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { btn.textContent = t; }, 1200); }
 }
 
 async function revshellListener(action) {
@@ -35011,20 +35010,27 @@ function formatDuration(seconds) {
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
-async function copyToClipboard(text) {
+async function copyToClipboard(text, { silent = false } = {}) {
+    // Works on a plain-HTTP Ragnar too: navigator.clipboard only exists in a
+    // secure context (HTTPS/localhost), so fall back to execCommand('copy').
+    let ok = true;
     try {
         await navigator.clipboard.writeText(text);
-        showNotification('Copied to clipboard', 'success');
     } catch (err) {
-        // Fallback for older browsers
         const textarea = document.createElement('textarea');
         textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-1000px';
+        textarea.style.opacity = '0';
         document.body.appendChild(textarea);
+        textarea.focus();
         textarea.select();
-        document.execCommand('copy');
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
         document.body.removeChild(textarea);
-        showNotification('Copied to clipboard', 'success');
     }
+    if (!silent) showNotification(ok ? 'Copied to clipboard' : 'Copy failed', ok ? 'success' : 'error');
+    return ok;
 }
 
 let advVulnScanMode = 'web';

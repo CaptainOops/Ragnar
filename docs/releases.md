@@ -4,12 +4,17 @@
 
 ### 2026-10-02
 
-#### [#899](https://github.com/PierreGode/Ragnar/pull/899) — fix(pentest): Reverse Shell "Copy" button works over plain HTTP
-*branch `fix/revshell-copy-http` · 2 file(s)*
+#### [#899](https://github.com/PierreGode/Ragnar/pull/899) — fix(ui): clipboard "Copy" buttons work over plain HTTP
+*branch `fix/revshell-copy-http` · 3 file(s)*
 
-- `revshellCopy()` relied solely on `navigator.clipboard`, which browsers expose only in secure contexts (HTTPS/localhost); on a plain-HTTP LAN Ragnar (`http://192.168.x`/`100.x`) it is `undefined`, so the button silently did nothing
-- Now routes through the shared `copyToClipboard()` helper (which adds the `document.execCommand('copy')` textarea fallback and a "Copied to clipboard" toast) and still flashes **Copied** on the button
-- Bumped the `ragnar_modern.js` cache-bust (`?v=20261002-revshell-copy`) so returning browsers load the fix
+- **Root cause:** `navigator.clipboard` is exposed by browsers only in a secure context (HTTPS/localhost). On a plain-HTTP LAN/Tailscale Ragnar (`http://192.168.x`/`100.x`) it is `undefined`, so copy handlers calling it directly either threw a synchronous `TypeError` (uncaught by their `.catch()`) or silently no-op'd
+- Hardened the shared `copyToClipboard()` helper: non-flashing `execCommand('copy')` fallback, returns a success boolean, honest "Copy failed" toast, and an optional `{ silent }` mode for callers that render their own feedback
+- Routed **four** copy buttons through it:
+  - Pentest → **Reverse Shell** one-liners (`revshellCopy`)
+  - Scan → captured-credential **password** copy (`copyCredToClipboard`)
+  - Account → **2FA recovery codes** copy (`copyRecoveryCodes`) — previously a lock-out risk when set up over HTTP
+  - WiFi map → **BSSID** copy (`wifiFsCopy`)
+- Bumped the `ragnar_modern.js` cache-bust (`?v=20261002-clipboard-http`) so returning browsers load the fix
 - **Docs:** [releases.md](releases.md)
 
 ### 2026-10-01
