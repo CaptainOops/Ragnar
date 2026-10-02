@@ -4,7 +4,20 @@
 
 ### 2026-10-02
 
-#### [#901](https://github.com/PierreGode/Ragnar/pull/901) — fix(files): upload scripts into console_scripts & rubber-ducky + console-card Upload button
+#### [#904](https://github.com/PierreGode/Ragnar/pull/904) — feat(scripts): install ducky + console scripts from the external RagnarScripts library
+*branch `feat/ragnarscripts-install-library` · 12 file(s)*
+
+- Ragnar now reads a second, **user-cloned** script source — [RagnarScripts](https://github.com/PierreGode/RagnarScripts) — alongside the built-in demos, which stay exactly where they are. Discovery order: `$RAGNAR_SCRIPTS_DIR` → a `RagnarScripts/` folder beside the repo → `~/RagnarScripts` → `/home/pi` or `/home/ragnar`
+- **Auto-sync** (`ragnar_scripts.py`): best-effort `git clone` (when missing) / `git pull` (when present) on web-server start and when the **Dashboard**/**Pentest** tabs open, so pushed scripts appear without a manual pull. Anonymous HTTPS (public repo, no creds), throttled ~30 s, backgrounded, `safe.directory=*` for cross-user checkouts, never fatal. New endpoint `POST /api/ragnar-scripts/sync`; the two `_ragnar_scripts_repo()` helpers now delegate to this module
+- **Rubber Ducky card:** RagnarScripts `.ducky`/`.txt` payloads (repo's `rubber-ducky/` folder) are folded directly into the existing **Payload Library** list, mixed with the bundled `resources/ducky_payloads/` payloads and tagged **RagnarScripts** vs **bundled**, with per-row Install/Reinstall (`list_ragnar_scripts()` / `install_ragnar_script()` in `python/rubber_ducky.py`)
+- **Device Console card:** new expandable **Install console scripts** section lists `.json` sequences from the repo's `console-scripts/` folder (name/vendor/command-count), installs into this unit's `data/console_scripts/` and refreshes the Run-script picker (`list_library()` / `install_library_script()` in `serial_console.py`)
+- APIs: `GET/POST /api/rubber-ducky/ragnar-scripts[/install]`, `GET/POST /api/serial-console/library[/install]`. Installs are name/id-validated (traversal rejected) and JSON-validated for console scripts
+- The **local folders stay fully editable** — Upload here / Files-tab / inline editor all still work; installing never deletes a user's own scripts (same-name install overwrites, shown as *Reinstall*)
+- Bumped the `ragnar_modern.js` cache-bust (`?v=20261002-ragnarscripts`)
+- **RagnarScripts repo** seeded with the folder structure and a few harmless test scripts (3 ducky payloads, 3 console scripts) + READMEs
+- **Docs:** new [ragnarscripts.md](ragnarscripts.md); updated [rubber-ducky.md](rubber-ducky.md), [serial-console.md](serial-console.md), [README.md](../README.md), [docs index](README.md)
+
+#### [#903](https://github.com/PierreGode/Ragnar/pull/903) — fix(files): upload scripts into console_scripts & rubber-ducky + console-card Upload button
 *branch `fix/files-upload-console-ducky` · 7 file(s)*
 
 - **Bug:** the Files tab only showed the **⬆ Upload here** toolbar inside `/uploads` and `/backups`, so there was no way to add a script from the **console_scripts** or **rubber-ducky** folders — the upload always fell back to `/uploads`. The backend also rejected `/console_scripts` as an upload target

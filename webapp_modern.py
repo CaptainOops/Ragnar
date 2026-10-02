@@ -14603,6 +14603,41 @@ def api_serial_console_script_status():
     return jsonify(serial_console.script_status())
 
 
+@app.route('/api/ragnar-scripts/sync', methods=['POST'])
+def api_ragnar_scripts_sync():
+    """Clone or git-pull the external RagnarScripts library (throttled).
+
+    Called when the Dashboard / Pentest tabs open so freshly-pushed shared
+    scripts appear without a manual pull. Best-effort — a failure (offline, no
+    git) is reported but never an error the UI must handle."""
+    try:
+        import ragnar_scripts
+        force = bool((request.get_json(silent=True) or {}).get('force'))
+        return jsonify(ragnar_scripts.sync(force=force))
+    except Exception as e:
+        logger.warning(f"RagnarScripts sync error: {e}")
+        return jsonify({'ok': False, 'error': str(e)})
+
+
+@app.route('/api/serial-console/library')
+def api_serial_console_library():
+    """List console scripts available in the cloned RagnarScripts repo."""
+    import serial_console
+    return jsonify(serial_console.list_library())
+
+
+@app.route('/api/serial-console/library/install', methods=['POST'])
+def api_serial_console_library_install():
+    """Install a console script from the RagnarScripts repo into data/console_scripts/."""
+    import serial_console
+    body = request.get_json(silent=True) or {}
+    sid = (body.get('script_id') or body.get('id') or '').strip()
+    if not sid:
+        return jsonify({'success': False, 'error': 'missing script_id'}), 400
+    result = serial_console.install_library_script(sid)
+    return jsonify(result), (200 if result.get('success') else 400)
+
+
 @app.route('/api/power/test', methods=['GET', 'POST'])
 def api_power_test():
     """Idle-vs-load power test. POST {duration, loads:[cpu,sdr,wifi]} starts
@@ -20838,6 +20873,30 @@ def rubber_ducky_library_install():
         return jsonify(result), (200 if result.get('success') else 400)
     except Exception as e:
         logger.error(f"Error installing payload: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/ragnar-scripts', methods=['GET'])
+def rubber_ducky_ragnar_scripts():
+    """List ducky payloads available in the cloned RagnarScripts repo."""
+    try:
+        from python.rubber_ducky import list_ragnar_scripts
+        return jsonify(list_ragnar_scripts())
+    except Exception as e:
+        logger.error(f"Error listing RagnarScripts payloads: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/ragnar-scripts/install', methods=['POST'])
+def rubber_ducky_ragnar_scripts_install():
+    """Install a ducky payload from the RagnarScripts repo into files/rubber-ducky/."""
+    try:
+        from python.rubber_ducky import install_ragnar_script
+        name = (request.get_json(silent=True) or {}).get('name')
+        result = install_ragnar_script(name)
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Error installing RagnarScripts payload: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -29820,6 +29879,21 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
             serial_console.init()
         except Exception as e:
             logger.warning(f"Serial console init skipped: {e}")
+
+        # Clone/pull the external RagnarScripts library on boot so shared ducky
+        # and console scripts are available without a manual git pull. Runs in
+        # the background (never blocks the web server binding) and is never fatal.
+        def _boot_ragnar_scripts():
+            try:
+                import ragnar_scripts
+                st = ragnar_scripts.sync(force=True)
+                if st.get('ok'):
+                    logger.info(f"RagnarScripts {st.get('action')} ok: {st.get('dir')}")
+                else:
+                    logger.info(f"RagnarScripts sync skipped: {st.get('error')}")
+            except Exception as _rs_err:
+                logger.warning(f"RagnarScripts boot sync error: {_rs_err}")
+        socketio.start_background_task(_boot_ragnar_scripts)
 
         # Synchronize counts in the background so the web server binds
         # immediately instead of waiting for a full DB scan first.

@@ -457,6 +457,97 @@ def list_scripts(scripts_dir=None) -> List[Dict]:
 # Bundled, read-only payload library shipped with the repo.
 DEFAULT_LIBRARY_DIR = Path(__file__).resolve().parent.parent / 'resources' / 'ducky_payloads'
 
+# External, user-cloned script library (github.com/PierreGode/RagnarScripts).
+# Payloads live under its "rubber-ducky/" subfolder. The discovery heuristic is
+# kept in sync with the copy in serial_console._ragnar_scripts_repo().
+RAGNAR_SCRIPTS_SUBDIR = 'rubber-ducky'
+
+
+def _ragnar_scripts_repo() -> Optional[Path]:
+    """Locate a cloned RagnarScripts library repo, or return None.
+
+    Delegates to :mod:`ragnar_scripts` (the canonical discovery + auto-sync
+    module); the inline search below is a standalone fallback kept in sync with
+    it. Search order: ``$RAGNAR_SCRIPTS_DIR``, a ``RagnarScripts`` folder beside
+    the Ragnar repo, ``~/RagnarScripts``, then the common pi/ragnar clone paths.
+    """
+    try:
+        import ragnar_scripts
+        return ragnar_scripts.repo_dir()
+    except Exception:
+        pass
+    ragnar_root = Path(__file__).resolve().parent.parent
+    candidates = []
+    env = os.environ.get('RAGNAR_SCRIPTS_DIR')
+    if env:
+        candidates.append(Path(env).expanduser())
+    candidates += [
+        ragnar_root.parent / 'RagnarScripts',
+        Path.home() / 'RagnarScripts',
+        Path('/home/pi/RagnarScripts'),
+        Path('/home/ragnar/RagnarScripts'),
+    ]
+    seen = set()
+    for c in candidates:
+        try:
+            rc = c.resolve()
+        except Exception:
+            continue
+        if rc in seen:
+            continue
+        seen.add(rc)
+        if c.is_dir():
+            return c
+    return None
+
+
+def list_ragnar_scripts() -> Dict:
+    """List ducky payloads available in the cloned RagnarScripts repo.
+
+    Returns ``{available, repo, scripts}``. ``available`` is False when no repo
+    is found; ``scripts`` carries name/description/size and an ``installed`` flag
+    (True when a file of the same name already sits in the editable folder).
+    """
+    repo = _ragnar_scripts_repo()
+    if not repo:
+        return {'available': False, 'repo': None, 'scripts': []}
+    lib = repo / RAGNAR_SCRIPTS_SUBDIR
+    scripts = []
+    if lib.is_dir():
+        for p in sorted(lib.glob('*')):
+            if p.is_file() and p.suffix in ('.ducky', '.txt'):
+                try:
+                    scripts.append({
+                        'name': p.name,
+                        'description': _first_comment(p),
+                        'size': p.stat().st_size,
+                        'installed': (DEFAULT_SCRIPTS_DIR / p.name).is_file(),
+                    })
+                except Exception as e:
+                    logger.error(f"Error reading RagnarScripts payload {p}: {e}")
+    return {'available': True, 'repo': str(lib), 'scripts': scripts}
+
+
+def install_ragnar_script(name: str) -> Dict:
+    """Copy a payload from the RagnarScripts repo into the editable folder."""
+    base = _safe_script_name(name)
+    if not base:
+        return {'success': False, 'error': 'Invalid script name'}
+    repo = _ragnar_scripts_repo()
+    if not repo:
+        return {'success': False, 'error': 'RagnarScripts repo not found'}
+    src = repo / RAGNAR_SCRIPTS_SUBDIR / base
+    if not src.is_file():
+        return {'success': False, 'error': f'Not in RagnarScripts: {base}'}
+    DEFAULT_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    dst = DEFAULT_SCRIPTS_DIR / base
+    try:
+        dst.write_text(src.read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
+        return {'success': True, 'name': base}
+    except Exception as e:
+        logger.error(f"Error installing RagnarScripts payload {base}: {e}")
+        return {'success': False, 'error': str(e)}
+
 
 def _first_comment(path: Path) -> str:
     """First REM / leading-# line of a payload, used as its description."""

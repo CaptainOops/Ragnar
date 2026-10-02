@@ -1414,9 +1414,26 @@
                     </div>
                     <p class="text-xs text-gray-500 mt-1">Press Enter or click Send. A \\r is appended. Scripts send pre-made command sequences — add your own JSON files here with <strong>Upload</strong>, or in Files &gt; console_scripts.</p>
                 </div>
+                <!-- Install console scripts from RagnarScripts (external community library) -->
+                <details id="sc-library" class="mt-3 bg-slate-900/40 border border-slate-700 rounded" ontoggle="if(this.open)scLoadLibrary()">
+                    <summary class="cursor-pointer select-none px-3 py-2 text-xs uppercase tracking-wide text-gray-300 flex items-center justify-between gap-2">
+                        <span>Install console scripts</span>
+                        <span class="text-[11px] text-gray-500 normal-case">from RagnarScripts ▾</span>
+                    </summary>
+                    <div class="px-3 pb-3">
+                        <div class="flex items-center justify-between gap-2 mb-2">
+                            <span id="sc-library-repo" class="text-[11px] text-gray-500 truncate"></span>
+                            <button onclick="scLoadLibrary()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded shrink-0">↺</button>
+                        </div>
+                        <div id="sc-library-list" class="space-y-2 max-h-48 overflow-y-auto text-xs">
+                            <p class="text-gray-500">Loading…</p>
+                        </div>
+                        <p class="text-[11px] text-gray-500 mt-2">Scripts install into this unit's <code class="bg-slate-800 px-1 rounded">data/console_scripts/</code>; your own scripts there are never touched. Enable <strong>Allow write</strong> to run them.</p>
+                    </div>
+                </details>
             </div>
         </div>
-        
+
         <!-- Network Tab -->
         <div id="network-tab" class="tab-content hidden">
             <!-- Sub-tab navigation -->
@@ -4779,7 +4796,7 @@
                         <div id="rubber-ducky-library" class="space-y-2 max-h-48 overflow-y-auto text-xs">
                             <p class="text-gray-500">Loading…</p>
                         </div>
-                        <p class="text-[11px] text-gray-500 mt-2">Ready-made payloads — Install copies one into your scripts folder to run or edit.</p>
+                        <p class="text-[11px] text-gray-500 mt-2">Ready-made payloads — <span class="text-gray-400">bundled</span> with Ragnar and from the <span class="text-indigo-300">RagnarScripts</span> library. Install copies one into <code class="bg-slate-800 px-1 rounded">files/rubber-ducky/</code> to run or edit; your own scripts there are never touched.</p>
                     </div>
                     <div class="bg-slate-900/40 border border-slate-700 rounded p-3">
                         <div class="flex items-center justify-between mb-2">
@@ -9350,7 +9367,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20261002-folder-upload"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20261002-ragnarscripts-merged"></script>
 
 
 
