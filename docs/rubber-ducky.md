@@ -129,9 +129,11 @@ Typing is Shift-aware on a US layout, so capitals and shifted symbols
 ## Uploading scripts
 
 Scripts live in `files/rubber-ducky/`, which is exposed in the **Files** tab as
-its own `rubber-ducky` folder. Upload `.ducky` or `.txt` files there (the folder
-ships with one safe demo, `demo_hello.ducky`); they appear in the script
-dropdown immediately. `.ducky` files open as editable text in the Files tab
+its own `rubber-ducky` folder. Browse into it and use **⬆ Upload here** to add
+`.ducky` or `.txt` files (the folder ships with one safe demo,
+`demo_hello.ducky`); they appear in the script dropdown immediately. The card's
+own **Upload** button (next to the script picker) does the same thing without
+leaving the Pentest tab. `.ducky` files open as editable text in the Files tab
 (like `.txt`/`.json`), so you can tweak a script in place. Selecting a script
 shows a human-readable **preview** of every action before you run it.
 

@@ -24462,7 +24462,9 @@ def _resolve_upload_target(target_path):
     """Map an /uploads or /backups virtual dir (possibly nested) to a real dir.
 
     Returns the actual directory path, or raises ValueError on a bad/escaping
-    path. Only the writable uploads and backups trees are allowed as targets.
+    path. The writable trees allowed as upload targets are Uploads, Backups and
+    the two script libraries (rubber-ducky payloads and console scripts) — so a
+    script can be added straight from the Files tab.
     """
     if target_path == '/uploads' or target_path.startswith('/uploads/'):
         return _resolve_legacy_path('/uploads', shared_data.upload_dir, target_path)
@@ -24471,6 +24473,9 @@ def _resolve_upload_target(target_path):
     if target_path == '/rubber-ducky' or target_path.startswith('/rubber-ducky/'):
         return _resolve_legacy_path('/rubber-ducky',
             os.path.join(os.path.dirname(os.path.abspath(__file__)), 'files', 'rubber-ducky'), target_path)
+    if target_path == '/console_scripts' or target_path.startswith('/console_scripts/'):
+        return _resolve_legacy_path('/console_scripts',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'console_scripts'), target_path)
     raise ValueError('Invalid upload path')
 
 
@@ -24510,7 +24515,8 @@ def _resolve_readable_path(file_path):
 
 @app.route('/api/files/upload', methods=['POST'])
 def upload_file_api():
-    """Upload one or more files into an /uploads or /backups folder."""
+    """Upload one or more files into a writable folder (Uploads, Backups, the
+    rubber-ducky payload library or the console_scripts library)."""
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400

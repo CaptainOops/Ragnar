@@ -4,6 +4,16 @@
 
 ### 2026-10-02
 
+#### [#901](https://github.com/PierreGode/Ragnar/pull/901) — fix(files): upload scripts into console_scripts & rubber-ducky + console-card Upload button
+*branch `fix/files-upload-console-ducky` · 7 file(s)*
+
+- **Bug:** the Files tab only showed the **⬆ Upload here** toolbar inside `/uploads` and `/backups`, so there was no way to add a script from the **console_scripts** or **rubber-ducky** folders — the upload always fell back to `/uploads`. The backend also rejected `/console_scripts` as an upload target
+- Added an `isUploadablePath()` superset (writable trees **plus** the two script libraries) so the folder toolbar's **Upload here** button now appears in `console_scripts` and `rubber-ducky`, and `uploadFile()` targets the folder actually being browsed. The general-purpose **+ New folder** button stays limited to Uploads/Backups (the libraries are flat)
+- Backend: `_resolve_upload_target()` now accepts `/console_scripts` (mapped to `data/console_scripts/`); `/rubber-ducky` was already allowed. Uploaded `.json` scripts are picked up by `serial_console.list_scripts()` immediately
+- **Feature:** added an **Upload** button next to the **Run Script** picker on the Dashboard **Device Console** card (mirrors the Rubber Ducky card) — pick a `.json` console script, it's added to the local unit's library and auto-selected (`scUploadScript()`)
+- Bumped the `ragnar_modern.js` cache-bust (`?v=20261002-folder-upload`)
+- **Docs:** [serial-console.md](serial-console.md), [rubber-ducky.md](rubber-ducky.md), [README.md](../README.md), [releases.md](releases.md)
+
 #### [#900](https://github.com/PierreGode/Ragnar/pull/900) — docs(pentest): Rubber Ducky card shows supported boards + GPIO-powering note
 *branch `fix/ducky-board-power-info` · 2 file(s)*
 
