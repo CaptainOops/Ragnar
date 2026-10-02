@@ -39,6 +39,9 @@ FILE_OWNERS = {
     'python/snmp_cve.py': 'SNMP Watch',
     'python/dellguard.py': 'Dell Guard',
     'python/dellguard_conformance.py': 'Dell Guard',
+    'python/apcguard.py': 'APC Guard',
+    'python/apcguard_selftest.py': 'APC Guard',
+    'python/apcguard_scapy_xcheck.py': 'APC Guard',
     'actions/ble_pentest.py': 'BLE Pentest (active)',
 }
 FILE_PREFIX_OWNERS = {'python/dns_doctor_passive/': 'DNS Watch'}
@@ -52,6 +55,7 @@ ND_PREFIXES = [
     ('_BGP_ADVISORIES', 'BGP Path Watch'), ('_OSPF_ADVISORIES', 'OSPF Watch'),
     ('_arista', 'Arista Guard'), ('_ARISTA', 'Arista Guard'), ('do_arista', 'Arista Guard'),
     ('_aruba', 'Aruba Guard'), ('_ARUBA', 'Aruba Guard'),
+    ('_apc', 'APC Guard'), ('_APC', 'APC Guard'), ('do_apc', 'APC Guard'),
     ('_arp', 'ARP Watch'),
     ('_cdp', 'CDP Watch'), ('_CDP', 'CDP Watch'),
     ('_cisco', 'Cisco Guard'), ('_CISCO', 'Cisco Guard'), ('_ikev2', 'Cisco Guard'),
@@ -79,11 +83,17 @@ ND_PREFIXES = [
     ('_snmp', 'SNMP Watch'),
     ('_FTP', 'FTP Watch'), ('_ftp', 'FTP Watch'), ('do_ftp', 'FTP Watch'),
     ('_SMTP', 'SMTP Watch'), ('_smtp', 'SMTP Watch'), ('do_smtp', 'SMTP Watch'),
+    ('_RELAY', 'Relay / Coercion Watch'), ('_relay', 'Relay / Coercion Watch'),
+    ('_parse_relay', 'Relay / Coercion Watch'), ('do_relay', 'Relay / Coercion Watch'),
     ('_ND_DNSSL', 'ICMP Watch'), ('_ISIS', 'IS-IS Watch'), ('_CFM', 'Cisco Guard'),
     ('_CAPWAP', 'Cisco Guard'), ('_COMWARE', 'Comware Guard'), ('_DNS_PASSIVE', 'DNS Watch'),
     ('_TCPDUMP_HEX_RE', 'Trailing-data / Etherleak'),
     ('_stp_selftest', 'Trailing-data / Etherleak'), ('_apply_trailing', 'Trailing-data / Etherleak'),
 ]
+# CVEs named inside a detector's finding text for comparison only — e.g. the
+# OpenSSH scp bug named as the "twin" of the netkit rcp CVE Telnet Watch detects,
+# and the Ripple20 IPv6 bug APC Guard names only to state it does not apply to APC.
+CONTEXT_CVES = {'CVE-2019-6111', 'CVE-2020-11897'}
 # Per-CVE owner overrides where a shared helper names another vendor's CVE.
 CVE_OWNER_OVERRIDE = {'CVE-2021-0254': 'Juniper Guard'}
 # Owners (or owner+CVE) whose mention is context/reference, not a detection.
@@ -94,12 +104,20 @@ CONTEXT_OWNERS = {'BGP Path Watch:advisory', 'OSPF Watch:advisory', 'SR-MPLS Wat
 # listed shows the detector alone rather than a guessed label.
 NAMES = {
     'CVE-2002-20001': 'D(HE)at', 'CVE-2022-40735': 'D(HE)at', 'CVE-2024-41996': 'D(HE)at',
-    'CVE-2003-0001': 'Etherleak', 'CVE-2005-4436': 'EIGRP K-value / Goodbye reset',
+    'CVE-2003-0001': 'Etherleak',
+    'CVE-2020-11896': 'Ripple20 IPv4 tunnelling RCE', 'CVE-2020-11897': 'Ripple20 IPv6 OOB write (not APC)',
+    'CVE-2020-11898': 'Ripple20 ICMPv4 heap leak', 'CVE-2020-11899': 'Ripple20 IPv6 OOB read',
+    'CVE-2020-11901': 'Ripple20 DNS resolver RCE', 'CVE-2020-11902': 'Ripple20 IPv6-in-IPv4 OOB read',
+    'CVE-1999-0113': 'rlogin -froot auth bypass', 'CVE-1999-0185': 'r-services ftp-data trust bounce',
+    'CVE-2007-0882': 'Solaris in.telnetd -f auth bypass', 'CVE-2011-4862': 'telnetd encrypt_keyid overflow',
+    'CVE-2019-6111': 'OpenSSH scp file overwrite', 'CVE-2019-7282': 'netkit rcp dot-name',
+    'CVE-2019-7283': 'netkit rcp unrequested file', 'CVE-2022-39028': 'inetutils telnetd EC/EL crash', 'CVE-2005-4436': 'EIGRP K-value / Goodbye reset',
     'CVE-2005-4437': 'EIGRP missing authentication', 'CVE-2006-5051': 'OpenSSH signal-handler race',
     'CVE-2008-0960': 'SNMPv3 USM HMAC truncation', 'CVE-2013-2566': 'RC4 biases',
     'CVE-2013-5211': 'NTP monlist amplification', 'CVE-2014-0160': 'Heartbleed',
     'CVE-2014-9295': 'NTP Autokey crypto_recv overflow', 'CVE-2015-2808': 'Bar Mitzvah (RC4)',
     'CVE-2018-6789': 'Exim AUTH base64 overflow',
+    'CVE-2026-67276': 'MikroTrick SSH key forgery (RouterOS)', 'CVE-2026-86060': 'MikroTrick username escalation (RouterOS)',
     'CVE-2019-10149': 'Exim ${...} expansion RCE',
     'CVE-2019-15846': 'Exim SNI/cert-DN RCE',
     'CVE-2019-16928': 'Exim overlong EHLO overflow',
@@ -121,7 +139,8 @@ NAMES = {
     'CVE-2020-16899': 'RA DNSSL DoS', 'CVE-2020-25583': 'RA DNSSL DoS (rtsold)',
     'CVE-2020-25705': 'SAD DNS', 'CVE-2021-1587': 'NX-OS NGOAM DoS',
     'CVE-2021-0254': 'Junos overlayd VXLAN RCE', 'CVE-2021-1675': 'PrintNightmare',
-    'CVE-2021-34527': 'PrintNightmare', 'CVE-2021-31166': 'HTTP.sys Accept-Encoding',
+    'CVE-2021-34527': 'PrintNightmare', 'CVE-2021-1678': 'Print spooler RPC relay (IRemoteWinSpool)',
+    'CVE-2021-36942': 'PetitPotam', 'CVE-2021-31166': 'HTTP.sys Accept-Encoding',
     'CVE-2022-21907': 'HTTP.sys Accept-Encoding', 'CVE-2021-25220': 'MaginotDNS',
     'CVE-2022-26809': 'RPC runtime bind_ack underflow', 'CVE-2022-26925': 'PetitPotam-class LSA coercion',
     'CVE-2022-33647': 'Kerberos RC4-MD4 downgrade', 'CVE-2022-33679': 'Kerberos RC4-MD4 downgrade',
@@ -247,6 +266,8 @@ def collect():
                                 if path.startswith(p)), path)
                     status = 'detected'
                 det = CVE_OWNER_OVERRIDE.get(cve, det)
+                if cve in CONTEXT_CVES and status == 'detected':
+                    status = 'context'
                 owners[cve].add((det, status))
     return owners, mentions
 

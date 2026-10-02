@@ -130,6 +130,14 @@ Tailscale. Because the app is pure REST, a plain HTTP relay covers all of it.
   set one (see [the mesh secret](#hardening-a-shared-tailnet-the-mesh-secret))
   to enable it. Tailnet-tag trust alone never opens the full relay.
 
+The web dashboard uses the same gateway for the
+[Device Console](serial-console.md): pick another unit in the card and its
+read-only serial console (a switch or firewall cabled to that Ragnar) streams
+through this unit — full view and control. Without a mesh secret, a unit can still
+**share its console view-only**: its operator ticks *Share with mesh* on that unit,
+and peers read the output on tag trust through a dedicated `/api/mesh/` route.
+Sharing is off by default and per unit.
+
 ---
 
 ## Unit identity — the Viking army

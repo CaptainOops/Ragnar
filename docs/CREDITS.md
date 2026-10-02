@@ -14,21 +14,24 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **209 CVEs detected from the wire.** 248 distinct CVE IDs are named across Ragnar's
-  code; 209 of them a passive detector actually identifies. The rest are named, not detected:
-  30 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
-  shape, the SR-MPLS `CVE_REFERENCES` table, and the BGP / OSPF **malformed-attribute posture
+- **225 CVEs detected from the wire.** 266 distinct CVE IDs are named across Ragnar's
+  code; 225 of them a passive detector actually identifies. The rest are named, not detected:
+  32 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
+  shape, the SR-MPLS `CVE_REFERENCES` table, the BGP / OSPF **malformed-attribute posture
   advisories** — byte-level parser CVEs the passive text watchers name for patch guidance but
-  cannot reconstruct on the wire), 3 in card prose as related context, and 6 **active** BLE
+  cannot reconstruct on the wire — and the Ripple20 IPv6 bug CVE-2020-11897, which APC Guard
+  names only to say it does not apply to APC), 3 in card prose as related context, and 6 **active** BLE
   checks in the BLE Pentest action. Every one is listed, with its detector and status, in the
   generated **[CVE Index](CVE.md)**.
-- **24 years of coverage** — from **CVE-2002-1623** to **CVE-2026-81736**.
-- **Two CISA KEV entries** join the corpus with SMTP Watch (CVE-2019-10149, CVE-2018-6789).
+- **28 years of coverage** — from **CVE-1999-0113** (the rlogin `-froot` bypass) to
+  **CVE-2026-86060**.
+- **Two CISA KEV entries** join the corpus with SMTP Watch (CVE-2019-10149, CVE-2018-6789),
+  and APC Guard adds the KEV-listed Ripple20 CVE-2020-11899.
 - Weighted to the current threat wave (all named IDs): **36 CVEs from 2023, 47 from 2024, 33 from 2025, and
   34 from 2026.**
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
-  watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **six
-  in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba) and **Dell
+  watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **seven
+  in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba, APC) and **Dell
   Guard** as a standalone daemon.
 - **Cross-protocol crypto-attack coverage** — the same cryptographic weaknesses are named
   everywhere they appear: **SWEET32** (CVE-2016-2183) in TLS, SSH and IKE; **D(HE)at**
@@ -74,8 +77,12 @@ behind them is Solarflere's work.
   vendored **RPC / NetLogon Watch** adds **PrintNightmare** (CVE-2021-1675 / CVE-2021-34527,
   spoolss RpcAddPrinterDriver over `\pipe\spoolss`), the **HTTP.sys** Accept-Encoding bug
   (CVE-2021-31166 / CVE-2022-21907), the **RPC-runtime bind_ack underflow** (CVE-2022-26809),
-  **PetitPotam-class LSA anonymous coercion** (CVE-2022-26925) and the **RemoteRegistry
-  NTLM-relay fallback** (CVE-2024-43532); and **ARP Watch** gains a passive ARP-frame capture
+  **PetitPotam-class LSA anonymous coercion** (CVE-2022-26925), the **RemoteRegistry
+  NTLM-relay fallback** (CVE-2024-43532) and — in v3 — the **IRemoteWinSpool relay level**
+  (CVE-2021-1678: MS-PAR bound below packet privacy is high posture, and the opnum-62
+  driver install on that session is critical), while **Relay/Coercion Watch** attributes
+  the original **PetitPotam** (CVE-2021-36942) when the coercion stream carries
+  `EfsRpcOpenFileRaw` — the one method the August 2021 patch fixed; and **ARP Watch** gains a passive ARP-frame capture
   that flags request rate/breadth and gratuitous floods — the shared shape behind the Juniper
   ARP control-plane DoS family (CVE-2018-0063 / CVE-2019-0033 / CVE-2021-0216 / CVE-2021-0292),
   attached as related context, not a per-CVE identification.
@@ -144,6 +151,30 @@ behind them is Solarflere's work.
   `b64decode` over-consume (**CVE-2018-6789**, CISA KEV). All three rules are ungated and
   near-zero false-positive by construction, and Exim's three- and four-component version
   numbers are compared in full so a patched 4.90.1 is never read as 4.90.
+
+- **Cleartext remote-login plane** — **Telnet Watch v5** extends the telnetd coverage to
+  the **encrypt key-id heap overflow** (CVE-2011-4862, exploited in the wild 2011), the
+  pre-auth **EC/EL NULL-dereference** and its inetd crash loop (CVE-2022-39028) and the
+  Solaris `in.telnetd -f` twin (CVE-2007-0882), and adds the **r-services** on their own
+  engines: the rlogin/rsh **`-froot`** injection (CVE-1999-0113), the **ftp-data
+  source-port trust bounce** (CVE-1999-0185) and netkit **rcp** abuse by a malicious server
+  (CVE-2019-7282 / CVE-2019-7283), plus rexec cleartext credentials and `.rhosts` trust —
+  the same `login -f` auth-bypass shape traced across twenty-seven years of Unix remote login.
+
+- **Actively exploited, honestly scoped** — **MikroTik Guard v2** adds the **MikroTrick**
+  chain (CVE-2026-67276 forged-exponent SSH key + CVE-2026-86060 crafted-username
+  escalation, exploited in the wild since 2 September 2026) as an *exposure* finding: the
+  attack runs inside encrypted SSH authentication and can never be seen on a tap, so the
+  guard flags RouterOS devices inside the fix train (read from MNDP or the cleartext
+  `ROSSSH` banner) that have SSH on the wire — and says plainly that silence is not
+  evidence of safety.
+- **Ripple20 on the power plane** — **APC Guard** watches APC / Schneider Network
+  Management Cards (rack PDUs, ATS, UPS) for the Treck TCP/IP stack bugs: SNMP sysDescr
+  version gates for NMC1/NMC2/NMC3 against Schneider's per-application table (reported as
+  *version in range*, never *vulnerable*), fragmented and trimmed IP-in-IP tunnels
+  (CVE-2020-11896), an ICMP reply that quotes memory the packet never carried — heap
+  disclosure seen on the wire (CVE-2020-11898), IPv6-in-IPv4 to a card (CVE-2020-11902),
+  and malformed DNS answers (CVE-2020-11901).
 
 _(Counts reflect the detector code as of September 2026 and grow as new modules land.)_
 
