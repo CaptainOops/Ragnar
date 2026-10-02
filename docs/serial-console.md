@@ -194,8 +194,12 @@ built-in are never overwritten by an update. Deleting a built-in brings back
 the default on the next read; to hide one for good, replace its contents
 instead.
 
-**Create your own:** add a `.json` file to `data/console_scripts/` (or upload one
-via **Files > console_scripts** in the dashboard). The format:
+**Create your own:** the quickest way is the **Upload** button next to the
+**Run Script** picker on the console card — pick a `.json` file and it is added
+to this unit's library and selected straight away. You can also drop a `.json`
+file into `data/console_scripts/` by hand, or upload one from the
+**Files** tab (browse into **console_scripts** and use **⬆ Upload here**).
+The format:
 
 ```json
 {

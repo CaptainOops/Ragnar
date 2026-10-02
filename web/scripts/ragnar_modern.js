@@ -22096,6 +22096,39 @@ async function scRunScript() {
     }
 }
 
+async function scUploadScript(input) {
+    // Add a console script (.json) to this unit's library straight from the
+    // dashboard, then refresh the dropdown and pre-select it. Scripts are
+    // stored locally in data/console_scripts/ (same place list_scripts reads),
+    // so the upload always targets the local unit regardless of which unit is
+    // being *viewed* in the console.
+    const file = input.files && input.files[0];
+    input.value = '';  // allow re-uploading the same filename later
+    if (!file) return;
+    const statusEl = document.getElementById('sc-script-status');
+    const setStatus = (html) => { if (statusEl) statusEl.innerHTML = html; };
+    if (!/\.json$/i.test(file.name)) {
+        setStatus('<span class="text-red-400">Console scripts must be .json files</span>');
+        return;
+    }
+    setStatus(`<span class="text-amber-300">Uploading ${escapeHtml(file.name)}…</span>`);
+    try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('path', '/console_scripts');
+        const r = await fetch(resolveNetworkAwareEndpoint('/api/files/upload'), { method: 'POST', body: fd });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || data.error || !data.success) throw new Error(data.error || `upload failed (${r.status})`);
+        await scLoadScripts(true);
+        const sel = document.getElementById('sc-script-sel');
+        const stem = file.name.replace(/\.json$/i, '');
+        if (sel && [...sel.options].some(o => o.value === stem)) sel.value = stem;
+        setStatus(`<span class="text-emerald-300">Added ${escapeHtml(file.name)}</span>`);
+    } catch (e) {
+        setStatus(`<span class="text-red-400">Upload failed: ${escapeHtml(e.message)}</span>`);
+    }
+}
+
 async function scPollScriptStatus() {
     const statusEl = document.getElementById('sc-script-status');
     try {
@@ -24536,10 +24569,21 @@ const SAFE_VDIR = '/__safe__';
 // Current subfolder within the Vault ('' = root), preserved across refreshes.
 let currentSafeDir = '';
 
-// Real-filesystem locations the user may create folders in / upload to.
+// Real-filesystem locations the user may create folders in, rename and move
+// within — the general-purpose writable trees.
 function isWritablePath(p) {
     return p === '/uploads' || p.startsWith('/uploads/') ||
            p === '/backups' || p.startsWith('/backups/');
+}
+
+// Locations the user may upload files into. A superset of the writable trees:
+// it also covers the two script libraries (console scripts and rubber-ducky
+// payloads), so a script can be added straight from the Files tab without the
+// full folder/move/rename toolset those libraries don't need.
+function isUploadablePath(p) {
+    return isWritablePath(p) ||
+           p === '/console_scripts' || p.startsWith('/console_scripts/') ||
+           p === '/rubber-ducky' || p.startsWith('/rubber-ducky/');
 }
 
 // ── File-explorer navigation (Back = history, Up = parent folder) ────────────
@@ -24761,14 +24805,18 @@ function displayFiles(files, path, highlightFile = null) {
 
     if (!fileList) return false;
 
-    // A contextual toolbar for writable locations: create folders and upload
-    // straight into the folder being browsed. Shown even when the folder is
-    // empty (so a freshly created folder can be filled).
-    const toolbar = isWritablePath(path) ? `
+    // A contextual toolbar for writable/uploadable locations: upload straight
+    // into the folder being browsed (and, in the general-purpose writable
+    // trees, create folders too). Shown even when the folder is empty — so a
+    // freshly created folder, or an empty script library, can be filled.
+    const newFolderBtn = isWritablePath(path)
+        ? `<button onclick="newFolder()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1.5 rounded transition-colors whitespace-nowrap">+ New folder</button>`
+        : '';
+    const toolbar = isUploadablePath(path) ? `
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 mb-1 bg-slate-800/60 border border-slate-700 rounded-lg">
             <span class="text-sm text-gray-300 truncate">📁 ${escapeHtml(path)}</span>
             <div class="flex items-center gap-2 flex-shrink-0">
-                <button onclick="newFolder()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1.5 rounded transition-colors whitespace-nowrap">+ New folder</button>
+                ${newFolderBtn}
                 <button onclick="uploadFile()" class="bg-green-700 hover:bg-green-800 text-white text-xs px-2.5 py-1.5 rounded transition-colors whitespace-nowrap">⬆ Upload here</button>
             </div>
         </div>` : '';
@@ -25313,9 +25361,10 @@ function uploadFile() {
             formData.append('file', file);
         }
 
-        // Upload into the folder currently being browsed when it is writable
-        // (an /uploads or /backups subfolder); otherwise default to /uploads.
-        const target = isWritablePath(currentDirectory) ? currentDirectory : '/uploads';
+        // Upload into the folder currently being browsed when it accepts
+        // uploads (an /uploads or /backups subfolder, or a script library);
+        // otherwise default to /uploads.
+        const target = isUploadablePath(currentDirectory) ? currentDirectory : '/uploads';
         formData.append('path', target);
 
         let totalBytes = 0;
@@ -25353,7 +25402,7 @@ function uploadFile() {
             try { data = JSON.parse(xhr.responseText); } catch (_) { /* non-JSON */ }
             if (xhr.status >= 200 && xhr.status < 300 && data.success) {
                 progress.finish(true, `Uploaded ${files.length} file(s)`);
-                if (!isWritablePath(currentDirectory)) currentDirectory = target;
+                if (!isUploadablePath(currentDirectory)) currentDirectory = target;
                 refreshFiles();
             } else {
                 const msg = (data && data.error) ? data.error : `HTTP ${xhr.status}`;
