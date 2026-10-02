@@ -17,15 +17,16 @@ not a replacement — and installing never deletes your own scripts.
 
 ## Setup
 
-Clone the library anywhere Ragnar can reach it. The simplest place is next to
-the Ragnar repo:
+**You normally don't have to do anything** — Ragnar clones the library for you
+(see [Auto-sync](#auto-sync)). To place it yourself, clone it next to the Ragnar
+repo:
 
 ```bash
 cd ~            # or wherever your Ragnar checkout lives
 git clone https://github.com/PierreGode/RagnarScripts
 ```
 
-Ragnar discovers it automatically, trying in order:
+Ragnar discovers an existing checkout automatically, trying in order:
 
 1. `$RAGNAR_SCRIPTS_DIR` (set this to override everything else)
 2. a `RagnarScripts/` folder beside the Ragnar repo
@@ -34,6 +35,24 @@ Ragnar discovers it automatically, trying in order:
 
 The first path that exists wins. To keep the library elsewhere, export
 `RAGNAR_SCRIPTS_DIR=/path/to/RagnarScripts` in Ragnar's environment.
+
+## Auto-sync
+
+Ragnar keeps the checkout current on its own, so scripts pushed to the GitHub
+repo show up without you touching a shell. It runs a best-effort `git clone`
+(when the repo is missing) or `git pull` (when it's present):
+
+- **on web-server start** (i.e. after a restart);
+- **when the Dashboard tab opens**;
+- **when the Pentest tab opens**.
+
+The clone is anonymous over HTTPS (the repo is public — no SSH key or token
+needed). Sync is throttled (~30 s) so switching tabs quickly never spawns a git
+process each time, runs in the background so it never blocks the UI, and is
+silently skipped if the box is offline or `git` is missing — your already-listed
+scripts keep working either way. A fresh clone lands at `$RAGNAR_SCRIPTS_DIR`
+if set, otherwise beside the Ragnar repo. You can still pull manually, and the
+↺ button on each install section re-lists on demand.
 
 ## Installing a script
 

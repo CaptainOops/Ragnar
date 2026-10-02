@@ -657,9 +657,17 @@ _RAGNAR_SCRIPTS_SUBDIR = 'console-scripts'
 def _ragnar_scripts_repo():
     """Locate a cloned RagnarScripts library repo, or return None.
 
-    Search order: ``$RAGNAR_SCRIPTS_DIR``, a ``RagnarScripts`` folder beside the
-    Ragnar repo, ``~/RagnarScripts``, then the common pi/ragnar clone paths.
+    Delegates to :mod:`ragnar_scripts` (the canonical discovery + auto-sync
+    module); the inline search below is a standalone fallback kept in sync with
+    it. Search order: ``$RAGNAR_SCRIPTS_DIR``, a ``RagnarScripts`` folder beside
+    the Ragnar repo, ``~/RagnarScripts``, then the common pi/ragnar clone paths.
     """
+    try:
+        import ragnar_scripts
+        d = ragnar_scripts.repo_dir()
+        return str(d) if d else None
+    except Exception:
+        pass
     candidates = []
     env = os.environ.get('RAGNAR_SCRIPTS_DIR')
     if env:

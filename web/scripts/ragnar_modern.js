@@ -1352,6 +1352,24 @@ function initTerminal() {
     setTimeout(() => { try { _termFit.fit(); } catch (e) {} _sendTermResize(); }, 80);
 }
 
+// Auto clone/pull the external RagnarScripts library when the Dashboard or
+// Pentest tab opens, so newly-pushed shared scripts appear without a manual
+// git pull. Best-effort and throttled both here and server-side; if either
+// install section is open, it re-lists once the sync returns.
+let _ragnarScriptsSyncedAt = 0;
+async function ragnarScriptsAutoSync() {
+    const now = Date.now();
+    if (now - _ragnarScriptsSyncedAt < 20000) return;   // client-side throttle
+    _ragnarScriptsSyncedAt = now;
+    try {
+        await fetch('/api/ragnar-scripts/sync', { method: 'POST' });
+    } catch (e) { return; /* offline / best-effort */ }
+    const d = document.getElementById('rubber-ducky-ragnar');
+    if (d && d.open && typeof rubberDuckyLoadRagnarScripts === 'function') rubberDuckyLoadRagnarScripts();
+    const s = document.getElementById('sc-library');
+    if (s && s.open && typeof scLoadLibrary === 'function') scLoadLibrary();
+}
+
 function showTab(tabName) {
     // Backward-compat: these tabs are now sub-tabs of Network / Discovered
     if (tabName === 'networks') { showTab('network'); showNetworkSubtab('archive'); return; }
@@ -1411,6 +1429,10 @@ function showTab(tabName) {
     }
     
     loadTabData(tabName);
+
+    if (tabName === 'dashboard' || tabName === 'pentest') {
+        ragnarScriptsAutoSync();
+    }
 
     if (tabName === 'config') {
         try { refreshSensingInstallCard(); syncRusenseTabToggle(); syncTerminalToggle(); syncMeshTabToggle(); } catch (e) { /* ignore */ }

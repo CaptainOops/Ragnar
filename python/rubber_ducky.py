@@ -466,10 +466,16 @@ RAGNAR_SCRIPTS_SUBDIR = 'rubber-ducky'
 def _ragnar_scripts_repo() -> Optional[Path]:
     """Locate a cloned RagnarScripts library repo, or return None.
 
-    Search order: ``$RAGNAR_SCRIPTS_DIR``, a ``RagnarScripts`` folder beside the
-    Ragnar repo, ``~/RagnarScripts``, then the common pi/ragnar clone paths. The
-    first existing directory wins.
+    Delegates to :mod:`ragnar_scripts` (the canonical discovery + auto-sync
+    module); the inline search below is a standalone fallback kept in sync with
+    it. Search order: ``$RAGNAR_SCRIPTS_DIR``, a ``RagnarScripts`` folder beside
+    the Ragnar repo, ``~/RagnarScripts``, then the common pi/ragnar clone paths.
     """
+    try:
+        import ragnar_scripts
+        return ragnar_scripts.repo_dir()
+    except Exception:
+        pass
     ragnar_root = Path(__file__).resolve().parent.parent
     candidates = []
     env = os.environ.get('RAGNAR_SCRIPTS_DIR')

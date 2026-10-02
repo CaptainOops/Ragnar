@@ -14603,6 +14603,22 @@ def api_serial_console_script_status():
     return jsonify(serial_console.script_status())
 
 
+@app.route('/api/ragnar-scripts/sync', methods=['POST'])
+def api_ragnar_scripts_sync():
+    """Clone or git-pull the external RagnarScripts library (throttled).
+
+    Called when the Dashboard / Pentest tabs open so freshly-pushed shared
+    scripts appear without a manual pull. Best-effort — a failure (offline, no
+    git) is reported but never an error the UI must handle."""
+    try:
+        import ragnar_scripts
+        force = bool((request.get_json(silent=True) or {}).get('force'))
+        return jsonify(ragnar_scripts.sync(force=force))
+    except Exception as e:
+        logger.warning(f"RagnarScripts sync error: {e}")
+        return jsonify({'ok': False, 'error': str(e)})
+
+
 @app.route('/api/serial-console/library')
 def api_serial_console_library():
     """List console scripts available in the cloned RagnarScripts repo."""
@@ -29863,6 +29879,21 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
             serial_console.init()
         except Exception as e:
             logger.warning(f"Serial console init skipped: {e}")
+
+        # Clone/pull the external RagnarScripts library on boot so shared ducky
+        # and console scripts are available without a manual git pull. Runs in
+        # the background (never blocks the web server binding) and is never fatal.
+        def _boot_ragnar_scripts():
+            try:
+                import ragnar_scripts
+                st = ragnar_scripts.sync(force=True)
+                if st.get('ok'):
+                    logger.info(f"RagnarScripts {st.get('action')} ok: {st.get('dir')}")
+                else:
+                    logger.info(f"RagnarScripts sync skipped: {st.get('error')}")
+            except Exception as _rs_err:
+                logger.warning(f"RagnarScripts boot sync error: {_rs_err}")
+        socketio.start_background_task(_boot_ragnar_scripts)
 
         # Synchronize counts in the background so the web server binds
         # immediately instead of waiting for a full DB scan first.
