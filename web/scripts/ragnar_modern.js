@@ -11961,6 +11961,7 @@ async function loadTabData(tabName) {
                 checkAirSnitchInstalled();
                 populateAirSnitchInterfaceDropdowns();
                 refreshAirSnitchResults();
+                rubberDuckyInit();
             } else {
                 addConsoleMessage('Enable Pentest Mode to access the Pentest tab', 'warning');
                 showTab('dashboard');
@@ -21334,6 +21335,492 @@ async function runManualLynisPentest() {
             liveStatus.className = 'text-sm text-red-600 mt-2';
         }
     }
+}
+
+// ============================================================================
+// RUBBER DUCKY SCRIPT EXECUTOR
+// ============================================================================
+
+async function rubberDuckyInit() {
+    /**Initialize rubber ducky UI on pentest tab load*/
+    await rubberDuckyRefreshScripts();
+    await rubberDuckyRefreshDevices();
+    await rubberDuckyGadgetStatus();
+    rubberDuckyLoadLibrary();
+    revshellInit();
+}
+
+async function _rdJson(r) {
+    /**Parse a fetch Response as JSON, or throw a clear message when the backend
+       is stale (new routes return 404/HTML until the webapp is restarted).*/
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('json')) {
+        throw new Error(r.status === 404
+            ? 'endpoint not found — restart Ragnar to load the new routes'
+            : `unexpected ${r.status} response`);
+    }
+    return r.json();
+}
+
+async function rubberDuckyLoadLibrary() {
+    /**Fetch the bundled payload library and render install buttons*/
+    const box = document.getElementById('rubber-ducky-library');
+    if (!box) return;
+    try {
+        const r = await fetch('/api/rubber-ducky/library');
+        const data = await _rdJson(r);
+        const list = (data && data.payloads) || [];
+        if (!list.length) { box.innerHTML = '<p class="text-gray-500">No library payloads.</p>'; return; }
+        box.innerHTML = '';
+        list.forEach(p => {
+            const row = document.createElement('div');
+            row.className = 'flex items-start justify-between gap-2 border-b border-slate-800 pb-2';
+            row.innerHTML = `<div class="min-w-0"><div class="text-gray-200 truncate">${escapeHtml(p.name)}</div>`
+                + `<div class="text-gray-500 truncate">${escapeHtml(p.description || '')}</div></div>`;
+            const btn = document.createElement('button');
+            btn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded shrink-0';
+            btn.textContent = 'Install';
+            btn.onclick = () => rubberDuckyInstall(p.name);
+            row.appendChild(btn);
+            box.appendChild(row);
+        });
+    } catch (e) {
+        box.innerHTML = `<p class="text-red-400">Error: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+async function rubberDuckyInstall(name) {
+    /**Copy a library payload into the scripts folder and select it*/
+    try {
+        const r = await fetch('/api/rubber-ducky/library/install', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        const data = await _rdJson(r);
+        if (!r.ok || !data.success) throw new Error(data.error || 'install failed');
+        await rubberDuckyRefreshScripts();
+        const sel = document.getElementById('rubber-ducky-script-select');
+        if (sel) { sel.value = data.name; rubberDuckyOnScriptSelect(); }
+    } catch (e) {
+        alert('Install failed: ' + e.message);
+    }
+}
+
+function rubberDuckyEditNew() {
+    /**Clear the editor for a new script*/
+    const n = document.getElementById('rubber-ducky-edit-name');
+    const c = document.getElementById('rubber-ducky-edit-content');
+    if (n) n.value = '';
+    if (c) c.value = '';
+    if (n) n.focus();
+}
+
+async function rubberDuckyEditLoad() {
+    /**Load the selected script's contents into the editor*/
+    const name = document.getElementById('rubber-ducky-script-select').value;
+    if (!name) { alert('Select a script first'); return; }
+    try {
+        const r = await fetch(`/api/files/preview?path=${encodeURIComponent('/rubber-ducky/' + name)}`);
+        const data = await r.json();
+        if (data.type !== 'text') throw new Error('not a text file');
+        document.getElementById('rubber-ducky-edit-name').value = name;
+        document.getElementById('rubber-ducky-edit-content').value = data.content || '';
+    } catch (e) {
+        alert('Could not load: ' + e.message);
+    }
+}
+
+async function rubberDuckyEditSave() {
+    /**Save the editor contents as a script in files/rubber-ducky/*/
+    const name = document.getElementById('rubber-ducky-edit-name').value.trim();
+    const content = document.getElementById('rubber-ducky-edit-content').value;
+    const statusDiv = document.getElementById('rubber-ducky-status');
+    const statusMsg = document.getElementById('rubber-ducky-status-message');
+    try {
+        const r = await fetch('/api/rubber-ducky/save', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, content })
+        });
+        const data = await _rdJson(r);
+        if (!r.ok || !data.success) throw new Error(data.error || 'save failed');
+        await rubberDuckyRefreshScripts();
+        const sel = document.getElementById('rubber-ducky-script-select');
+        if (sel) { sel.value = data.name; rubberDuckyOnScriptSelect(); }
+        if (statusMsg) {
+            statusMsg.textContent = `✅ Saved ${data.name}`;
+            statusMsg.className = 'rounded-lg border border-green-700 bg-green-900/70 px-4 py-3 text-sm text-green-200';
+            statusDiv.classList.remove('hidden');
+        }
+    } catch (e) {
+        if (statusMsg) {
+            statusMsg.textContent = `❌ Save failed: ${e.message}`;
+            statusMsg.className = 'rounded-lg border border-red-700 bg-red-900/70 px-4 py-3 text-sm text-red-200';
+            statusDiv.classList.remove('hidden');
+        }
+    }
+}
+
+function rubberDuckyRenderGadget(data) {
+    /**Render the USB HID gadget status line from a status/enable/disable payload*/
+    const el = document.getElementById('rubber-ducky-gadget-status');
+    if (!el) return;
+    if (!data || data.ok === false) {
+        el.textContent = '⚠ ' + ((data && data.error) || 'gadget status unavailable');
+        el.className = 'text-xs text-yellow-300 mt-1';
+        return;
+    }
+    if (data.hidg0) {
+        const attached = data.state === 'configured' ? ' · host attached' :
+                         (data.state ? ` · host: ${data.state}` : '');
+        el.textContent = `Enabled — /dev/hidg0 ready${attached}`;
+        el.className = 'text-xs text-green-400 mt-1';
+    } else if (!data.udc) {
+        el.textContent = 'No USB device controller — enable the HID-gadget option in the installer/updater and reboot';
+        el.className = 'text-xs text-yellow-300 mt-1';
+    } else {
+        el.textContent = 'Disabled — /dev/hidg0 not present';
+        el.className = 'text-xs text-gray-400 mt-1';
+    }
+}
+
+async function rubberDuckyGadgetStatus() {
+    /**Fetch and render the HID gadget status*/
+    try {
+        const r = await fetch('/api/rubber-ducky/gadget/status');
+        rubberDuckyRenderGadget(await r.json());
+    } catch (e) {
+        rubberDuckyRenderGadget({ ok: false, error: e.message });
+    }
+}
+
+async function rubberDuckyGadget(action) {
+    /**Enable or disable the HID gadget on demand, then refresh status + devices*/
+    const el = document.getElementById('rubber-ducky-gadget-status');
+    if (el) { el.textContent = action === 'enable' ? 'Enabling…' : 'Disabling…'; el.className = 'text-xs text-blue-300 mt-1'; }
+    try {
+        const r = await fetch(`/api/rubber-ducky/gadget/${action}`, { method: 'POST' });
+        rubberDuckyRenderGadget(await r.json());
+    } catch (e) {
+        rubberDuckyRenderGadget({ ok: false, error: e.message });
+    }
+    // The device dropdown depends on /dev/hidg0, so refresh it too.
+    await rubberDuckyRefreshDevices();
+}
+
+async function rubberDuckyRefreshScripts() {
+    /**Fetch and populate script list*/
+    try {
+        const response = await fetch('/api/rubber-ducky/scripts');
+        const data = await response.json();
+
+        if (!data.success) {
+            console.error('Failed to load scripts:', data.error);
+            return;
+        }
+
+        const select = document.getElementById('rubber-ducky-script-select');
+        select.innerHTML = '<option value="">Select a script...</option>';
+
+        if (data.scripts.length === 0) {
+            select.innerHTML += '<option disabled>No scripts found in files/rubber-ducky/</option>';
+            return;
+        }
+
+        data.scripts.forEach(script => {
+            const option = document.createElement('option');
+            option.value = script.name;
+            option.textContent = `${script.name} (${script.size} bytes)`;
+            select.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading scripts:', error);
+    }
+}
+
+async function rubberDuckyUploadScript(input) {
+    /**Upload a .ducky/.txt script into files/rubber-ducky/ and select it*/
+    const file = input.files && input.files[0];
+    input.value = '';  // allow re-uploading the same filename later
+    if (!file) return;
+    const statusDiv = document.getElementById('rubber-ducky-status');
+    const statusMsg = document.getElementById('rubber-ducky-status-message');
+    try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('path', '/rubber-ducky');
+        const r = await fetch('/api/files/upload', { method: 'POST', body: fd });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || data.error) throw new Error(data.error || `upload failed (${r.status})`);
+        await rubberDuckyRefreshScripts();
+        const sel = document.getElementById('rubber-ducky-script-select');
+        if (sel) { sel.value = file.name; rubberDuckyOnScriptSelect(); }
+        if (statusMsg) {
+            statusMsg.textContent = `✅ Uploaded ${file.name}`;
+            statusMsg.className = 'rounded-lg border border-green-700 bg-green-900/70 px-4 py-3 text-sm text-green-200';
+            statusDiv.classList.remove('hidden');
+        }
+    } catch (e) {
+        if (statusMsg) {
+            statusMsg.textContent = `❌ Upload failed: ${e.message}`;
+            statusMsg.className = 'rounded-lg border border-red-700 bg-red-900/70 px-4 py-3 text-sm text-red-200';
+            statusDiv.classList.remove('hidden');
+        }
+    }
+}
+
+async function rubberDuckyRefreshDevices() {
+    /**Fetch and populate HID device list*/
+    try {
+        const response = await fetch('/api/rubber-ducky/devices');
+        const data = await response.json();
+
+        if (!data.success) {
+            console.error('Failed to load devices:', data.error);
+            return;
+        }
+
+        const select = document.getElementById('rubber-ducky-device-select');
+        select.innerHTML = '<option value="">Select a device...</option>';
+
+        const hintEl = document.getElementById('rubber-ducky-device-hint');
+        if (data.devices.length === 0) {
+            select.innerHTML += '<option disabled>No HID keyboard gadget detected</option>';
+            if (hintEl) {
+                hintEl.textContent = data.hint || 'No USB HID keyboard gadget found.';
+                hintEl.classList.remove('hidden');
+            }
+            return;
+        }
+        if (hintEl) hintEl.classList.add('hidden');
+
+        data.devices.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.path;
+            option.textContent = device.name;
+            select.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading devices:', error);
+    }
+}
+
+async function rubberDuckyOnScriptSelect() {
+    /**Load and preview selected script*/
+    try {
+        const scriptName = document.getElementById('rubber-ducky-script-select').value;
+
+        if (!scriptName) {
+            document.getElementById('rubber-ducky-preview').classList.add('hidden');
+            return;
+        }
+
+        const response = await fetch('/api/rubber-ducky/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script: scriptName })
+        });
+
+        const data = await response.json();
+        const previewDiv = document.getElementById('rubber-ducky-preview');
+        const previewContent = document.getElementById('rubber-ducky-preview-content');
+
+        if (!data.success) {
+            previewContent.textContent = `Error: ${data.error || 'Failed to parse script'}`;
+            previewContent.className = 'text-red-400 text-xs font-mono whitespace-pre-wrap';
+        } else {
+            previewContent.textContent = data.preview;
+            previewContent.className = 'text-gray-300 text-xs font-mono whitespace-pre-wrap';
+        }
+
+        previewDiv.classList.remove('hidden');
+    } catch (error) {
+        console.error('Error loading preview:', error);
+        document.getElementById('rubber-ducky-preview-content').textContent = `Error: ${error.message}`;
+    }
+}
+
+async function rubberDuckyExecute() {
+    /**Execute the selected script on the target device*/
+    try {
+        const scriptName = document.getElementById('rubber-ducky-script-select').value;
+        const devicePath = document.getElementById('rubber-ducky-device-select').value;
+        const statusDiv = document.getElementById('rubber-ducky-status');
+        const statusMsg = document.getElementById('rubber-ducky-status-message');
+        const executeBtn = document.getElementById('rubber-ducky-execute-btn');
+
+        if (!scriptName || !devicePath) {
+            statusMsg.textContent = '⚠️ Please select both a script and a target device';
+            statusMsg.className = 'rounded-lg border border-yellow-700 bg-yellow-900/70 px-4 py-3 text-sm text-yellow-200';
+            statusDiv.classList.remove('hidden');
+            return;
+        }
+
+        // Disable button and show executing state
+        executeBtn.disabled = true;
+        executeBtn.textContent = 'Executing...';
+        statusMsg.textContent = '⏳ Running script on device...';
+        statusMsg.className = 'rounded-lg border border-blue-700 bg-blue-900/70 px-4 py-3 text-sm text-blue-200';
+        statusDiv.classList.remove('hidden');
+
+        const response = await fetch('/api/rubber-ducky/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                script: scriptName,
+                device: devicePath
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            statusMsg.innerHTML = `✅ <strong>Script executed successfully!</strong><br>Executed ${result.executed}/${result.total} commands`;
+            statusMsg.className = 'rounded-lg border border-green-700 bg-green-900/70 px-4 py-3 text-sm text-green-200';
+        } else {
+            statusMsg.innerHTML = `❌ <strong>Execution failed:</strong><br>${result.error || 'Unknown error'}`;
+            statusMsg.className = 'rounded-lg border border-red-700 bg-red-900/70 px-4 py-3 text-sm text-red-200';
+        }
+
+        // Re-enable button
+        executeBtn.disabled = false;
+        executeBtn.textContent = 'Execute Script';
+    } catch (error) {
+        console.error('Error executing script:', error);
+        const statusMsg = document.getElementById('rubber-ducky-status-message');
+        statusMsg.textContent = `❌ Error: ${error.message}`;
+        statusMsg.className = 'rounded-lg border border-red-700 bg-red-900/70 px-4 py-3 text-sm text-red-200';
+        document.getElementById('rubber-ducky-status').classList.remove('hidden');
+
+        const executeBtn = document.getElementById('rubber-ducky-execute-btn');
+        executeBtn.disabled = false;
+        executeBtn.textContent = 'Execute Script';
+    }
+}
+
+// ============================================================================
+// REVERSE SHELL GENERATOR + LISTENER
+// ============================================================================
+
+let _revshellPollTimer = null;
+
+async function revshellInit() {
+    /**Prefill LHOST with the box LAN IP and sync listener state*/
+    try {
+        const ipEl = document.getElementById('revshell-ip');
+        if (ipEl && !ipEl.value) {
+            const r = await fetch('/api/revshell/lan-ip');
+            const d = await r.json();
+            if (d && d.ip) ipEl.value = d.ip;
+        }
+    } catch (e) { /* ignore */ }
+    revshellRefreshStatus();
+}
+
+async function revshellGenerate() {
+    /**Generate reverse-shell one-liners and render them with copy buttons*/
+    const box = document.getElementById('revshell-payloads');
+    const ip = document.getElementById('revshell-ip').value.trim();
+    const port = document.getElementById('revshell-port').value;
+    const shell = document.getElementById('revshell-shell').value.trim() || '/bin/bash';
+    box.innerHTML = '<p class="text-xs text-gray-500">Generating…</p>';
+    try {
+        const r = await fetch('/api/revshell/generate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip, port, shell })
+        });
+        const data = await _rdJson(r);
+        if (!r.ok || !data.success) throw new Error(data.error || 'generate failed');
+        const ipEl = document.getElementById('revshell-ip');
+        if (ipEl && !ipEl.value) ipEl.value = data.ip;
+        box.innerHTML = '';
+        (data.payloads || []).forEach(p => {
+            const row = document.createElement('div');
+            row.className = 'bg-slate-900/50 border border-slate-800 rounded p-2';
+            const head = document.createElement('div');
+            head.className = 'flex items-center justify-between mb-1';
+            head.innerHTML = `<span class="text-xs font-medium text-pink-200">${escapeHtml(p.name)}</span>`;
+            const copy = document.createElement('button');
+            copy.className = 'text-[11px] bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded';
+            copy.textContent = 'Copy';
+            copy.onclick = () => revshellCopy(p.payload, copy);
+            head.appendChild(copy);
+            const code = document.createElement('div');
+            code.className = 'text-[11px] font-mono text-gray-300 whitespace-pre-wrap break-all';
+            code.textContent = p.payload;
+            row.appendChild(head); row.appendChild(code);
+            box.appendChild(row);
+        });
+    } catch (e) {
+        box.innerHTML = `<p class="text-xs text-red-400">Error: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+function revshellCopy(text, btn) {
+    const done = () => { if (btn) { const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200); } };
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, () => {});
+        }
+    } catch (e) { /* ignore */ }
+}
+
+async function revshellListener(action) {
+    /**Start or stop the catch listener*/
+    try {
+        const body = action === 'start'
+            ? JSON.stringify({ port: document.getElementById('revshell-port').value })
+            : '{}';
+        const r = await fetch(`/api/revshell/listener/${action}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body
+        });
+        const data = await _rdJson(r);
+        if (!r.ok || data.success === false) throw new Error(data.error || 'failed');
+        revshellRefreshStatus();
+    } catch (e) {
+        const c = document.getElementById('revshell-console');
+        if (c) c.textContent = 'Error: ' + e.message;
+    }
+}
+
+async function revshellRefreshStatus() {
+    /**Poll listener status and update the console; self-schedules while running*/
+    try {
+        const r = await fetch('/api/revshell/listener/status');
+        const s = await r.json();
+        const statusEl = document.getElementById('revshell-listener-status');
+        const con = document.getElementById('revshell-console');
+        if (statusEl) {
+            statusEl.textContent = s.running
+                ? (s.connected ? `Connected — ${s.peer}` : `Listening on :${s.port}`)
+                : 'Stopped';
+            statusEl.className = 'text-xs mt-1 ' + (s.connected ? 'text-green-400' : s.running ? 'text-blue-300' : 'text-gray-400');
+        }
+        if (con && typeof s.output === 'string') {
+            const atBottom = con.scrollHeight - con.scrollTop - con.clientHeight < 40;
+            con.textContent = s.output || (s.running ? '' : 'Listener stopped.');
+            if (atBottom) con.scrollTop = con.scrollHeight;
+        }
+        if (_revshellPollTimer) { clearTimeout(_revshellPollTimer); _revshellPollTimer = null; }
+        // Keep polling only while the tab is on Pentest and the listener runs.
+        if (s.running && currentTab === 'pentest') {
+            _revshellPollTimer = setTimeout(revshellRefreshStatus, 1500);
+        }
+    } catch (e) { /* ignore transient errors */ }
+}
+
+async function revshellSend() {
+    /**Send a command line to the connected session*/
+    const input = document.getElementById('revshell-cmd');
+    const data = input.value;
+    if (!data) return;
+    input.value = '';
+    try {
+        await fetch('/api/revshell/listener/send', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data })
+        });
+        setTimeout(revshellRefreshStatus, 300);
+    } catch (e) { /* ignore */ }
 }
 
 // ============================================================================

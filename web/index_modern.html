@@ -4549,8 +4549,6 @@
                     </div>
                     <div class="space-y-4">
                         <div class="grid grid-cols-2 gap-3">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
                             <button onclick="triggerNetworkScan()" class="bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded transition-colors">
                                 Network Scan
                             </button>
@@ -4650,6 +4648,164 @@
                 
                 <!-- Live Status Display -->
                 <div id="lynis-audit-status" class="text-sm text-gray-400 mt-2 hidden"></div>
+            </div>
+
+            <!-- Rubber Ducky Script Executor -->
+            <div class="glass rounded-xl p-6 mb-6">
+                <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                    <div>
+                        <h3 class="text-xl font-semibold text-yellow-200 flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5a4 4 0 100-8 4 4 0 000 8z"></path>
+                            </svg>
+                            Rubber Ducky Script Executor
+                        </h3>
+                        <p class="text-sm text-gray-400">Emulate a USB keyboard to a host the Pi is plugged into, driving it from a script. Requires the HID gadget (<code class="bg-slate-800 px-2 py-1 rounded text-xs">/dev/hidg0</code>) configured by the installer. Upload .ducky or .txt scripts to <code class="bg-slate-800 px-2 py-1 rounded text-xs">files/rubber-ducky/</code>.</p>
+                    </div>
+                    <span class="text-xs text-yellow-200 bg-yellow-900/50 px-3 py-1 rounded-full">Requires HID Gadget</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">Select Script</label>
+                        <select id="rubber-ducky-script-select" onchange="rubberDuckyOnScriptSelect()" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-yellow-400">
+                            <option value="">Loading scripts...</option>
+                        </select>
+                        <div class="flex items-center gap-2 mt-2">
+                            <button onclick="rubberDuckyRefreshScripts()" class="text-xs text-gray-300 bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">Refresh</button>
+                            <label class="text-xs text-gray-300 bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded cursor-pointer">
+                                Upload
+                                <input type="file" accept=".ducky,.txt" class="hidden" onchange="rubberDuckyUploadScript(this)">
+                            </label>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">Target Device</label>
+                        <select id="rubber-ducky-device-select" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-yellow-400">
+                            <option value="">Select Device</option>
+                        </select>
+                        <button onclick="rubberDuckyRefreshDevices()" class="text-xs text-gray-300 bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded mt-2">Refresh Devices</button>
+                        <p id="rubber-ducky-device-hint" class="text-xs text-yellow-300/80 mt-2 hidden"></p>
+                    </div>
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">&nbsp;</label>
+                        <button id="rubber-ducky-execute-btn" onclick="rubberDuckyExecute()" class="mt-1 w-full bg-yellow-600 hover:bg-yellow-700 text-white py-2 px-3 rounded font-semibold tracking-wide">Execute Script</button>
+                    </div>
+                </div>
+
+                <!-- USB HID Gadget on-demand control -->
+                <div class="mt-4 bg-slate-900/40 border border-slate-700 rounded p-3">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                            <span class="text-xs uppercase tracking-wide text-gray-400">USB HID Keyboard Gadget</span>
+                            <p id="rubber-ducky-gadget-status" class="text-xs text-gray-300 mt-1">Checking…</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="rubberDuckyGadget('enable')" class="text-xs bg-green-700 hover:bg-green-600 text-white px-3 py-1.5 rounded">Enable</button>
+                            <button onclick="rubberDuckyGadget('disable')" class="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded">Disable</button>
+                            <button onclick="rubberDuckyGadgetStatus()" title="Refresh" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1.5 rounded">↺</button>
+                        </div>
+                    </div>
+                    <p class="text-[11px] text-gray-500 mt-2">On-demand: brings <code class="bg-slate-800 px-1 rounded">/dev/hidg0</code> up or down now. Making it permanent across reboots is the installer/updater HID-gadget option.</p>
+                </div>
+
+                <!-- Script Preview -->
+                <div id="rubber-ducky-preview" class="mt-4 hidden">
+                    <label class="text-xs uppercase tracking-wide text-gray-400">Script Preview</label>
+                    <div id="rubber-ducky-preview-content" class="mt-2 bg-slate-900/50 border border-slate-700 rounded p-3 max-h-48 overflow-y-auto text-xs font-mono text-gray-300 whitespace-pre-wrap">
+                    </div>
+                </div>
+
+                <!-- Status and Feedback -->
+                <div id="rubber-ducky-status" class="hidden mt-4">
+                    <div id="rubber-ducky-status-message" class="rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm text-gray-200"></div>
+                </div>
+
+                <!-- Payload library + inline editor -->
+                <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div class="bg-slate-900/40 border border-slate-700 rounded p-3">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs uppercase tracking-wide text-gray-400">Payload Library</span>
+                            <button onclick="rubberDuckyLoadLibrary()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded">↺</button>
+                        </div>
+                        <div id="rubber-ducky-library" class="space-y-2 max-h-48 overflow-y-auto text-xs">
+                            <p class="text-gray-500">Loading…</p>
+                        </div>
+                        <p class="text-[11px] text-gray-500 mt-2">Ready-made payloads — Install copies one into your scripts folder to run or edit.</p>
+                    </div>
+                    <div class="bg-slate-900/40 border border-slate-700 rounded p-3">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs uppercase tracking-wide text-gray-400">Editor</span>
+                            <div class="flex items-center gap-2">
+                                <button onclick="rubberDuckyEditNew()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded">New</button>
+                                <button onclick="rubberDuckyEditLoad()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded">Edit selected</button>
+                            </div>
+                        </div>
+                        <input id="rubber-ducky-edit-name" type="text" placeholder="name.ducky" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs mb-2 focus:outline-none focus:border-yellow-400">
+                        <textarea id="rubber-ducky-edit-content" rows="6" placeholder="REM New payload&#10;DELAY 500&#10;STRING hello&#10;ENTER" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-yellow-400" spellcheck="false"></textarea>
+                        <button onclick="rubberDuckyEditSave()" class="mt-2 w-full bg-yellow-600 hover:bg-yellow-700 text-white py-1.5 rounded text-sm font-semibold">Save Script</button>
+                    </div>
+                </div>
+
+                <p class="text-xs text-gray-500 mt-4">
+                    💾 <strong>Upload scripts:</strong> Use the Files tab to upload .ducky or .txt scripts to <code class="bg-slate-800 px-1 rounded">files/rubber-ducky/</code> (ships with a safe <code class="bg-slate-800 px-1 rounded">demo_hello.ducky</code> you can run to validate the setup).
+                    <strong>Formats:</strong> Official Ducky syntax (.ducky) or plain text instructions (type:, press:, wait:, key:).
+                    <strong>Target:</strong> the device dropdown lists the Pi's USB keyboard gadget (<code class="bg-slate-800 px-1 rounded">/dev/hidg0</code>); plug the Pi into the host you are testing.
+                </p>
+            </div>
+
+            <!-- Reverse Shell Generator + Listener -->
+            <div class="glass rounded-xl p-6 mb-6">
+                <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                    <div>
+                        <h3 class="text-xl font-semibold text-pink-200 flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M3 4h18a1 1 0 011 1v14a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1z"></path>
+                            </svg>
+                            Reverse Shell
+                        </h3>
+                        <p class="text-sm text-gray-400">Generate connect-back one-liners and catch them with the built-in listener. Authorized testing only.</p>
+                    </div>
+                    <span class="text-xs text-pink-200 bg-pink-900/50 px-3 py-1 rounded-full">LHOST auto-filled</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">LHOST</label>
+                        <input id="revshell-ip" type="text" placeholder="auto" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-pink-400">
+                    </div>
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">LPORT</label>
+                        <input id="revshell-port" type="number" value="4444" min="1" max="65535" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-pink-400">
+                    </div>
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">Shell</label>
+                        <input id="revshell-shell" type="text" value="/bin/bash" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-pink-400">
+                    </div>
+                    <div>
+                        <label class="text-xs uppercase tracking-wide text-gray-400">&nbsp;</label>
+                        <button onclick="revshellGenerate()" class="mt-1 w-full bg-pink-700 hover:bg-pink-600 text-white py-2 px-3 rounded font-semibold tracking-wide">Generate</button>
+                    </div>
+                </div>
+
+                <div id="revshell-payloads" class="mt-4 space-y-2"></div>
+
+                <!-- Listener -->
+                <div class="mt-4 bg-slate-900/40 border border-slate-700 rounded p-3">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                            <span class="text-xs uppercase tracking-wide text-gray-400">Catch Listener</span>
+                            <p id="revshell-listener-status" class="text-xs text-gray-400 mt-1">Stopped</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="revshellListener('start')" class="text-xs bg-green-700 hover:bg-green-600 text-white px-3 py-1.5 rounded">Start</button>
+                            <button onclick="revshellListener('stop')" class="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded">Stop</button>
+                        </div>
+                    </div>
+                    <div id="revshell-console" class="mt-2 bg-slate-950/70 border border-slate-800 rounded p-2 h-40 overflow-y-auto text-xs font-mono text-green-300 whitespace-pre-wrap">Listener stopped.</div>
+                    <div class="flex items-center gap-2 mt-2">
+                        <input id="revshell-cmd" type="text" placeholder="command to send…" onkeydown="if(event.key==='Enter')revshellSend()" class="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-pink-400">
+                        <button onclick="revshellSend()" class="text-xs bg-pink-700 hover:bg-pink-600 text-white px-3 py-1.5 rounded">Send</button>
+                    </div>
+                </div>
             </div>
 
             <!-- AirSnitch Wi-Fi Client Isolation Testing -->
@@ -9145,7 +9301,7 @@
     <!-- JavaScript -->
     <script src="/web/scripts/skyview.js?v=20260822-mobile-opacity"></script>
     <script src="/web/scripts/skyview_vr.js?v=20260822-rich-info-panel"></script>
-    <script src="/web/scripts/ragnar_modern.js?v=20260930-osi-matrix"></script>
+    <script src="/web/scripts/ragnar_modern.js?v=20261001-pentest-tools"></script>
 
 
 
