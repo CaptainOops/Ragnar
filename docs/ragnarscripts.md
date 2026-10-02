@@ -56,19 +56,22 @@ if set, otherwise beside the Ragnar repo. You can still pull manually, and the
 
 ## Installing a script
 
-1. Open the relevant card (**Rubber Ducky** or **Device Console**).
-2. Expand **Install from RagnarScripts** / **Install console scripts**.
-3. Each available script shows its name, description and (for console scripts)
-   vendor and command count. Click **Install** — the file is copied into the
-   local library and selected in the picker. A script already installed shows
-   **Reinstall** instead (which overwrites the local copy with the repo's).
+- **Ducky payloads** — on the **Rubber Ducky** card (Pentest tab), RagnarScripts
+  payloads appear directly in the **Payload Library** list, mixed in with the
+  bundled ones and tagged **RagnarScripts** so you can tell them apart.
+- **Console scripts** — on the **Device Console** card (Dashboard), expand
+  **Install console scripts**.
 
-Console scripts install to **this unit** (the one serving the dashboard).
-Enable **Allow write** on the Device Console to actually run them.
+Each row shows name, description and (for console scripts) vendor and command
+count. Click **Install** — the file is copied into the local library
+(`files/rubber-ducky/` or `data/console_scripts/`) and selected in the picker.
+A script already installed shows **Reinstall** instead (which overwrites the
+local copy with the repo's). Console scripts install to **this unit** (the one
+serving the dashboard); enable **Allow write** on the Device Console to run them.
 
-If the card says *RagnarScripts repo not found*, the clone isn't in any of the
-discovery paths above — clone it, or set `RAGNAR_SCRIPTS_DIR`, then hit the ↺
-refresh button.
+If nothing from RagnarScripts shows up, the clone isn't in any of the discovery
+paths above — Ragnar normally [auto-clones](#auto-sync) it, but you can also
+clone it by hand or set `RAGNAR_SCRIPTS_DIR`, then hit the ↺ refresh button.
 
 ## Contributing scripts
 

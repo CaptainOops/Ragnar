@@ -141,22 +141,23 @@ shows a human-readable **preview** of every action before you run it.
 
 The card has two helpers under the status line:
 
-- **Payload library** — ready-made payloads bundled in the repo
-  (`resources/ducky_payloads/`): host recon for Windows/Linux/macOS, a Windows
-  saved-Wi-Fi-profile dump, and a Windows reverse-shell template. **Install**
-  copies one into `files/rubber-ducky/` to run or edit.
+- **Payload library** — one combined list of ready-made payloads from two
+  sources, each row tagged so you can tell them apart:
+  - **bundled** — shipped in the repo (`resources/ducky_payloads/`): host recon
+    for Windows/Linux/macOS, a Windows saved-Wi-Fi-profile dump, and a Windows
+    reverse-shell template.
+  - **RagnarScripts** — the shared [RagnarScripts](ragnarscripts.md) library
+    (`rubber-ducky/`), shown here automatically once the repo is present (Ragnar
+    [auto-clones/pulls](ragnarscripts.md#auto-sync) it). A RagnarScripts payload
+    already copied locally shows **Reinstall**.
+
+  **Install** copies the chosen payload into `files/rubber-ducky/` to run or
+  edit; your own scripts there are never touched.
 - **Editor** — write a script inline: **New** clears it, **Edit selected**
   loads the chosen script, **Save Script** writes it to `files/rubber-ducky/`
   (name must end in `.ducky`/`.txt`) and selects it. Pairs with the
   [Reverse Shell](reverse-shell.md) card — generate a one-liner, paste it into a
   payload, save, run.
-
-Below those, **Install from RagnarScripts** is an expandable section that lists
-payloads from the shared [RagnarScripts](ragnarscripts.md) library
-(`rubber-ducky/`). **Install** copies one into `files/rubber-ducky/`; an
-already-present payload shows **Reinstall**. This is separate from the bundled
-`resources/ducky_payloads/` library above and requires the RagnarScripts repo to
-be cloned — see [RagnarScripts](ragnarscripts.md).
 
 ## Workflow
 
