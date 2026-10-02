@@ -40,12 +40,30 @@ can never be the keyboard side.
 | --- | --- | --- |
 | Pi Zero / Zero W / **Zero 2 W** | ✅ Yes | The reliable platform. Use the **middle "USB"** micro-port (not "PWR"); one cable to the laptop carries data **and** power. |
 | Pi 3A+ | ✅ Yes | Single USB port is OTG-capable. |
-| Pi 4 / 400 | ✅ Yes | Via the USB-C power port (dwc2). |
-| Pi 5 | ⚠️ Finicky | Single USB-C shared with power; gadget mode is awkward. |
+| Pi 4 / 400 | ✅ Yes | Via the USB-C power port (dwc2). That port carries the data, so **power the Pi from the 5V GPIO pins** to keep USB-C free for the target (see below). |
+| Pi 5 | ⚠️ Finicky | Single USB-C shared with power; gadget mode is awkward. Same fix: **power via the 5V GPIO pins**, USB-C to the target. |
 | Pi 3B / 3B+ | ❌ No | OTG port is consumed internally by the onboard USB hub + LAN chip; USB-A ports are host-only. |
 | Pi 1 / 2 | ❌ No | Same hub reason. |
 
 A **Pi Zero 2 W** is the recommended box for testing and demos.
+
+### Powering via the GPIO pins (Pi 4 / Pi 5)
+
+On the Pi 4 and Pi 5, the **only** gadget-capable port is the USB-C port — which
+is also the power input. If you plug USB-C into the target for the HID data link,
+you can no longer power the Pi from USB-C, and relying on the data cable to also
+power the Pi is unreliable. Power the Pi from the **5V GPIO header** instead:
+
+- **Pin 2 or Pin 4** → +5V
+- **Pin 6** (or any GND pin) → GND
+
+Then USB-C goes to the target and the Pi stays powered independently. A Pi Zero /
+Zero 2 W does **not** need this — it has a dedicated **PWR** micro-port separate
+from the data **USB** port.
+
+> ⚠️ The GPIO 5V rail is **unfused** and bypasses the board's input protection.
+> Feed it clean, current-limited 5V (a solid 5V/3A+ supply), and never power from
+> both the GPIO pins and USB-C at the same time.
 
 ## Software setup
 

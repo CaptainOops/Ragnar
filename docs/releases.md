@@ -4,6 +4,14 @@
 
 ### 2026-10-02
 
+#### [#900](https://github.com/PierreGode/Ragnar/pull/900) — docs(pentest): Rubber Ducky card shows supported boards + GPIO-powering note
+*branch `fix/ducky-board-power-info` · 2 file(s)*
+
+- Added a collapsible **Supported boards & powering** panel to the Rubber Ducky Script Executor card: a board-compatibility table (Zero 2 W ✅ / 3A+ ✅ / Pi 4 ✅ / Pi 5 ⚠️ / 3B ❌) and the key caveat that on **Pi 4 / Pi 5** the single USB-C port is both power and the OTG/data port
+- Documents the fix: **power the Pi from the 5V GPIO pins** (pin 2/4 + pin 6 GND) and keep USB-C plugged into the target, so the data link doesn't have to also power the Pi ("steal" the port) — the Pi-4-style workaround; includes the unfused-rail safety caveat
+- Mirrored the same guidance into [rubber-ducky.md](rubber-ducky.md) (board table + new "Powering via the GPIO pins" section)
+- **Docs:** [rubber-ducky.md](rubber-ducky.md), [releases.md](releases.md)
+
 #### [#899](https://github.com/PierreGode/Ragnar/pull/899) — fix(ui): clipboard "Copy" buttons work over plain HTTP
 *branch `fix/revshell-copy-http` · 3 file(s)*
 
