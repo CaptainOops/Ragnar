@@ -2,6 +2,16 @@
 
 ## Releases
 
+### 2026-10-02
+
+#### [#899](https://github.com/PierreGode/Ragnar/pull/899) — fix(pentest): Reverse Shell "Copy" button works over plain HTTP
+*branch `fix/revshell-copy-http` · 2 file(s)*
+
+- `revshellCopy()` relied solely on `navigator.clipboard`, which browsers expose only in secure contexts (HTTPS/localhost); on a plain-HTTP LAN Ragnar (`http://192.168.x`/`100.x`) it is `undefined`, so the button silently did nothing
+- Now routes through the shared `copyToClipboard()` helper (which adds the `document.execCommand('copy')` textarea fallback and a "Copied to clipboard" toast) and still flashes **Copied** on the button
+- Bumped the `ragnar_modern.js` cache-bust (`?v=20261002-revshell-copy`) so returning browsers load the fix
+- **Docs:** [releases.md](releases.md)
+
 ### 2026-10-01
 
 #### [#895](https://github.com/PierreGode/Ragnar/pull/895) — feat(pentest): Rubber Ducky script executor (USB HID keystroke injection)

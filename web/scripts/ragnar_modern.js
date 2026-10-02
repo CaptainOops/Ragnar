@@ -21755,13 +21755,11 @@ async function revshellGenerate() {
     }
 }
 
-function revshellCopy(text, btn) {
-    const done = () => { if (btn) { const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200); } };
-    try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done, () => {});
-        }
-    } catch (e) { /* ignore */ }
+async function revshellCopy(text, btn) {
+    // Route through copyToClipboard: a plain-HTTP Ragnar (http://192.168.x/100.x)
+    // has no navigator.clipboard, so this needs the execCommand fallback.
+    try { await copyToClipboard(text); } catch (e) { /* copyToClipboard handles UX */ }
+    if (btn) { const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = t; }, 1200); }
 }
 
 async function revshellListener(action) {
