@@ -167,6 +167,33 @@ The card has two helpers under the status line:
 4. Pick a script (preview appears), pick the `/dev/hidg0` target, press
    **Execute Script**. The status line reports how many commands ran.
 
+## Driving another unit over the mesh
+
+When a Ragnar is plugged into a host PC over USB-OTG, that port is both its power
+and its data link to the target — so it can't also use wired Ethernet, and it
+runs on **Wi-Fi**. That's enough for a *second* Ragnar on the LAN/mesh to drive
+its HID: you operate from your own unit and the keystrokes come out of the one
+cabled to the host. Same model as the [Device Console](serial-console.md) across
+the mesh.
+
+- **Run on** — the picker at the top of the card. `This unit` is the default;
+  pick a mesh peer to target its `/dev/hidg0`. The list shows each peer's state
+  (`HID, mesh-allowed`, `HID (not allowed)`, `no HID`, offline/unreachable).
+  Script list, device list, preview and **Execute** then all act on that unit.
+- **Allow mesh units to run payloads on this unit** — the checkbox. Off by
+  default: a unit will not let the mesh touch its keyboard until its own operator
+  ticks this. Set it on the unit that's **cabled to the host** (reach its
+  dashboard over Wi-Fi, or tick it before you plug it in).
+- **Mesh secret** — cross-unit control rides the same secret-gated gateway as
+  the rest of hub mode, so the [mesh secret](mesh.md) must be armed on **both**
+  units (Config → Mesh). Tag membership alone is not enough. Without it the card
+  tells you what's missing.
+
+So the two gates are independent: the **secret** proves the request came from
+your mesh (transport), and the **checkbox** is the target unit's explicit opt-in
+(per-unit). A relayed **Execute**, gadget enable/disable, save or install is
+refused unless the target has ticked the box.
+
 ## Testing & validation
 
 The target is a **normal computer** (laptop/desktop) that the Pi types into —
