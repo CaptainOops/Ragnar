@@ -4708,6 +4708,54 @@
                     <p class="text-[11px] text-gray-500 mt-2">On-demand: brings <code class="bg-slate-800 px-1 rounded">/dev/hidg0</code> up or down now. Making it permanent across reboots is the installer/updater HID-gadget option.</p>
                 </div>
 
+                <!-- Supported boards & powering -->
+                <details class="mt-4 bg-slate-900/40 border border-slate-700 rounded p-3 text-xs text-gray-300">
+                    <summary class="cursor-pointer select-none text-gray-200 font-medium">Supported boards &amp; powering</summary>
+                    <div class="mt-3 space-y-3">
+                        <p class="text-gray-400">To <em>be</em> a USB keyboard, the Pi must expose a USB <strong>gadget/OTG</strong> port and act as the <em>device</em> side. A plain USB-A host port can never be the keyboard.</p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead class="text-gray-400">
+                                    <tr class="border-b border-slate-700">
+                                        <th class="py-1 pr-3 font-medium whitespace-nowrap">Board</th>
+                                        <th class="py-1 pr-3 font-medium whitespace-nowrap">HID gadget</th>
+                                        <th class="py-1 font-medium">Notes</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr class="border-b border-slate-800">
+                                        <td class="py-1 pr-3"><strong>Pi Zero 2 W</strong> / Zero / Zero W</td>
+                                        <td class="py-1 pr-3 text-green-300 whitespace-nowrap">✅ Yes</td>
+                                        <td class="py-1">Recommended. Use the middle <strong>USB</strong> micro-port (not <strong>PWR</strong>) — one cable carries data <em>and</em> power.</td>
+                                    </tr>
+                                    <tr class="border-b border-slate-800">
+                                        <td class="py-1 pr-3">Pi 3A+</td>
+                                        <td class="py-1 pr-3 text-green-300 whitespace-nowrap">✅ Yes</td>
+                                        <td class="py-1">Single USB port is OTG-capable.</td>
+                                    </tr>
+                                    <tr class="border-b border-slate-800">
+                                        <td class="py-1 pr-3">Pi 4 / 400</td>
+                                        <td class="py-1 pr-3 text-green-300 whitespace-nowrap">✅ Yes</td>
+                                        <td class="py-1">USB-C (dwc2) carries the data — so <strong>power from the 5V GPIO pins</strong> to keep USB-C free for the target.</td>
+                                    </tr>
+                                    <tr class="border-b border-slate-800">
+                                        <td class="py-1 pr-3">Pi 5</td>
+                                        <td class="py-1 pr-3 text-yellow-300 whitespace-nowrap">⚠️ Finicky</td>
+                                        <td class="py-1">Single USB-C shared with power; gadget mode is awkward. Same fix: <strong>power via 5V GPIO pins</strong>, USB-C to the target.</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="py-1 pr-3">Pi 3B / 3B+</td>
+                                        <td class="py-1 pr-3 text-red-300 whitespace-nowrap">❌ No</td>
+                                        <td class="py-1">OTG port is consumed by the onboard USB hub + LAN chip; USB-A ports are host-only.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="text-amber-300">⚡ <strong>Powering via pins (Pi 4 / Pi 5):</strong> the only gadget-capable port is the USB-C power port, so plug it into the <em>target</em> for data and feed the Pi 5V on <strong>GPIO pin 2 or 4 (5V)</strong> and <strong>pin 6 (GND)</strong> from a separate supply. Otherwise the data cable has to also power the Pi — unreliable, and it "steals" the USB-C port.</p>
+                        <p class="text-[11px] text-gray-500">GPIO 5V is unfused and bypasses the board's input protection — feed it clean, current-limited 5V (a good 5V/3A+ supply), never both GPIO and USB-C at once.</p>
+                    </div>
+                </details>
+
                 <!-- Script Preview -->
                 <div id="rubber-ducky-preview" class="mt-4 hidden">
                     <label class="text-xs uppercase tracking-wide text-gray-400">Script Preview</label>
