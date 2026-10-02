@@ -14603,6 +14603,25 @@ def api_serial_console_script_status():
     return jsonify(serial_console.script_status())
 
 
+@app.route('/api/serial-console/library')
+def api_serial_console_library():
+    """List console scripts available in the cloned RagnarScripts repo."""
+    import serial_console
+    return jsonify(serial_console.list_library())
+
+
+@app.route('/api/serial-console/library/install', methods=['POST'])
+def api_serial_console_library_install():
+    """Install a console script from the RagnarScripts repo into data/console_scripts/."""
+    import serial_console
+    body = request.get_json(silent=True) or {}
+    sid = (body.get('script_id') or body.get('id') or '').strip()
+    if not sid:
+        return jsonify({'success': False, 'error': 'missing script_id'}), 400
+    result = serial_console.install_library_script(sid)
+    return jsonify(result), (200 if result.get('success') else 400)
+
+
 @app.route('/api/power/test', methods=['GET', 'POST'])
 def api_power_test():
     """Idle-vs-load power test. POST {duration, loads:[cpu,sdr,wifi]} starts
@@ -20838,6 +20857,30 @@ def rubber_ducky_library_install():
         return jsonify(result), (200 if result.get('success') else 400)
     except Exception as e:
         logger.error(f"Error installing payload: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/ragnar-scripts', methods=['GET'])
+def rubber_ducky_ragnar_scripts():
+    """List ducky payloads available in the cloned RagnarScripts repo."""
+    try:
+        from python.rubber_ducky import list_ragnar_scripts
+        return jsonify(list_ragnar_scripts())
+    except Exception as e:
+        logger.error(f"Error listing RagnarScripts payloads: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rubber-ducky/ragnar-scripts/install', methods=['POST'])
+def rubber_ducky_ragnar_scripts_install():
+    """Install a ducky payload from the RagnarScripts repo into files/rubber-ducky/."""
+    try:
+        from python.rubber_ducky import install_ragnar_script
+        name = (request.get_json(silent=True) or {}).get('name')
+        result = install_ragnar_script(name)
+        return jsonify(result), (200 if result.get('success') else 400)
+    except Exception as e:
+        logger.error(f"Error installing RagnarScripts payload: {e}")
         return jsonify({'error': str(e)}), 500
 
 

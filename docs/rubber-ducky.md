@@ -151,6 +151,13 @@ The card has two helpers under the status line:
   [Reverse Shell](reverse-shell.md) card — generate a one-liner, paste it into a
   payload, save, run.
 
+Below those, **Install from RagnarScripts** is an expandable section that lists
+payloads from the shared [RagnarScripts](ragnarscripts.md) library
+(`rubber-ducky/`). **Install** copies one into `files/rubber-ducky/`; an
+already-present payload shows **Reinstall**. This is separate from the bundled
+`resources/ducky_payloads/` library above and requires the RagnarScripts repo to
+be cloned — see [RagnarScripts](ragnarscripts.md).
+
 ## Workflow
 
 1. Enable Pentest Mode.

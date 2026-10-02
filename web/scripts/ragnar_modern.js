@@ -21405,6 +21405,61 @@ async function rubberDuckyInstall(name) {
     }
 }
 
+async function rubberDuckyLoadRagnarScripts() {
+    /**Fetch the external RagnarScripts ducky library and render install buttons*/
+    const box = document.getElementById('rubber-ducky-ragnar-list');
+    const repoEl = document.getElementById('rubber-ducky-ragnar-repo');
+    if (!box) return;
+    box.innerHTML = '<p class="text-gray-500">Loading…</p>';
+    try {
+        const r = await fetch('/api/rubber-ducky/ragnar-scripts');
+        const data = await _rdJson(r);
+        if (!data.available) {
+            if (repoEl) repoEl.textContent = '';
+            box.innerHTML = '<p class="text-gray-500">RagnarScripts repo not found. Clone it with '
+                + '<code class="bg-slate-800 px-1 rounded">git clone https://github.com/PierreGode/RagnarScripts</code> '
+                + 'next to Ragnar, or set <code class="bg-slate-800 px-1 rounded">RAGNAR_SCRIPTS_DIR</code>.</p>';
+            return;
+        }
+        if (repoEl) repoEl.textContent = data.repo || '';
+        const list = data.scripts || [];
+        if (!list.length) { box.innerHTML = '<p class="text-gray-500">No payloads in RagnarScripts/rubber-ducky/.</p>'; return; }
+        box.innerHTML = '';
+        list.forEach(p => {
+            const row = document.createElement('div');
+            row.className = 'flex items-start justify-between gap-2 border-b border-slate-800 pb-2';
+            row.innerHTML = `<div class="min-w-0"><div class="text-gray-200 truncate">${escapeHtml(p.name)}</div>`
+                + `<div class="text-gray-500 truncate">${escapeHtml(p.description || '')}</div></div>`;
+            const btn = document.createElement('button');
+            btn.className = 'text-xs px-2 py-1 rounded shrink-0 ' + (p.installed ? 'bg-slate-800 text-gray-400 hover:bg-slate-700' : 'bg-slate-700 hover:bg-slate-600 text-white');
+            btn.textContent = p.installed ? 'Reinstall' : 'Install';
+            btn.onclick = () => rubberDuckyInstallRagnar(p.name);
+            row.appendChild(btn);
+            box.appendChild(row);
+        });
+    } catch (e) {
+        box.innerHTML = `<p class="text-red-400">Error: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+async function rubberDuckyInstallRagnar(name) {
+    /**Install a payload from the RagnarScripts repo, then select it*/
+    try {
+        const r = await fetch('/api/rubber-ducky/ragnar-scripts/install', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        const data = await _rdJson(r);
+        if (!r.ok || !data.success) throw new Error(data.error || 'install failed');
+        await rubberDuckyRefreshScripts();
+        const sel = document.getElementById('rubber-ducky-script-select');
+        if (sel) { sel.value = data.name; rubberDuckyOnScriptSelect(); }
+        rubberDuckyLoadRagnarScripts();   // refresh the installed/reinstall labels
+    } catch (e) {
+        alert('Install failed: ' + e.message);
+    }
+}
+
 function rubberDuckyEditNew() {
     /**Clear the editor for a new script*/
     const n = document.getElementById('rubber-ducky-edit-name');
@@ -22126,6 +22181,63 @@ async function scUploadScript(input) {
         setStatus(`<span class="text-emerald-300">Added ${escapeHtml(file.name)}</span>`);
     } catch (e) {
         setStatus(`<span class="text-red-400">Upload failed: ${escapeHtml(e.message)}</span>`);
+    }
+}
+
+async function scLoadLibrary() {
+    /**Fetch the external RagnarScripts console-script library and render install buttons*/
+    const box = document.getElementById('sc-library-list');
+    const repoEl = document.getElementById('sc-library-repo');
+    if (!box) return;
+    box.innerHTML = '<p class="text-gray-500">Loading…</p>';
+    try {
+        const r = await fetch('/api/serial-console/library');
+        const data = await r.json();
+        if (!data.available) {
+            if (repoEl) repoEl.textContent = '';
+            box.innerHTML = '<p class="text-gray-500">RagnarScripts repo not found. Clone it with '
+                + '<code class="bg-slate-800 px-1 rounded">git clone https://github.com/PierreGode/RagnarScripts</code> '
+                + 'next to Ragnar, or set <code class="bg-slate-800 px-1 rounded">RAGNAR_SCRIPTS_DIR</code>.</p>';
+            return;
+        }
+        if (repoEl) repoEl.textContent = data.repo || '';
+        const list = data.scripts || [];
+        if (!list.length) { box.innerHTML = '<p class="text-gray-500">No scripts in RagnarScripts/console-scripts/.</p>'; return; }
+        box.innerHTML = '';
+        list.forEach(s => {
+            const meta = [s.vendor, (s.commands || 0) + ' cmds'].filter(Boolean).join(' · ');
+            const row = document.createElement('div');
+            row.className = 'flex items-start justify-between gap-2 border-b border-slate-800 pb-2';
+            row.innerHTML = `<div class="min-w-0"><div class="text-gray-200 truncate">${escapeHtml(s.name)} <span class="text-gray-500">(${escapeHtml(meta)})</span></div>`
+                + `<div class="text-gray-500 truncate">${escapeHtml(s.description || '')}</div></div>`;
+            const btn = document.createElement('button');
+            btn.className = 'text-xs px-2 py-1 rounded shrink-0 ' + (s.installed ? 'bg-slate-800 text-gray-400 hover:bg-slate-700' : 'bg-indigo-600 hover:bg-indigo-700 text-white');
+            btn.textContent = s.installed ? 'Reinstall' : 'Install';
+            btn.onclick = () => scInstallLibrary(s.id);
+            row.appendChild(btn);
+            box.appendChild(row);
+        });
+    } catch (e) {
+        box.innerHTML = `<p class="text-red-400">Error: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+async function scInstallLibrary(id) {
+    /**Install a console script from the RagnarScripts repo into the local library*/
+    const box = document.getElementById('sc-library-list');
+    try {
+        const r = await fetch('/api/serial-console/library/install', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script_id: id })
+        });
+        const data = await r.json();
+        if (!r.ok || !data.success) throw new Error(data.error || 'install failed');
+        await scLoadScripts(true);                // refresh the Run-script picker
+        const sel = document.getElementById('sc-script-sel');
+        if (sel && [...sel.options].some(o => o.value === id)) sel.value = id;
+        scLoadLibrary();                          // refresh the installed/reinstall labels
+    } catch (e) {
+        if (box) box.insertAdjacentHTML('afterbegin', `<p class="text-red-400">Install failed: ${escapeHtml(e.message)}</p>`);
     }
 }
 
