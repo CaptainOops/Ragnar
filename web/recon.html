@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Ragnar Recon</title>
+<style>
+:root{--bg:#0f172a;--card:#142132;--card2:#18283b;--border:#293c53;--muted:#64748b;--dim:#94a3b8;
+  --text:#e2e8f0;--cyan:#7dd3fc;--green:#22c55e;--amber:#f59e0b;--red:#f87171;--purple:#c4b5fd;--teal:#5eead4;
+  --glow:0 0 8px rgba(94,234,212,.35);color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;padding:8px;height:100dvh;display:flex;flex-direction:column;gap:7px;
+  background:radial-gradient(1200px 500px at 20% -10%,#102a2a,transparent),var(--bg);
+  color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  -webkit-tap-highlight-color:transparent;overflow:hidden;-webkit-user-select:none;user-select:none}
+header{display:flex;gap:7px;align-items:center;flex-shrink:0}
+header a{color:var(--teal);text-decoration:none;font-weight:700;font-size:14px;border:1px solid var(--border);
+  background:var(--card);border-radius:8px;padding:7px 12px}
+header a:active{transform:scale(.96)}
+header strong{flex:1;letter-spacing:2px;color:var(--teal);text-shadow:var(--glow);font-size:17px;display:inline-flex;align-items:center;gap:7px}
+header strong svg{display:block}
+#hdrStat{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%}
+nav{display:flex;gap:7px;flex-shrink:0}
+nav button{flex:1;font:inherit;font-weight:700;letter-spacing:.5px;color:var(--dim);background:var(--card);
+  border:1px solid var(--border);border-radius:9px;padding:9px;min-height:42px;cursor:pointer}
+nav button:active{transform:scale(.98)}
+nav button[aria-selected=true]{background:#0c2420;border-color:#2a6b63;color:var(--teal)}
+.sumbar{display:flex;gap:6px;flex-shrink:0}
+.sumbar .s{flex:1;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:5px 8px;overflow:hidden}
+.sumbar .s .k{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.sumbar .s .v{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v.cyan{color:var(--cyan)}.v.green{color:var(--green)}.v.amber{color:var(--amber)}.v.red{color:var(--red)}.v.teal{color:var(--teal)}
+main{overflow:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:6px}
+.btnrow{display:flex;gap:7px;flex-shrink:0}
+.act{flex:1;font:inherit;font-weight:700;color:var(--teal);background:#0c2420;border:1px solid #2a6b63;border-radius:9px;padding:10px;min-height:44px;cursor:pointer}
+.act:active{transform:scale(.98)} .act.stop{color:var(--red);background:#2a0f0f;border-color:#5c1a1a}
+.act.ghost{color:var(--dim);background:var(--card);border-color:var(--border)}
+.row{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--border);
+  border-left:3px solid var(--border);border-radius:8px;padding:8px 10px}
+.row.me{border-left-color:var(--teal)} .row.hot{border-left-color:var(--amber)} .row.conn{border-left-color:var(--green)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+.rtx{flex:1 1 auto;min-width:0}
+.rtitle{display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rsub{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag{font-size:9px;font-weight:700;padding:1px 6px;border-radius:4px;letter-spacing:.5px;flex:0 0 auto}
+.tag.me{color:var(--teal);border:1px solid #2a6b63;background:#0c2420}
+.tag.b24{color:var(--amber);border:1px solid #5c3a1a} .tag.b5{color:var(--cyan);border:1px solid #1e4e6b} .tag.b6{color:var(--purple);border:1px solid #4b2e6b}
+.tag.wpa3{color:var(--green);border:1px solid #1f5134} .tag.wpa2{color:var(--cyan);border:1px solid #1e4e6b} .tag.open{color:var(--red);border:1px solid #5c1a1a}
+.rright{flex:0 0 auto;text-align:right;font-size:11px;white-space:nowrap}
+.rright .din{color:var(--green)} .rright .dout{color:var(--cyan)}
+.meter{height:5px;border-radius:3px;background:#0a1420;border:1px solid var(--border);overflow:hidden;margin-top:4px}
+.meter .fill{height:100%;width:0}
+.rssi{flex:0 0 auto;width:74px;text-align:right}
+.rssi .dbm{font-size:13px;font-weight:700}
+.rssibar{width:56px;height:5px;border-radius:3px;background:#0a1420;border:1px solid var(--border);overflow:hidden;display:inline-block;vertical-align:middle;margin-left:5px}
+.rssibar .fill{height:100%;width:0}
+.find{font-size:10px;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.empty{color:var(--muted);text-align:center;padding:22px;font-size:13px}
+.sevrow{display:flex;gap:5px;flex-shrink:0}
+.sev{flex:1;text-align:center;border:1px solid var(--border);border-radius:7px;padding:5px 3px;background:var(--card)}
+.sev .n{font-size:17px;font-weight:700} .sev .l{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.sev.crit .n{color:var(--red)} .sev.high .n{color:#fb923c} .sev.med .n{color:var(--amber)} .sev.low .n{color:var(--cyan)} .sev.info .n{color:var(--dim)}
+[hidden]{display:none!important}
+#toast{position:fixed;left:50%;bottom:12px;transform:translateX(-50%);background:#0c2420;border:1px solid var(--teal);
+  color:var(--teal);padding:7px 14px;border-radius:6px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:92vw;text-align:center}
+#toast.show{opacity:1}
+</style></head>
+<body>
+<header><a href="/web/kiosk_status.html">‹ Home</a><strong><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.6 7.4L11 16M17.4 7.4L13 16M7 6h10"/></svg>RECON</strong><span id="hdrStat">—</span></header>
+<nav><button id="netTab" aria-selected="true">Network</button><button id="sigTab" aria-selected="false">Signal</button><button id="trafTab" aria-selected="false">Traffic</button></nav>
+
+<section id="net" style="display:flex;flex-direction:column;gap:6px;min-height:0;flex:1">
+  <div class="sumbar"><div class="s"><div class="k">Hosts</div><div class="v cyan" id="nHosts">—</div></div>
+    <div class="s"><div class="k">Conns</div><div class="v teal" id="nConns">—</div></div>
+    <div class="s"><div class="k">Rate</div><div class="v" id="nRate">—</div></div></div>
+  <main id="netList"><div class="empty">loading hosts…</div></main>
+</section>
+
+<section id="sig" hidden style="flex-direction:column;gap:6px;min-height:0;flex:1">
+  <div class="sumbar"><div class="s"><div class="k">APs</div><div class="v cyan" id="sAps">—</div></div>
+    <div class="s"><div class="k">Bands</div><div class="v teal" id="sBands">—</div></div>
+    <div class="s"><div class="k">Overlap</div><div class="v amber" id="sOverlap">—</div></div></div>
+  <div class="btnrow"><button class="act" id="sScan">SCAN AIRSPACE</button></div>
+  <main id="sigList"><div class="empty">tap SCAN to sweep WiFi</div></main>
+</section>
+
+<section id="traf" hidden style="flex-direction:column;gap:6px;min-height:0;flex:1">
+  <div class="sumbar"><div class="s"><div class="k">Conns</div><div class="v teal" id="tConns">—</div></div>
+    <div class="s"><div class="k">Rate</div><div class="v" id="tRate">—</div></div>
+    <div class="s"><div class="k">DNS</div><div class="v cyan" id="tDns">—</div></div>
+    <div class="s"><div class="k">Beacons</div><div class="v amber" id="tBeacon">—</div></div></div>
+  <div class="sevrow"><div class="sev crit"><div class="n" id="svCrit">0</div><div class="l">crit</div></div>
+    <div class="sev high"><div class="n" id="svHigh">0</div><div class="l">high</div></div>
+    <div class="sev med"><div class="n" id="svMed">0</div><div class="l">med</div></div>
+    <div class="sev low"><div class="n" id="svLow">0</div><div class="l">low</div></div>
+    <div class="sev info"><div class="n" id="svInfo">0</div><div class="l">info</div></div></div>
+  <div class="btnrow"><button class="act" id="tToggle">▶ START CAPTURE</button></div>
+  <main id="trafBody"><div class="empty">—</div></main>
+</section>
+
+<div id="toast"></div>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)}, tT, toast=$("toast");
+  function note(m){toast.textContent=m;toast.classList.add("show");clearTimeout(tT);tT=setTimeout(function(){toast.classList.remove("show")},2400);}
+  async function api(u,b){var c=new AbortController(),t=setTimeout(function(){c.abort()},b===undefined?15000:12000);
+    try{var r=await fetch(u,{cache:"no-store",signal:c.signal,...(b===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})});
+      if(!r.ok)throw Error("HTTP "+r.status);
+      if(!(r.headers.get("content-type")||"").includes("application/json"))throw Error("Sign in via web UI");
+      return await r.json();}finally{clearTimeout(t)}}
+  function esc(s){return(s==null?"":""+s).replace(/[<>&]/g,function(c){return{"<":"&lt;",">":"&gt;","&":"&amp;"}[c]})}
+  function bytes(n){n=+n||0;if(n>=1048576)return(n/1048576).toFixed(1)+" MB";if(n>=1024)return(n/1024).toFixed(1)+" KB";return n+" B";}
+  function rate(n){n=+n||0;if(n>=1048576)return(n/1048576).toFixed(1)+" MB/s";if(n>=1024)return(n/1024).toFixed(0)+" KB/s";return Math.round(n)+" B/s";}
+
+  var localIPs=new Set();
+  api("/api/system/status").then(function(d){(d.network_interfaces||[]).forEach(function(i){
+    (i.addresses||[]).forEach(function(a){if(a&&a.address)localIPs.add(a.address);});});}).catch(function(){});
+
+  // ---- tabs ----
+  var cur="net";
+  function show(name){cur=name;
+    $("net").style.display=name==="net"?"flex":"none";$("net").hidden=name!=="net";
+    $("sig").hidden=name!=="sig";$("sig").style.display=name==="sig"?"flex":"none";
+    $("traf").hidden=name!=="traf";$("traf").style.display=name==="traf"?"flex":"none";
+    $("netTab").setAttribute("aria-selected",String(name==="net"));
+    $("sigTab").setAttribute("aria-selected",String(name==="sig"));
+    $("trafTab").setAttribute("aria-selected",String(name==="traf"));
+    if(name==="sig" && !sigLoaded){sigLoaded=true;scanAirspace();}
+    if(name==="net")pullNet(); if(name==="traf")pullTraf();
+  }
+  $("netTab").onclick=function(){show("net")};$("sigTab").onclick=function(){show("sig")};$("trafTab").onclick=function(){show("traf")};
+
+  // ---- Network tab ----
+  function pullNet(){ Promise.all([api("/api/traffic/status").catch(function(){return{}}),
+      api("/api/traffic/hosts").catch(function(){return{}})]).then(function(res){
+    var st=res[0]||{}, sm=(st.summary||{}), hd=res[1]||{}, hosts=(hd.hosts||[]);
+    var running=(sm.status==="running");
+    $("hdrStat").textContent=st.available===false?"capture off":running?(hosts.length+" hosts · "+rate(sm.bytes_per_second)):"capture stopped";
+    $("nHosts").textContent=hosts.length||"0";
+    $("nConns").textContent=sm.active_connections!=null?sm.active_connections:"—";
+    $("nRate").textContent=running&&sm.bytes_per_second!=null?rate(sm.bytes_per_second):"idle";
+    var list=$("netList");
+    if((st.available===false||!running)&&!hosts.length){list.innerHTML='<div class="empty">Traffic capture is off.<br>Start it on the Traffic tab.</div>';return;}
+    if(!hosts.length){list.innerHTML='<div class="empty">No hosts captured yet…</div>';return;}
+    hosts=hosts.slice().sort(function(a,b){return (b.total_bytes||0)-(a.total_bytes||0)});
+    var max=Math.max.apply(null,hosts.map(function(h){return h.total_bytes||0})).valueOf()||1;
+    list.innerHTML="";
+    hosts.forEach(function(h){
+      var me=localIPs.has(h.ip), conns=(h.connections_active||0)>0;
+      var protos=Object.keys(h.protocols||{}).length, ports=(h.ports_contacted||[]).length;
+      var r=document.createElement("div"); r.className="row"+(me?" me":conns?" conn":"");
+      r.innerHTML='<span class="dot'+(conns?" on":"")+'"></span><div class="rtx">'+
+        '<div class="rtitle">'+esc(h.ip)+(me?' <span class="tag me">THIS PI</span>':(h.hostname?' <span class="rsub" style="font-weight:400">'+esc(h.hostname)+'</span>':''))+'</div>'+
+        '<div class="rsub">'+bytes(h.total_bytes)+' · '+ports+' port'+(ports===1?"":"s")+' · '+protos+' proto</div>'+
+        '<div class="meter"><div class="fill" style="width:'+Math.max(2,Math.round((h.total_bytes||0)/max*100))+'%;background:'+(me?"var(--teal)":"linear-gradient(90deg,#0284c7,var(--cyan))")+'"></div></div></div>'+
+        '<div class="rright"><div class="din">↓ '+bytes(h.bytes_in)+'</div><div class="dout">↑ '+bytes(h.bytes_out)+'</div></div>';
+      list.appendChild(r);
+    });
+  }); }
+
+  // ---- Signal tab ----
+  var sigLoaded=false, scanning=false, connSsid="";
+  api("/api/status").then(function(d){connSsid=d.current_ssid||"";}).catch(function(){});
+  function rssiPct(dbm){dbm=+dbm; if(!dbm)return 0; return Math.max(0,Math.min(100,Math.round((dbm+90)/60*100)));}
+  function rssiColor(dbm){dbm=+dbm; return dbm>=-55?"var(--green)":dbm>=-70?"var(--amber)":"var(--red)";}
+  function bandTag(b){b=""+b; return b.indexOf("6")===0?'<span class="tag b6">6G</span>':b.indexOf("5")===0?'<span class="tag b5">5G</span>':'<span class="tag b24">2.4G</span>';}
+  function secTag(s){s=(s||"").toUpperCase(); var c=/WPA3/.test(s)?"wpa3":/OPEN|NONE|^$/.test(s)?"open":"wpa2";
+    return '<span class="tag '+c+'">'+(s||"OPEN")+'</span>';}
+  function scanAirspace(){ if(scanning)return; scanning=true; $("sScan").textContent="scanning…"; $("sScan").disabled=true;
+    api("/api/net/wifi/scan").then(function(d){
+      var aps=(d.aps||[]); $("sAps").textContent=d.ap_count!=null?d.ap_count:aps.length;
+      var sb=d.supported_bands||{}; $("sBands").textContent=Object.keys(sb).filter(function(k){return sb[k]}).join("/")||"—";
+      var ov=((d.interference||{}).adjacent_overlap||[]).length; $("sOverlap").textContent=ov;
+      $("hdrStat").textContent=aps.length+" APs · "+(d.interface||"wlan");
+      var list=$("sigList");
+      if(!aps.length){list.innerHTML='<div class="empty">No APs seen.</div>';return;}
+      aps=aps.slice().sort(function(a,b){return (b.signal||b.rssi||-999)-(a.signal||a.rssi||-999)});
+      list.innerHTML="";
+      aps.forEach(function(ap){
+        var norm=function(s){return(s||"").replace(/[_\s]/g,"").toLowerCase()};
+        var dbm=ap.signal!=null?ap.signal:ap.rssi, me=(ap.ssid&&connSsid&&norm(ap.ssid)===norm(connSsid));
+        var find=(ap.security_findings||[])[0];
+        var r=document.createElement("div"); r.className="row"+(me?" me":find?" hot":"");
+        r.innerHTML='<div class="rtx"><div class="rtitle">'+(ap.hidden?'<span class="rsub" style="font-weight:700">‹hidden›</span>':esc(ap.ssid||"‹no ssid›"))+(me?' <span class="tag me">LINKED</span>':'')+'</div>'+
+          '<div class="rsub">'+bandTag(ap.band)+' ch '+esc(ap.channel)+' '+secTag(ap.security)+' '+(ap.phy_mode?('· '+esc(ap.phy_mode)):'')+'</div>'+
+          (find?'<div class="find">! '+esc(find)+'</div>':'')+'</div>'+
+          '<div class="rssi"><span class="dbm" style="color:'+rssiColor(dbm)+'">'+(dbm!=null?Math.round(dbm):"—")+'</span><span class="rssibar"><span class="fill" style="width:'+rssiPct(dbm)+'%;background:'+rssiColor(dbm)+'"></span></span></div>';
+        list.appendChild(r);
+      });
+    }).catch(function(e){$("sigList").innerHTML='<div class="empty">Scan failed: '+esc(e.message)+'</div>';})
+    .finally(function(){scanning=false;$("sScan").textContent="SCAN AIRSPACE";$("sScan").disabled=false;});
+  }
+  $("sScan").onclick=scanAirspace;
+
+  // ---- Traffic tab ----
+  var capOn=false;
+  function pullTraf(){ api("/api/traffic/status").then(function(st){
+    var sm=st.summary||{}; capOn=(st.available!==false) && (sm.status==="running");
+    $("tConns").textContent=sm.active_connections!=null?sm.active_connections:"—";
+    $("tRate").textContent=sm.bytes_per_second!=null?rate(sm.bytes_per_second):"—";
+    $("tDns").textContent=sm.dns_queries_captured!=null?sm.dns_queries_captured:"—";
+    $("tBeacon").textContent=sm.beacon_candidates!=null?sm.beacon_candidates:"—";
+    var sev=sm.alerts_by_severity||{};
+    $("svCrit").textContent=sev.critical||0;$("svHigh").textContent=sev.high||0;$("svMed").textContent=sev.medium||0;
+    $("svLow").textContent=sev.low||0;$("svInfo").textContent=sev.info||0;
+    var b=$("tToggle"); b.textContent=capOn?"■ STOP CAPTURE":"▶ START CAPTURE"; b.classList.toggle("stop",capOn);
+    $("hdrStat").textContent=capOn?("capturing · "+rate(sm.bytes_per_second)):"capture off";
+    // alerts list
+    api("/api/traffic/alerts").then(function(a){var al=(a.alerts||a||[]); var body=$("trafBody");
+      if(!Array.isArray(al)||!al.length){body.innerHTML='<div class="empty">No alerts. '+(capOn?"Watching…":"Capture is off.")+'</div>';return;}
+      body.innerHTML=""; al.slice(0,40).forEach(function(x){var r=document.createElement("div");r.className="row hot";
+        r.innerHTML='<div class="rtx"><div class="rtitle">'+esc(x.category||x.type||x.title||"alert")+'</div><div class="rsub">'+esc(x.message||x.detail||x.description||x.src||"")+'</div></div><div class="rright">'+esc(x.severity||"")+'</div>';
+        body.appendChild(r);});
+    }).catch(function(){});
+  }).catch(function(){$("hdrStat").textContent="traffic unavailable";}); }
+  $("tToggle").onclick=function(){ if(capOn){note("Stopping capture…");api("/api/traffic/stop",{}).then(function(){setTimeout(pullTraf,700)});}
+    else{note("Starting capture…");api("/api/traffic/start",{}).then(function(){setTimeout(pullTraf,700)});} };
+
+  // boot + visibility-aware polling
+  pullNet();
+  function loop(fn,ms){async function run(){if(!document.hidden){try{await fn()}catch(e){}}setTimeout(run,ms)}setTimeout(run,ms)}
+  loop(function(){if(cur==="net")return pullNet(); if(cur==="traf")return pullTraf();},5000);
+})();
+</script></body></html>

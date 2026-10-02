@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Ragnar Tools</title>
+<style>
+:root{--bg:#0f172a;--card:#142132;--card2:#18283b;--border:#293c53;--muted:#64748b;--dim:#94a3b8;
+  --text:#e2e8f0;--cyan:#7dd3fc;--green:#22c55e;--amber:#f59e0b;--red:#f87171;--purple:#c4b5fd;
+  --glow:0 0 8px rgba(125,211,252,.35);color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;padding:8px;height:100dvh;display:flex;flex-direction:column;gap:7px;
+  background:radial-gradient(1200px 500px at 20% -10%,#132036,transparent),var(--bg);
+  color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  -webkit-tap-highlight-color:transparent;overflow:hidden}
+header,nav,.row{display:flex;gap:7px;align-items:center}
+header{flex-shrink:0}
+header a{color:var(--cyan);text-decoration:none;font-weight:700;font-size:14px;border:1px solid var(--border);
+  background:var(--card);border-radius:8px;padding:7px 12px;touch-action:manipulation}
+header a:active{transform:scale(.96)}
+header strong{flex:1;letter-spacing:2px;color:var(--cyan);text-shadow:var(--glow);font-size:17px;
+  display:inline-flex;align-items:center;gap:7px}
+header strong svg{display:block}
+#activity{font-size:11px;color:var(--dim);max-width:34%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+nav{flex-shrink:0}
+nav button{flex:1;font:inherit;font-weight:700;letter-spacing:.5px;color:var(--dim);background:var(--card);
+  border:1px solid var(--border);border-radius:9px;padding:9px;min-height:42px;cursor:pointer;touch-action:manipulation}
+nav button:active{transform:scale(.98)}
+nav button[aria-selected=true]{background:#0b2436;border-color:#1e6b82;color:#a3efff}
+#jobBar{flex-shrink:0;background:#0a2230;border:1px solid #1e6b82;border-left:3px solid var(--cyan);
+  border-radius:8px;padding:8px 10px;font-size:13px;color:#b4eeff}
+#jobBar.done{background:#0c2417;border-color:#1f5134;border-left-color:var(--green);color:#b6f1cf}
+main{overflow:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch}
+.card{padding:11px 12px;background:var(--card);border:1px solid var(--border);border-radius:11px;margin-bottom:8px}
+h2{font-size:15px;margin:0 0 7px;color:var(--text);letter-spacing:.5px}
+p{margin:5px 0;color:var(--dim);font-size:12px}
+button,select{font:inherit;color:var(--text);background:var(--card2);border:1px solid var(--border);
+  border-radius:9px;padding:10px;min-height:44px;touch-action:manipulation}
+button{cursor:pointer;font-weight:700}
+button:active{transform:scale(.98)}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:#0b2436;border-color:#1e6b82;color:#a3efff}
+select{width:100%;margin:6px 0}
+.row>*{flex:1}
+.message{font-size:12px;color:var(--cyan);white-space:pre-wrap;overflow-wrap:anywhere}
+article{padding:7px 0;border-top:1px solid var(--border)}
+article strong{font-size:13px;color:var(--text)}
+footer{flex-shrink:0;font-size:10px;color:var(--muted);letter-spacing:.3px}
+.choices{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;max-height:100px;overflow:auto;overscroll-behavior:contain}
+.choices button{min-height:46px;text-align:left;flex:1 1 150px;font-weight:600;color:var(--dim)}
+.choices button[aria-pressed=true]{border:2px solid var(--cyan);background:#0b2436;color:#a3efff}
+#actionHint{color:var(--amber);font-size:12px}
+details{margin-top:9px}
+summary{min-height:44px;padding:10px;background:var(--card2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-weight:700;font-size:12px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px ui-monospace,monospace;max-height:200px;overflow:auto;color:var(--dim)}
+.severity{color:var(--amber)} #reportDate{color:var(--dim);font-size:11px} #penResult{font-weight:600}
+[hidden]{display:none!important}
+/* System tab action list */
+.actions{display:flex;flex-direction:column;gap:8px}
+.act{display:flex;align-items:center;gap:11px;text-align:left;width:100%;min-height:54px;
+  background:var(--card2);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:10px;padding:10px 12px;font-weight:400}
+.act .ic{flex:0 0 auto;color:var(--cyan);display:flex} .act .ic svg{display:block}
+.act .tx{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+.act .tx .l{display:block;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.act .tx .s{display:block;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.act .st{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:3px 9px;letter-spacing:.5px}
+.act .chev{flex:0 0 auto;color:var(--muted)}
+.act.good{border-left-color:#1f5134} .act.good .ic{color:var(--green)}
+.act.warn{border-left-color:#5c3a1a} .act.warn .ic{color:var(--amber)}
+.act.danger{border-left-color:#5c1a1a} .act.danger .ic{color:var(--red)}
+.act.armed{background:#3b0d0d;border-color:#b91c1c;border-left-color:#ef4444}
+.act.armed .l{color:#fca5a5} .act.armed .ic{color:#fca5a5}
+.act.on{border-left-color:#1f5134;background:#0c2417}
+.act .st.on{color:var(--green);border-color:#1f5134;background:#0c2417}
+.act .st.run{color:var(--amber);border-color:#5c3a1a;background:#241704}
+/* Pentest brute-force attack buttons */
+#attacksWrap{margin-top:10px}
+.atklabel{color:var(--amber);font-size:12px;margin:0 0 6px;display:flex;align-items:center;gap:6px}
+.attacks{display:flex;flex-wrap:wrap;gap:6px}
+.atk{flex:1 1 130px;min-height:48px;font-weight:700;text-align:center;color:#fca5a5;
+  background:#1f1414;border:1px solid #5c1a1a;border-radius:9px;padding:8px}
+.atk:active{transform:scale(.97)}
+.atk.armed{background:#3b0d0d;border-color:#ef4444;color:#fecaca}
+</style></head>
+<body>
+<header><a href="/web/kiosk_status.html">‹ Home</a><strong><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5a3.5 3.5 0 0 0-4.8 4.4L4 15.6 6.4 18l5.7-5.7a3.5 3.5 0 0 0 4.4-4.8l-2.2 2.2-2-2z"/></svg>FIELD TOOLS</strong><span id="activity">Connecting…</span></header>
+<nav><button id="defTab" aria-selected="true">Defense</button><button id="penTab" aria-selected="false">Pentest</button><button id="sysTab" aria-selected="false">System</button></nav>
+<div id="jobBar" role="status" hidden></div>
+<main>
+<section id="defense"><div class="card"><h2>Listen for wireless threats</h2><p>A single 15-second check. No continuous capture. Uses the selected adapter and may change its radio mode.</p><div id="iface" class="choices" aria-label="Wireless adapter"></div><div class="row"><button id="check" class="primary" disabled>Run defense check</button><button id="release">Release monitor</button></div><p id="radio"></p></div><div class="card"><div id="defResult" class="message" role="status">Ready when you are. Checks run only when requested.</div><div id="detections"></div></div></section>
+<section id="pentest" hidden><div class="card"><h2>Inspect a lab target</h2><p>Select a device you own or have permission to test. Vulnerability checks run on that device only.</p><div id="target" class="choices" aria-label="Pentest target"></div><p id="actionHint" role="status"></p><p id="ports">Select a device to see its open ports.</p><div class="row"><button id="refresh">Refresh targets</button><button id="audit" class="primary" disabled>Check vulnerabilities</button></div><div id="attacksWrap" hidden><p class="atklabel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2"/></svg>Brute force — Ragnar wordlists, tap twice to confirm</p><div id="attacks" class="attacks"></div></div></div><div class="card"><div id="penResult" class="message" role="status">Uses Ragnar's existing Nmap vulnerability scanner.</div><p id="reportDate">Select a device to see saved results.</p><button id="resultsRefresh">Refresh results</button><div id="services"></div><div id="findings"></div><details id="fullReport"><summary>Read full scan report</summary><pre id="reportText">Select a device first.</pre></details></div></section>
+<section id="system" hidden><div class="card"><h2>Device actions</h2><p>One-tap controls. Destructive actions ask for a second tap to confirm.</p>
+<div class="actions">
+  <button class="act" id="aAuto"><span class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 3v4M21 12h-4"/><circle cx="12" cy="12" r="2.4"/></svg></span><span class="tx"><span class="l">Full Auto</span><span class="s">autonomous scan → attack orchestrator</span></span><span class="st" id="stAuto">OFF</span></button>
+  <button class="act warn" id="aAp"><span class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="1.8" fill="currentColor" stroke="none"/><path d="M8.3 14.5a5.2 5.2 0 0 1 7.4 0"/><path d="M5.5 11.5a9.2 9.2 0 0 1 13 0"/></svg></span><span class="tx"><span class="l">AP Mode</span><span class="s">host Ragnar's own WiFi — drops the LAN</span></span><span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span></button>
+  <button class="act good" id="aSwap"><span class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg></span><span class="tx"><span class="l" id="swapLbl">Swap → Pwnagotchi</span><span class="s">stop Ragnar, start pwn hunting (reboot to return)</span></span><span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span></button>
+  <button class="act danger" id="aReboot"><span class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg></span><span class="tx"><span class="l">Reboot</span><span class="s">restart the Pi (returns to Ragnar mode)</span></span><span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span></button>
+</div>
+<div id="sysResult" class="message" role="status" style="margin-top:9px">Ready. Tap an action above.</div></div></section>
+</main><footer>On-demand tools · no background scans · status refresh every 10 seconds</footer>
+<script src="/web/vendor/socket.io.min.js"></script>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);let busy=false,targets=[],manual=false,lastStatus=null,armed=null,armTimer,selectedIface="",selectedTarget="",auditPending=false;let resultCache=null,resultTime=0,resultRequest=null,reportURL=null,reportLoaded=null,jobStamp="",jobStarted=0;
+async function api(url,body,timeout=12000){const c=new AbortController(),timer=setTimeout(()=>c.abort(),timeout);try{const r=await fetch(url,{cache:'no-store',signal:c.signal,...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});if(!r.ok)throw Error('Request failed ('+r.status+')');if(!(r.headers.get('content-type')||'').includes('application/json'))throw Error('Session expired. Sign in through the web UI.');const d=await r.json();if(d.error||d.success===false)throw Error(d.error||'Request was not accepted');return d;}finally{clearTimeout(timer)}}
+function failure(e){return e.name==='AbortError'?'Response timed out. The device may still be working; check status before retrying.':e.message}
+function controls(){ $('check').disabled=busy||!selectedIface;$('release').disabled=busy;$('audit').disabled=busy||auditPending||!manual||!selectedTarget;$('refresh').disabled=false;$('actionHint').textContent=busy?'A request is running. Home and device selection still work.':!manual?'Pentest mode is unavailable or off; refresh status before starting a check.':!selectedTarget?'Tap a device below to select it.':auditPending?'Check running. Live status is above; results appear below.':'Selected '+selectedTarget+' — tap Check vulnerabilities, then confirm.';}
+function choices(id,items,selected,onSelect){$(id).replaceChildren();for(const item of items){const b=document.createElement('button');b.type='button';b.textContent=item.label;b.setAttribute('aria-pressed',String(item.value===selected));b.onclick=()=>{onSelect(item.value);for(const e of $(id).children)e.setAttribute('aria-pressed',String(e===b));controls()};$(id).append(b)}}
+function disarm(){armed=null;clearTimeout(armTimer);$('audit').textContent='Check vulnerabilities'}
+async function interfaces(){try{const d=await api('/api/wifidef/interfaces');const items=(d.interfaces||[]).filter(i=>i.monitor_capable).map(i=>({value:i.iface,label:i.iface+' · '+i.type}));selectedIface=items.some(i=>i.value===selectedIface)?selectedIface:(items.some(i=>i.value===d.base_iface)?d.base_iface:'');choices('iface',items,selectedIface,v=>{selectedIface=v});$('radio').textContent=d.active_monitor?'Monitor: '+d.active_monitor:'No defense monitor active';}catch(e){$('defResult').textContent=failure(e)}controls()}
+async function loadTargets(){try{const d=await api('/api/manual/targets');targets=d.targets||[];if(!targets.some(t=>t.ip===selectedTarget))selectedTarget='';choices('target',targets.map(t=>({value:t.ip,label:(t.hostname||t.ip)+' · '+t.ip})),selectedTarget,v=>{disarm();selectedTarget=v;const t=targets.find(t=>t.ip===v);$('ports').textContent='Open ports: '+((t.ports||[]).join(', ')||'none recorded');renderAttacks(t);reportURL=null;reportLoaded=null;$('fullReport').open=false;showResults();checkJob()});if(!targets.length)$('ports').textContent='No online targets found. Run a network scan from Home.';if(!selectedTarget)renderAttacks(null);}catch(e){$('penResult').textContent=failure(e)}await status();controls()}
+function show(name){disarm();$('defense').hidden=name!=='def';$('pentest').hidden=name!=='pen';$('system').hidden=name!=='sys';$('defTab').setAttribute('aria-selected',String(name==='def'));$('penTab').setAttribute('aria-selected',String(name==='pen'));$('sysTab').setAttribute('aria-selected',String(name==='sys'));if(name==='pen'&&!targets.length)loadTargets()}
+$('defTab').onclick=()=>show('def');$('penTab').onclick=()=>show('pen');$('sysTab').onclick=()=>show('sys');$('refresh').onclick=()=>{disarm();loadTargets()};$('check').onclick=async()=>{if(busy||!selectedIface)return;busy=true;controls();$('defResult').textContent='Listening for 15 seconds…';$('detections').replaceChildren();try{const war=await api('/api/wardriving/status');if(war.running)throw Error('Stop wardriving before using its wireless adapter.');const d=await api('/api/wifidef/scan?interface='+encodeURIComponent(selectedIface)+'&seconds=15&deep=0',undefined,60000);$('defResult').textContent='Threat: '+(d.threat||'unknown')+' · '+(d.frames??'—')+' frames · '+new Date().toLocaleTimeString();for(const item of (d.detections||[]).slice(0,30)){const a=document.createElement('article'),h=document.createElement('strong'),p=document.createElement('p');h.textContent=item.title||item.type||item.name||'Detection';p.textContent=item.description||item.detail||item.message||JSON.stringify(item);a.append(h,p);$('detections').append(a)}if(!(d.detections||[]).length)$('detections').textContent='No detections in this sample; this is not a guarantee of a safe network.';await interfaces();}catch(e){$('defResult').textContent=failure(e)}finally{busy=false;controls()}};
+$('release').onclick=async()=>{busy=true;controls();try{await api('/api/wifidef/monitor',{action:'disable'});$('defResult').textContent='Defense monitor released.';await interfaces()}catch(e){$('defResult').textContent=failure(e)}finally{busy=false;controls()}};
+$('audit').onclick=async()=>{const ip=selectedTarget;if(busy||!manual||!ip)return;if(armed!==ip){armed=ip;$('audit').textContent='Confirm '+ip;armTimer=setTimeout(disarm,5000);return}disarm();busy=true;controls();try{await api('/api/manual/scan/vulnerability',{ip});auditPending=true;jobStarted=Date.now()/1000;$('jobBar').hidden=false;$('jobBar').className='';$('jobBar').textContent='Check started for '+ip+' · waiting for scanner';$('penResult').textContent='Check requested for '+ip+'. Reading target-specific progress…';}catch(e){$('penResult').textContent=failure(e)}finally{busy=false;await status();await checkJob();controls()}};
+async function status(){try{lastStatus=await api('/api/status');manual=!!lastStatus.manual_mode;$('activity').textContent=lastStatus.ragnar_status||'IDLE';$('activity').title=lastStatus.ragnar_status2||'';if(!manual)$('penResult').textContent='Enable Pentest Mode in the web UI to use manual checks.';paintSys();controls()}catch(e){$('activity').textContent='Status unavailable';manual=false;paintSys();controls()}}
+function resultRow(parent,title,body){const a=document.createElement('article'),h=document.createElement('strong'),p=document.createElement('p');h.textContent=title;p.textContent=body;a.append(h,p);$(parent).append(a)}
+async function resultData(force){if(!force&&resultCache&&Date.now()-resultTime<60000)return resultCache;if(!resultRequest)resultRequest=Promise.all([api('/api/vulnerabilities'),api('/api/vulnerability-intel')]).then(([v,i])=>{resultCache={v:Array.isArray(v)?v:(v.vulnerabilities||[]),scans:i.scans||[]};resultTime=Date.now();return resultCache}).finally(()=>{resultRequest=null});return resultRequest}
+async function showResults(force=false){const ip=selectedTarget;if(!ip)return;$('reportDate').textContent='Loading saved results…';try{const d=await resultData(force);if(ip!==selectedTarget)return;const findings=d.v.filter(v=>v.host===ip),reports=d.scans.filter(r=>r.ip===ip).sort((a,b)=>String(b.scan_date).localeCompare(String(a.scan_date))),r=reports[0];$('services').replaceChildren();$('findings').replaceChildren();reportURL=r&&r.download_url&&r.download_url.startsWith('/api/vulnerability-report/')?r.download_url:null;reportLoaded=null;$('reportDate').textContent=r?'Saved report: '+r.scan_date:'No saved service report for this device.';for(const svc of (r?.services||[]))resultRow('services',svc.port+' · '+svc.service,svc.version||'Version not identified');resultRow('findings',findings.length+' scanner findings','Version matches and script findings need verification; this list is not proof of exploitation.');for(const v of findings.slice(0,80))resultRow('findings',(v.severity||'unknown').toUpperCase()+' · '+v.port+'/'+(v.service||'service'),v.vulnerability||'Finding');$('reportText').textContent=reportURL?'Expand to load the saved report.':'No report available for this device.';if($('fullReport').open)readReport();}catch(e){if(ip===selectedTarget)$('reportDate').textContent=failure(e)}}
+async function checkJob(){const ip=selectedTarget;if(!ip)return;try{const d=await api('/api/manual/scan/vulnerability/status?ip='+encodeURIComponent(ip));if(ip!==selectedTarget)return;auditPending=d.state==='running';jobStarted=d.started||0;$('jobBar').hidden=d.state==='unknown';$('jobBar').className=d.state==='completed'?'done':'';if(d.state==='running')$('penResult').textContent='Checking '+ip+' · '+(d.message||'Running')+' · '+Math.max(0,Math.floor(Date.now()/1000-d.started))+'s';else if(d.state==='completed'||d.state==='failed'){$('penResult').textContent=ip+' · '+d.message;const stamp=ip+':'+d.finished;if(stamp!==jobStamp){jobStamp=stamp;await showResults(true)}}else $('penResult').textContent='Saved results for '+ip+'. Start a new check to refresh them.';$('jobBar').textContent=d.state==='completed'?'Check completed · '+ip+' · '+Math.round(d.finished-d.started)+' seconds':$('penResult').textContent;controls()}catch(e){$('penResult').textContent='Scan status unavailable: '+failure(e)}}
+async function readReport(){const url=reportURL,ip=selectedTarget;if(!url||reportLoaded===url)return;reportLoaded=url;const c=new AbortController(),timer=setTimeout(()=>c.abort(),12000);$('reportText').textContent='Loading report…';try{const r=await fetch(url,{cache:'no-store',signal:c.signal});if(!r.ok)throw Error('Report unavailable ('+r.status+')');if((r.headers.get('content-type')||'').includes('text/html'))throw Error('Sign in to read the report');const text=await r.text();if(ip===selectedTarget)$('reportText').textContent=text.slice(0,100000);}catch(e){if(ip===selectedTarget){reportLoaded=null;$('reportText').textContent=failure(e)}}finally{clearTimeout(timer)}}
+setInterval(()=>{if(auditPending&&jobStarted&&!document.hidden){const seconds=Math.max(0,Math.floor(Date.now()/1000-jobStarted));$('jobBar').textContent='Checking '+selectedTarget+' · '+seconds+'s elapsed · some devices take several minutes';}},1000);
+$('fullReport').ontoggle=()=>{if($('fullReport').open)readReport()};$('resultsRefresh').onclick=()=>showResults(true);
+
+/* ---- System tab: one-tap device actions ---- */
+let sysBusy=false,sArmed=null,sArmTimer;
+function sysNote(m){$('sysResult').textContent=m}
+function sDisarm(){if(sArmed){const b=$(sArmed.id);if(b){b.classList.remove('armed');b.querySelector('.l').textContent=sArmed.lbl}}sArmed=null;clearTimeout(sArmTimer)}
+function armAct(id,onConfirm){const b=$(id),lbl=b.querySelector('.l');b.onclick=()=>{if(sysBusy)return;
+  if(sArmed&&sArmed.id===id){sDisarm();onConfirm();return}
+  sDisarm();sArmed={id:id,lbl:lbl.textContent};b.classList.add('armed');lbl.textContent='TAP AGAIN TO CONFIRM';
+  sArmTimer=setTimeout(sDisarm,5000)};}
+async function sysAct(fn,running,done){if(sysBusy)return;sysBusy=true;sysNote(running);try{await fn();sysNote(done)}catch(e){sysNote(failure(e))}finally{sysBusy=false}}
+function paintSys(){const on=!!(lastStatus&&lastStatus.automation_enabled);const b=$('aAuto'),st=$('stAuto');
+  b.classList.toggle('on',on);st.textContent=on?'ON':'OFF';st.className='st'+(on?' on':'')}
+$('aAuto').onclick=()=>{const on=!!(lastStatus&&lastStatus.automation_enabled);
+  if(on)sysAct(()=>api('/api/manual/orchestrator/stop',{}),'Stopping orchestrator…','Full-auto OFF').then(status);
+  else sysAct(()=>api('/api/automation/orchestrator/start',{}),'Enabling full-auto orchestrator…','Full-auto ON').then(status);};
+armAct('aAp',()=>sysAct(()=>api('/api/wifi/ap/start',{}),'Entering AP mode — LAN dropping…','AP mode starting — join Ragnar’s WiFi'));
+armAct('aSwap',()=>sysAct(()=>api('/api/pwnagotchi/swap',{target:'pwnagotchi',manual:false}),'Swapping to Pwnagotchi — hold on…','Swap scheduled — pwn is taking over'));
+armAct('aReboot',()=>sysAct(()=>api('/api/system/reboot',{}),'Rebooting the Pi…','Reboot requested — screen will drop shortly'));
+
+/* ---- Pentest brute-force attacks ---- */
+const ATK={ssh:{label:'SSH',ports:[22]},ftp:{label:'FTP',ports:[21]},telnet:{label:'Telnet',ports:[23]},smb:{label:'SMB',ports:[139,445]},rdp:{label:'RDP',ports:[3389]},sql:{label:'SQL',ports:[3306]}};
+let atkArmed=null,atkTimer;
+function clearAtkArm(){if(atkArmed){const b=document.querySelector('.atk[data-atk="'+atkArmed+'"]');if(b){b.classList.remove('armed');b.textContent=b.dataset.base;}}atkArmed=null;clearTimeout(atkTimer);}
+function renderAttacks(t){const wrap=$('attacksWrap'),box=$('attacks');clearAtkArm();box.replaceChildren();
+  const ports=((t&&t.ports)||[]).map(x=>parseInt(x,10)).filter(n=>n);
+  const avail=Object.entries(ATK).filter(([k,v])=>v.ports.some(p=>ports.includes(p)));
+  if(!t||!avail.length){wrap.hidden=true;return;}
+  wrap.hidden=false;
+  for(const [action,info] of avail){
+    const port=info.ports.find(p=>ports.includes(p));
+    const b=document.createElement('button');b.type='button';b.className='atk';
+    b.dataset.atk=action;b.dataset.base=info.label+' · '+port;b.textContent=b.dataset.base;
+    b.onclick=()=>{if(atkArmed===action){clearAtkArm();fireAttack(action,port,t.ip,b);return;}
+      clearAtkArm();atkArmed=action;b.classList.add('armed');b.textContent='Confirm '+info.label+'?';atkTimer=setTimeout(clearAtkArm,5000);};
+    box.append(b);
+  }
+}
+async function fireAttack(action,port,ip,b){const base=b.dataset.base;b.classList.remove('armed');b.textContent='sending…';
+  $('penResult').textContent='Launching '+action.toUpperCase()+' brute on '+ip+':'+port+'…';
+  try{const d=await api('/api/manual/execute-attack',{ip:ip,port:String(port),action:action});
+    b.textContent='» '+base;
+    $('penResult').textContent=(d.message||'Attack initiated')+' — runs in background; a crack bumps Creds on Home.';
+    setTimeout(()=>{if(b.isConnected)b.textContent=base;},2600);}
+  catch(e){b.textContent=base;$('penResult').textContent='Attack failed: '+failure(e);}}
+
+/* ---- live attack/scan feed over Socket.IO (manual attacks don't update /api/status).
+       Also mirror events to the shared localStorage feed so the Home terminal replays them. ---- */
+const esc2=s=>(s==null?'':''+s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+function feedPush(h,c){try{const ts=new Date().toTimeString().slice(0,8);let a=JSON.parse(localStorage.getItem('ragnar_feed')||'[]');a.push({ts:ts,h:h,c:c||''});if(a.length>30)a=a.slice(-30);localStorage.setItem('ragnar_feed',JSON.stringify(a));}catch(e){}}
+try{ if(window.io){ const sock=io({transports:['websocket','polling']});
+  sock.on('manual_attack_update',d=>{d=d||{};const s=(d.status||'').toLowerCase();
+    const cls=s==='success'?'g':(s==='error'||s==='failed'||s==='danger')?'r':'a';
+    const line=(d.action?d.action.toUpperCase()+' ':'')+(d.ip||'')+(d.port?(':'+d.port):'')+' · '+(d.message||d.stage||s);
+    $('penResult').textContent=line;$('jobBar').hidden=false;$('jobBar').className=(s==='success'?'done':'');$('jobBar').textContent=line;
+    feedPush('<span class="'+cls+'">&raquo; '+esc2((d.action||'attack').toUpperCase())+'</span> '+esc2(d.ip||'')+(d.port?(':'+esc2(d.port)):'')+' — '+esc2(d.message||d.stage||s),'hi');});
+  sock.on('credentials_update',()=>{$('jobBar').hidden=false;$('jobBar').className='done';$('jobBar').textContent='+ Credential captured — see Creds on Home';
+    feedPush('<span class="g">+CRED</span> credential captured','hi');});
+}}catch(e){}
+
+async function poll(){if(!document.hidden){await status();if((!$('pentest').hidden||auditPending)&&selectedTarget)await checkJob();}setTimeout(poll,10000)}
+interfaces();show(location.hash==='#pentest'?'pen':location.hash==='#system'?'sys':'def');poll();
+</script></body></html>

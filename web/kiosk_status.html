@@ -9,6 +9,7 @@
     --bg:#0f172a; --card:#1e293b; --card2:#172033; --border:#334155;
     --muted:#64748b; --dim:#94a3b8; --text:#e2e8f0;
     --cyan:#7dd3fc; --green:#22c55e; --blue:#0284c7; --amber:#f59e0b; --red:#f87171;
+    --purple:#c4b5fd; --term:#0a1420;
     --glow:0 0 8px rgba(125,211,252,.35);
   }
   *{box-sizing:border-box}
@@ -16,13 +17,16 @@
      radial-gradient(1200px 500px at 20% -10%,#132036,transparent),var(--bg);
     color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
     overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
-  body{display:flex;flex-direction:column;padding:7px;gap:6px}
+  body{display:flex;flex-direction:column;padding:6px;gap:6px}
   /* header */
   .top{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;gap:8px}
-  .brand{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:clamp(14px,4vw,20px);letter-spacing:2px;color:var(--cyan);text-shadow:var(--glow)}
-  .brand svg,.btn .ic svg{display:block}
+  .brand{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:clamp(15px,4.4vw,22px);letter-spacing:2px;color:var(--cyan)}
+  .brand svg{display:block}
   .brand small{color:var(--muted);font-weight:400;letter-spacing:1px;font-size:.5em}
-  .hdr-r{display:flex;align-items:center;gap:7px}
+  .hdr-r{display:flex;align-items:center;gap:6px}
+  .lvl{display:flex;align-items:baseline;gap:3px;padding:3px 8px;border-radius:6px;border:1px solid #3a3357;
+    background:#1a1430;color:var(--purple);font-size:11px;font-weight:700;letter-spacing:.5px}
+  .lvl b{font-size:15px}
   .pill{display:flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);
     font-size:clamp(10px,2.6vw,13px);font-weight:700;letter-spacing:1px}
   .pill.ragnar{color:var(--cyan);border-color:#1e4e6b;background:#0b2436}
@@ -32,86 +36,76 @@
     font-weight:700;font-size:clamp(11px,3vw,15px)}
   /* main */
   .main{flex:1 1 auto;display:flex;gap:7px;min-height:0}
-  .mascot{flex:0 0 34%;max-width:170px;border:1px solid var(--border);border-radius:8px;
-    background:#0a1526;box-shadow:inset 0 0 20px rgba(0,0,0,.5),0 0 10px rgba(125,211,252,.12);
-    overflow:hidden;display:flex;align-items:center;justify-content:center;position:relative}
-  .mascot img{width:100%;height:100%;object-fit:contain;image-rendering:auto}
-  .mascot .scan{position:absolute;inset:0;pointer-events:none;
-    background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(0,0,0,.14) 3px 4px)}
+  .mascot{flex:0 0 34%;max-width:200px;border:1px solid var(--border);border-radius:9px;
+    background:#0a1526;overflow:hidden;display:flex;align-items:center;justify-content:center;position:relative}
+  .mascot canvas{width:100%;height:100%;object-fit:contain}
   .right{flex:1 1 auto;display:flex;flex-direction:column;gap:6px;min-width:0}
-  .say{border-left:3px solid var(--cyan);background:var(--card2);border-radius:4px;
-    padding:5px 8px;font-size:clamp(10px,2.7vw,13px);color:var(--dim);
-    overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-  .say b{color:var(--cyan)}
-  .act{background:var(--card2);border-left:3px solid var(--cyan);border-radius:4px;
-    padding:5px 8px;display:flex;flex-direction:column;gap:5px}
-  .actrow{display:flex;align-items:baseline;gap:7px;overflow:hidden;white-space:nowrap}
-  .op{font-weight:700;font-size:clamp(11px,3vw,15px);color:var(--green);flex:0 0 auto}
-  .op.busy{color:var(--amber)}
-  .tgt{color:var(--dim);font-weight:400;font-size:.85em;margin-left:6px}
-  .qt{color:var(--muted);font-size:clamp(9px,2.3vw,12px);overflow:hidden;
-    text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
-  .bar{height:9px;border-radius:5px;background:#0a1526;border:1px solid var(--border);
-    overflow:hidden;position:relative}
-  .bar{display:none}
-  .bar.show{display:block}
-  .bar .fill{position:absolute;top:0;bottom:0;left:0;width:0;border-radius:5px;
-    background:linear-gradient(90deg,#0284c7,var(--cyan));transition:width .5s ease}
-  .pct{position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:8px;
-    font-weight:700;color:#04243a;letter-spacing:.5px}
-  .chips{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
-  .chip{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:4px 5px;overflow:hidden}
-  .chip .k{font-size:clamp(7px,1.9vw,9px);color:var(--muted);letter-spacing:.5px;text-transform:uppercase}
-  .chip .v{font-size:clamp(12px,3.6vw,18px);font-weight:700;line-height:1.15;white-space:nowrap;
-    overflow:hidden;text-overflow:ellipsis}
+  /* terminal heartbeat (poll-driven; no CSS animation) */
+  .term{flex:1 1 auto;background:var(--term);border:1px solid #16314a;border-left:3px solid var(--cyan);
+    border-radius:6px;padding:6px 8px 5px;min-height:0;overflow:hidden;display:flex;flex-direction:column;
+    justify-content:flex-end;gap:1px}
+  .term.scanning{border-left-color:var(--green)}
+  .term .ln{font-size:12px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+  .term .ln .ts{color:var(--muted)} .term .ln .pr{color:var(--cyan);font-weight:700}
+  .term .ln.hi{color:var(--text)}
+  .term .ln .g{color:var(--green)} .term .ln .a{color:var(--amber)} .term .ln .r{color:var(--red)} .term .ln .c{color:var(--cyan)}
+  /* mission chips */
+  .chips{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;flex:0 0 auto}
+  .chip{background:#18283b;border:1px solid var(--border);border-radius:8px;padding:5px 7px 4px;overflow:hidden}
+  .chip .k{font-size:10px;color:#b7cadc;letter-spacing:.5px;text-transform:uppercase}
+  .chip .v{font-size:clamp(17px,5vw,23px);font-weight:700;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .v.cyan{color:var(--cyan)} .v.green{color:var(--green)} .v.amber{color:var(--amber)} .v.red{color:var(--red)}
-  .chips.sys .chip{border-color:#24405c}
+  /* stat lines */
+  .sline{flex:0 0 auto;display:flex;align-items:center;font-size:12px;color:var(--dim);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px}
+  .sline .s{display:inline-flex;align-items:center;gap:4px;padding-right:11px}
+  .sline .s b{color:var(--text);font-weight:700}
+  .sline .s svg{display:block;opacity:.85}
+  .sline.net b{color:var(--cyan)} .sline.net .ts{color:var(--green)}
+  .ssid{color:var(--purple);overflow:hidden;text-overflow:ellipsis}
   /* buttons */
-  .btns{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+  .btns{flex:0 0 auto;display:grid;grid-template-columns:repeat(6,1fr);gap:5px}
   .btn{appearance:none;border:1.5px solid var(--border);border-radius:9px;background:var(--card);
-    color:var(--text);font-family:inherit;font-weight:700;letter-spacing:.3px;
-    font-size:clamp(10px,2.7vw,14px);padding:12px 4px;min-height:74px;cursor:pointer;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
-    transition:transform .05s}
+    color:var(--text);font-family:inherit;font-weight:700;letter-spacing:.2px;
+    font-size:clamp(9px,2.4vw,12px);padding:9px 2px;min-height:62px;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;transition:transform .05s}
   .btn .ic{display:flex;align-items:center;justify-content:center;line-height:1}
-  .btn:active{transform:scale(.95)}
+  .btn .ic svg{width:23px;height:23px}
+  .btn.recon{border-color:#2a6b63;color:#5eead4}
+  .btn:active{transform:scale(.95)} .btn:disabled{opacity:.5}
   .btn.wardrive{border-color:#1e4e6b;color:var(--cyan)}
   .btn.wardrive.on{background:#0c2417;border-color:#1f5134;color:var(--green)}
   .btn.ap{border-color:#5c3a1a;color:var(--amber)}
   .btn.scan{border-color:#1e4e6b;color:var(--cyan)}
-  .btn.scan.stopping{border-color:#5c1a1a;background:#2a0f0f;color:var(--red)}
-  .btn.cams{border-color:#4b2e6b;color:#c4b5fd}
+  .btn.scan.on{background:#0c2417;border-color:#1f5134;color:var(--green)}
+  .btn.cams{border-color:#4b2e6b;color:var(--purple)}
+  .btn.tools{border-color:#287081;color:#a3efff}
   .btn.armed{background:#3b0d0d;border-color:#b91c1c;color:#fca5a5}
-  #toast{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);background:#0b2436;
+  #toast{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);background:#0b2436;
     border:1px solid var(--cyan);color:var(--cyan);padding:7px 14px;border-radius:6px;font-size:13px;
     box-shadow:var(--glow);opacity:0;transition:opacity .2s;pointer-events:none;max-width:92vw;text-align:center}
   #toast.show{opacity:1}
+  @media(max-height:340px){
+    .btn{min-height:54px;padding:7px 2px;font-size:11px}.btn .ic svg{width:22px;height:22px}
+    .chip .v{font-size:19px}.term .ln{font-size:11px}.sline{font-size:11px}.brand{font-size:19px}
+  }
 </style>
 </head>
 <body>
   <div class="top">
     <div class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="14" y2="14"/><line x1="20" y1="4" x2="10" y2="14"/><line x1="4" y1="20" x2="8.5" y2="15.5"/><line x1="20" y1="20" x2="15.5" y2="15.5"/></svg>RAGNAR <small>CYBERVIKING</small></div>
     <div class="hdr-r">
+      <div class="lvl">LVL&nbsp;<b id="lvl">—</b></div>
       <div id="pill" class="pill ragnar"><span class="dot"></span><span id="mode">RAGNAR</span></div>
       <div class="tchip" id="temp">—°</div>
     </div>
   </div>
 
   <div class="main">
-    <div class="mascot">
-      <img src="/web/images/ragnar-240x320-tools.gif" alt="Ragnar">
-      <div class="scan"></div>
-    </div>
+    <div class="mascot"><canvas id="ragnarArt" aria-label="Ragnar artwork" role="img"></canvas></div>
     <div class="right">
-      <div class="act">
-        <div class="actrow"><span class="op" id="op">IDLE</span><span class="tgt" id="tgt"></span><span class="qt" id="says"></span></div>
-        <div class="bar" id="bar"><div class="fill" id="fill"></div><span class="pct" id="pct"></span></div>
-      </div>
-      <div class="chips sys">
-        <div class="chip"><div class="k">CPU</div><div class="v cyan" id="cpu">—</div></div>
-        <div class="chip"><div class="k">Mem</div><div class="v cyan" id="mem">—</div></div>
-        <div class="chip"><div class="k">Uptime</div><div class="v" id="up">—</div></div>
-        <div class="chip"><div class="k">Disk</div><div class="v" id="disk">—</div></div>
+      <div class="term" id="term">
+        <div class="ln"><span class="ts">--:--:--</span> <span class="pr">&gt;</span> booting console…</div>
       </div>
       <div class="chips">
         <div class="chip"><div class="k">Targets</div><div class="v cyan" id="tgts">—</div></div>
@@ -119,84 +113,127 @@
         <div class="chip"><div class="k">Vulns</div><div class="v amber" id="vuln">—</div></div>
         <div class="chip"><div class="k">Creds</div><div class="v green" id="cred">—</div></div>
       </div>
-      <div class="say" style="border-color:var(--muted)"><span id="net" style="color:var(--dim)">—</span></div>
+      <div class="sline">
+        <span class="s" title="cpu"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/></svg>CPU <b id="cpu">—</b></span>
+        <span class="s" title="mem"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="8" width="18" height="9" rx="1.5"/><path d="M6 17v2M10 17v2M14 17v2M18 17v2"/></svg>MEM <b id="mem">—</b></span>
+        <span class="s" title="uptime"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><b id="up">—</b></span>
+        <span class="s" title="disk"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/></svg><b id="disk">—</b></span>
+      </div>
+      <div class="sline">
+        <span class="s" title="coins"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg><b id="coins">—</b></span>
+        <span class="s" title="data looted"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"/><path d="M14 3v6h6"/></svg>DATA <b id="data">—</b></span>
+        <span class="s" title="networks seen"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2.3"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M6 6a9 9 0 0 0 0 12M18 6a9 9 0 0 1 0 12"/></svg>NETS <b id="nets">—</b></span>
+        <span class="ssid" id="ssid">—</span>
+      </div>
+      <div class="sline net"><span id="net" style="color:var(--muted)">link down</span></div>
     </div>
   </div>
 
   <div class="btns">
-    <button class="btn wardrive" id="bWar"><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 19l4.5-4.5"/><path d="M11 13a6 6 0 0 1 6 6"/><path d="M11 9a10 10 0 0 1 10 10"/></svg></span><span class="lbl">WARDRIVE</span></button>
-    <button class="btn cams"     id="bCams"><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="18" height="12.5" rx="2"/><circle cx="12" cy="12.8" r="3.2"/><path d="M8 6.5l1.4-2h5.2l1.4 2"/></svg></span><span class="lbl">LIVE CAMS</span></button>
-    <button class="btn scan"     id="bScan"><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 12l7-3.3"/></svg></span><span class="lbl">SCAN</span></button>
-    <button class="btn ap"       id="bAp" ><span class="ic"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M8.3 14a5.2 5.2 0 0 1 7.4 0"/><path d="M5.5 11.2a9.2 9.2 0 0 1 13 0"/></svg></span><span class="lbl">AP MODE</span></button>
+    <button class="btn wardrive" id="bWar"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 19l4.5-4.5"/><path d="M11 13a6 6 0 0 1 6 6"/><path d="M11 9a10 10 0 0 1 10 10"/></svg></span><span class="lbl">WARDRIVE</span></button>
+    <button class="btn recon" id="bRecon"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.6 7.4L11 16M17.4 7.4L13 16M7 6h10"/></svg></span><span class="lbl">RECON</span></button>
+    <button class="btn cams" id="bCams"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="18" height="12.5" rx="2"/><circle cx="12" cy="12.8" r="3.2"/><path d="M8 6.5l1.4-2h5.2l1.4 2"/></svg></span><span class="lbl">CAMS</span></button>
+    <button class="btn scan" id="bScan"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 12l7-3.3"/></svg></span><span class="lbl">SCAN</span></button>
+    <button class="btn tools" id="bTools"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5a3.5 3.5 0 0 0-4.8 4.4L4 15.6 6.4 18l5.7-5.7a3.5 3.5 0 0 0 4.4-4.8l-2.2 2.2-2-2z"/></svg></span><span class="lbl">TOOLS</span></button>
+    <button class="btn ap" id="bAp"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="17.5" r="1.7" fill="currentColor" stroke="none"/><path d="M8.3 14a5.2 5.2 0 0 1 7.4 0"/><path d="M5.5 11.2a9.2 9.2 0 0 1 13 0"/></svg></span><span class="lbl">AP</span></button>
   </div>
 
   <div id="toast"></div>
 
+<script src="/web/vendor/socket.io.min.js"></script>
 <script>
 (function(){
+  // static first-frame mascot drawn to canvas (no continuous GIF animation = cooler)
+  var art=new Image();art.onload=function(){var c=document.getElementById("ragnarArt");
+    c.width=art.naturalWidth;c.height=art.naturalHeight;c.getContext("2d").drawImage(art,0,0);
+    art.onload=null;art.src="";};art.src="/web/images/ragnar-240x320-tools.gif";
+
   var $=function(id){return document.getElementById(id)}, tT, toast=$("toast");
   function note(m,ok){toast.textContent=m;
     toast.style.borderColor=ok===false?"#f87171":"var(--cyan)";
     toast.style.color=ok===false?"#fca5a5":"var(--cyan)";
     toast.classList.add("show");clearTimeout(tT);
     tT=setTimeout(function(){toast.classList.remove("show")},2800);}
-  function post(u,b){return fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(b||{})}).then(function(r){return r.json().catch(function(){return{success:r.ok}})});}
-  function gj(u){return fetch(u,{cache:"no-store"}).then(function(r){return r.json()})}
+  // robust fetch: timeout + auth-wall detection (same contract as the live page)
+  async function request(u,b){var c=new AbortController(),t=setTimeout(function(){c.abort()},12000);
+    try{var r=await fetch(u,{cache:"no-store",signal:c.signal,...(b===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})});
+      if(!r.ok)throw Error("Request failed: "+r.status);
+      if(!(r.headers.get("content-type")||"").includes("application/json"))throw Error("Sign in through the web UI");
+      var d=await r.json();if(d.error||d.success===false)throw Error(d.error||"Request failed");return d;
+    }finally{clearTimeout(t)}}
+  function post(u,b){return request(u,b||{})} function gj(u){return request(u)}
+  function nz(v){return v!=null?v:"—"}
+  function kfmt(n){n=+n||0;return n>=1000?(n/1000).toFixed(n>=10000?0:1)+"k":""+n;}
+  function esc(s){return (s==null?"":""+s).replace(/[<>&]/g,function(c){return{"<":"&lt;",">":"&gt;","&":"&amp;"}[c]})}
+  function hhmmss(){var d=new Date();function p(n){return(n<10?"0":"")+n}
+    return p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds());}
 
-  var warRunning=false, scanActive=false, scanStart=0, SCAN_EST=45000;
+  // ---- terminal heartbeat (persisted to localStorage so events survive page
+  //      navigation — e.g. launch a brute on the Pentest tab, see it here too) ----
+  var term=$("term"), MAXLN=6, FEED="ragnar_feed";
+  function trim(){var lns=term.querySelectorAll(".ln");while(lns.length>MAXLN){term.removeChild(lns[0]);lns=term.querySelectorAll(".ln");}}
+  function addLine(ts,html,cls){var ln=document.createElement("div");ln.className="ln"+(cls?(" "+cls):"");
+    ln.innerHTML='<span class="ts">'+ts+'</span> <span class="pr">&gt;</span> '+html;term.appendChild(ln);trim();}
+  function pushFeed(ts,html,cls){try{var a=JSON.parse(localStorage.getItem(FEED)||"[]");
+    a.push({ts:ts,h:html,c:cls||""});if(a.length>30)a=a.slice(-30);localStorage.setItem(FEED,JSON.stringify(a));}catch(e){}}
+  function log(html,cls,persist){var ts=hhmmss();addLine(ts,html,cls);if(persist)pushFeed(ts,html,cls);}
+  function renderStored(){try{var a=JSON.parse(localStorage.getItem(FEED)||"[]");a.slice(-MAXLN).forEach(function(e){addLine(e.ts,e.h,e.c);});}catch(e){}}
 
-  function pullStatus(){ gj("/api/status").then(function(d){
+  var warRunning=false, scanActive=false, scanPending=false;
+  var prev={status:null,mode:null,tgt:null,port:null,vuln:null,cred:null};
+
+  function pullStatus(){ return gj("/api/status").then(function(d){
     var isPwn=(d.pwnagotchi_mode||"ragnar").toLowerCase()==="pwnagotchi";
-    $("mode").textContent=isPwn?"PWNAGOTCHI":"RAGNAR";
-    $("pill").className="pill "+(isPwn?"pwn":"ragnar");
-    var op=(d.ragnar_status||"IDLE"), t2=(d.ragnar_status2||"");
-    var busy=!!op && !/^(idle|standby|ready|online|)$/i.test(op);
-    $("op").textContent=op; $("op").className="op"+(busy?" busy":"");
-    $("tgt").textContent=t2?("→ "+t2):"";
-    $("says").textContent=d.ragnar_says||"";
-    // scan progress — time estimate (Ragnar exposes no true %); only while a scan runs
-    if(scanActive){
-      var el=Date.now()-scanStart, pct=Math.min(100,Math.round(el/SCAN_EST*100));
-      $("bar").classList.add("show"); $("fill").style.width=pct+"%"; $("pct").textContent=pct+"%";
-      $("says").textContent="network scan "+pct+"%";
-      if(pct>=100){ scanActive=false; updateScanBtn();
-        setTimeout(function(){ if(!scanActive){$("bar").classList.remove("show");$("fill").style.width="0";$("pct").textContent="";} },900); }
-    } else { $("bar").classList.remove("show"); }
-    $("tgts").textContent=nz(d.target_count);
-    $("ports").textContent=nz(d.port_count);
-    $("vuln").textContent=nz(d.vulnerability_count);
-    $("cred").textContent=nz(d.credential_count);
-  }).catch(function(){$("op").textContent="LINK DOWN"}); }
+    var modeTxt=isPwn?"PWNAGOTCHI":"RAGNAR";
+    $("mode").textContent=modeTxt; $("pill").className="pill "+(isPwn?"pwn":"ragnar");
+    if(prev.mode!==null && prev.mode!==modeTxt) log('mode → <span class="'+(isPwn?'g':'c')+'">'+modeTxt+'</span>','hi',true);
+    prev.mode=modeTxt;
 
-  function pullSys(){ gj("/api/system/status").then(function(d){
+    var op=(d.ragnar_status||d.orchestrator_status||"IDLE"), t2=(d.ragnar_status2||"");
+    if(prev.status!==null && op!==prev.status && op) log('<span class="c">'+op+'</span>'+(t2?(' <span class="ts">'+t2+'</span>'):''));
+    prev.status=op;
+    scanActive=/scanner/i.test(op); term.classList.toggle("scanning",scanActive); updateScanBtn();
+
+    $("lvl").textContent=nz(d.level);
+    $("coins").textContent=kfmt(d.coins||d.points);
+    $("data").textContent=nz(d.data_count);
+    $("nets").textContent=nz(d.scanned_network_count);
+    $("ssid").textContent=d.wifi_connected?("· "+(d.current_ssid||"wifi")):"· offline";
+
+    function delta(key,id,label,cls){var v=d[key];if(v==null)return;$(id).textContent=v;
+      var p=prev[id];if(p!=null && v>p) log('+'+(v-p)+' <span class="'+cls+'">'+label+'</span> ('+v+')','hi',true);prev[id]=v;}
+    delta("target_count","tgts","target"+((d.target_count||0)===1?"":"s"),"c");
+    delta("port_count","ports","open port"+((d.port_count||0)===1?"":"s"),"");
+    delta("vulnerability_count","vuln","vuln"+((d.vulnerability_count||0)===1?"":"s"),"a");
+    delta("credential_count","cred","cred"+((d.credential_count||0)===1?"":"s"),"g");
+  }).catch(function(e){ log('<span class="r">link down</span> — '+(e.message||"waiting for ragnar:8000"),'r'); }); }
+
+  function pullSys(){ return gj("/api/system/status").then(function(d){
     var t=(d.temperatures&&(d.temperatures.cpu_thermal_||d.temperatures.cpu_thermal))||0;
-    var tc=$("temp"); tc.textContent=Math.round(t)+"°"; tc.className="tchip";
+    var tc=$("temp"); tc.textContent=Math.round(t)+"°";
     tc.style.color=t>=78?"var(--red)":t>=65?"var(--amber)":"var(--green)";
     $("cpu").textContent=Math.round((d.cpu&&d.cpu.percent)||0)+"%";
     $("mem").textContent=Math.round((d.memory&&d.memory.percent)||0)+"%";
     $("up").textContent=(d.uptime&&d.uptime.formatted)||"—";
     $("disk").textContent=Math.round((d.disk&&d.disk.percent)||0)+"%";
     var nis=d.network_interfaces||[];
-    function ipOf(n){var i=nis.filter(function(x){return x.name===n})[0]; if(!i)return null;
-      var a=(i.addresses||[]).filter(function(x){return x.family==="2"||x.family===2})[0]; return a&&a.address;}
+    function ipOf(n){var i=nis.filter(function(x){return x.name===n})[0];if(!i)return null;
+      var a=(i.addresses||[]).filter(function(x){return x.family==="2"||x.family===2})[0];return a&&a.address;}
     var lan=ipOf("wlan0")||ipOf("eth0"), ts=ipOf("tailscale0");
-    $("net").innerHTML=(lan?('LAN <b style="color:var(--cyan)">'+lan+':8000</b>'):"offline")
-      +(ts?('  ·  TS <b style="color:var(--green)">'+ts+':8000</b>'):"");
+    $("net").innerHTML=(lan?('LAN <b>'+lan+':8000</b>'):'<span style="color:var(--muted)">link down</span>')
+      +(ts?('<span style="color:var(--border);padding:0 7px">·</span>TS <b class="ts">'+ts+':8000</b>'):"");
   }).catch(function(){}); }
 
-  function pullWar(){ gj("/api/wardriving/status").then(function(d){
-    warRunning=!!d.running;   // only "running", not the persistent "enabled" flag
-    $("bWar").classList.toggle("on",warRunning);
+  function pullWar(){ return gj("/api/wardriving/status").then(function(d){
+    warRunning=!!d.running; $("bWar").classList.toggle("on",warRunning);
     $("bWar").querySelector(".lbl").textContent=warRunning?"WARDRIVE·ON":"WARDRIVE";
   }).catch(function(){}); }
 
-  function nz(v){return v!=null?v:"—"}
-
   // --- buttons ---
   $("bWar").onclick=function(){ location.href="/web/wardrive.html"; };
+  $("bRecon").onclick=function(){ location.href="/web/recon.html"; };
   $("bCams").onclick=function(){ location.href="/web/livecams.html"; };
-  // AP MODE = 2-tap confirm (it takes the box onto its own AP and drops the LAN)
+  $("bTools").onclick=function(){ location.href="/web/kiosk_tools.html"; };
   var apArmed=false, apT;
   $("bAp").onclick=function(){
     if(!apArmed){ apArmed=true; this.classList.add("armed"); this.querySelector(".lbl").textContent="CONFIRM?";
@@ -204,27 +241,45 @@
       apT=setTimeout(function(){apArmed=false;$("bAp").classList.remove("armed");$("bAp").querySelector(".lbl").textContent="AP MODE";},4000);
       return; }
     apArmed=false; this.classList.remove("armed"); this.querySelector(".lbl").textContent="AP MODE";
-    note("Entering AP mode — join Ragnar's WiFi"); post("/api/wifi/ap/start",{});
+    note("Entering AP mode — join Ragnar's WiFi"); log('<span class="a">AP mode</span> starting — LAN dropping','a');
+    post("/api/wifi/ap/start",{}).catch(function(e){note(e.message,false)});
   };
-  function updateScanBtn(){ var b=$("bScan"); b.classList.toggle("stopping",scanActive);
-    b.querySelector(".lbl").textContent=scanActive?"STOP":"SCAN"; }
-  $("bScan").onclick=function(){
-    if(!scanActive){ note("Starting network scan…");
-      post("/api/manual/scan/network",{}).then(function(r){
-        if(r&&r.success){scanActive=true;scanStart=Date.now();updateScanBtn();pullStatus();}
-        else note("Scan failed: "+((r&&r.error)||"?"),false); }); }
-    else { note("Stopping scan…");
-      post("/api/manual/orchestrator/stop",{}).then(function(){
-        scanActive=false;updateScanBtn();
-        $("bar").classList.remove("show");$("fill").style.width="0";$("pct").textContent="";
-        note("Scan stopped",true); }); }
+  // scan: this backend has no cancel; reflect SCANNING, debounce re-requests
+  function updateScanBtn(){var b=$("bScan");b.disabled=scanPending;b.classList.toggle("on",scanActive);
+    b.querySelector(".lbl").textContent=scanActive?"SCANNING":scanPending?"…":"SCAN";}
+  $("bScan").onclick=async function(){
+    if(scanPending)return;
+    if(scanActive){note("Scan is running — this backend has no cancel control");return;}
+    scanPending=true;updateScanBtn();
+    try{var r=await post("/api/manual/scan/network",{});if(!r.success)throw Error(r.error||"Scan not accepted");
+      log('network scan <span class="c">requested</span>','hi');note("Scan requested");pullStatus();}
+    catch(e){note(e.message,false);}
+    finally{setTimeout(function(){scanPending=false;updateScanBtn()},10000);}
   };
 
-  function tick(){ pullStatus(); }
+  // ---- live event feed over Socket.IO ----
+  // Manual attacks/scans don't update /api/status reliably, so polling alone
+  // misses them. This streams what the device is actually doing in real time.
+  renderStored();   // replay recent events (attacks/scans/creds) from any kiosk page
+  try{ if(window.io){
+    var sock=io({transports:["websocket","polling"]});
+    sock.on("connect",function(){log('live feed <span class="g">online</span>','hi');});
+    sock.on("disconnect",function(){log('live feed <span class="r">dropped</span>','r');});
+    sock.on("manual_attack_update",function(d){ d=d||{};
+      var s=(d.status||"").toLowerCase(), cls=s==="success"?"g":(s==="error"||s==="failed"||s==="danger")?"r":"a";
+      log('<span class="'+cls+'">&raquo; '+esc((d.action||"attack").toUpperCase())+'</span> '+esc(d.ip||"")+(d.port?(":"+esc(d.port)):"")+' — '+esc(d.message||d.stage||s),"hi",true); });
+    sock.on("credentials_update",function(d){ log('<span class="g">+CRED</span> '+esc((d&&(d.message||d.user||d.ip))||"new credential"),"hi",true); pullStatus(); });
+    sock.on("loot_update",function(d){ log('<span class="g">LOOT</span> '+esc((d&&d.message)||"data looted"),"hi",true); });
+    sock.on("scan_started",function(d){ log('scan <span class="c">started</span> '+esc((d&&(d.message||d.target))||""),"",true); });
+    sock.on("scan_completed",function(d){ log('scan <span class="g">complete</span> '+esc((d&&d.message)||""),"",true); });
+    sock.on("lynis_update",function(d){ log('lynis '+esc((d&&(d.message||d.type))||""),"",true); });
+  }}catch(e){}
+
+  log('console ready','hi');
   pullStatus(); pullSys(); pullWar();
-  setInterval(pullStatus,2000);
-  setInterval(pullSys,6000);
-  setInterval(pullWar,7000);
+  // visibility-aware slow polling (pauses when the panel isn't showing = cooler)
+  function loop(fn,ms){async function run(){if(!document.hidden)await fn();setTimeout(run,ms)}setTimeout(run,ms)}
+  loop(pullStatus,5000); loop(pullSys,15000); loop(pullWar,15000);
 })();
 </script>
 </body>

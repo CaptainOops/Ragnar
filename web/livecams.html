@@ -6,7 +6,7 @@
 <title>Ragnar Live Cams</title>
 <style>
   :root{--bg:#0f172a;--card:#1e293b;--card2:#172033;--border:#334155;--muted:#64748b;
-    --dim:#94a3b8;--text:#e2e8f0;--cyan:#7dd3fc;--green:#22c55e;--amber:#f59e0b;--purple:#c4b5fd;
+    --dim:#94a3b8;--text:#e2e8f0;--cyan:#7dd3fc;--green:#22c55e;--amber:#f59e0b;--red:#f87171;--purple:#c4b5fd;
     --glow:0 0 8px rgba(196,181,253,.35);}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:radial-gradient(1200px 500px at 20% -10%,#1a1430,transparent),var(--bg);
@@ -22,12 +22,13 @@
   .title svg{display:block}
   .pill{padding:4px 11px;border-radius:999px;border:1px solid #4b2e6b;background:#1a1430;color:var(--purple);
     font-size:clamp(11px,3vw,14px);font-weight:700}
-  .scanbar{flex:0 0 auto;display:flex;align-items:center;gap:9px}
+  .scanbar{flex:0 0 auto;display:flex;align-items:center;gap:7px}
   .scanbtn{appearance:none;border:1px solid #4b2e6b;background:#1a1430;color:var(--purple);
-    font-family:inherit;font-weight:700;font-size:clamp(11px,2.9vw,14px);border-radius:8px;padding:9px 14px;cursor:pointer;flex:0 0 auto}
+    font-family:inherit;font-weight:700;font-size:clamp(11px,2.9vw,14px);border-radius:8px;padding:9px 13px;cursor:pointer;flex:0 0 auto}
   .scanbtn:active{transform:scale(.97)}
   .scanbtn.scanning{border-color:#5c1a1a;background:#2a0f0f;color:var(--red)}
-  .scanstat{font-size:clamp(10px,2.5vw,12px);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .scanbtn.wallbtn{border-color:#1e4e6b;background:#0b2436;color:var(--cyan)}
+  .scanstat{font-size:clamp(10px,2.5vw,12px);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto}
   .list{flex:1 1 auto;display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:min-content;gap:7px;
     overflow-y:auto;min-height:0;padding-right:2px;-webkit-overflow-scrolling:touch}
   .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:9px 11px;cursor:pointer;
@@ -39,7 +40,7 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .card .type{font-size:9px;font-weight:700;color:var(--purple);border:1px solid #4b2e6b;border-radius:4px;padding:1px 5px;flex:0 0 auto}
   .empty{grid-column:1/-1;color:var(--muted);text-align:center;padding:24px;font-size:13px}
-  /* fullscreen viewer */
+  /* fullscreen single viewer */
   .viewer{position:fixed;inset:0;background:#000;z-index:50;display:none;flex-direction:column}
   .viewer.show{display:flex}
   .vhead{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -51,6 +52,16 @@
   .vbody iframe,.vbody img{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:contain;background:#000}
   .vbody .msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     color:var(--dim);font-size:13px;text-align:center;padding:16px}
+  /* WALL — all cams at once */
+  .wall{position:fixed;inset:0;background:#000;z-index:60;display:none;flex-direction:column}
+  .wall.show{display:flex}
+  .wgrid{flex:1 1 auto;display:grid;gap:3px;padding:3px;overflow-y:auto;background:#000;
+    grid-template-columns:repeat(auto-fill,minmax(150px,1fr));grid-auto-rows:98px;-webkit-overflow-scrolling:touch}
+  .wtile{position:relative;background:#06080d;border:1px solid var(--border);border-radius:4px;overflow:hidden}
+  .wtile iframe,.wtile img{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:cover;background:#000}
+  .wtile .wl{position:absolute;left:0;right:0;bottom:0;background:rgba(5,8,13,.72);color:var(--cyan);
+    font-size:9px;font-weight:700;padding:2px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:2;pointer-events:none}
+  .wtile:active{outline:2px solid var(--cyan)}
 </style>
 </head>
 <body>
@@ -60,14 +71,20 @@
     <div class="pill" id="count">—</div>
   </div>
   <div class="scanbar">
-    <button class="scanbtn" id="scanBtn">⌕ SCAN LAN</button>
-    <span class="scanstat" id="scanStat">tap to find cameras on your network</span>
+    <button class="scanbtn wallbtn" id="wallBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:-2px"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg> WALL</button>
+    <button class="scanbtn" id="scanBtn">SCAN LAN</button>
+    <span class="scanstat" id="scanStat">tap WALL to view all · SCAN LAN to find cameras</span>
   </div>
   <div class="list" id="list"><div class="empty">loading cams…</div></div>
 
   <div class="viewer" id="viewer">
-    <div class="vhead"><span class="vl" id="vlabel">—</span><button class="vclose" id="vclose">✕ CLOSE</button></div>
+    <div class="vhead"><span class="vl" id="vlabel">—</span><button class="vclose" id="vclose">× CLOSE</button></div>
     <div class="vbody" id="vbody"></div>
+  </div>
+
+  <div class="wall" id="wall">
+    <div class="vhead"><span class="vl" id="wlabel">ALL CAMS</span><button class="vclose" id="wclose">× CLOSE</button></div>
+    <div class="wgrid" id="wgrid"></div>
   </div>
 
 <script>
@@ -77,28 +94,51 @@
   function post(u,b){return fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify(b||{})}).then(function(r){return r.json().catch(function(){return{success:r.ok}})})}
   $("back").onclick=function(){location.href="/web/kiosk_status.html"};
-
   function esc(s){return (s||"").replace(/[<>&"]/g,function(c){return{"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c]})}
 
-  function open(cam){
-    $("vlabel").textContent=cam.label||"camera";
-    var body=$("vbody"), t=(cam.type||"").toLowerCase(), url=cam.url||"";
+  var CAMS=[];
+
+  // Build the media element HTML for a cam. mute=true for the wall (avoid 16 audios).
+  function media(cam,mute,cover){
+    var t=(cam.type||"").toLowerCase(), url=cam.url||"", fit=cover?"cover":"contain";
     if(t==="embed" || /youtube|youtu\.be|\.m3u8|embed/i.test(url)){
-      body.innerHTML='<iframe src="'+esc(url)+'" allow="autoplay; encrypted-media" allowfullscreen></iframe>';
+      var u=url;
+      if(/youtube|youtu\.be/i.test(u) && mute){ u+=(u.indexOf("?")<0?"?":"&")+"autoplay=1&mute=1"; }
+      return '<iframe src="'+esc(u)+'" style="object-fit:'+fit+'" allow="autoplay; encrypted-media" allowfullscreen></iframe>';
     } else if(t==="mjpeg" || t==="snapshot" || /\.(jpg|jpeg|mjpg|mjpeg)(\?|$)/i.test(url)){
-      body.innerHTML='<img src="'+esc(url||("/api/livecams/snapshot/"+cam.id))+'">';
-    } else if(url){
-      body.innerHTML='<iframe src="'+esc(url)+'" allow="autoplay"></iframe>';
-    } else {
-      body.innerHTML='<div class="msg">No stream URL for this camera.<br>Open it from the web UI.</div>';
-    }
-    $("viewer").classList.add("show");
+      return '<img style="object-fit:'+fit+'" src="'+esc(url||("/api/livecams/snapshot/"+cam.id))+'">';
+    } else if(url){ return '<iframe src="'+esc(url)+'" style="object-fit:'+fit+'" allow="autoplay"></iframe>'; }
+    return '<div class="msg">No stream URL.</div>';
   }
-  function close(){ $("viewer").classList.remove("show"); $("vbody").innerHTML=""; } // clear = stop the stream
-  $("vclose").onclick=close;
+
+  // single fullscreen viewer
+  function openCam(cam){ $("vlabel").textContent=cam.label||"camera";
+    $("vbody").innerHTML=media(cam,false,false); $("viewer").classList.add("show"); }
+  $("vclose").onclick=function(){ $("viewer").classList.remove("show"); $("vbody").innerHTML=""; };
+
+  // WALL — all cams at once
+  function openWall(){
+    var g=$("wgrid"); if(!CAMS.length){return;}
+    $("wlabel").textContent="ALL CAMS · "+CAMS.length;
+    g.innerHTML="";
+    CAMS.forEach(function(c){
+      var tile=document.createElement("div"); tile.className="wtile";
+      tile.innerHTML=media(c,true,true)+'<div class="wl">'+esc(c.label||"cam")+'</div>';
+      tile.onclick=function(){ closeWall(); openCam(c); }; // tap a tile → full view
+      g.appendChild(tile);
+    });
+    $("wall").classList.add("show");
+  }
+  function closeWall(){ $("wall").classList.remove("show"); $("wgrid").innerHTML=""; } // clear = stop all streams
+  $("wclose").onclick=closeWall;
+  $("wallBtn").onclick=function(){
+    if(!CAMS.length){ $("scanStat").textContent="no cameras to show yet"; return; }
+    $("scanStat").textContent="loading all "+CAMS.length+" streams… (heavy on the Pi screen — best on a phone/PC)";
+    openWall();
+  };
 
   function render(cams){
-    var list=$("list"); $("count").textContent=cams.length;
+    CAMS=cams; var list=$("list"); $("count").textContent=cams.length;
     if(!cams.length){ list.innerHTML='<div class="empty">No cameras configured.<br>Add them in the Ragnar web UI.</div>'; return; }
     list.innerHTML="";
     cams.forEach(function(c){
@@ -106,7 +146,7 @@
       card.innerHTML='<div class="lbl">'+esc(c.label||"cam")+'</div>'+
         '<div class="meta"><span class="cat">'+esc(c.category||"general")+'</span>'+
         '<span class="type">'+esc((c.type||"cam").toUpperCase())+'</span></div>';
-      card.onclick=function(){open(c)};
+      card.onclick=function(){openCam(c)};
       list.appendChild(card);
     });
   }
@@ -121,7 +161,7 @@
     var s=(d.scan||{}); camScanning=!!s.scanning; var b=$("scanBtn");
     if(s.scanning){ b.classList.add("scanning"); b.textContent="■ STOP";
       $("scanStat").textContent="scanning "+(s.scanned||0)+"/"+(s.total||"?")+" · found "+((s.cameras||[]).length); }
-    else { b.classList.remove("scanning"); b.textContent="⌕ SCAN LAN";
+    else { b.classList.remove("scanning"); b.textContent="SCAN LAN";
       var n=(s.cameras||[]).length;
       if(s.status && s.status!=="idle") $("scanStat").textContent="found "+n+" camera"+(n===1?"":"s")+" on LAN";
       if(camPoll){ clearInterval(camPoll); camPoll=null; loadCams(); } }
