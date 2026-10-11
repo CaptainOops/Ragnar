@@ -2,6 +2,18 @@
 
 ## Releases
 
+### 2026-10-11
+
+#### [#941](https://github.com/PierreGode/Ragnar/pull/941) — feat(net): LLDP Watch v2 — +10 CVEs (FortiSwitchAX RCE, Cisco SB220/RV, TRENDnet, QNAP)
+*branch `feature/lldp-watch-v2`*
+
+- **Re-vendored the Solarflere `lldpwatch` engine to v2** (`python/lldpwatch.py`, `lldpwatch_frames.py`, `lldpwatch_conformance.py`; the scapy cross-check is byte-identical and unchanged). The in-app `do_lldp_watch` adapter is unchanged — the engine API (`Config`, `Engine.handle_frame`) is stable.
+- **30 finding codes now (was 26)** and **30 LLDP parser CVEs across thirteen families (was 20 / eight).** Four new screening codes `LLDP-031`..`034` add the **TRENDnet**, **QNAP QSS**, **Cisco SB220/B220** and **Cisco RV** families. The new structural reach is **CVE-2026-22627**, the FortiSwitchAX oversized-OUI TLV overflow — unauthenticated adjacent **RCE** (8.8) — caught both structurally and as a FortiSwitchAX screen. Other new CVEs: CVE-2021-34779/34780, CVE-2021-1309/1251/1308, CVE-2021-33315/33316/33317, CVE-2021-28801.
+- **CVE index 299 → 309 named, 256 → 266 detected.** `gen_cve_list.py` ignores the four SB220 4.3 siblings (CVE-2021-34775..34778) that the module's conformance asserts are *not* screened. CREDITS and README synced; the LLDP bullet lists the new families and the 2021 cluster.
+- **Self-test:** the `lldp` suite grows to **41 scenarios** (the four new screening builders are covered by the existing generic loops), and runs the module's **2117-check conformance** and **285-check scapy cross-check** out of process. Detector Self-Test stays at 52 suites.
+- **Validated live:** malformed, flood and vendor frames replayed with `tcpreplay` over a sealed-netns veth fire through the real tcpdump path, the four new `LLDP-031`..`034` families included, and CVE-2026-22627 is detected. Real switch hardware is not yet validated.
+- **Docs:** [nettools.md › LLDP Watch](nettools.md#lldp-watch) (families table, code count, screening range, validation), [CREDITS.md](CREDITS.md). The L2 visibility-matrix tile still reads "26 codes · 20 CVEs" — the image was not re-cut (no updated source supplied).
+
 ### 2026-10-10
 
 #### [#940](https://github.com/PierreGode/Ragnar/pull/940) — fix(ui): L2 layer button count 14 → 16 (OAM + CFM Watch)

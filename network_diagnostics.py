@@ -25638,9 +25638,9 @@ def do_lldp_baseline(action='get'):
 
 def _lldp_selftest():
     """Adapter scenarios over the vendored engine + frame builders (offline, no root),
-    plus the module's own tiers run out-of-process: the 1767-check conformance
+    plus the module's own tiers run out-of-process: the 2117-check conformance
     harness (which asserts scapy is NOT imported, so it cannot run inside this
-    process) and, with scapy present, the 262-check independent-dissector cross-check."""
+    process) and, with scapy present, the 285-check independent-dissector cross-check."""
     import tempfile
     scenarios = []
 
@@ -25654,12 +25654,12 @@ def _lldp_selftest():
         return {'success': False, 'scenarios': [
             {'name': 'lldpwatch import failed: %s' % e, 'pass': False}]}
 
-    check('registry: 26 codes (11 screening / 13 structural / 2 abuse)',
-          len(W.FINDINGS) == 26 and
-          sorted(g for _n, _s, g in W.FINDINGS.values()).count('screening') == 11 and
+    check('registry: 30 codes (15 screening / 13 structural / 2 abuse)',
+          len(W.FINDINGS) == 30 and
+          sorted(g for _n, _s, g in W.FINDINGS.values()).count('screening') == 15 and
           sorted(g for _n, _s, g in W.FINDINGS.values()).count('structural') == 13)
     fam_cves = {c for f in W.BUILTIN_FAMILIES for c in f.cves}
-    check('screening table names 20 distinct LLDP CVEs', len(fam_cves) == 20)
+    check('screening table names 30 distinct LLDP CVEs', len(fam_cves) == 30)
     check('engine passes its own passive-invariant AST audit',
           W.audit_source(open(W.__file__).read(), 'lldpwatch.py') == [])
 

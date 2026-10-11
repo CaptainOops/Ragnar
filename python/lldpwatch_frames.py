@@ -370,6 +370,47 @@ def vendor_panos(src: str = "02:00:00:00:0c:0a") -> bytes:
     )
 
 
+def vendor_cisco_sb220(src: str = "02:00:00:00:0c:0d") -> bytes:
+    return frame(
+        mandatory()
+        + [t_sys_name(b"sb220-closet-4"),
+           t_sys_desc(b"Cisco SB220-24P-2SFP Smart Plus Switch, firmware 1.2.1.2"),
+           t_end()],
+        src=src, pad=False,
+    )
+
+
+def vendor_cisco_rv(src: str = "02:00:00:00:0c:0e") -> bytes:
+    return frame(
+        mandatory()
+        + [t_sys_name(b"rv340-branch-7"),
+           t_sys_desc(b"Cisco RV340 Dual WAN Gigabit VPN Router, 1.0.03.20"),
+           t_end()],
+        src=src, pad=False,
+    )
+
+
+def vendor_trendnet(src: str = "02:00:00:00:0c:0b") -> bytes:
+    return frame(
+        mandatory()
+        + [
+            t_sys_name(b"ti-pg1284i-plant-2"),
+            t_sys_desc(b"TRENDnet TI-PG1284i Industrial Switch, firmware 1.0.4.S0"),
+            t_end(),
+        ],
+        src=src, pad=False,
+    )
+
+
+def vendor_qnap(src: str = "02:00:00:00:0c:0c") -> bytes:
+    return frame(
+        mandatory()
+        + [t_sys_desc(b"QSW-M2108-2C Managed Switch, QSS 1.0.1 build 20201215"),
+           t_end()],
+        src=src, pad=False,
+    )
+
+
 def vendor_sonicwall(src: str = "02:00:00:00:0c:05") -> bytes:
     return frame(
         mandatory()
@@ -410,6 +451,37 @@ def mal_stray_octet(src: str = "02:00:00:00:04:0f") -> bytes:
 def mal_missing_mandatory(src: str = "02:00:00:00:04:02") -> bytes:
     """LLDP-042 — no TTL TLV at all."""
     return frame([t_chassis_id(), t_port_id(), t_sys_name(b"srv-14"), t_end()], src=src)
+
+
+def mal_missing_chassis_id(src: str = "02:00:00:00:04:1b") -> bytes:
+    """LLDP-042 — an LLDPDU with NO Chassis ID TLV.
+
+    The exact CVE-2021-33317 trigger (TRENDnet TI-series, null-pointer
+    dereference on a frame that omits the mandatory Chassis ID). Already
+    covered by the mandatory-TLV grammar rule; named separately so the
+    specific trigger shape has its own fixture rather than riding on the
+    generic missing-TTL case.
+    """
+    return frame([t_port_id(), t_ttl(), t_sys_name(b"srv-14"), t_end()], src=src)
+
+
+def mal_chassis_id_underflow(src: str = "02:00:00:00:04:1c") -> bytes:
+    """LLDP-046 — a Chassis ID TLV declaring length 1: a subtype octet and no
+    identifier at all.
+
+    The CVE-2021-33316 trigger shape (TRENDnet, 9.8): the length field is not
+    validated, so the device's own arithmetic underflows and hands memcpy() a
+    negative count. On the wire the signal is a mandatory ID TLV too short to
+    hold what its subtype promises. Structural only.
+    """
+    return frame([tlv(1, b"\x04"), t_port_id(), t_ttl(), t_end()], src=src)
+
+
+def mal_port_id_underflow(src: str = "02:00:00:00:04:1d") -> bytes:
+    """LLDP-047 — the same shape on the Port ID TLV: the CVE-2021-33315
+    trigger (TRENDnet, 9.8). Separate fixture because it is a separate code
+    path and a separate CVE, and one fixture cannot stand in for both."""
+    return frame([t_chassis_id(), tlv(2, b"\x05"), t_ttl(), t_end()], src=src)
 
 
 def mal_out_of_order(src: str = "02:00:00:00:04:03") -> bytes:
@@ -555,6 +627,33 @@ def mal_med_inventory_oversized(src: str = "02:00:00:00:04:15") -> bytes:
     )
 
 
+def mal_org_oversized_unknown_oui(src: str = "02:00:00:00:04:19") -> bytes:
+    """LLDP-051 — a 420-octet Organizationally Specific TLV under an OUI the
+    engine does not recognise.
+
+    This is the CVE-2026-22627 structural class (FortiSwitch, buffer overflow
+    in the LLDP OUI field, unauthenticated adjacent RCE). Before the general
+    ceiling existed this frame was COMPLETELY SILENT: every org-specific rule
+    was keyed on a recognised (OUI, subtype) pair, so an unknown OUI had no
+    upper length bound at all. Structural only — an oversized field, no
+    working exploit.
+    """
+    return frame(
+        mandatory() + [t_org(b"\x00\xde\xad", 9, b"A" * 416), t_end()],
+        src=src, pad=False,
+    )
+
+
+def mal_org_oversized_known_oui_unknown_sub(src: str = "02:00:00:00:04:1a") -> bytes:
+    """LLDP-051 — the same gap reached the other way: a RECOGNISED OUI
+    (LLDP-MED) with a subtype that has no fixed-length rule, at 400 octets.
+    A ceiling applied only to unknown OUIs would miss this."""
+    return frame(
+        mandatory() + [t_org(OUI_MED, 99, b"B" * 396), t_end()],
+        src=src, pad=False,
+    )
+
+
 def mal_reserved_tlv_type(src: str = "02:00:00:00:04:16") -> bytes:
     """LLDP-052 — TLV type 64, inside the reserved 9-126 range."""
     return frame(mandatory() + [tlv(64, b"\x00\x01\x02"), t_end()], src=src)
@@ -578,7 +677,7 @@ def mal_no_end(src: str = "02:00:00:00:04:18") -> bytes:
 MALFORMED_BUILDERS = {
     "LLDP-040": (mal_length_overrun,),
     "LLDP-041": (mal_ttl_illegal, mal_stray_octet),
-    "LLDP-042": (mal_missing_mandatory,),
+    "LLDP-042": (mal_missing_mandatory, mal_missing_chassis_id),
     "LLDP-043": (mal_out_of_order,),
     "LLDP-044": (mal_duplicate_tlv,),
     "LLDP-045": (
@@ -587,11 +686,15 @@ MALFORMED_BUILDERS = {
     ),
     "LLDP-046": (
         mal_chassis_mac_wrong_len, mal_chassis_reserved_subtype,
-        mal_chassis_v6_mismatch,
+        mal_chassis_v6_mismatch, mal_chassis_id_underflow,
     ),
-    "LLDP-047": (mal_port_mac_wrong_len, mal_port_v6_mismatch),
+    "LLDP-047": (mal_port_mac_wrong_len, mal_port_v6_mismatch,
+                 mal_port_id_underflow),
     "LLDP-050": (mal_oversized_sysdesc, mal_oversized_sysname),
-    "LLDP-051": (mal_org_short, mal_org_fixed_len, mal_med_inventory_oversized),
+    "LLDP-051": (
+        mal_org_short, mal_org_fixed_len, mal_med_inventory_oversized,
+        mal_org_oversized_unknown_oui, mal_org_oversized_known_oui_unknown_sub,
+    ),
     "LLDP-052": (mal_reserved_tlv_type,),
     "LLDP-053": (mal_trailing_data,),
     "LLDP-054": (mal_no_end,),
@@ -613,6 +716,10 @@ VENDOR_BUILDERS = {
     "LLDP-028": vendor_ruckus,
     "LLDP-029": vendor_fortiswitch,
     "LLDP-030": vendor_panos,
+    "LLDP-033": vendor_cisco_sb220,
+    "LLDP-034": vendor_cisco_rv,
+    "LLDP-031": vendor_trendnet,
+    "LLDP-032": vendor_qnap,
 }
 
 

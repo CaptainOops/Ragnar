@@ -10,8 +10,8 @@ detector works is in [nettools.md](nettools.md).
 
 ## Summary
 
-- **299** distinct CVE IDs
-- **256** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
+- **309** distinct CVE IDs
+- **266** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
 - **34** context only: posture advisories and reference tables for byte-level parser bugs the text-based watchers cannot reconstruct, plus related CVEs attached to a shared attack shape (named for patch guidance, not identified per-CVE)
 - **6** active check: probed by the BLE Pentest action, which transmits (not part of the passive suite)
 - **3** card text only: named in a detector card's description as related context, not detected
@@ -35,12 +35,12 @@ detector works is in [nettools.md](nettools.md).
 | 2018 | 10 |
 | 2019 | 15 |
 | 2020 | 25 |
-| 2021 | 20 |
+| 2021 | 29 |
 | 2022 | 21 |
 | 2023 | 39 |
 | 2024 | 50 |
 | 2025 | 36 |
-| 2026 | 37 |
+| 2026 | 38 |
 
 ## By detector
 
@@ -71,7 +71,7 @@ detector works is in [nettools.md](nettools.md).
 | LACP Watch | 1 |
 | LDAP Watch | 3 |
 | Liebert Guard | 2 |
-| LLDP Watch | 20 |
+| LLDP Watch | 30 |
 | MikroTik Guard | 16 |
 | Modbus Watch | 4 |
 | NTP Watch | 15 |
@@ -194,6 +194,9 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2021-0254](https://nvd.nist.gov/vuln/detail/CVE-2021-0254) | Junos overlayd VXLAN RCE | detected | Juniper Guard | — |
 | [CVE-2021-0277](https://nvd.nist.gov/vuln/detail/CVE-2021-0277) |  | detected | LLDP Watch | — |
 | [CVE-2021-0292](https://nvd.nist.gov/vuln/detail/CVE-2021-0292) |  | context only | ARP Watch | — |
+| [CVE-2021-1251](https://nvd.nist.gov/vuln/detail/CVE-2021-1251) |  | detected | LLDP Watch | — |
+| [CVE-2021-1308](https://nvd.nist.gov/vuln/detail/CVE-2021-1308) |  | detected | LLDP Watch | — |
+| [CVE-2021-1309](https://nvd.nist.gov/vuln/detail/CVE-2021-1309) |  | detected | LLDP Watch | — |
 | [CVE-2021-1587](https://nvd.nist.gov/vuln/detail/CVE-2021-1587) | NX-OS NGOAM DoS | detected | Cisco Guard | — |
 | [CVE-2021-1675](https://nvd.nist.gov/vuln/detail/CVE-2021-1675) | PrintNightmare | detected | RPC / NetLogon Watch | — |
 | [CVE-2021-1678](https://nvd.nist.gov/vuln/detail/CVE-2021-1678) | Print spooler RPC relay (IRemoteWinSpool) | detected | RPC / NetLogon Watch | — |
@@ -204,10 +207,16 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2021-25220](https://nvd.nist.gov/vuln/detail/CVE-2021-25220) | MaginotDNS | detected | DNS Watch | — |
 | [CVE-2021-26111](https://nvd.nist.gov/vuln/detail/CVE-2021-26111) |  | detected | LLDP Watch | — |
 | [CVE-2021-28510](https://nvd.nist.gov/vuln/detail/CVE-2021-28510) |  | detected | PTP Watch | — |
+| [CVE-2021-28801](https://nvd.nist.gov/vuln/detail/CVE-2021-28801) |  | detected | LLDP Watch | — |
 | [CVE-2021-31166](https://nvd.nist.gov/vuln/detail/CVE-2021-31166) | HTTP.sys Accept-Encoding | detected | RPC / NetLogon Watch | — |
+| [CVE-2021-33315](https://nvd.nist.gov/vuln/detail/CVE-2021-33315) |  | detected | LLDP Watch | — |
+| [CVE-2021-33316](https://nvd.nist.gov/vuln/detail/CVE-2021-33316) |  | detected | LLDP Watch | — |
+| [CVE-2021-33317](https://nvd.nist.gov/vuln/detail/CVE-2021-33317) |  | detected | LLDP Watch | — |
 | [CVE-2021-34527](https://nvd.nist.gov/vuln/detail/CVE-2021-34527) | PrintNightmare | detected | RPC / NetLogon Watch | — |
 | [CVE-2021-34618](https://nvd.nist.gov/vuln/detail/CVE-2021-34618) |  | detected | LLDP Watch | — |
 | [CVE-2021-34703](https://nvd.nist.gov/vuln/detail/CVE-2021-34703) |  | detected | LLDP Watch | — |
+| [CVE-2021-34779](https://nvd.nist.gov/vuln/detail/CVE-2021-34779) |  | detected | LLDP Watch | — |
+| [CVE-2021-34780](https://nvd.nist.gov/vuln/detail/CVE-2021-34780) |  | detected | LLDP Watch | — |
 | [CVE-2021-36942](https://nvd.nist.gov/vuln/detail/CVE-2021-36942) | PetitPotam | detected | RPC / NetLogon Watch, Relay / Coercion Watch | — |
 | [CVE-2021-41987](https://nvd.nist.gov/vuln/detail/CVE-2021-41987) |  | detected | MikroTik Guard | — |
 | [CVE-2022-4337](https://nvd.nist.gov/vuln/detail/CVE-2022-4337) |  | detected | LLDP Watch | — |
@@ -372,6 +381,7 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2026-20074](https://nvd.nist.gov/vuln/detail/CVE-2026-20074) | IS-IS multi-instance exposure | detected | IS-IS Watch | — |
 | [CVE-2026-20222](https://nvd.nist.gov/vuln/detail/CVE-2026-20222) | EIGRP update flood | detected | EIGRP Watch | — |
 | [CVE-2026-21902](https://nvd.nist.gov/vuln/detail/CVE-2026-21902) |  | detected | Juniper Guard | — |
+| [CVE-2026-22627](https://nvd.nist.gov/vuln/detail/CVE-2026-22627) |  | detected | LLDP Watch | — |
 | [CVE-2026-24061](https://nvd.nist.gov/vuln/detail/CVE-2026-24061) | inetutils telnetd auth bypass | detected | Telnet Watch | — |
 | [CVE-2026-32746](https://nvd.nist.gov/vuln/detail/CVE-2026-32746) |  | detected | Telnet Watch | — |
 | [CVE-2026-33781](https://nvd.nist.gov/vuln/detail/CVE-2026-33781) |  | card text only | Juniper Guard | — |

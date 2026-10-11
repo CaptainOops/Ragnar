@@ -154,6 +154,17 @@ SPEC_MAX_MGMT_ADDR_STRLEN = 31
 SPEC_MAX_MGMT_OID_LEN = 128
 SPEC_MED_INVENTORY_MAX = 32  # MED inventory strings
 
+# General ceiling for an Organizationally Specific TLV (type 127) whose
+# (OUI, subtype) pair has no fixed length in ORG_FIXED_LEN.
+#
+# The 9-bit TLV length field permits 511, and 802.1AB allows an information
+# string of up to 507 octets, but NO standard org-specific TLV comes close:
+# the largest are the 802.1 VLAN Name TLV (3+1+2+1+32 = 39) and the LLDP-MED
+# inventory strings (4+32 = 36). 128 leaves generous room for a proprietary
+# vendor blob while still being far below the span an overflow needs.
+# Configurable, because a vendor TLV nobody has seen yet could be larger.
+SPEC_MAX_ORG_SPECIFIC = 128
+
 # --------------------------------------------------------------------------
 # Finding registry
 # --------------------------------------------------------------------------
@@ -174,6 +185,10 @@ FINDINGS: Dict[str, Tuple[str, str, str]] = {
     "LLDP-028": ("SCREEN_RUCKUS_LLDP", "notice", "screening"),
     "LLDP-029": ("SCREEN_FORTISWITCH_LLDPMEDD", "notice", "screening"),
     "LLDP-030": ("SCREEN_PANOS_LLDP", "notice", "screening"),
+    "LLDP-031": ("SCREEN_TRENDNET_LLDP", "notice", "screening"),
+    "LLDP-032": ("SCREEN_QNAP_QSS", "notice", "screening"),
+    "LLDP-033": ("SCREEN_CISCO_SB220_LLDP", "notice", "screening"),
+    "LLDP-034": ("SCREEN_CISCO_RV_LLDP", "notice", "screening"),
     # --- Class A: structural / attack-in-flight ---------------------------
     "LLDP-040": ("TLV_LENGTH_OVERRUN", "critical", "structural"),
     "LLDP-041": ("TLV_LENGTH_ILLEGAL", "high", "structural"),
@@ -313,12 +328,18 @@ BUILTIN_FAMILIES: Tuple[Family, ...] = (
         code="LLDP-029",
         label="Fortinet FortiSwitch",
         pattern=r"(?i)\bfortiswitch\b",
-        cves=("CVE-2021-26111",),
+        cves=("CVE-2021-26111", "CVE-2026-22627"),
         note=(
-            "Memory leak in the FortiSwitch lldpmedd daemon: crafted adjacent "
-            "discovery frames exhaust memory. Like the lldpd/OVS and Nexus "
-            "leaks the signal is a sustained stream rather than a single frame, "
-            "so this leans on LLDP-048."
+            "Two very different weights. CVE-2026-22627 (8.8, FG-IR-26-086, "
+            "CWE-120) is a buffer overflow in the LLDP OUI field — "
+            "unauthenticated ADJACENT REMOTE CODE EXECUTION on FortiSwitchAX "
+            "1.0.0-1.0.1 and FortiSwitchAX-Chassis, fixed in 1.0.2; its "
+            "structural shape is an oversized Organizationally Specific TLV, "
+            "which LLDP-051 bounds. CVE-2021-26111 (6.5) is a memory leak in "
+            "the lldpmedd daemon reached by LLDP, CDP or EDP; like the lldpd, "
+            "OVS and Nexus leaks its signal is a sustained stream rather than "
+            "a single frame, so it leans on LLDP-048. The CDP half of 26111 "
+            "belongs to cdpwatch, and EDP is an uncovered plane."
         ),
     ),
     Family(
@@ -332,6 +353,112 @@ BUILTIN_FAMILIES: Tuple[Family, ...] = (
             "it into maintenance mode. Applies only where LLDP is enabled "
             "globally and on an interface whose profile is transmit-receive or "
             "receive-only."
+        ),
+    ),
+    Family(
+        key="cisco_sb220",
+        code="LLDP-033",
+        label="Cisco Small Business 220 / Business 220 smart switches",
+        # A SEPARATE family from LLDP-020, not a widening of it: these run
+        # their own firmware, not IOS/IOS-XE/NX-OS/FXOS, and carry their own
+        # CVEs. Model-keyed so the other Small Business lines (SG250, SG350,
+        # CBS350) are not screened for an advisory they are not in.
+        pattern=(
+            r"(?i)(?:\b(?:SB|CBS)?220-?\d{0,2}[a-z]{0,4}\b"
+            r"(?=.*(?:cisco|business|switch))"
+            r"|\bcisco\s+business\s+220\b|\bsmall\s+business\s+220\b)"
+        ),
+        cves=("CVE-2021-34779", "CVE-2021-34780"),
+        note=(
+            "Missing length validation in LLDP packet handling: a crafted "
+            "adjacent frame can achieve CODE EXECUTION or reload the switch "
+            "(8.8, AV:A/AC:L/PR:N). Small Business 220 at or below firmware "
+            "1.2.1.2 (fixed 1.2.1.5) and Business 220 at or below 2.0.1.5 "
+            "(fixed 2.0.1.9). LLDP is ON BY DEFAULT on all LAN ports, so the "
+            "surface is exposed without anyone enabling it. The same advisory "
+            "carries four out-of-bounds-read database-corruption issues at "
+            "4.3, which are below the severity bar and deliberately not "
+            "screened here."
+        ),
+    ),
+    Family(
+        key="cisco_rv",
+        code="LLDP-034",
+        label="Cisco Small Business RV Series routers",
+        # The negative lookahead is load-bearing: the advisory explicitly names
+        # RV016, RV042, RV042G and RV082 as NOT AFFECTED. A bare RV\d{3}
+        # pattern screened an RV042, which is a wrong attribution of the same
+        # kind as screening a QNAP NAS for a switch CVE. Caught by probing the
+        # advisory's not-affected list, not just its affected list.
+        pattern=(
+            r"(?i)\bRV(?!016\b|042G?\b|082\b)\d{3}[a-z]{0,2}\b"
+            r"(?=.*(?:cisco|router|vpn))"
+        ),
+        cves=("CVE-2021-1309", "CVE-2021-1251", "CVE-2021-1308"),
+        note=(
+            "Missing length validation of LLDP packet HEADER fields across the "
+            "RV line: CVE-2021-1309 (8.8) can execute code or reload the "
+            "router; CVE-2021-1251 and CVE-2021-1308 (7.4, scope-changed) "
+            "exhaust memory or force a reload. All unauthenticated and "
+            "adjacent, no workarounds. Affects RV132W, RV134W, RV160(W), "
+            "RV260(P/W), RV320, RV325, RV340(W) and RV345(P). LLDP is on by "
+            "default on all LAN ports for RV132W, RV134W, RV320 and RV325. "
+            "RV320 and RV325 are END OF LIFE with no fixed release, so those "
+            "two are permanently exposed — kept deliberately, like the "
+            "unpatched branches in arubaguard and mikrotikwatch, to catch a "
+            "forgotten device. RV016, RV042, RV042G and RV082 are NOT "
+            "affected."
+        ),
+    ),
+    Family(
+        key="trendnet",
+        code="LLDP-031",
+        label="TRENDnet TI-series / TEG managed switches",
+        # Keyed on the AFFECTED MODEL CLUSTER, not the bare brand name. The
+        # bare brand was the first attempt and a near-miss negative caught it:
+        # it screened an unmanaged TEG-S82g, a device that has no QSS-class
+        # firmware to verify and is not in the advisory. Same reasoning as the
+        # QNAP entry below — pointing an operator at a device that cannot be
+        # affected is a wrong attribution, not a safe default.
+        pattern=r"(?i)(?:\bTI-(?:PG|RP|G)\d{3,4}[a-z]?\b|\bTEG-30102WS\b)",
+        cves=("CVE-2021-33315", "CVE-2021-33316", "CVE-2021-33317"),
+        note=(
+            "Three CVEs, and two of them are the serious ones. CVE-2021-33315 "
+            "and CVE-2021-33316 are both 9.8 CRITICAL integer underflows: the "
+            "length field of the Port ID TLV (33315) and of the Chassis ID TLV "
+            "(33316) is not validated, so a crafted frame drives a NEGATIVE "
+            "value into memcpy() — buffer overflow or invalid memory access, "
+            "unauthenticated. Their structural shape is a mandatory ID TLV "
+            "whose declared length is too small for its own subtype, which the "
+            "Chassis ID and Port ID checks (LLDP-046 / LLDP-047) already bound. "
+            "CVE-2021-33317 (7.5) is the milder sibling: a null-pointer "
+            "dereference on a frame that OMITS the Chassis ID TLV entirely, "
+            "caught by the mandatory-TLV grammar check (LLDP-042). All affect "
+            "the TI- industrial cluster and TEG-30102WS below firmware "
+            "2.0.2.S0; the two 9.8s are pinned to TI-PG1284i hardware v2.0R."
+        ),
+    ),
+    Family(
+        key="qnap",
+        code="LLDP-032",
+        label="QNAP QSW-M managed switches (QSS)",
+        # Keyed on the managed-switch model line, NOT on the bare word QNAP:
+        # the CVE is in QSS on the QSW-M switches, and a QNAP NAS advertising
+        # its brand must not be screened for a switch firmware flaw.
+        # The trailing [a-z]? is load-bearing: the advisory's QSW-M2108R-2C
+        # variant puts a letter straight after the digits, where a bare \b
+        # does not match (both sides are word characters). Caught by walking
+        # the advisory's full model list rather than one fixture's model.
+        pattern=r"(?i)\bqsw-m\d{4}[a-z]?\b",
+        cves=("CVE-2021-28801",),
+        note=(
+            "Out-of-bounds read (CWE-125) in QSS, QNAP's switch firmware: "
+            "unauthenticated information disclosure (QSA-21-23). Affects "
+            "QSW-M2108-2C / -2S / -R-2C below QSS 1.0.2 build 20210122. "
+            "Structurally the twin of the SonicWall out-of-bounds reads, and "
+            "already caught by the Class-A bounds checks. LLDP-specificity "
+            "rests on the LCDPwn attribution rather than the vendor advisory, "
+            "which names only QSS; QNAP switches speak LLDP, not CDP."
         ),
     ),
     Family(
@@ -372,6 +499,7 @@ class Config:
     max_mgmt_addr_strlen: int = SPEC_MAX_MGMT_ADDR_STRLEN
     max_mgmt_oid_len: int = SPEC_MAX_MGMT_OID_LEN
     max_med_inventory: int = SPEC_MED_INVENTORY_MAX
+    max_org_specific: int = SPEC_MAX_ORG_SPECIFIC
 
     # Class C
     flood_window: float = 10.0
@@ -402,6 +530,7 @@ class Config:
             "max_mgmt_addr_strlen": self.max_mgmt_addr_strlen,
             "max_mgmt_oid_len": self.max_mgmt_oid_len,
             "max_med_inventory": self.max_med_inventory,
+            "max_org_specific": self.max_org_specific,
             "flood_window": self.flood_window,
             "flood_threshold": self.flood_threshold,
             "flood_distinct_src": self.flood_distinct_src,
@@ -439,6 +568,7 @@ class Config:
             "max_mgmt_addr_strlen",
             "max_mgmt_oid_len",
             "max_med_inventory",
+            "max_org_specific",
             "flood_threshold",
             "flood_distinct_src",
             "neigh_max",
@@ -1317,6 +1447,7 @@ class Engine:
                     % (off, sub, len(body), self.cfg.max_med_inventory),
                     ts=now, tlv_offset=off, oui=oui.hex("-"), subtype=sub,
                 )
+            return
         if oui == OUI_MED and sub == 3:
             # Location Identification: 1 location-data-format octet + body.
             if tlv.length < 5:
@@ -1327,6 +1458,45 @@ class Engine:
                     "length %d; the minimum is 5." % (off, tlv.length),
                     ts=now, tlv_offset=off, oui=oui.hex("-"), subtype=sub,
                 )
+                return
+
+        # GENERAL CEILING — the CVE-2026-22627 surface class.
+        #
+        # Everything above is keyed on a RECOGNISED (OUI, subtype) pair. An
+        # unrecognised OUI, or a known OUI with an unrecognised subtype, hit
+        # none of those rules and so had NO upper length bound at all: a
+        # 500-octet org-specific TLV passed silently. Measured, not assumed —
+        # it is what the FortiSwitch OUI-field overflow (CVE-2026-22627,
+        # FG-IR-26-086, CWE-120, unauthenticated adjacent RCE) needs, and the
+        # same span any fixed-size copy out of this TLV would need.
+        #
+        # An unknown OUI is NOT itself a finding: any organisation may define
+        # its own TLVs, so the OUI value carries no verdict. Only the LENGTH
+        # does. The OUI field proper is positionally fixed at 3 octets with no
+        # length prefix on the wire, so there is no separate OUI length to
+        # bound — which is why this is a whole-TLV ceiling rather than a
+        # field check.
+        if tlv.length > self.cfg.max_org_specific:
+            self.finding(
+                "LLDP-051",
+                fr.src,
+                "Organizationally Specific TLV at offset %d (OUI %s, subtype %d) "
+                "declares length %d, over the %d-octet ceiling. No standard "
+                "org-specific TLV exceeds 39 octets; the 9-bit length field "
+                "permits 511, and that span is what a fixed-size copy out of "
+                "this TLV overflows — the structural class of CVE-2026-22627 "
+                "(FortiSwitch, unauthenticated adjacent RCE via the LLDP OUI "
+                "field). Structural shape, not a pinned per-field trigger."
+                % (
+                    off,
+                    OUI_NAMES.get(oui, oui.hex("-")),
+                    sub,
+                    tlv.length,
+                    self.cfg.max_org_specific,
+                ),
+                ts=now, tlv_offset=off, oui=oui.hex("-"), subtype=sub,
+                tlv_length=tlv.length, limit=self.cfg.max_org_specific,
+            )
 
     def _check_grammar(self, fr: Frame, walk: Walk, types_seen: List[int], now: float) -> None:
         """First three TLVs MUST be Chassis ID, Port ID, TTL, in that order."""
