@@ -2389,7 +2389,7 @@ is where the threat sits: one crafted, unauthenticated frame from a host on the 
 crashes or reloads the neighbour's LLDP parser. This is separate from
 [Switch Discovery](#switch-discovery-lldp--cdpv1v2--edp--fdp), which reads neighbours from `lldpctl`.
 
-**CVE backbone: 20 LLDP parser CVEs across eight implementation families.**
+**CVE backbone: 30 LLDP parser CVEs across thirteen implementation families.** The one with real reach is **CVE-2026-22627**, an oversized Organizationally Specific / OUI TLV giving unauthenticated adjacent **code execution** on FortiSwitchAX; everything else is a crash, reload or leak.
 
 | Family | CVEs |
 |--------|------|
@@ -2398,14 +2398,18 @@ crashes or reloads the neighbour's LLDP parser. This is separate from
 | Juniper `l2cpd` | **CVE-2018-0007**, **CVE-2020-1641**, **CVE-2021-0277**, **CVE-2023-36849**, **CVE-2024-21618** |
 | Open vSwitch | **CVE-2020-27827**, **CVE-2022-4337**, **CVE-2022-4338** (Auto Attach TLV, 9.8) |
 | HPE Aruba AOS-CX / Instant (and Siemens SCALANCE W1750D) | **CVE-2020-7121**, **CVE-2021-34618** |
-| Fortinet FortiSwitch `lldpmedd` | **CVE-2021-26111** |
+| Fortinet FortiSwitch `lldpmedd` / FortiSwitchAX | **CVE-2021-26111**, **CVE-2026-22627** (OUI-field overflow, adjacent **RCE**, 8.8) |
+| Cisco SB220 / Business 220 | **CVE-2021-34779**, **CVE-2021-34780** (missing length validation, adjacent code execution, 8.8) |
+| Cisco RV Series routers | **CVE-2021-1309**, **CVE-2021-1251**, **CVE-2021-1308** |
+| TRENDnet TI-PG1284i / TI-series | **CVE-2021-33315** (Port ID underflow), **CVE-2021-33316** (Chassis ID underflow), **CVE-2021-33317** (missing Chassis ID NULL deref) |
+| QNAP QSW-M switches (QSS) | **CVE-2021-28801** |
 | Palo Alto PAN-OS | **CVE-2025-0116** |
 | SonicWall SWS | **CVE-2021-20024** |
 
 Juniper's `l2cpd` also drives STP/RSTP/MSTP, MVRP, ERP and LACP, so an LLDP crash there
 reinitialises spanning tree and flaps aggregation.
 
-There are 26 finding codes (`LLDP-nnn`) in three classes. There is **no disclosure-posture
+There are 30 finding codes (`LLDP-nnn`) in three classes. There is **no disclosure-posture
 class**: a neighbour advertising its name and version over LLDP is how the protocol works.
 
 - **Class A: structural (13 codes, vendor-agnostic, no baseline).** This is where detection
@@ -2426,8 +2430,9 @@ class**: a neighbour advertising its name and version over LLDP is how the proto
   - `LLDP-054`: no End TLV.
 
   All-zero Ethernet padding and a trailing 4-octet FCS stay silent.
-- **Class B: screening (11 codes, `LLDP-020`..`030`).** The cleartext System Name /
-  Description is matched against the family table above. These are **notes, never a
+- **Class B: screening (15 codes, `LLDP-020`..`034`).** The cleartext System Name /
+  Description is matched against the family table above. `LLDP-031`..`034` add the TRENDnet,
+  QNAP QSS, Cisco SB220 and Cisco RV families. These are **notes, never a
   vulnerability verdict**: an advertised version string cannot show patch state, because
   vendors backport fixes without changing it.
 - **Class C: abuse.** `LLDP-048` trips on a frame-rate or distinct-source flood. It is the
@@ -2460,15 +2465,18 @@ deliberately not named here: CVE-2023-41910 (lldpd's **CDP** decoder) and CVE-20
   `GET/POST /api/net/lldp-baseline` `{action: trust|reset}` · binary: `tcpdump`
 - CLI: `python3 network_diagnostics.py lldp-watch [--iface I] [--seconds N] [--pcap FILE]
   [--json]` (`--pcap` replays a file; the baseline is not used or saved)
-- Self-test: suite `lldp` (37 scenarios). It covers every malformed fixture per code, the
+- Self-test: suite `lldp` (41 scenarios). It covers every malformed fixture per code, the
   benign FP set, screening, flood, the forged-neighbour baseline, dual-stack, and the
-  module's own **1767-check conformance** and **262-check scapy cross-check** tiers, run
+  module's own **2117-check conformance** and **285-check scapy cross-check** tiers, run
   out-of-process.
 - Vendored engine (Solarflere): `python/lldpwatch.py`, `lldpwatch_frames.py`,
-  `lldpwatch_conformance.py`, `lldpwatch_scapy_xcheck.py`. Validated live by replaying the
-  conformance attack pcap with `tcpreplay` over a veth pair in a sealed netns: 23 codes
-  fire. `LLDP-025` / `026` need an operator version floor, and `LLDP-049` needs a trusted
-  baseline. Real switch hardware is not yet validated.
+  `lldpwatch_conformance.py`, `lldpwatch_scapy_xcheck.py`. Validated live by replaying
+  malformed and vendor frames with `tcpreplay` over a veth pair in a sealed netns: the
+  structural, flood and screening codes fire through the capture path, the four new
+  `LLDP-031`..`034` families included, and CVE-2026-22627 is caught both structurally (the
+  oversized OUI TLV) and as a FortiSwitchAX screen. `LLDP-025` / `026` need an operator
+  version floor, and `LLDP-049` needs a trusted baseline. Real switch hardware is not yet
+  validated.
 
 ### VTP Watch
 A **passive** bomb / rogue-server scanner for Cisco's **VLAN Trunking Protocol**

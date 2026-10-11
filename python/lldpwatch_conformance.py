@@ -593,6 +593,91 @@ def s_thresholds(c: Checker) -> None:
         got = codes_for(raw)
         c.eq("LLDP-052" not in got, want, "TLV type %d reserved-range boundary" % t)
 
+    c.sect("org-specific-ceiling")
+    # THE CVE-2026-22627 SURFACE. Measured gap, not hypothetical: before the
+    # general ceiling existed, every org-specific rule was keyed on a
+    # RECOGNISED (OUI, subtype) pair, so an unknown OUI - or a known OUI with
+    # an unknown subtype - had NO upper length bound and a 500-octet TLV
+    # passed silently.
+    lim = W.Config().max_org_specific
+    c.eq(lim, 128, "the documented org-specific ceiling is the real default")
+    for oui, sub, label in (
+        (b"\x00\xde\xad", 9, "unknown OUI"),
+        (F.OUI_MED, 99, "LLDP-MED OUI, unknown subtype"),
+        (F.OUI_8021, 77, "802.1 OUI, unknown subtype"),
+        (F.OUI_8023, 50, "802.3 OUI, unknown subtype"),
+    ):
+        # at the ceiling: silent. one octet over: fires. Both directions, so
+        # the rule cannot drift into either an off-by-one or a no-op.
+        at = F.frame(F.mandatory()
+                     + [F.t_org(oui, sub, b"X" * (lim - 4)), F.t_end()], pad=False)
+        over = F.frame(F.mandatory()
+                       + [F.t_org(oui, sub, b"X" * (lim - 3)), F.t_end()], pad=False)
+        c.eq(codes_for(at), [], "%s at the %d-octet ceiling is silent" % (label, lim))
+        c.eq(codes_for(over), ["LLDP-051"], "%s one octet over fires" % label)
+        huge = F.frame(F.mandatory()
+                       + [F.t_org(oui, sub, b"X" * 440), F.t_end()], pad=False)
+        c.eq(codes_for(huge), ["LLDP-051"], "%s at 444 octets fires" % label)
+
+    # An unknown OUI is NOT itself a finding - any organisation may define its
+    # own TLVs. Only the length carries a verdict.
+    for oui in (b"\x00\xde\xad", b"\xaa\xbb\xcc", b"\x00\x01\x42"):
+        small = F.frame(F.mandatory()
+                        + [F.t_org(oui, 1, b"X" * 20), F.t_end()], pad=False)
+        c.eq(codes_for(small), [],
+             "a small TLV under unknown OUI %s is silent" % oui.hex("-"))
+
+    # Real standard org-specific TLVs must all stay silent - these are the
+    # largest shapes the standards define.
+    real = [
+        ("802.1 VLAN Name (39, the largest standard org TLV)",
+         F.t_org(F.OUI_8021, 3, b"\x00\x64\x20" + b"N" * 32)),
+        ("802.1 Port VLAN ID", F.t_org(F.OUI_8021, 1, b"\x00\x64")),
+        ("802.3 Max Frame Size", F.t_org(F.OUI_8023, 4, b"\x05\xf2")),
+        ("MED inventory at its own 32-octet ceiling",
+         F.t_org(F.OUI_MED, 5, b"X" * 32)),
+    ]
+    for label, tlv in real:
+        raw = F.frame(F.mandatory() + [tlv, F.t_end()], pad=False)
+        c.eq(codes_for(raw), [], "standard org TLV is silent: %s" % label)
+
+    # the tighter MED inventory ceiling must still win where it applies
+    med_over = F.frame(F.mandatory()
+                       + [F.t_org(F.OUI_MED, 5, b"X" * 40), F.t_end()], pad=False)
+    rec = first(c, W.Engine().handle_frame(med_over), "MED inventory", "LLDP-051")
+    c.ok("inventory" in rec.get("detail", ""),
+         "the tighter MED inventory ceiling wins over the general one")
+    c.eq(rec.get("subtype"), 5, "MED inventory finding reports its subtype")
+
+    # PRECEDENCE, with a fixture that can actually tell the two rules apart.
+    # The existing MED fixture is 64 octets: over the 32-octet inventory
+    # ceiling but UNDER the 128-octet general one, so dropping the
+    # inventory rule's early return changed nothing and the mutation
+    # escaped every tier. A TLV over BOTH ceilings is the only traffic that
+    # distinguishes "inventory rule wins" from "both rules fire" (LESSON Z).
+    both = F.frame(F.mandatory()
+                   + [F.t_org(F.OUI_MED, 5, b"X" * 200), F.t_end()], pad=False)
+    recs = W.Engine().handle_frame(both)
+    c.eq(len(recs), 1,
+         "a MED inventory TLV over BOTH ceilings fires exactly ONCE, not twice")
+    c.eq([r["code"] for r in recs], ["LLDP-051"], "and it is LLDP-051")
+    if recs:
+        c.ok("inventory" in recs[0]["detail"],
+             "the more specific inventory rule is the one that reports")
+        c.ok("ceiling" in recs[0]["detail"], "it names a ceiling")
+        c.ok(str(W.Config().max_med_inventory) in recs[0]["detail"],
+             "it cites the 32-octet inventory ceiling, not the 128-octet one")
+
+    # and the general ceiling is configurable in both directions
+    tight = W.Config(max_org_specific=16)
+    c.eq(codes_for(F.frame(F.mandatory()
+                           + [F.t_org(b"\x00\xde\xad", 1, b"X" * 20), F.t_end()],
+                           pad=False), tight),
+         ["LLDP-051"], "a tightened org ceiling fires")
+    loose = W.Config(max_org_specific=500)
+    c.eq(codes_for(F.mal_org_oversized_unknown_oui(), loose), [],
+         "a loosened org ceiling silences the oversized fixture")
+
     c.sect("threshold-config")
     tight = W.Config(max_system_desc=16)
     raw = F.frame(F.mandatory() + [F.t_sys_desc(b"X" * 17), F.t_end()])
@@ -707,6 +792,16 @@ def s_screening(c: Checker) -> None:
         b"Brocade ICX7250-24 , ICX Routing, Version 08.0.95",
         b"Aruba JL256A 2930F-48G-PoE+-4SFP+ Switch, revision WC.16.10.0012",
         b"Aruba 7210 Mobility Controller, ArubaOS 8.10.0.4",
+        # QNAP keys on the SWITCH model line, not the brand: a NAS must not be
+        # screened for a switch-firmware CVE.
+        b"QNAP TS-873A NAS, QTS 5.0.1",
+        b"TRENDnet TEG-S82g unmanaged switch",
+        # Other Cisco Small Business lines are NOT in the SB220 advisory.
+        b"Cisco Small Business SG350-28 Managed Switch",
+        b"CBS350-24T-4G Cisco Business Managed Switch",
+        # and the RV models the advisory names as NOT affected
+        b"Cisco RV042G Dual Gigabit WAN VPN Router",
+        b"Cisco RV082 Dual WAN VPN Router",
         b"",
     ]
     for d in neutral:
@@ -720,6 +815,158 @@ def s_screening(c: Checker) -> None:
         "no disclosure-posture class exists (by directive)",
     )
 
+    c.sect("batch-cve-coverage")
+
+    def fam_of(key: str) -> Any:
+        """Family by key, or a stub that fails every assertion.
+
+        Suite LESSON L again: indexing [0] on a filtered family list turns a
+        deleted family into a harness CRASH ("module broken") where it should
+        be a detection FAILURE, losing every later check in the section. Found
+        by biting a family deletion.
+        """
+        hit = [f for f in W.BUILTIN_FAMILIES if f.key == key]
+        if hit:
+            return hit[0]
+        c.ok(False, "family %r is missing from the screening table" % key)
+        return W.Family(key=key, code="?", label="?", pattern="(?!)",
+                        cves=(), note="")
+
+    allc = {cv for fam in W.BUILTIN_FAMILIES for cv in fam.cves}
+    for cve, famkey in (
+        ("CVE-2026-22627", "fortiswitch"),
+        ("CVE-2021-33317", "trendnet"),
+        ("CVE-2021-28801", "qnap"),
+    ):
+        c.ok(cve in allc, "%s is carried by the screening table" % cve)
+        fam = [f for f in W.BUILTIN_FAMILIES if f.key == famkey]
+        c.ok(bool(fam), "family %r exists" % famkey)
+        if fam:
+            c.ok(cve in fam[0].cves, "%s sits in the %s family" % (cve, famkey))
+    fs = fam_of("fortiswitch")
+    c.ok("REMOTE CODE EXECUTION" in fs.note,
+         "the FortiSwitch note states the RCE weight, not just the old leak")
+    c.ok("OUI field" in fs.note, "the FortiSwitch note names the OUI-field trigger")
+    c.ok("cdpwatch" in fs.note,
+         "the note routes the CDP half of CVE-2021-26111 to cdpwatch")
+    c.ok("EDP" in fs.note, "the note records EDP as an uncovered plane")
+    tn = fam_of("trendnet")
+    c.ok("Chassis ID" in tn.note, "the TRENDnet note names the missing-TLV trigger")
+    c.ok("LLDP-042" in tn.note,
+         "the TRENDnet note points at the rule that already catches it")
+    qn = fam_of("qnap")
+    c.ok("LCDPwn" in qn.note,
+         "the QNAP note records that LLDP-specificity rests on LCDPwn attribution")
+    c.eq(qn.pattern.count("qnap"), 0,
+         "the QNAP pattern does NOT key on the bare brand name")
+
+    c.sect("affected-model-coverage")
+    # Every model the TRENDnet advisory names must screen, and the near-miss
+    # unmanaged model must not. A pattern keyed on a model cluster has to be
+    # checked against the whole cluster or it silently covers only the one
+    # model its fixture happens to use (suite LESSON AF).
+    for model in ("TI-PG1284i", "TI-G102i", "TI-G160i", "TI-G642i",
+                  "TI-PG102i", "TI-PG541i", "TI-RP262i", "TEG-30102WS"):
+        raw = F.frame(
+            F.mandatory()
+            + [F.t_sys_desc(b"TRENDnet " + model.encode() + b" switch, fw 1.0.4.S0"),
+               F.t_end()],
+            pad=False,
+        )
+        c.eq(codes_for(raw), ["LLDP-031"], "TRENDnet %s screens" % model)
+    for model in ("TEG-S82g", "TPE-TG80g", "TEG-S50g"):
+        raw = F.frame(
+            F.mandatory()
+            + [F.t_sys_desc(b"TRENDnet " + model.encode() + b" unmanaged switch"),
+               F.t_end()],
+            pad=False,
+        )
+        c.eq(codes_for(raw), [],
+             "unaffected TRENDnet %s does NOT screen" % model)
+    # Cisco RV Series: the advisory's affected list AND its explicit
+    # not-affected list. Probing only the affected list let an RV042 screen —
+    # the advisory names it as not affected, so that was a wrong attribution.
+    for model in ("RV132W", "RV134W", "RV160", "RV160W", "RV260", "RV260P",
+                  "RV260W", "RV320", "RV325", "RV340", "RV340W", "RV345",
+                  "RV345P"):
+        raw = F.frame(
+            F.mandatory()
+            + [F.t_sys_desc(b"Cisco " + model.encode() + b" VPN Router, 1.0.03.20"),
+               F.t_end()],
+            pad=False,
+        )
+        c.eq(codes_for(raw), ["LLDP-034"], "Cisco %s screens" % model)
+    for model in ("RV016", "RV042", "RV042G", "RV082"):
+        raw = F.frame(
+            F.mandatory()
+            + [F.t_sys_desc(b"Cisco " + model.encode() + b" Dual WAN VPN Router"),
+               F.t_end()],
+            pad=False,
+        )
+        c.eq(codes_for(raw), [],
+             "Cisco %s is named NOT AFFECTED and does not screen" % model)
+    for desc in (b"Cisco SB220-24P-2SFP Smart Plus Switch, firmware 1.2.1.2",
+                 b"Cisco Business 220 Series Smart Switch, 2.0.1.5",
+                 b"CBS220-24T-4G Smart Switch"):
+        raw = F.frame(F.mandatory() + [F.t_sys_desc(desc), F.t_end()], pad=False)
+        c.eq(codes_for(raw), ["LLDP-033"], "SB220-class screens: %r" % desc[:34])
+    for desc in (b"Cisco Small Business SG250-26 Smart Switch",
+                 b"Cisco Small Business SG350-28 Managed Switch",
+                 b"CBS350-24T-4G Cisco Business Managed Switch"):
+        raw = F.frame(F.mandatory() + [F.t_sys_desc(desc), F.t_end()], pad=False)
+        c.eq(codes_for(raw), [],
+             "other Small Business line does NOT screen: %r" % desc[:38])
+
+    for model in ("QSW-M2108-2C", "QSW-M2108-2S", "QSW-M2108R-2C"):
+        raw = F.frame(
+            F.mandatory()
+            + [F.t_sys_desc(model.encode() + b" Managed Switch, QSS 1.0.1"), F.t_end()],
+            pad=False,
+        )
+        c.eq(codes_for(raw), ["LLDP-032"], "QNAP %s screens" % model)
+    for desc in (b"QNAP TS-873A NAS, QTS 5.0.1", b"QNAP TVS-h1288X, QuTS hero"):
+        raw = F.frame(F.mandatory() + [F.t_sys_desc(desc), F.t_end()], pad=False)
+        c.eq(codes_for(raw), [], "QNAP NAS does NOT screen: %r" % desc[:20])
+
+    c.sect("cisco-line-discrimination")
+    # The three Cisco families must not bleed into each other. A genuine
+    # Catalyst advert SHOULD screen as LLDP-020 (Catalyst runs IOS/IOS-XE);
+    # a Cisco Business CBS350 should screen as nothing, since it is in no
+    # advisory here. A fixture that said "Catalyst CBS350" conflated the two
+    # lines and failed — correctly.
+    for desc, want in (
+        (b"Cisco IOS-XE Catalyst 9300, Version 17.6.3", ["LLDP-020"]),
+        (b"Cisco NX-OS(tm) n9000, Version 9.3(5)", ["LLDP-020"]),
+        (b"Cisco SB220-24P-2SFP Smart Plus Switch, firmware 1.2.1.2", ["LLDP-033"]),
+        (b"Cisco RV340 Dual WAN Gigabit VPN Router, 1.0.03.20", ["LLDP-034"]),
+        (b"CBS350-24T-4G Cisco Business Managed Switch", []),
+        (b"Cisco Small Business SG250-26 Smart Switch", []),
+    ):
+        raw = F.frame(F.mandatory() + [F.t_sys_desc(desc), F.t_end()], pad=False)
+        c.eq(codes_for(raw), want, "Cisco line discrimination: %r" % desc[:40])
+
+    c.sect("cisco-smb-batch-d")
+    sb = fam_of("cisco_sb220")
+    rv = fam_of("cisco_rv")
+    c.ok("CODE EXECUTION" in sb.note, "the SB220 note states the code-execution weight")
+    c.ok("ON BY DEFAULT" in sb.note, "the SB220 note records LLDP being on by default")
+    c.ok("4.3" in sb.note,
+         "the SB220 note records that the four 4.3 siblings are below the bar")
+    for cve in ("CVE-2021-34775", "CVE-2021-34776", "CVE-2021-34777",
+                "CVE-2021-34778"):
+        c.ok(cve not in sb.cves,
+             "%s (4.3, below the bar) is NOT screened" % cve)
+    c.ok("END OF LIFE" in rv.note, "the RV note records the EOL models")
+    c.ok("NOT" in rv.note and "RV042" in rv.note,
+         "the RV note names the models the advisory excludes")
+    c.eq(sb.code, "LLDP-033", "SB220 carries its own code, separate from LLDP-020")
+    c.eq(rv.code, "LLDP-034", "RV carries its own code")
+    cisco = fam_of("cisco")
+    c.ok(not (set(sb.cves) & set(cisco.cves)),
+         "SB220 CVEs do not duplicate the IOS/NX-OS family's")
+    c.ok(not (set(rv.cves) & set(cisco.cves)),
+         "RV CVEs do not duplicate the IOS/NX-OS family's")
+
     c.sect("screening-near-miss")
     # Each of these is a product from a vendor that IS in the table, but a
     # model the CVE does not cover. They must stay silent, which is what
@@ -729,6 +976,10 @@ def s_screening(c: Checker) -> None:
         (b"Cisco Small Business SG250-26 Smart Switch", "cisco"),
         (b"Aruba JL256A 2930F-48G-PoE+-4SFP+ Switch, revision WC.16.10", "aruba"),
         (b"Aruba 7210 Mobility Controller, ArubaOS 8.10.0.4", "aruba"),
+        (b"QNAP TS-873A NAS, QTS 5.0.1", "qnap"),
+        (b"TRENDnet TEG-S82g unmanaged switch", "trendnet"),
+        (b"Cisco Small Business SG250-26 Smart Switch", "cisco_sb220"),
+        (b"Cisco RV042G Dual Gigabit WAN VPN Router", "cisco_rv"),
     ):
         raw = F.frame(F.mandatory() + [F.t_sys_desc(desc), F.t_end()], pad=False)
         got = codes_for(raw)
@@ -1069,10 +1320,10 @@ def s_registry(c: Checker) -> None:
     groups = {}
     for _, (_, _, g) in W.FINDINGS.items():
         groups[g] = groups.get(g, 0) + 1
-    c.eq(groups.get("screening"), 11, "11 screening codes")
+    c.eq(groups.get("screening"), 15, "15 screening codes")
     c.eq(groups.get("structural"), 13, "13 structural codes")
     c.eq(groups.get("abuse"), 2, "2 abuse codes")
-    c.eq(len(W.FINDINGS), 26, "26 codes in total")
+    c.eq(len(W.FINDINGS), 30, "30 codes in total")
     c.ok("posture" not in groups, "no posture/disclosure group exists")
 
     c.sect("coverage")
