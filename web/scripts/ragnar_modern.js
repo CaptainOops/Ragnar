@@ -10943,7 +10943,7 @@ const _CDP_VERDICT_STYLE = {
     'cdp-enabled': ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ CDP is enabled here — it leaks IOS version / mgmt IP / native VLAN in clear'],
     spoof:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 Rogue CDP speaker — spoofed neighbour (possible fake IP phone / VoIP-VLAN-hop)'],
     flood:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 CDP flood — neighbour-table / CPU exhaustion DoS (Yersinia)'],
-    cdpwn:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 CDPwn exploit shape — malformed CDP TLV matching an Armis CDPwn CVE (CVE-2020-3110/3111/3118/3119/3120)'],
+    cdpwn:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 CDPwn / LCDPwn exploit shape — malformed CDP TLV matching a CDPwn-family CVE (Armis CDPwn + LCDPwn cross-vendor set)'],
     'trailing-data': ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Trailing data after the declared length — smuggled bytes / Etherleak (CVE-2003-0001)'],
     unknown:       ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
 };

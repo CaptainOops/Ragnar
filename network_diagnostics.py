@@ -15585,31 +15585,65 @@ _CDP_FMT_LENGTH = "hlLqjztZ"
 _CDP_FMT_WRITE = "nN"          # writes through a pointer -> CRITICAL
 _CDP_FMT_READ = "diouxXeEfFgGaAcspm"
 _CDP_FMT_READ_MIN = 2          # a lone %-x is noise; a run is a leak probe
+# Platform/version/device-id screening families — the original Armis CDPwn set
+# plus its LCDPwn (Qian Chen / Qi'anxin) successor and the LCDPwn cross-vendor
+# arm (FortiSwitch, lldpd, Cisco ATA/Unified CM). Each match attaches the CVEs to
+# verify that device against: a version banner can't prove patch state, so these
+# are screening AIDS, not per-CVE detection. Plain IOS/IOS-XE is deliberately
+# ABSENT — Cisco's advisory says those platforms are not CDPwn-affected, so
+# matching them would be a false positive. An ATA is NOT an IP Phone 7800/8800,
+# so ip_phone carries an explicit negative lookahead excluding the ATA banner (it
+# would otherwise double-match a phone-style SEP device-id) — the same
+# not-affected-list technique LLDP Watch needed for the Cisco RV042.
 _CDPWN_FAMILIES = [
-    (re.compile(r"IP\s*Phone|SIP\d{2,}|SEP[0-9A-Fa-f]{12}"), 'CDP-020',
-     ['CVE-2020-3111'],
-     "Cisco IP Phone — verify firmware against CVE-2020-3111 (PortID stack overflow)"),
+    (re.compile(r"\bATA\s*19[0-9]\b|Analog\s*Telephone\s*Adaptor"), 'CDP-029',
+     ['CVE-2022-20688', 'CVE-2022-20689', 'CVE-2022-20690', 'CVE-2022-20691',
+      'CVE-2022-20766'],
+     "Cisco ATA 190/191/192 — verify against CVE-2022-20689/20690 (8.8 CDP length "
+     "validation), CVE-2022-20691, CVE-2022-20688, CVE-2022-20766"),
+    (re.compile(r"^(?!.*(?:\bATA\s*19[0-9]\b|Analog\s*Telephone))"
+                r".*(?:IP\s*Phone|SIP\d{2,}|SEP[0-9A-Fa-f]{12})", re.S), 'CDP-020',
+     ['CVE-2020-3111', 'CVE-2021-1379', 'CVE-2022-20968'],
+     "Cisco IP Phone — verify firmware against CVE-2020-3111 (PortID stack overflow), "
+     "CVE-2021-1379 (68xx/78xx/88xx) + CVE-2022-20968 (7800/8800 <=14.2 stack overflow)"),
     (re.compile(r"IP\s*Camera|Video\s*Surveillance|CIVS-IPC"), 'CDP-021',
-     ['CVE-2020-3110'],
-     "Cisco Video Surveillance 8000 IP Camera — verify against CVE-2020-3110 (DeviceID heap overflow)"),
+     ['CVE-2020-3110', 'CVE-2020-3505', 'CVE-2020-3506', 'CVE-2020-3507',
+      'CVE-2020-3543', 'CVE-2020-3544', 'CVE-2021-1131', 'CVE-2021-1521',
+      'CVE-2021-1563', 'CVE-2021-1564'],
+     "Cisco Video Surveillance 7000/8000 IP Camera — verify against CVE-2020-3110 "
+     "(DeviceID heap overflow) + the LCDPwn set (CVE-2020-3505/3506/3507/3543/3544, "
+     "CVE-2021-1131/1521 on 8000; CVE-2021-1563/1564 on 7000)"),
     (re.compile(r"IOS[\s-]?XR"), 'CDP-022', ['CVE-2020-3118', 'CVE-2020-3120'],
      "Cisco IOS XR — verify against CVE-2020-3118 (format string) + CVE-2020-3120 (Addresses DoS)"),
-    (re.compile(r"NX[\s-]?OS|Nexus"), 'CDP-023', ['CVE-2020-3119', 'CVE-2020-3120'],
-     "Cisco NX-OS — verify against CVE-2020-3119 (Power Request overflow) + CVE-2020-3120 (Addresses DoS)"),
+    (re.compile(r"NX[\s-]?OS|Nexus"), 'CDP-023',
+     ['CVE-2020-3119', 'CVE-2020-3120', 'CVE-2022-20824'],
+     "Cisco NX-OS — verify against CVE-2020-3119 (Power Request overflow), CVE-2020-3120 "
+     "(Addresses DoS) + CVE-2022-20824 (8.8 CDP code execution)"),
     (re.compile(r"FXOS|Firepower\s*(4100|9300)|UCS\s*6\d{3}|Fabric\s*Interconnect"),
-     'CDP-024', ['CVE-2020-3120'],
-     "Cisco FXOS / Firepower 4100/9300 / UCS FI — verify against CVE-2020-3120 (Addresses DoS)"),
+     'CDP-024', ['CVE-2020-3120', 'CVE-2022-20824'],
+     "Cisco FXOS / Firepower 4100/9300 / UCS FI — verify against CVE-2020-3120 (Addresses "
+     "DoS) + CVE-2022-20824 (8.8 CDP code execution)"),
+    # --- LCDPwn cross-vendor / non-switch CDP speakers ---
+    (re.compile(r"FortiSwitch"), 'CDP-027', ['CVE-2021-26111'],
+     "FortiSwitch — verify against CVE-2021-26111 (lldpmedd memory exhaustion via crafted "
+     "LLDP/CDP/EDP); fixed in 6.4.7 / 6.2.7"),
+    (re.compile(r"\blldpd\b"), 'CDP-028', ['CVE-2023-41910'],
+     "lldpd — verify against CVE-2023-41910 (9.8 out-of-bounds read in cdp_decode via the "
+     "CDP Addresses TLV, the CDP-054 shape); fixed in 1.0.17"),
+    (re.compile(r"Unified\s*(Communications\s*Manager|CM)\b|\bCUCM\b"), 'CDP-030',
+     ['CVE-2022-20804'],
+     "Cisco Unified CM / CM SME — verify against CVE-2022-20804 (CDP DoS); screened on the "
+     "CDP plane, not the voice plane"),
 ]
-# Cisco's advisory says plain IOS / IOS-XE routers+switches are NOT CDPwn-affected,
-# so those platforms are deliberately absent from the family table (false-positive
-# avoidance).
 _CDPWN_SEV = {'CDP-020': 'high', 'CDP-021': 'high', 'CDP-022': 'high',
-              'CDP-023': 'high', 'CDP-024': 'medium', 'CDP-040': 'critical',
-              'CDP-041': 'critical', 'CDP-042': 'critical', 'CDP-043': 'critical',
-              'CDP-044': 'high', 'CDP-045': 'critical', 'CDP-046': 'critical',
-              'CDP-047': 'high', 'CDP-050': 'low'}
+              'CDP-023': 'high', 'CDP-024': 'medium', 'CDP-027': 'medium',
+              'CDP-028': 'high', 'CDP-029': 'high', 'CDP-030': 'medium',
+              'CDP-040': 'critical', 'CDP-041': 'critical', 'CDP-042': 'critical',
+              'CDP-043': 'critical', 'CDP-044': 'high', 'CDP-045': 'critical',
+              'CDP-046': 'critical', 'CDP-047': 'high', 'CDP-050': 'low',
+              'CDP-053': 'high', 'CDP-054': 'critical'}
 _CDPWN_ATTACK_CODES = ('CDP-040', 'CDP-041', 'CDP-042', 'CDP-043', 'CDP-044',
-                       'CDP-045', 'CDP-046', 'CDP-047')
+                       'CDP-045', 'CDP-046', 'CDP-047', 'CDP-053', 'CDP-054')
 
 
 def _cdp_scan_format_specifiers(s):
@@ -15638,11 +15672,91 @@ def _cdp_scan_format_specifiers(s):
     return out
 
 
+# Address-record protocol types inside a CDP Addresses / Mgmt-Addr TLV. Each
+# record is proto_type(1) proto_len(1) proto(proto_len) addr_len(2) addr(addr_len).
+# LCDPwn abused two shapes the outer-TLV bounds check cannot see:
+#   * a proto_type that disagrees with proto_len — a victim switches on the type
+#     to size the protocol field but copies proto_len bytes, so a type=NLPID
+#     (requires 1) carrying proto_len 255 walks off the record -> CDP-053.
+#   * a declared count / inner length that disagrees with the bytes present —
+#     allocate for the declared size, copy the other one -> CDP-054, the class of
+#     CVE-2023-41910 (lldpd cdp_decode Addresses-TLV out-of-bounds read).
+# Neither is reachable by checking the outer TLV length alone, which is all this
+# module did before (it read the 4-byte count and stopped).
+_CDP_PROTO_TYPE_LEN = {1: 1, 2: 8}        # 1=NLPID (1B), 2=802.2/SNAP (8B)
+_CDP_PROTO_ADDR_LEN = {0xCC: 4}           # NLPID 0xCC = IPv4 -> 4-byte address
+_CDP_SNAP_IPV6_SUFFIX = b'\x86\xdd'       # 802.2/SNAP ...86DD = IPv6 -> 16-byte address
+
+
+def _cdp_walk_address_records(r, value, count):
+    """Walk the individual records inside a CDP Addresses/Mgmt-Addr TLV value,
+    recording protocol_type/length mismatches (CDP-053) and allocation/copy size
+    discrepancies (CDP-054). value is the full TLV value (its first 4 bytes are
+    the record count). Never raises."""
+    body = value[4:]
+    pos = seen = 0
+    while pos < len(body):
+        if pos + 2 > len(body):
+            r['malformations'].append(
+                ('CDP-054', 'address record %d truncated: %d byte(s) left, need 2 for '
+                 'proto_type/proto_len' % (seen, len(body) - pos)))
+            return
+        ptype = body[pos]
+        plen = body[pos + 1]
+        expect = _CDP_PROTO_TYPE_LEN.get(ptype)
+        if expect is None:
+            r['malformations'].append(
+                ('CDP-053', 'address record %d declares unknown protocol_type %d '
+                 '(expected 1=NLPID or 2=802.2)' % (seen, ptype)))
+        elif plen != expect:
+            r['malformations'].append(
+                ('CDP-053', 'address record %d declares protocol_type %d but '
+                 'protocol_length %d (type %d requires %d) — LCDPwn protocol_type shape'
+                 % (seen, ptype, plen, ptype, expect)))
+        pos += 2
+        if pos + plen > len(body):
+            r['malformations'].append(
+                ('CDP-054', 'address record %d protocol field of %d byte(s) overruns the '
+                 'TLV (%d left)' % (seen, plen, len(body) - pos)))
+            return
+        proto = body[pos:pos + plen]
+        pos += plen
+        if pos + 2 > len(body):
+            r['malformations'].append(
+                ('CDP-054', 'address record %d truncated before address_length' % seen))
+            return
+        alen = int.from_bytes(body[pos:pos + 2], 'big')
+        pos += 2
+        if pos + alen > len(body):
+            r['malformations'].append(
+                ('CDP-054', 'address record %d address_length %d overruns the TLV (%d '
+                 'byte(s) present) — allocation/copy size discrepancy'
+                 % (seen, alen, len(body) - pos)))
+            return
+        # the address length must match the protocol the record itself names
+        want = _CDP_PROTO_ADDR_LEN.get(proto[0]) if plen == 1 and proto else None
+        if plen == 8 and proto.endswith(_CDP_SNAP_IPV6_SUFFIX):
+            want = 16
+        if want is not None and alen != want:
+            r['malformations'].append(
+                ('CDP-054', 'address record %d names a %d-byte protocol but declares '
+                 'address_length %d' % (seen, want, alen)))
+        pos += alen
+        seen += 1
+    r['address_records'] = seen
+    if count != seen:
+        r['malformations'].append(
+            ('CDP-054', 'Addresses TLV declares %d address(es) but %d record(s) are '
+             'present — allocation/copy size discrepancy' % (count, seen)))
+
+
 def _cdp_dispatch_tlv(r, ttype, value):
     if ttype in _CDP_STRING_TLVS:
         r['tlvs'][_CDP_STRING_TLVS[ttype]] = value.decode('latin-1', 'replace')
     elif ttype in (0x0016, 0x0002) and len(value) >= 4:   # Mgmt-Addr / Addresses
-        r['address_count'] = int.from_bytes(value[:4], 'big')
+        count = int.from_bytes(value[:4], 'big')
+        r['address_count'] = count
+        _cdp_walk_address_records(r, value, count)
     elif ttype in (0x001a, 0x001b, 0x0010):               # Power Req/Avail/Consumption
         r['tlvs']['power'] = True
         if ttype == 0x001a and len(value) >= 4:           # Power Request: 4B hdr + levels
@@ -15976,6 +16090,24 @@ def _cdp_selftest():
                 ('cdpwn-ttl-zero', _cdp_bytes(_cdp_tlv(0x0001, b'sw1'), ttl=0), 'CDP-050'),
                 ('cdpwn-nxos-screen',
                  _cdp_bytes(_cdp_tlv(0x0006, b'cisco Nexus N9K')), 'CDP-023'),
+                ('cdpwn-fortiswitch-screen',
+                 _cdp_bytes(_cdp_tlv(0x0006, b'FortiSwitch-424E-FPOE')), 'CDP-027'),
+                ('cdpwn-lldpd-screen',
+                 _cdp_bytes(_cdp_tlv(0x0005, b'lldpd 1.0.5')), 'CDP-028'),
+                ('cdpwn-cisco-ata-screen',
+                 _cdp_bytes(_cdp_tlv(0x0006, b'Cisco ATA 191')), 'CDP-029'),
+                ('cdpwn-unified-cm-screen',
+                 _cdp_bytes(_cdp_tlv(0x0006, b'Cisco Unified Communications Manager')),
+                 'CDP-030'),
+                # LCDPwn Addresses-record shapes the outer-length check misses:
+                ('cdpwn-addr-proto-type-mismatch',          # proto_type 1 (NLPID) / len 8
+                 _cdp_bytes(_cdp_tlv(0x0016, (1).to_bytes(4, 'big') + bytes([1, 8])
+                            + b'\x00' * 8 + (4).to_bytes(2, 'big') + b'\x00' * 4)),
+                 'CDP-053'),
+                ('cdpwn-addr-length-overrun',               # addr_len 100, 0 bytes present
+                 _cdp_bytes(_cdp_tlv(0x0016, (1).to_bytes(4, 'big') + bytes([1, 1])
+                            + b'\xcc' + (100).to_bytes(2, 'big'))),
+                 'CDP-054'),
                 ('cdpwn-tlv-underflow', _cdp_bytes(b'\x00\x01\x00\x02'), 'CDP-041'),
             ]
             for _nm, _fr, _code in cdpwn_cases:
@@ -15986,6 +16118,21 @@ def _cdp_selftest():
             scenarios.append({'name': 'cdpwn-benign-silent', 'expect': 'no findings',
                               'got': [x['code'] for x in _cdp_cdpwn_scan([_benign])],
                               'pass': not _cdp_cdpwn_scan([_benign])})
+            # ATA-not-phone FP guard: an ATA advertising a phone-style SEP device-id
+            # must screen as CDP-029 (ATA) and NOT CDP-020 (IP Phone).
+            _ata = _cdp_bytes(_cdp_tlv(0x0001, b'SEP001122334455')
+                              + _cdp_tlv(0x0006, b'Cisco ATA 191'))
+            _ata_codes = {x['code'] for x in _cdp_cdpwn_scan([_ata])}
+            scenarios.append({'name': 'cdpwn-ata-not-phone',
+                              'expect': 'CDP-029 & not CDP-020', 'got': sorted(_ata_codes),
+                              'pass': 'CDP-029' in _ata_codes and 'CDP-020' not in _ata_codes})
+            # a well-formed NLPID/IPv4 address record stays silent (no CDP-053/054)
+            _addr_ok = _cdp_bytes(_cdp_tlv(0x0016, (1).to_bytes(4, 'big') + bytes([1, 1])
+                                  + b'\xcc' + (4).to_bytes(2, 'big') + bytes([10, 0, 0, 1])))
+            _addr_codes = {x['code'] for x in _cdp_cdpwn_scan([_addr_ok])}
+            scenarios.append({'name': 'cdpwn-addr-wellformed-silent',
+                              'expect': 'no CDP-053/054', 'got': sorted(_addr_codes),
+                              'pass': 'CDP-053' not in _addr_codes and 'CDP-054' not in _addr_codes})
             # verdict escalation: an attack shape sets verdict 'cdpwn'
             _res = {'verdict': 'clean', 'reasons': ['CDP speakers all match the trusted baseline']}
             _apply_cdpwn(_res, _cdp_cdpwn_scan([cdpwn_cases[0][1]]))
