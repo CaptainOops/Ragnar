@@ -14,8 +14,8 @@ behind them is Solarflere's work.
 
 ### By the numbers
 
-- **266 CVEs detected from the wire.** 309 distinct CVE IDs are named across Ragnar's
-  code; 266 of them a passive detector actually identifies. The rest are named, not detected:
+- **285 CVEs detected from the wire.** 328 distinct CVE IDs are named across Ragnar's
+  code; 285 of them a passive detector actually identifies. The rest are named, not detected:
   34 as context (the four Juniper ARP control-plane CVEs attached to a shared request-rate
   shape, the SR-MPLS `CVE_REFERENCES` table, the BGP / OSPF **malformed-attribute posture
   advisories** — byte-level parser CVEs the passive text watchers name for patch guidance but
@@ -27,9 +27,11 @@ behind them is Solarflere's work.
   **CVE-2026-86060**.
 - **Two CISA KEV entries** join the corpus with SMTP Watch (CVE-2019-10149, CVE-2018-6789),
   and APC Guard adds the KEV-listed Ripple20 CVE-2020-11899.
-- Weighted to the current threat wave (all named IDs): **39 CVEs from 2023, 50 from 2024, 36 from 2025, and
-  38 from 2026**, with a nine-strong 2021 cluster from the new LLDP SB220 / RV / TRENDnet /
-  QNAP families.
+- Weighted to the current threat wave (all named IDs): **40 CVEs from 2023, 50 from 2024, 36 from 2025, and
+  38 from 2026**, with a nine-strong 2021 cluster from the LLDP SB220 / RV / TRENDnet /
+  QNAP families and a deep 2020–2022 CDP seam (30 / 34 / 29) that the CDP Watch **LCDPwn**
+  expansion widened — the Video Surveillance 7000/8000 set, the Cisco ATA 190 cluster,
+  Unified CM, FortiSwitch and lldpd.
 - Spanning **~40 passive detectors** from L2 to L7 plus the timing- and forwarding-plane
   watchers (BFD, PTP, SR-MPLS) and the **IPsec/IKE** key-exchange posture detector, **eight
   in-app vendor CVE guards** (Cisco, Juniper, Arista, Comware, MikroTik, Aruba, APC, Liebert) and **Dell
@@ -201,6 +203,18 @@ behind them is Solarflere's work.
   33317), QNAP QSS (CVE-2021-28801), PAN-OS (CVE-2025-0116) and SonicWall SWS
   (CVE-2021-20024). It detects the malformed frame structurally, whichever stack it targets.
   The advertised-version screen is labelled a note, not a verdict.
+- **The Cisco discovery plane** — **CDP Watch** screens 25 CDP-plane CVEs: the Armis **CDPwn**
+  five (CVE-2020-3110 / 3111 / 3118 / 3119 / 3120) widened by the **LCDPwn** successor and its
+  cross-vendor arm — the Video Surveillance 7000/8000 camera set (CVE-2020-3505 / 3506 / 3507 /
+  3543 / 3544, CVE-2021-1131 / 1521 / 1563 / 1564), IP Phone 68xx/78xx/88xx (CVE-2021-1379,
+  CVE-2022-20968), NX-OS/FXOS code execution (CVE-2022-20824), the Cisco ATA 190/191/192
+  cluster (CVE-2022-20688 / 20689 / 20690 / 20691 / 20766), Unified CM (CVE-2022-20804),
+  FortiSwitch (CVE-2021-26111) and lldpd (CVE-2023-41910). A byte-level TLV parser catches the
+  exploit shapes directly — oversized DeviceID/PortID, format-string TLVs, malformed
+  Power-Request and Addresses counts, and the per-address-record protocol_type/length and
+  allocation/copy mismatches behind the lldpd out-of-bounds read — while the advertised-version
+  match is a screening note, not a verdict (plain IOS/IOS-XE excluded, and an ATA guarded off
+  the IP-Phone family by a negative lookahead).
 - **Carrier Ethernet service OAM** — **CFM Watch** watches IEEE 802.1ag CFM / ITU-T Y.1731
   on EVC trunks. It detects the Junos cfmd crash shape CVE-2020-1639 from CFM bounds
   violations, and it correlates the CVE-2025-52961 load pattern. That second one is labelled

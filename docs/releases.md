@@ -4,6 +4,17 @@
 
 ### 2026-10-11
 
+#### [#942](https://github.com/PierreGode/Ragnar/pull/942) — feat(net): CDP Watch v4 — LCDPwn expansion (+20 CVEs, cross-vendor screening, address-record attack shapes)
+*branch `feature/cdp-watch-v4`*
+
+- **Ported the Solarflere `cdpwatch` v4 (LCDPwn) additions into the in-app `do_cdp_watch`.** CDP is already an in-app watcher (byte-level TLV parser over the `tcpdump -xx` capture path), so no standalone module was vendored — the new detection logic was folded into the existing `_cdp_cdpwn_scan` / `_cdp_parse_frame`.
+- **CDP-plane CVE coverage 5 → 25.** Version-screening grew from five families to **nine** (`CDP-020`..`024`, `CDP-027`..`030`; the config-driven `CDP-025`/`026` version-floor hints aren't part of the passive in-app watcher): the original Armis CDPwn set widened by the **LCDPwn** successor — the Video Surveillance 7000/8000 camera cluster, IP Phone 68xx/78xx/88xx — and its cross-vendor arm: **FortiSwitch** (`CDP-027`, CVE-2021-26111), **lldpd** (`CDP-028`, CVE-2023-41910, the 9.8 `cdp_decode` OOB read), **Cisco ATA 190/191/192** (`CDP-029`, CVE-2022-20688…20766) and **Unified CM** (`CDP-030`, CVE-2022-20804). An ATA is guarded off the IP-Phone family by a negative lookahead; plain IOS/IOS-XE stays excluded per Cisco's advisory.
+- **Two new byte-level attack shapes** the outer-TLV length check cannot see: per-address-record **protocol_type/length mismatch** (`CDP-053`) and **allocation/copy size discrepancy** (`CDP-054`) — the parsing class behind the lldpd OOB read. Both escalate the verdict to `cdpwn`.
+- **CVE index 309 → 328 named, 266 → 285 detected** (+19 each; CVE-2021-26111 was already named by LLDP-048). `gen_cve_list.py` labels the new IDs (CDPwn / LCDPwn / vendor). CREDITS and README synced; a CDP Watch coverage bullet added.
+- **Self-test:** the `cdp` suite grows to **29 scenarios** — the four new screening families, the two address-record shapes, an ATA-not-IP-Phone false-positive guard and a well-formed-record silence check — all passing, plus the scapy capture→parse end-to-end leg. Detector Self-Test unchanged.
+- **Validated live:** crafted FortiSwitch/lldpd screening frames and a malformed Addresses record replayed with `tcpreplay` over a sealed-netns veth fire through the real `tcpdump` capture path — `CDP-027`/`028`/`053`/`054` all detected, verdict `cdpwn`. Real Cisco hardware is not yet validated.
+- **Docs:** [nettools.md › CDP Watch](nettools.md#cdp-watch) (cdpwn/screening description, 11 families, 25 CVEs), [CREDITS.md](CREDITS.md). The L2 visibility-matrix tile is unchanged (still an image; no updated source supplied with this drop).
+
 #### [#941](https://github.com/PierreGode/Ragnar/pull/941) — feat(net): LLDP Watch v2 — +10 CVEs (FortiSwitchAX RCE, Cisco SB220/RV, TRENDnet, QNAP)
 *branch `feature/lldp-watch-v2`*
 

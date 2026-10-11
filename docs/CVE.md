@@ -10,8 +10,8 @@ detector works is in [nettools.md](nettools.md).
 
 ## Summary
 
-- **309** distinct CVE IDs
-- **266** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
+- **328** distinct CVE IDs
+- **285** detected: a passive detector identifies the CVE's signature, exposure or exploit shape from traffic already on the wire
 - **34** context only: posture advisories and reference tables for byte-level parser bugs the text-based watchers cannot reconstruct, plus related CVEs attached to a shared attack shape (named for patch guidance, not identified per-CVE)
 - **6** active check: probed by the BLE Pentest action, which transmits (not part of the passive suite)
 - **3** card text only: named in a detector card's description as related context, not detected
@@ -34,10 +34,10 @@ detector works is in [nettools.md](nettools.md).
 | 2017 | 6 |
 | 2018 | 10 |
 | 2019 | 15 |
-| 2020 | 25 |
-| 2021 | 29 |
-| 2022 | 21 |
-| 2023 | 39 |
+| 2020 | 30 |
+| 2021 | 34 |
+| 2022 | 29 |
+| 2023 | 40 |
 | 2024 | 50 |
 | 2025 | 36 |
 | 2026 | 38 |
@@ -53,7 +53,7 @@ detector works is in [nettools.md](nettools.md).
 | BFD Watch | 5 |
 | BGP Path Watch | 13 |
 | BLE Pentest (active) | 6 |
-| CDP Watch | 5 |
+| CDP Watch | 25 |
 | CFM Watch | 4 |
 | Cisco Guard | 15 |
 | Comware Guard | 2 |
@@ -174,6 +174,11 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2020-3118](https://nvd.nist.gov/vuln/detail/CVE-2020-3118) | CDPwn | detected | CDP Watch | — |
 | [CVE-2020-3119](https://nvd.nist.gov/vuln/detail/CVE-2020-3119) | CDPwn | detected | CDP Watch | — |
 | [CVE-2020-3120](https://nvd.nist.gov/vuln/detail/CVE-2020-3120) | CDPwn | detected | CDP Watch | — |
+| [CVE-2020-3505](https://nvd.nist.gov/vuln/detail/CVE-2020-3505) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
+| [CVE-2020-3506](https://nvd.nist.gov/vuln/detail/CVE-2020-3506) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
+| [CVE-2020-3507](https://nvd.nist.gov/vuln/detail/CVE-2020-3507) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
+| [CVE-2020-3543](https://nvd.nist.gov/vuln/detail/CVE-2020-3543) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
+| [CVE-2020-3544](https://nvd.nist.gov/vuln/detail/CVE-2020-3544) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
 | [CVE-2020-7121](https://nvd.nist.gov/vuln/detail/CVE-2020-7121) |  | detected | LLDP Watch | — |
 | [CVE-2020-8616](https://nvd.nist.gov/vuln/detail/CVE-2020-8616) | NXNSAttack | detected | DNS Watch | — |
 | [CVE-2020-11868](https://nvd.nist.gov/vuln/detail/CVE-2020-11868) | NTP zero-origin sync block | detected | NTP Watch | — |
@@ -194,9 +199,14 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2021-0254](https://nvd.nist.gov/vuln/detail/CVE-2021-0254) | Junos overlayd VXLAN RCE | detected | Juniper Guard | — |
 | [CVE-2021-0277](https://nvd.nist.gov/vuln/detail/CVE-2021-0277) |  | detected | LLDP Watch | — |
 | [CVE-2021-0292](https://nvd.nist.gov/vuln/detail/CVE-2021-0292) |  | context only | ARP Watch | — |
+| [CVE-2021-1131](https://nvd.nist.gov/vuln/detail/CVE-2021-1131) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
 | [CVE-2021-1251](https://nvd.nist.gov/vuln/detail/CVE-2021-1251) |  | detected | LLDP Watch | — |
 | [CVE-2021-1308](https://nvd.nist.gov/vuln/detail/CVE-2021-1308) |  | detected | LLDP Watch | — |
 | [CVE-2021-1309](https://nvd.nist.gov/vuln/detail/CVE-2021-1309) |  | detected | LLDP Watch | — |
+| [CVE-2021-1379](https://nvd.nist.gov/vuln/detail/CVE-2021-1379) | LCDPwn (IP Phone 68xx/78xx/88xx) | detected | CDP Watch | — |
+| [CVE-2021-1521](https://nvd.nist.gov/vuln/detail/CVE-2021-1521) | LCDPwn (Video Surveillance 8000) | detected | CDP Watch | — |
+| [CVE-2021-1563](https://nvd.nist.gov/vuln/detail/CVE-2021-1563) | LCDPwn (Video Surveillance 7000) | detected | CDP Watch | — |
+| [CVE-2021-1564](https://nvd.nist.gov/vuln/detail/CVE-2021-1564) | LCDPwn (Video Surveillance 7000) | detected | CDP Watch | — |
 | [CVE-2021-1587](https://nvd.nist.gov/vuln/detail/CVE-2021-1587) | NX-OS NGOAM DoS | detected | Cisco Guard | — |
 | [CVE-2021-1675](https://nvd.nist.gov/vuln/detail/CVE-2021-1675) | PrintNightmare | detected | RPC / NetLogon Watch | — |
 | [CVE-2021-1678](https://nvd.nist.gov/vuln/detail/CVE-2021-1678) | Print spooler RPC relay (IRemoteWinSpool) | detected | RPC / NetLogon Watch | — |
@@ -205,7 +215,7 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2021-20024](https://nvd.nist.gov/vuln/detail/CVE-2021-20024) |  | detected | LLDP Watch | — |
 | [CVE-2021-22779](https://nvd.nist.gov/vuln/detail/CVE-2021-22779) | ModiPwn (Modicon UMAS auth bypass) | detected | Modbus Watch | — |
 | [CVE-2021-25220](https://nvd.nist.gov/vuln/detail/CVE-2021-25220) | MaginotDNS | detected | DNS Watch | — |
-| [CVE-2021-26111](https://nvd.nist.gov/vuln/detail/CVE-2021-26111) |  | detected | LLDP Watch | — |
+| [CVE-2021-26111](https://nvd.nist.gov/vuln/detail/CVE-2021-26111) | FortiSwitch lldpmedd memory exhaustion | detected | CDP Watch, LLDP Watch | — |
 | [CVE-2021-28510](https://nvd.nist.gov/vuln/detail/CVE-2021-28510) |  | detected | PTP Watch | — |
 | [CVE-2021-28801](https://nvd.nist.gov/vuln/detail/CVE-2021-28801) |  | detected | LLDP Watch | — |
 | [CVE-2021-31166](https://nvd.nist.gov/vuln/detail/CVE-2021-31166) | HTTP.sys Accept-Encoding | detected | RPC / NetLogon Watch | — |
@@ -221,6 +231,14 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2021-41987](https://nvd.nist.gov/vuln/detail/CVE-2021-41987) |  | detected | MikroTik Guard | — |
 | [CVE-2022-4337](https://nvd.nist.gov/vuln/detail/CVE-2022-4337) |  | detected | LLDP Watch | — |
 | [CVE-2022-4338](https://nvd.nist.gov/vuln/detail/CVE-2022-4338) | Open vSwitch LLDP Auto Attach integer underflow | detected | LLDP Watch | — |
+| [CVE-2022-20688](https://nvd.nist.gov/vuln/detail/CVE-2022-20688) | Cisco ATA 190 CDP OOB read | detected | CDP Watch | — |
+| [CVE-2022-20689](https://nvd.nist.gov/vuln/detail/CVE-2022-20689) | Cisco ATA 190 CDP length validation | detected | CDP Watch | — |
+| [CVE-2022-20690](https://nvd.nist.gov/vuln/detail/CVE-2022-20690) | Cisco ATA 190 CDP length validation | detected | CDP Watch | — |
+| [CVE-2022-20691](https://nvd.nist.gov/vuln/detail/CVE-2022-20691) | Cisco ATA 190 CDP resource exhaustion | detected | CDP Watch | — |
+| [CVE-2022-20766](https://nvd.nist.gov/vuln/detail/CVE-2022-20766) | Cisco ATA 190 CDP OOB read | detected | CDP Watch | — |
+| [CVE-2022-20804](https://nvd.nist.gov/vuln/detail/CVE-2022-20804) | Cisco Unified CM CDP DoS | detected | CDP Watch | — |
+| [CVE-2022-20824](https://nvd.nist.gov/vuln/detail/CVE-2022-20824) | Cisco NX-OS/FXOS CDP RCE | detected | CDP Watch | — |
+| [CVE-2022-20968](https://nvd.nist.gov/vuln/detail/CVE-2022-20968) | Cisco IP Phone 7800/8800 CDP stack overflow | detected | CDP Watch | — |
 | [CVE-2022-21907](https://nvd.nist.gov/vuln/detail/CVE-2022-21907) | HTTP.sys Accept-Encoding | detected | RPC / NetLogon Watch | — |
 | [CVE-2022-24805](https://nvd.nist.gov/vuln/detail/CVE-2022-24805) |  | detected | SNMP Watch | — |
 | [CVE-2022-24807](https://nvd.nist.gov/vuln/detail/CVE-2022-24807) |  | detected | SNMP Watch | — |
@@ -271,6 +289,7 @@ detector works is in [nettools.md](nettools.md).
 | [CVE-2023-36849](https://nvd.nist.gov/vuln/detail/CVE-2023-36849) |  | detected | LLDP Watch | — |
 | [CVE-2023-38802](https://nvd.nist.gov/vuln/detail/CVE-2023-38802) |  | context only | BGP Path Watch | — |
 | [CVE-2023-41358](https://nvd.nist.gov/vuln/detail/CVE-2023-41358) |  | context only | BGP Path Watch | — |
+| [CVE-2023-41910](https://nvd.nist.gov/vuln/detail/CVE-2023-41910) | lldpd cdp_decode OOB read | detected | CDP Watch | — |
 | [CVE-2023-44204](https://nvd.nist.gov/vuln/detail/CVE-2023-44204) |  | context only | SR-MPLS Watch | — |
 | [CVE-2023-47234](https://nvd.nist.gov/vuln/detail/CVE-2023-47234) |  | context only | BGP Path Watch | — |
 | [CVE-2023-47235](https://nvd.nist.gov/vuln/detail/CVE-2023-47235) |  | context only | BGP Path Watch | — |
