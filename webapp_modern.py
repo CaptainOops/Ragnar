@@ -16368,6 +16368,142 @@ try:
 except Exception as _hook_exc:  # pragma: no cover - never block startup
     logger.error(f"auto-upload: could not register wardrive stop hook: {_hook_exc}")
 
+# ---------------------------------------------------------------------------
+# ADS-B auto-start for the duration of a wardrive session
+# ---------------------------------------------------------------------------
+# Matches the WatchDogsGo "All Wardrive collectors" pattern (automatic ADS-B
+# aircraft collection as part of an all-radios wardrive) -- the Aircraft tile
+# on the Wardriving tab (see ragnar_modern.js refreshWardrivingSigint) is most
+# useful when something is actually feeding it. ADS-B shares the one RTL-SDR
+# with the sub-GHz sweep/pager/ACARS/VDL2/VOR/APRS decoders, so it is stopped
+# again the moment the drive ends -- never left running unattended.
+MUNINN_DIR = '/home/ragnar/adsb-to-wdgwars'
+MUNINN_PYTHON = MUNINN_DIR + '/.venv/bin/python'
+_muninn_stream_proc = None
+_muninn_should_run = False
+_muninn_lock = threading.Lock()
+
+
+def _muninn_stream_start():
+    """Launch Muninn's live SBS-1 stream uploader against our own dump1090,
+    so aircraft captured during this wardrive are actually submitted to
+    WDGWars (the Aircraft tile alone is just a live counter -- this is what
+    makes a sighting count toward points). Reuses the wdg_key already saved
+    into Muninn's own config (see ragnar-wardrive-autopilot memory)."""
+    global _muninn_stream_proc
+    import os
+    if not (os.path.isdir(MUNINN_DIR) and os.path.exists(MUNINN_PYTHON)):
+        logger.info("auto-sdr: Muninn not installed, skipping WDGWars aircraft upload")
+        return
+    with _muninn_lock:
+        if _muninn_stream_proc is not None and _muninn_stream_proc.poll() is None:
+            return  # already running
+
+        global _muninn_should_run
+        _muninn_should_run = True
+
+        def _delayed_launch():
+            # dump1090 can report started-ok and still be mid-flap for a few
+            # seconds (the same USB-settling race _auto_sdr_on_started's own
+            # retry absorbs for its own caller) -- give it a moment before
+            # Muninn's stream attaches, or a reconnect-after-EOF loop with no
+            # backoff can spin a core hot (observed live, 2026-10-12).
+            time.sleep(5)
+            global _muninn_stream_proc
+            with _muninn_lock:
+                if not _muninn_should_run:
+                    return  # session already stopped before the delay elapsed
+                try:
+                    log_path = MUNINN_DIR + '/muninn-stream.log'
+                    logf = open(log_path, 'a')
+                    _muninn_stream_proc = subprocess.Popen(
+                        [MUNINN_PYTHON, 'muninn.py', '--stream', 'localhost:30003',
+                         '--upload', '-q'],
+                        cwd=MUNINN_DIR, stdout=logf, stderr=subprocess.STDOUT)
+                    logger.info("auto-sdr: Muninn stream started (aircraft -> WDGWars)")
+                except Exception as e:
+                    logger.warning(f"auto-sdr: could not start Muninn stream: {e}")
+
+        threading.Thread(target=_delayed_launch, daemon=True).start()
+
+
+def _muninn_stream_stop():
+    global _muninn_stream_proc, _muninn_should_run
+    _muninn_should_run = False
+    with _muninn_lock:
+        proc = _muninn_stream_proc
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            logger.info("auto-sdr: Muninn stream stopped")
+        except Exception as e:
+            logger.warning(f"auto-sdr: error stopping Muninn stream: {e}")
+        _muninn_stream_proc = None
+
+
+def _auto_sdr_on_started(session_id):
+    """SESSION_STARTED_HOOKS entry: start ADS-B alongside a new wardrive."""
+    if not shared_data.config.get('wardriving_auto_sdr_adsb', True):
+        return
+    try:
+        import adsb
+    except Exception as e:
+        logger.warning(f"auto-sdr: could not import adsb: {e}")
+        return
+    # Hand the one dongle to dump1090 -- best-effort, each stopper independent
+    # so one missing/broken decoder module never blocks ADS-B from starting.
+    for modname, attr in (('rtl_sdr', 'power_stop'), ('rtl_sdr', 'ism_stop'),
+                           ('pagerdecode', 'stop'), ('acars', 'stop'), ('vdl2', 'stop'),
+                           ('radio', 'stop'), ('vor', 'stop'), ('aprs', 'stop')):
+        try:
+            mod = __import__(modname)
+            getattr(mod, attr)()
+        except Exception:
+            pass
+    # Right after boot/a service restart the USB device can still be settling,
+    # so the first launch can transiently fail with "Device or resource busy"
+    # even though a retry a couple seconds later works fine (observed live).
+    for attempt in range(3):
+        try:
+            result = adsb.start()
+            if isinstance(result, dict) and result.get('ok') is False:
+                raise RuntimeError(result.get('error') or 'adsb.start() returned ok=False')
+            logger.info(f"auto-sdr: started ADS-B for wardrive session {session_id}")
+            _muninn_stream_start()
+            break
+        except Exception as e:
+            if attempt == 2:
+                logger.warning(f"auto-sdr: could not auto-start ADS-B after {attempt + 1} attempts: {e}")
+            else:
+                time.sleep(2)
+
+
+def _auto_sdr_on_finished(session_id):
+    """SESSION_FINISHED_HOOKS entry: stop ADS-B when the wardrive ends, freeing the SDR."""
+    if not shared_data.config.get('wardriving_auto_sdr_adsb', True):
+        return
+    _muninn_stream_stop()
+    try:
+        import adsb
+        adsb.stop()
+        logger.info(f"auto-sdr: stopped ADS-B after wardrive session {session_id}")
+    except Exception as e:
+        logger.warning(f"auto-sdr: could not auto-stop ADS-B: {e}")
+
+
+try:
+    if _auto_sdr_on_started not in _wardriving_mod.SESSION_STARTED_HOOKS:
+        _wardriving_mod.SESSION_STARTED_HOOKS.append(_auto_sdr_on_started)
+    if _auto_sdr_on_finished not in _wardriving_mod.SESSION_FINISHED_HOOKS:
+        _wardriving_mod.SESSION_FINISHED_HOOKS.append(_auto_sdr_on_finished)
+except Exception as _hook_exc:  # pragma: no cover - never block startup
+    logger.error(f"auto-sdr: could not register wardrive start/stop hooks: {_hook_exc}")
+
 
 @app.route('/api/wardriving/upload-config', methods=['GET', 'POST'])
 def wardriving_upload_config():
