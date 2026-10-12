@@ -634,6 +634,7 @@ function epdTypeToSizeKey(epd_type) {
 
 const displaySelectOptions = {
     epd_type: [
+        { value: 'headless', label: 'Headless — no screen (web UI only)' },
         { value: 'auto', label: 'Auto-detect' },
         { value: '2in13', label: '2.13" e-Paper (122x250)' },
         { value: '2in7', label: '2.7" e-Paper (176x264)' },
@@ -1507,6 +1508,11 @@ function showNetworkSubtab(name, layer) {
         _macWatchFillIfaces();
         _ntpFillIfaces();
         _snmpFillIfaces();
+        _fillIfaceSel('modbus-iface');
+        _modbusLoadBaseline();
+        _fillIfaceSel('lldpw-iface');
+        _fillIfaceSel('oam-iface');
+        _fillIfaceSel('cfm-iface');
         _certFillIfaces();
         _tlsFillIfaces();
         _lldpFillIfaces();
@@ -2138,6 +2144,10 @@ function _wifiRtlCheck() {
         _wifiState.rtlAvailable = !!det.available;
         _wifiRfwfShow();
     }).catch(() => {});
+    fetch('/api/net/esp/status').then(r => r.json()).then(st => {
+        _wifiState.espAvailable = !!(st && st.detect && st.detect.available);
+        _wifiRfwfShow();
+    }).catch(() => {});
     // Meshtastic companion node (separate USB device) gates the Mesh Nodes button.
     fetch('/api/net/mesh/status').then(r => r.json()).then(st => {
         _wifiState.meshAvailable = !!(st && st.detect && st.detect.available);
@@ -2150,16 +2160,20 @@ function _wifiRfwfShow() {
     if (!btn) return;
     const hackrf = !!(_wifiState.sdr && _wifiState.sdr.available);
     const rtl = !!_wifiState.rtlAvailable;
+    const esp = !!_wifiState.espAvailable;
     const demo = !!_wifiState.rfwfDemo;
-    const show = hackrf || rtl || demo;
-    btn.classList.toggle('hidden', !show);
-    btn.classList.toggle('inline-flex', show);
+    // Always offer the waterfall: the page collapses the panel of any radio
+    // that isn't connected instead of the button hiding here.
+    btn.classList.remove('hidden');
+    btn.classList.add('inline-flex');
     const bits = [];
     if (hackrf) bits.push('HackRF');
     if (rtl) bits.push('RTL-SDR');
+    if (esp) bits.push('ESP-SDR');
     btn.title = bits.length
         ? 'Open the RF Waterfall page — live: ' + bits.join(' + ')
-        : 'Open the RF Waterfall page (synthetic demo — connect a HackRF or RTL-SDR for true RF)';
+        : (demo ? 'Open the RF Waterfall page (synthetic demo — connect an RTL-SDR, HackRF or ESP-SDR for true RF)'
+                : 'Open the RF Waterfall page (no SDR connected — panels stay collapsed until a radio is plugged in)');
     // Signal Analyzer works offline on recorded SigMF captures (no live SDR
     // needed) — always offer it; the page itself guides you if no capture exists.
     const analyzer = document.getElementById('wifi-analyzer-btn');
@@ -2235,8 +2249,9 @@ function wifiSdrCheck() {
     box.innerHTML = '<span style="color:#9ca3af">🩺 Checking SDR — USB bus, drivers, tools, power…</span>';
     Promise.all([
         fetch('/api/net/rtl/diagnose').then(r => r.json()).catch(() => null),
-        fetch('/api/net/sdr/status').then(r => r.json()).catch(() => null)
-    ]).then(([d, hk]) => {
+        fetch('/api/net/sdr/status').then(r => r.json()).catch(() => null),
+        fetch('/api/net/esp/status').then(r => r.json()).catch(() => null)
+    ]).then(([d, hk, esp]) => {
         if (!d) { box.innerHTML = '<span style="color:#f87171">SDR check failed — the endpoint did not respond.</span>'; return; }
         const tone = { ok: ['#34d399', '✅'], no_usb: ['#fb7185', '⛔'], tools_missing: ['#fbbf24', '⚙️'],
                        dvb_held: ['#fbbf24', '🔒'], probe_timeout: ['#fbbf24', '⏱️'],
@@ -2267,6 +2282,11 @@ function wifiSdrCheck() {
         const hkline = hk && hk.detect
             ? `<div class="mt-2 text-xs" style="color:#9ca3af">HackRF (Wi-Fi bands): ${hk.detect.available ? '<span style="color:#34d399">detected</span>' : escapeHtml(String(hk.detect.error || 'not detected'))}</div>`
             : '';
+        const espline = esp && esp.detect
+            ? `<div class="mt-2 text-xs" style="color:#9ca3af">ESP-SDR (2.4 GHz): ${esp.detect.available
+                ? '<span style="color:#34d399">detected' + (esp.detect.model_name ? ' (' + escapeHtml(String(esp.detect.model_name)) + ')' : '') + '</span>'
+                : escapeHtml(String(esp.detect.error || 'not detected'))}</div>`
+            : '';
         // One-click fix button when the SDR check says the tools are missing or
         // the DVB-T driver is holding the dongle (both fixable from the server).
         const actLabel = (d.tools_installed === false)
@@ -2284,6 +2304,7 @@ function wifiSdrCheck() {
                  ${healLine}
                  <div class="mt-2 text-xs" style="color:#9ca3af">${facts}</div>
                  ${hkline}
+                 ${espline}
                </div>
                <button type="button" onclick="document.getElementById('wifi-sdr-diag').classList.add('hidden')" class="text-xs" style="color:#6b7280" title="Dismiss">✕</button>
              </div>`;
@@ -7420,8 +7441,8 @@ const _NETINT_STYLE = {
 // A verdict is clean/informational, an active attack (critical, red), or — anything
 // else non-clean — a suspicious finding (amber). Mirrors the server's _ni_rank so the
 // chips colour every scanner's verdicts without enumerating them all.
-const _NETINT_CLEAN = new Set(['clean', 'unknown', 'ok', 'none', 'hardened', 'learned', 'n/a', 'no-traffic', 'disabled', 'not-applicable', 'randomization', 'fhrp', 'observed']);
-const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'eternalblue-probe', 'krb-rc4md4', 'smbghost-exploit', 'smb-reflection', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'modcopy-exploited', 'payload-queued', 'exploit', 'attack']);
+const _NETINT_CLEAN = new Set(['clean', 'unknown', 'ok', 'none', 'hardened', 'learned', 'n/a', 'no-traffic', 'disabled', 'not-applicable', 'randomization', 'fhrp', 'observed', 'learning']);
+const _NETINT_CRITICAL = new Set(['hijacked', 'spoofed', 'rogue', 'starvation', 'compromised', 'root-hijack', 'bpdu-flood', 'vlan-hop', 'hijack', 'injection', 'rogue-router', 'poisoning', 'spoof-conflict', 'smbv1-active', 'responder-challenge', 'krb-recon', 'eternalblue-probe', 'krb-rc4md4', 'smbghost-exploit', 'smb-reflection', 'coercion-attempt', 'relay-suspected', 'rogue-speaker', 'rogue-redirect', 'rogue-ra', 'rogue-irdp', 'cdpwn', 'autokey-exploit', 'crash-exploit', 'auth-bypass', 'lag-hijack', 'zerologon', 'dcsync', 'credential-exposure', 'failover-manipulation', 'segment-injection', 'modcopy-exploited', 'payload-queued', 'plc-abuse', 'exploit', 'attack']);
 function _netintRank(verdict) {
     const v = verdict || 'unknown';
     if (_NETINT_CLEAN.has(v)) return 0;
@@ -8613,6 +8634,7 @@ const _NTP_VERDICT_STYLE = {
     'time-injection': ['bg-red-950/60 border-red-800 text-red-300', '🛑 NTP time injection — a source is serving a skewed clock'],
     autokey:          ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ NTP Autokey extension field on the wire — deprecated (CVE-2014-9295 surface)'],
     'autokey-exploit':['bg-red-950/60 border-red-800 text-red-300', '🛑 Malformed NTP Autokey EF — crypto_recv() overflow signature (CVE-2014-9295 RCE)'],
+    'crash-exploit':  ['bg-red-950/60 border-red-800 text-red-300', '🛑 NTP crash / overrun shape — oversize datagram (CVE-2016-9312) or mode-6 count overrun (CVE-2019-6444/6443)'],
     'auth-bypass':    ['bg-red-950/60 border-red-800 text-red-300', '🛑 NTP crypto-NAK auth bypass — symmetric-association clock steering (CVE-2015-7871)'],
     unknown:          ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
 };
@@ -8797,7 +8819,9 @@ async function _runGuard(module, label, btn) {
         const forgetEl = document.getElementById(module + '-guard-forget');
         const cardsQs = (cardsEl && cardsEl.dataset.dirty === '1') ? '&cards=' + encodeURIComponent(cardsEl.value) : '';
         const forgetQs = (forgetEl && forgetEl.checked) ? '&forget=1' : '';
-        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + roleQs + cardsQs + forgetQs;
+        const portEl = document.getElementById(module + '-guard-port');
+        const portQs = (portEl && portEl.value) ? '&port=' + encodeURIComponent(portEl.value) : '';
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + roleQs + cardsQs + forgetQs + portQs;
         const d = await fetchAPI('/api/net/' + module + '-guard' + qs);
         if (!d || d.success === false) {
             const msg = (d && d.error) || 'failed';
@@ -8830,6 +8854,7 @@ function runComwareGuard() { _runGuard('comware', 'Comware', (typeof event !== '
 function runMikroTikGuard() { _runGuard('mikrotik', 'MikroTik', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runArubaGuard() { _runGuard('aruba', 'Aruba', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 function runAPCGuard() { _runGuard('apc', 'APC', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
+function runLiebertGuard() { _runGuard('liebert', 'Liebert', (typeof event !== 'undefined' && event && event.target) ? event.target : null); }
 // --- Dell Guard daemon control (standalone systemd sensor; enable/disable switch) ---
 function _dellGuardRender(d) {
     if (!d) return '<span class="text-red-400">No status returned.</span>';
@@ -9755,7 +9780,9 @@ async function runPtpWatch() {
     out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing PTP (Annex F 0x88F7 · Annex D+E UDP 319/320)…</p>';
     try {
         _fillIfaceSel('ptpwatch-iface');
-        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '');
+        const profEl = document.getElementById('ptpwatch-profile');
+        const prof = profEl && profEl.value ? profEl.value : 'auto';
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') + '&profile=' + encodeURIComponent(prof);
         const d = await fetchAPI('/api/net/ptp-watch' + qs);
         if (!d || d.success === false) {
             const msg = (d && d.error) || 'failed';
@@ -9767,7 +9794,8 @@ async function runPtpWatch() {
         const [cls, label] = _PTP_VERDICT_STYLE[d.verdict] || _PTP_VERDICT_STYLE.unknown;
         const transports = (d.transports || []).join(', ') || '—';
         let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
-        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · clocks: ${d.clocks || 0} · transports: ${escapeHtml(transports)}</p>`;
+        const profLabel = (d.profile && d.profile !== 'auto') ? ` · profile: ${escapeHtml(d.profile)}` : ' · no profile declared (telecom checks off)';
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · clocks: ${d.clocks || 0} · transports: ${escapeHtml(transports)}${profLabel}</p>`;
         const findings = (d.findings || []).filter(f => ['critical', 'high', 'medium'].includes((f.severity || '').toLowerCase()));
         if (findings.length) {
             html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
@@ -9920,6 +9948,528 @@ async function runFtpWatch() {
         out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
     } finally {
         _ndBusy(btn, false);
+    }
+}
+
+// ---- OAM Watch (IEEE 802.3ah Link OAM: loopback blackhole / flag forgery) ----
+const _OAM_VERDICT_STYLE = {
+    'no-traffic': ['bg-slate-800 border-slate-700 text-slate-300', 'ℹ No Link OAM on this port — it is point-to-point and config-gated, normally only on a metro / access handoff link'],
+    clean:        ['bg-green-950/40 border-green-900 text-green-400', '✓ Link OAM seen — well-formed, no loopback, flag forgery, re-peering or MIB read'],
+    observed:     ['bg-sky-950/40 border-sky-900 text-sky-300', 'ℹ The Link OAM peer advertises capabilities that make the abuse primitives reachable (loopback / variable retrieval) — notes, not an attack'],
+    exposure:     ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Exposure — a low-severity OAMPDU defect (e.g. an illegal OAM version)'],
+    suspicious:   ['bg-orange-950/50 border-orange-800 text-orange-300', '⚠ Suspicious — a failure flag (Dying Gasp / Critical Event / Link Fault), a MIB read, event replay or a reserved encoding'],
+    attack:       ['bg-red-950/60 border-red-800 text-red-300', '🛑 LINK OAM ATTACK — loopback blackhole, flapping failure flags, peer substitution, a second speaker, a rate-cap flood or a malformed OAMPDU'],
+    unknown:      ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
+};
+const _OAM_SEV_STYLE = {
+    critical: 'text-red-300', high: 'text-orange-300', medium: 'text-amber-300', low: 'text-yellow-300', info: 'text-sky-300',
+};
+async function runOamWatch() {
+    const out = document.getElementById('oam-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('oam-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('oam-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '30';
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing Link OAM (slow protocols 0x8809, subtype 3)…</p>';
+    try {
+        _fillIfaceSel('oam-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '');
+        const d = await fetchAPI('/api/net/oam-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runOamWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const [cls, label] = _OAM_VERDICT_STYLE[d.verdict] || _OAM_VERDICT_STYLE.unknown;
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · ${d.packet_count} OAMPDU(s) · ${(d.peers || []).length} peer(s)</p>`;
+        const findings = d.findings || [];
+        if (findings.length) {
+            html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Sev</th><th class="px-2 py-1">Code</th><th class="px-2 py-1">What</th><th class="px-2 py-1">Source MAC</th><th class="px-2 py-1">#</th></tr>' +
+                '</thead><tbody>' +
+                findings.slice(0, 40).map(f => {
+                    const sc = _OAM_SEV_STYLE[f.severity] || 'text-gray-400';
+                    return `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 ${sc}">${escapeHtml(f.severity || '')}</td>
+                    <td class="px-2 py-1 font-mono ${sc}">${escapeHtml(f.code || '')}</td>
+                    <td class="px-2 py-1 text-gray-300 whitespace-normal" style="min-width:16rem">${escapeHtml(f.name || '')} <span class="text-gray-600">${escapeHtml(f.klass || '')}</span><span class="block text-gray-500">${escapeHtml(f.detail || '')}</span></td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.src || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${f.count}</td>
+                </tr>`; }).join('') +
+                '</tbody></table>';
+        }
+        const peers = d.peers || [];
+        if (peers.length) {
+            html += '<div class="text-xs text-gray-500 mt-3 mb-1">OAM peers (session state kept across scans)</div>' +
+                '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Source MAC</th><th class="px-2 py-1">OUI</th><th class="px-2 py-1">Capabilities</th><th class="px-2 py-1">State</th><th class="px-2 py-1">PDUs</th></tr>' +
+                '</thead><tbody>' +
+                peers.slice(0, 20).map(p => {
+                    const st = p.remote_loopback ? '<span class="text-red-300">remote loopback</span>' : (p.operational ? '<span class="text-green-400">operational</span>' : '<span class="text-gray-400">discovery</span>');
+                    return `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 font-mono text-gray-200">${escapeHtml(p.src)}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(p.oui || '—')}</td>
+                    <td class="px-2 py-1 text-amber-300/90">${escapeHtml((p.capabilities || []).join(', ') || '—')}</td>
+                    <td class="px-2 py-1">${st}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${p.pdus}</td>
+                </tr>`; }).join('') +
+                '</tbody></table>';
+        }
+        if (d.reasons && d.reasons.length) {
+            html += '<ul class="text-xs text-gray-400 mt-2 list-disc pl-5">' +
+                d.reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+async function oamReset() {
+    if (!confirm('Forget the learned Link OAM session state (peer identity, flags, event sequence)? Use after a legitimate peer swap.')) return;
+    try {
+        await postAPI('/api/net/oam-reset', {});
+        addConsoleMessage('Link OAM session state cleared', 'info');
+    } catch (e) {
+        addConsoleMessage('Link OAM reset failed: ' + e.message, 'error');
+    }
+}
+// ---- CFM Watch (IEEE 802.1ag CFM / ITU-T Y.1731 service OAM) ----------------
+const _CFM_VERDICT_STYLE = {
+    'no-traffic': ['bg-slate-800 border-slate-700 text-slate-300', 'ℹ No CFM on this port — 802.1ag / Y.1731 service OAM normally only appears on a carrier / metro Ethernet service handoff'],
+    clean:        ['bg-green-950/40 border-green-900 text-green-400', '✓ CFM seen — well-formed, no forgery, protection-switch abuse, linktrace sweep or flood (inventory only)'],
+    observed:     ['bg-sky-950/40 border-sky-900 text-sky-300', 'ℹ Operational CFM events seen (RDI, AIS, CSF, loopback / linktrace) — worth a look, not an attack'],
+    suspicious:   ['bg-orange-950/50 border-orange-800 text-orange-300', '⚠ Suspicious — a manual switch, LCK, an MD-level or MAID anomaly, a reserved encoding, or a load pattern'],
+    attack:       ['bg-red-950/60 border-red-800 text-red-300', '🛑 CFM ATTACK — forged protection switching, a forged AIS / CCM, a moved or duplicate MEP, a linktrace sweep, an LBM flood or a malformed CFM frame'],
+    unknown:      ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
+};
+async function runCfmWatch() {
+    const out = document.getElementById('cfm-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('cfm-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('cfm-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '30';
+    const ceilEl = document.getElementById('cfm-ceiling');
+    const ceil = ceilEl && ceilEl.value !== '' ? ceilEl.value : '';
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing CFM (EtherType 0x8902, untagged / 802.1Q / QinQ)…</p>';
+    try {
+        _fillIfaceSel('cfm-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '') +
+            (ceil !== '' ? '&md_ceiling=' + encodeURIComponent(ceil) : '');
+        const d = await fetchAPI('/api/net/cfm-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runCfmWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const [cls, label] = _CFM_VERDICT_STYLE[d.verdict] || _CFM_VERDICT_STYLE.unknown;
+        const inv = d.inventory || {};
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · ${d.packet_count} CFM frame(s) · ${(inv.meps || []).length} MEP(s)` +
+            (d.md_ceiling !== null && d.md_ceiling !== undefined ? ` · MD ceiling ${d.md_ceiling}` : '') + '</p>';
+        const findings = (d.findings || []).filter(f => f.klass !== 'P');
+        if (findings.length) {
+            html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Sev</th><th class="px-2 py-1">Code</th><th class="px-2 py-1">What</th><th class="px-2 py-1">Source</th><th class="px-2 py-1">#</th></tr>' +
+                '</thead><tbody>' +
+                findings.slice(0, 40).map(f => {
+                    const sc = _OAM_SEV_STYLE[f.severity] || 'text-gray-400';
+                    const cves = (f.cves || []).filter(c => !(f.name || '').includes(c));
+                    const cve = cves.length ? ` <span class="text-red-300 font-mono">${escapeHtml(cves.join(', '))}</span>` : '';
+                    const conf = f.confidence === 'low' ? ' <span class="text-gray-500">(low confidence)</span>' : '';
+                    return `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 ${sc}">${escapeHtml(f.severity || '')}</td>
+                    <td class="px-2 py-1 font-mono ${sc}">${escapeHtml(f.code || '')}</td>
+                    <td class="px-2 py-1 text-gray-300 whitespace-normal" style="min-width:16rem">${escapeHtml(f.name || '')}${cve}${conf} <span class="text-gray-600">${escapeHtml(f.class_name || '')}</span><span class="block text-gray-500">${escapeHtml(f.detail || '')}</span></td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.src || f.context || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${f.count}</td>
+                </tr>`; }).join('') +
+                '</tbody></table>';
+        }
+        const meps = inv.meps || [];
+        if (meps.length) {
+            html += '<div class="text-xs text-gray-500 mt-3 mb-1">Maintenance endpoints (state kept across scans)</div>' +
+                '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Level</th><th class="px-2 py-1">MEP</th><th class="px-2 py-1">MAID</th><th class="px-2 py-1">MAC</th><th class="px-2 py-1">VLAN</th><th class="px-2 py-1">Interval</th></tr>' +
+                '</thead><tbody>' +
+                meps.slice(0, 20).map(m => `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 font-mono text-gray-400">${m.md_level}</td>
+                    <td class="px-2 py-1 font-mono text-gray-200">${m.mepid}</td>
+                    <td class="px-2 py-1 text-gray-300">${escapeHtml(m.maid || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(m.mac || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml((m.vlan || []).join('/') || 'untagged')}</td>
+                    <td class="px-2 py-1 text-gray-400">${escapeHtml(m.interval || '')}</td>
+                </tr>`).join('') +
+                '</tbody></table>';
+        }
+        if ((inv.y1731 || []).length) {
+            html += `<p class="text-xs text-gray-500 mt-2">Y.1731 overlay: ${escapeHtml(inv.y1731.join(', '))}</p>`;
+        }
+        if (d.reasons && d.reasons.length) {
+            html += '<ul class="text-xs text-gray-400 mt-2 list-disc pl-5">' +
+                d.reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+async function cfmReset() {
+    if (!confirm('Forget the learned CFM state (MEPs, associations, protection groups)? Use after a legitimate MEP or protection change.')) return;
+    try {
+        await postAPI('/api/net/cfm-reset', {});
+        addConsoleMessage('CFM state cleared', 'info');
+    } catch (e) {
+        addConsoleMessage('CFM reset failed: ' + e.message, 'error');
+    }
+}
+// ---- LLDP Watch (802.1AB malformed-TLV CVE shapes / screening / flood) ------
+const _LLDPW_VERDICT_STYLE = {
+    'no-traffic': ['bg-slate-800 border-slate-700 text-slate-300', 'ℹ No LLDP seen — LLDP is off on this port, or the window was shorter than the ~30 s hello'],
+    clean:        ['bg-green-950/40 border-green-900 text-green-400', '✓ LLDP seen and every LLDPDU was well-formed — no flood, no forged neighbour'],
+    observed:     ['bg-sky-950/40 border-sky-900 text-sky-300', 'ℹ Neighbour advertises software in a vulnerable LLDP-parser family — verify its patch level (a version string is not patch state)'],
+    exposure:     ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Exposure — advertised version below your floor, or an LLDPDU with no End TLV'],
+    suspicious:   ['bg-orange-950/50 border-orange-800 text-orange-300', '⚠ Suspicious — reserved TLV type, duplicated TLV, or non-zero data smuggled after End-of-LLDPDU'],
+    attack:       ['bg-red-950/60 border-red-800 text-red-300', '🛑 LLDP ATTACK SHAPE — a malformed TLV matching an LLDP parser CVE, an LLDP flood, or a forged neighbour'],
+    unknown:      ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
+};
+const _LLDPW_SEV_STYLE = {
+    critical: 'text-red-300', high: 'text-orange-300', medium: 'text-amber-300', low: 'text-yellow-300', notice: 'text-sky-300',
+};
+async function runLldpWatch() {
+    const out = document.getElementById('lldpw-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('lldpw-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('lldpw-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '30';
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing LLDP (EtherType 0x88CC — hellos are ~30s apart)…</p>';
+    try {
+        _fillIfaceSel('lldpw-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs) + (iface ? '&interface=' + encodeURIComponent(iface) : '');
+        const d = await fetchAPI('/api/net/lldp-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runLldpWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const [cls, label] = _LLDPW_VERDICT_STYLE[d.verdict] || _LLDPW_VERDICT_STYLE.unknown;
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · ${d.packet_count} LLDP frame(s), ${(d.neighbours || []).length} neighbour(s) · forged-neighbour check: ${d.enforce ? 'on (' + d.baseline_count + ' trusted)' : 'off — click “Trust current” to enable'}</p>`;
+        const findings = d.findings || [];
+        if (findings.length) {
+            html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Sev</th><th class="px-2 py-1">Code</th><th class="px-2 py-1">What</th><th class="px-2 py-1">Source MAC</th><th class="px-2 py-1">#</th><th class="px-2 py-1">CVE</th></tr>' +
+                '</thead><tbody>' +
+                findings.slice(0, 40).map(f => {
+                    const sc = _LLDPW_SEV_STYLE[f.severity] || 'text-gray-400';
+                    return `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 ${sc}">${escapeHtml(f.severity || '')}</td>
+                    <td class="px-2 py-1 font-mono ${sc}">${escapeHtml(f.code || '')}</td>
+                    <td class="px-2 py-1 text-gray-300 whitespace-normal" style="min-width:16rem">${escapeHtml(f.name || '')}<span class="block text-gray-500">${escapeHtml(f.detail || '')}</span></td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.src || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${f.count}</td>
+                    <td class="px-2 py-1 font-mono text-cyan-300 whitespace-normal" style="min-width:8rem">${escapeHtml((f.cves || []).join(' '))}</td>
+                </tr>`; }).join('') +
+                '</tbody></table>';
+        }
+        const nb = d.neighbours || [];
+        if (nb.length) {
+            html += '<div class="text-xs text-gray-500 mt-3 mb-1">Neighbours (directly attached — LLDP is never forwarded)</div>' +
+                '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">System name</th><th class="px-2 py-1">Description</th><th class="px-2 py-1">Port</th><th class="px-2 py-1">Mgmt</th><th class="px-2 py-1">VLAN</th><th class="px-2 py-1">Source MAC</th><th class="px-2 py-1">Trust</th></tr>' +
+                '</thead><tbody>' +
+                nb.slice(0, 40).map(n => {
+                    const badge = n.trusted == null ? '<span class="text-gray-500">—</span>' : (n.trusted ? '<span class="text-green-400">✓ known</span>' : '<span class="text-red-300">? new</span>');
+                    return `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 text-gray-200">${escapeHtml(n.name || n.chassis || '—')}</td>
+                    <td class="px-2 py-1 text-gray-400" title="${escapeHtml(n.desc || '')}">${escapeHtml((n.desc || '—').slice(0, 46))}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(n.port || '—')}</td>
+                    <td class="px-2 py-1 font-mono text-amber-300/90">${escapeHtml((n.mgmt || []).join(', ') || '—')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml((n.vlans || []).join('/') || '—')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-500">${escapeHtml(n.src)}</td>
+                    <td class="px-2 py-1">${badge}</td>
+                </tr>`; }).join('') +
+                '</tbody></table>';
+        }
+        if (d.reasons && d.reasons.length) {
+            html += '<ul class="text-xs text-gray-400 mt-2 list-disc pl-5">' +
+                d.reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+async function lldpwBaseline(action) {
+    if (action === 'reset' && !confirm('Forget the trusted LLDP neighbours? The forged-neighbour check (LLDP-049) turns off until you trust again.')) return;
+    try {
+        const d = await postAPI('/api/net/lldp-baseline', { action: action });
+        if (action === 'trust' && d && !d.enforce) {
+            addConsoleMessage('No LLDP neighbours seen yet — run a scan first, then trust', 'warning');
+            return;
+        }
+        addConsoleMessage(action === 'trust' ? 'LLDP neighbours trusted — an unknown LLDP speaker now raises LLDP-049' : 'LLDP baseline cleared — forged-neighbour check off', 'info');
+    } catch (e) {
+        addConsoleMessage('LLDP baseline update failed: ' + e.message, 'error');
+    }
+}
+// ---- Modbus Watch (Modbus/TCP posture: PLC writes / listen-only / UMAS) ----
+const _MODBUS_VERDICT_STYLE = {
+    clean:       ['bg-green-950/40 border-green-900 text-green-400', '✓ No off-baseline write, listen-only, UMAS, sweep or malformed framing seen'],
+    learning:    ['bg-slate-800 border-slate-700 text-slate-300', 'ℹ Learning — recording which masters talk to each PLC; off-baseline alerts start when the window closes'],
+    exposure:    ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Exposure — device enumeration, a unit-ID sweep or cleartext Modbus where it should not be'],
+    suspicious:  ['bg-orange-950/50 border-orange-800 text-orange-300', '⚠ Suspicious — an unlearned master, UMAS activity, a restart / clear-counters, or malformed framing (libmodbus CVE trigger)'],
+    'plc-abuse': ['bg-red-950/60 border-red-800 text-red-300', '🛑 PLC ABUSE — a write from an unlearned master, Force Listen Only, or the ModiPwn UMAS sequence (CVE-2021-22779)'],
+    unknown:     ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
+};
+const _MODBUS_SEV_STYLE = {
+    high: 'text-red-300', medium: 'text-amber-300', low: 'text-gray-400', info: 'text-gray-500',
+};
+function _modbusLearnLine(d) {
+    if (d.learning_ends == null) return 'baseline: waiting for the first Modbus traffic';
+    const t = new Date(d.learning_ends * 1000);
+    return d.learning
+        ? 'baseline: learning until ' + t.toLocaleString()
+        : 'baseline: armed (learned ' + (d.slaves || 0) + ' slave/unit pair' + ((d.slaves || 0) === 1 ? '' : 's') + ')';
+}
+async function _modbusLoadBaseline() {
+    const el = document.getElementById('modbus-ot');
+    const st = document.getElementById('modbus-baseline');
+    try {
+        const d = await fetchAPI('/api/net/modbus-baseline');
+        if (!d || d.success === false) return;
+        if (el && !el.dataset.touched) el.value = (d.ot_subnets || []).join(', ');
+        if (st) st.textContent = _modbusLearnLine(d) + (d.masters && d.masters.length ? ' · masters: ' + d.masters.slice(0, 8).join(', ') : '');
+    } catch (e) { /* card still works without the status line */ }
+}
+async function modbusBaseline(action) {
+    if (action === 'reset' && !confirm('Forget the learned Modbus masters? The next Modbus traffic starts a new learning window.')) return;
+    try {
+        await postAPI('/api/net/modbus-baseline', { action: action });
+        addConsoleMessage(action === 'arm' ? 'Modbus baseline armed — off-baseline masters alert from now on' : 'Modbus baseline reset — re-learning masters', 'info');
+        await _modbusLoadBaseline();
+    } catch (e) {
+        addConsoleMessage('Modbus baseline update failed: ' + e.message, 'error');
+    }
+}
+async function runModbusWatch() {
+    const out = document.getElementById('modbus-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const ifaceSel = document.getElementById('modbus-iface');
+    const iface = ifaceSel && ifaceSel.value ? ifaceSel.value : '';
+    const secsEl = document.getElementById('modbus-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '20';
+    const otEl = document.getElementById('modbus-ot');
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Passively capturing Modbus/TCP (tcp/502)…</p>';
+    try {
+        _fillIfaceSel('modbus-iface');
+        const qs = '?seconds=' + encodeURIComponent(secs)
+            + (iface ? '&interface=' + encodeURIComponent(iface) : '')
+            // Only send the OT list once the user edited it: an empty field before the
+            // saved list has loaded must not wipe the stored subnets.
+            + (otEl && otEl.dataset.touched ? '&ot=' + encodeURIComponent(otEl.value.trim()) : '');
+        const d = await fetchAPI('/api/net/modbus-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            let extra = '';
+            if (d && d.missing_tool) extra = ' <button onclick="installNetTool(\'tcpdump\', this, runModbusWatch)" class="ml-2 underline text-cyan-400">Install tcpdump</button>';
+            out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + extra + '</p>';
+            return;
+        }
+        const [cls, label] = _MODBUS_VERDICT_STYLE[d.verdict] || _MODBUS_VERDICT_STYLE.unknown;
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Interface: ${escapeHtml(d.interface || '—')} · ${d.seconds}s · Modbus ADUs: ${d.adus || 0} · ${escapeHtml(_modbusLearnLine(d))}${(d.ot_subnets || []).length ? ' · OT: ' + escapeHtml(d.ot_subnets.join(', ')) : ''}</p>`;
+        const findings = d.findings || [];
+        if (findings.length) {
+            html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Sev</th><th class="px-2 py-1">Code</th><th class="px-2 py-1">What</th><th class="px-2 py-1">Master → PLC</th><th class="px-2 py-1">Unit</th><th class="px-2 py-1">#</th><th class="px-2 py-1">CVE</th></tr>' +
+                '</thead><tbody>' +
+                findings.slice(0, 40).map(f => {
+                    const sc = _MODBUS_SEV_STYLE[f.severity] || 'text-gray-400';
+                    return `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 ${sc}">${escapeHtml(f.severity || '')}</td>
+                    <td class="px-2 py-1 font-mono ${sc}">${escapeHtml(f.code || '')}</td>
+                    <td class="px-2 py-1 text-gray-300 whitespace-normal" style="min-width:14rem">${escapeHtml(f.name || '')}<span class="block text-gray-500">${escapeHtml(f.detail || '')}</span></td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.af)} ${escapeHtml(f.master)} → ${escapeHtml(f.slave)}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${f.unit}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${f.count}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400 whitespace-normal" style="min-width:8rem">${escapeHtml((f.cves || []).join(' '))}</td>
+                </tr>`; }).join('') +
+                '</tbody></table>';
+        }
+        if (d.reasons && d.reasons.length) {
+            html += '<ul class="text-xs text-gray-400 mt-2 list-disc pl-5">' +
+                d.reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+        }
+        out.innerHTML = html;
+        _modbusLoadBaseline();
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+
+// ---- BLE Watch (Bluetooth Low Energy attack monitor, external sniffer) -----
+const _BLE_VERDICT_STYLE = {
+    clean:               ['bg-green-950/40 border-green-900 text-green-400', '✓ No clone, spoof, flood or connection abuse seen'],
+    observed:            ['bg-slate-800 border-slate-700 text-slate-300', '— BLE activity observed; nothing anomalous'],
+    suspicious:          ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Suspicious — RPA churn / vendor-shape anomaly'],
+    'attack-indicator':  ['bg-red-950/60 border-red-800 text-red-300', '🛑 Attack indicator — clone, beacon spoof, advertising flood / BLE-spam, hijack attempt or pairing downgrade'],
+    impersonation:       ['bg-red-950/60 border-red-800 text-red-300', '🛑 IMPERSONATION — two radios sharing one address, or two centrals racing a connection (connection MITM)'],
+    unknown:             ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
+};
+const _BLE_SEV_STYLE = {
+    critical: 'text-red-300', high: 'text-red-300', medium: 'text-amber-300',
+    low: 'text-gray-400', info: 'text-gray-500',
+};
+async function runBleWatch() {
+    const out = document.getElementById('blewatch-results');
+    if (!out) return;
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const devEl = document.getElementById('blewatch-device');
+    const device = devEl && devEl.value ? devEl.value.trim() : '';
+    const secsEl = document.getElementById('blewatch-secs');
+    const secs = secsEl && secsEl.value ? secsEl.value : '20';
+    _ndBusy(btn, true, 'Listening…');
+    out.classList.remove('hidden');
+    out.innerHTML = '<p class="text-sm text-gray-400">Capturing the BLE link layer via the sniffer…</p>';
+    try {
+        const qs = '?seconds=' + encodeURIComponent(secs)
+            + (device ? '&device=' + encodeURIComponent(device) : '');
+        const d = await fetchAPI('/api/net/ble-watch' + qs);
+        if (!d || d.success === false) {
+            const msg = (d && d.error) || 'failed';
+            // Device-gated: no sniffer is a normal state, not a red error.
+            const cls = (d && (d.missing_hw || d.missing_tool))
+                ? 'bg-slate-800 border border-slate-700 text-slate-300'
+                : 'text-red-400';
+            if (d && (d.missing_hw || d.missing_tool)) {
+                // Per-port diagnosis: which firmware answered on each USB serial port
+                // (a Bluefruit LE Friend looks identical to the Sniffer by USB name).
+                const kindStyle = { 'bluefruit-friend': 'text-amber-300', 'nrf-other-fw': 'text-amber-300', 'nrf-sniffer': 'text-green-400' };
+                const ports = (d.candidates || []).map(c =>
+                    '<li class="break-words"><span class="font-mono ' + (kindStyle[c.kind] || 'text-gray-300') + '">'
+                    + escapeHtml(c.path) + '</span> <span class="text-gray-500">(' + escapeHtml(c.usb || '') + ')</span><br>'
+                    + '<span class="text-gray-400">' + escapeHtml(c.note || c.kind) + '</span></li>').join('');
+                out.innerHTML = '<div class="px-3 py-2 rounded ' + cls + ' text-sm">🔌 '
+                    + escapeHtml(msg)
+                    + (ports ? '<ul class="mt-2 space-y-1 text-xs">' + ports + '</ul>' : '')
+                    + '</div>';
+            } else {
+                out.innerHTML = '<p class="text-sm text-red-400">Error: ' + escapeHtml(msg) + '</p>';
+            }
+            return;
+        }
+        // Remember the advertisers seen this scan so "Trust current" can persist
+        // them (addr -> {name, services}); keep it on window across handlers.
+        window._bleLastSeen = (d && d.seen && typeof d.seen === 'object') ? d.seen : {};
+        const seenCount = Object.keys(window._bleLastSeen).length;
+        const [cls, label] = _BLE_VERDICT_STYLE[d.verdict] || _BLE_VERDICT_STYLE.unknown;
+        const devs = (d.devices || []).slice(0, 6).join(', ') || '—';
+        let html = `<div class="mb-2 px-3 py-2 rounded border ${cls} text-sm">${label}</div>`;
+        html += `<p class="text-xs text-gray-500 mb-2">Source: ${escapeHtml(d.device || '—')} · ${d.seconds}s · ${d.packet_count || 0} PDUs · ${seenCount} advertiser${seenCount === 1 ? '' : 's'} seen · ${d.trusted_count || 0} trusted · flagged: ${escapeHtml(devs)}</p>`;
+        const findings = (d.findings || []).filter(f => ['critical', 'high', 'medium', 'low'].includes((f.severity || '').toLowerCase()));
+        if (findings.length) {
+            html += '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
+                '<tr class="text-left text-gray-500"><th class="px-2 py-1">Sev</th><th class="px-2 py-1">Code</th><th class="px-2 py-1">Class</th><th class="px-2 py-1">What</th><th class="px-2 py-1">Address</th></tr>' +
+                '</thead><tbody>' +
+                findings.slice(0, 40).map(f => `<tr class="border-t border-slate-800">
+                    <td class="px-2 py-1 ${_BLE_SEV_STYLE[(f.severity || '').toLowerCase()] || 'text-gray-400'}">${escapeHtml((f.severity || '').toLowerCase())}</td>
+                    <td class="px-2 py-1 font-mono ${_BLE_SEV_STYLE[(f.severity || '').toLowerCase()] || 'text-gray-300'}">${escapeHtml((f.code || '').replace(/^BLE-/, ''))}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.klass || '')}</td>
+                    <td class="px-2 py-1 text-gray-300 whitespace-normal">${escapeHtml((f.detail && f.detail.text) || f.name || '')}</td>
+                    <td class="px-2 py-1 font-mono text-gray-400">${escapeHtml(f.src || '-')}</td>
+                </tr>`).join('') +
+                '</tbody></table>';
+        }
+        if (d.reasons && d.reasons.length) {
+            html += '<ul class="text-xs text-gray-400 mt-2 list-disc pl-5">' +
+                d.reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = '<p class="text-sm text-red-400">Failed: ' + escapeHtml(e.message) + '</p>';
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+
+// Add the advertisers from the last scan to the BLE trusted-device list, so
+// they stop being flagged as clones/masquerades. Uses window._bleLastSeen,
+// populated by runBleWatch (so run a scan first).
+async function bleTrustCurrent() {
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    const seen = window._bleLastSeen || {};
+    if (!Object.keys(seen).length) {
+        showNotification('Run a BLE scan first — nothing seen to trust yet', 'info');
+        return;
+    }
+    _ndBusy(btn, true, 'Saving…');
+    try {
+        const d = await postAPI('/api/net/ble-watch/baseline', { action: 'trust', devices: seen });
+        if (d && d.success) {
+            const skipped = d.skipped_rotating || 0;
+            let msg = `Trusted ${d.added || 0} new device${d.added === 1 ? '' : 's'} (${d.count || 0} total) — re-scan to confirm they're no longer flagged`;
+            if (skipped) {
+                msg += `. Skipped ${skipped} rotating private address${skipped === 1 ? '' : 'es'} (phones/watches reshuffle their MAC every ~15 min, so they can't be trusted by address)`;
+            }
+            showNotification(msg, skipped ? 'info' : 'success');
+        } else {
+            showNotification('Could not update the trusted list', 'error');
+        }
+    } catch (e) {
+        showNotification('Trust current failed: ' + e.message, 'error');
+    } finally {
+        _ndBusy(btn, false);
+    }
+}
+
+// Empty the BLE trusted-device list and clear the on-screen results.
+async function bleClearList() {
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    _ndBusy(btn, true, 'Clearing…');
+    try {
+        const d = await postAPI('/api/net/ble-watch/baseline', { action: 'clear' });
+        if (d && d.success) {
+            showNotification('Trusted-device list cleared', 'success');
+        } else {
+            showNotification('Could not clear the trusted list', 'error');
+        }
+    } catch (e) {
+        showNotification('Clear list failed: ' + e.message, 'error');
+    } finally {
+        _ndBusy(btn, false);
+        window._bleLastSeen = {};
+        const out = document.getElementById('blewatch-results');
+        if (out) { out.innerHTML = ''; out.classList.add('hidden'); }
     }
 }
 
@@ -10418,7 +10968,7 @@ const _CDP_VERDICT_STYLE = {
     'cdp-enabled': ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ CDP is enabled here — it leaks IOS version / mgmt IP / native VLAN in clear'],
     spoof:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 Rogue CDP speaker — spoofed neighbour (possible fake IP phone / VoIP-VLAN-hop)'],
     flood:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 CDP flood — neighbour-table / CPU exhaustion DoS (Yersinia)'],
-    cdpwn:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 CDPwn exploit shape — malformed CDP TLV matching an Armis CDPwn CVE (CVE-2020-3110/3111/3118/3119/3120)'],
+    cdpwn:         ['bg-red-950/60 border-red-800 text-red-300', '🛑 CDPwn / LCDPwn exploit shape — malformed CDP TLV matching a CDPwn-family CVE (Armis CDPwn + LCDPwn cross-vendor set)'],
     'trailing-data': ['bg-amber-950/50 border-amber-800 text-amber-300', '⚠ Trailing data after the declared length — smuggled bytes / Etherleak (CVE-2003-0001)'],
     unknown:       ['bg-slate-800 border-slate-700 text-slate-400', '— Could not determine'],
 };
@@ -11244,14 +11794,15 @@ async function runRoutingSelftest() {
             : 'Scapy: <span class="text-amber-300">not installed</span> — end-to-end leg skipped';
         if (instBtn) instBtn.classList.toggle('hidden', !!d.scapy_available);
 
-        const names = { igmp: 'IGMP Watch', ipv6: 'IPv6 First-Hop Watch', ndp: 'NDP Watch (IPv6 neighbor spoofing)', raguard: 'IPv6 RA Guard', ntp: 'NTP Watch', icmp: 'ICMP Watch', snmp: 'SNMP Watch', cert: 'Cert Watch', tls: 'TLS Watch (passive JA4/QUIC)', stp: 'STP/BPDU Watch (spanning tree)', smb: 'SMB Watch (SMBv1 + poisoning + Kerberos downgrade)', relay: 'Relay/Coercion Watch (NTLM relay)', ldap: 'LDAP Watch (Active Directory)', ssh: 'SSH Watch (regreSSHion / Terrapin)', telnet: 'Telnet Watch (CVE-2026-24061 / 32746)', ftp: 'FTP Watch (ProFTPD mod_copy / quoted verb)', smtp: 'SMTP Watch (Exim expansion / SNI / AUTH b64)', dtp: 'DTP Watch (VLAN hopping)', cdp: 'CDP Watch (Cisco Discovery leak/flood)', vtp: 'VTP Watch (VTP bomb / VLAN-DB wipe)', eigrp: 'EIGRP Watch (Cisco IGP)', isis: 'IS-IS Watch (IGP)', fhrp: 'FHRP Watch (HSRP/VRRP/GLBP/CARP)', ospf: 'OSPF Scanner', bgp: 'BGP Path Watch',
+        const names = { igmp: 'IGMP Watch', ipv6: 'IPv6 First-Hop Watch', ndp: 'NDP Watch (IPv6 neighbor spoofing)', raguard: 'IPv6 RA Guard', ntp: 'NTP Watch', icmp: 'ICMP Watch', snmp: 'SNMP Watch', cert: 'Cert Watch', tls: 'TLS Watch (passive JA4/QUIC)', stp: 'STP/BPDU Watch (spanning tree)', smb: 'SMB Watch (SMBv1 + poisoning + Kerberos downgrade)', relay: 'Relay/Coercion Watch (NTLM relay)', ldap: 'LDAP Watch (Active Directory)', ssh: 'SSH Watch (regreSSHion / Terrapin)', telnet: 'Telnet Watch (CVE-2026-24061 / 32746)', ftp: 'FTP Watch (ProFTPD mod_copy / quoted verb)', smtp: 'SMTP Watch (Exim expansion / SNI / AUTH b64)', ble: 'BLE Watch (Bluetooth LE clone/spoof/MITM)', dtp: 'DTP Watch (VLAN hopping)', cdp: 'CDP Watch (Cisco Discovery leak/flood)', lldp: 'LLDP Watch (802.1AB malformed TLV / CVE screening)', oam: 'OAM Watch (802.3ah Link OAM loopback / flag forgery)', cfm: 'CFM Watch (802.1ag / Y.1731 service OAM)', vtp: 'VTP Watch (VTP bomb / VLAN-DB wipe)', eigrp: 'EIGRP Watch (Cisco IGP)', isis: 'IS-IS Watch (IGP)', fhrp: 'FHRP Watch (HSRP/VRRP/GLBP/CARP)', ospf: 'OSPF Scanner', bgp: 'BGP Path Watch',
                         arp: 'ARP Poisoning (incl. HSRP/VRRP virtual-MAC awareness)', dns: 'DNS Doctor (poison parser / anchors / ASN)',
                         mac: 'MAC Watch (spoof / vendor-OUI / randomization / HSRP-VRRP virtual-MAC)', dhcp: 'DHCP Guardian (rogue server / starvation)',
                         lacp: 'LACP Watch (802.1AX LAG-hijack / flapping)', rpc: 'RPC/NetLogon Watch (Zerologon / DCSync / WinRM)',
                         bfd: 'BFD Watch (failover manipulation)', ptp: 'PTP Watch (IEEE-1588 grandmaster takeover)', srmpls: 'SR-MPLS Watch (MPLS segment injection)', ipsec: 'IPsec/IKE Watch (D(HE)at / weak-DH / SWEET32)',
                         dns_passive: 'DNS Watch (KeyTrap / NSEC3 / NXNSAttack / MaginotDNS / SAD DNS)',
+                        modbus: 'Modbus Watch (PLC write / listen-only / UMAS / libmodbus framing)',
                         cisco_guard: 'Cisco Guard (IOS/IOS-XE/NX-OS CVEs)', juniper_guard: 'Juniper Guard (J-Web/SSR/Space CVEs)', arista_guard: 'Arista Guard (EOS CVEs)', comware_guard: 'Comware Guard (VRF-hop / MPLS CVEs)',
-                        mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', apc_guard: 'APC Guard (NMC Ripple20)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
+                        mikrotik_guard: 'MikroTik Guard (RouterOS CVEs)', aruba_guard: 'Aruba Guard (ArubaOS PAPI CVEs)', apc_guard: 'APC Guard (NMC Ripple20)', liebert_guard: 'Liebert Guard (RomPager / RDU101)', dell_guard: 'Dell Guard (OS10 SmartFabric CVE)',
                         bgp_speaker: 'BGP Speaker (codec/FSM/RIB)', path_asymmetry: 'Path Asymmetry (OWD)' };
         const overall = d.success
             ? '<div class="mb-2 px-3 py-2 rounded border bg-green-950/40 border-green-900 text-green-400 text-sm">✓ All detector self-tests passed' + (d.scapy_available ? ' (including Scapy end-to-end)' : ' — install Scapy for the end-to-end leg') + '</div>'
@@ -11260,7 +11811,7 @@ async function runRoutingSelftest() {
             '<table class="min-w-full text-xs text-gray-300 whitespace-nowrap"><thead>' +
             '<tr class="text-left text-gray-500"><th class="px-2 py-1">Scanner</th><th class="px-2 py-1">Scenarios</th><th class="px-2 py-1">End-to-end</th><th class="px-2 py-1">Result</th></tr>' +
             '</thead><tbody>';
-        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'apc_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
+        const order = ['igmp', 'ipv6', 'ndp', 'raguard', 'ntp', 'icmp', 'snmp', 'cert', 'tls', 'ssh', 'telnet', 'stp', 'smb', 'relay', 'ldap', 'dtp', 'cdp', 'lldp', 'vtp', 'eigrp', 'isis', 'fhrp', 'ospf', 'arp', 'mac', 'dhcp', 'dns', 'bgp', 'lacp', 'oam', 'cfm', 'rpc', 'bfd', 'ptp', 'srmpls', 'ipsec', 'dns_passive', 'ftp', 'smtp', 'modbus', 'cisco_guard', 'juniper_guard', 'arista_guard', 'comware_guard', 'mikrotik_guard', 'aruba_guard', 'apc_guard', 'liebert_guard', 'dell_guard', 'bgp_speaker', 'path_asymmetry'];
         // Append any suite the backend returned that isn't in the preferred order,
         // so a newly-wired detector can never again be counted toward pass/fail yet
         // stay invisible in the table.
@@ -23842,9 +24393,13 @@ function displayConfigForm(config) {
                 
                 if (Array.isArray(selectOptions)) {
                     let selectedValue = typeof value === 'boolean' ? String(value) : (value ?? '');
-                    // For epd_type, map driver name to size key so the dropdown matches
+                    // For epd_type, map driver name to size key so the dropdown matches.
+                    // When the service is actually running headless (display_enabled
+                    // is false), show "Headless" regardless of the remembered driver.
                     if (key === 'epd_type') {
-                        selectedValue = epdTypeToSizeKey(selectedValue);
+                        selectedValue = (config.display_enabled === false)
+                            ? 'headless'
+                            : epdTypeToSizeKey(selectedValue);
                     }
                     // For screen_reversed, normalize legacy boolean values to rotation angles
                     if (key === 'screen_reversed') {
@@ -32967,6 +33522,38 @@ async function importWigleCsv() {
     }
 }
 
+// Pull a Piglet's SD-card CSVs over USB and import each drive as a session.
+async function syncPiglet() {
+    const el = document.getElementById('wd-piglet-sync-status');
+    const show = (text, cls) => { if (el) { el.textContent = text; el.className = 'text-xs break-words ' + cls; } };
+    try {
+        show('Starting…', 'text-blue-400');
+        const res = await fetch('/api/wardriving/piglet/sync', { method: 'POST' });
+        const start = await res.json();
+        if (start.error) { show(start.error, 'text-red-400'); return; }
+        for (let i = 0; i < 600; i++) {                 // up to ~20 min for a big card
+            await new Promise(r => setTimeout(r, 2000));
+            const st = await (await fetch('/api/wardriving/piglet/sync')).json();
+            if (st.state === 'running' || st.state === 'queued') {
+                show(`Syncing on ${st.port || 'USB'}…`, 'text-blue-400');
+                continue;
+            }
+            if (st.state === 'error') { show(st.error || 'Sync failed', 'text-red-400'); return; }
+            if (st.state === 'done') {
+                const n = (st.imported || []).length;
+                const errs = (st.errors || []).length;
+                show(`${st.piglet ? 'Piglet ' + st.piglet.fw + ': ' : ''}${n} drive(s) imported, ${st.skipped || 0} skipped`
+                     + (errs ? `, ${errs} error(s): ${st.errors[0]}` : ''), errs ? 'text-yellow-400' : 'text-green-400');
+                loadWardrivingData();
+                return;
+            }
+        }
+        show('Still running — check back later', 'text-yellow-400');
+    } catch (e) {
+        show('Sync failed: ' + e.message, 'text-red-400');
+    }
+}
+
 async function detectSerialPort() {
     const portInput = document.getElementById('wd-serial-port');
     const statusEl = document.getElementById('wd-serial-status');
@@ -37311,6 +37898,7 @@ const _MESH_FEATURE_TITLE = {
     integrity: 'Network Integrity Monitor',
     watchtower: 'Watchtower',
     vulnerabilities: 'Vulnerabilities',
+    capture: 'Packet Capture',
 };
 
 function _meshSevBadge(sev) {
@@ -37455,6 +38043,431 @@ function _meshControlBar(id, feature, unit) {
     </div>`;
 }
 
+// Tailnet path summary for a peer, straight from the status payload (no probe):
+// a direct WireGuard path vs. a DERP relay, plus the node's tailnet addresses.
+// This is the "how am I reaching this unit" half of "see the jumps".
+function _meshPathLine(unit) {
+    const ips = (unit.ips && unit.ips.length) ? unit.ips : (unit.ip ? [unit.ip] : []);
+    const ipStr = ips.map(escapeHtml).join(', ');
+    let path;
+    if (unit.direct) path = '<span class="text-green-300">Direct connection</span>';
+    else if (unit.relay) path = `<span class="text-amber-300">Relayed via DERP</span> <span class="text-gray-500">(${escapeHtml(unit.relay)})</span>`;
+    else path = '<span class="text-gray-400">Path not yet known</span>';
+    return `<span class="text-xs text-gray-400">Tailnet path: ${path}${ipStr ? ` · <span class="font-mono">${ipStr}</span>` : ''}</span>`;
+}
+
+// The per-node Actions bar: live network probes from THIS unit to the peer. Only
+// shown for a reachable peer with an address (an unreachable one gets Trace +
+// Diagnose on its banner instead, so the page never carries two output boxes).
+function _meshActionsBar(unit) {
+    if (!unit.ip) return '';
+    const ip = escapeHtml(unit.ip);
+    const port = _meshNodePort();
+    return `<div class="glass rounded-lg p-4 mb-3">
+        <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <h4 class="font-semibold">Actions</h4>
+            ${_meshPathLine(unit)}
+        </div>
+        <div class="flex flex-wrap gap-2">
+            <button onclick="meshProbe('${ip}','trace',this)"
+                    class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white text-xs px-3 py-1.5 rounded transition-colors">Trace route</button>
+            <button onclick="meshProbe('${ip}','ping',this)"
+                    class="bg-slate-700 hover:bg-slate-600 text-gray-200 text-xs px-3 py-1.5 rounded transition-colors">Ping</button>
+            <button onclick="meshDiagnose('${ip}', ${port}, this)"
+                    class="bg-slate-700 hover:bg-slate-600 text-gray-200 text-xs px-3 py-1.5 rounded transition-colors">Diagnose</button>
+            <button onclick="meshCopyText('${ip}',this)"
+                    class="bg-slate-700 hover:bg-slate-600 text-gray-200 text-xs px-3 py-1.5 rounded transition-colors">Copy IP</button>
+        </div>
+        <div class="mesh-diag-out mt-3"></div>
+        <div class="mesh-probe-out mt-3"></div>
+    </div>`;
+}
+
+// Draw a traceroute result as a hop list — the "jumps" between this unit and the
+// peer. A relayed tailnet path or a dead hop shows up plainly here.
+// The last probe/diagnose results, kept so the on-page "Download" can save the
+// same data the box is showing as a text report (no re-run, no server round-trip).
+let _meshProbeResult = null;   // last trace/ping shown in .mesh-probe-out
+let _meshDiagResult = null;    // last diagnose shown in .mesh-diag-out
+
+function _meshSafeName(s) {
+    return String(s || 'result').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 48) || 'result';
+}
+function _meshStamp() {
+    return new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+}
+// Trigger a client-side text download. This runs in the real Ragnar web app (not
+// a sandboxed artifact), so a Blob + <a download> saves straight to the browser.
+function _meshDownloadText(filename, text) {
+    try {
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; a.style.display = 'none';
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+    } catch (e) {
+        if (typeof showNotification === 'function') showNotification('Download failed: ' + e, 'error');
+    }
+}
+
+function _meshTraceReport(d) {
+    const n = d.hop_count != null ? d.hop_count : (d.hops || []).filter(h => h.ip).length;
+    const lines = ['Ragnar mesh — traceroute',
+        'Target: ' + (d.target || ''),
+        'Generated: ' + new Date().toISOString(),
+        'Hops: ' + n, '',
+        'HOP  ADDRESS'.padEnd(46) + 'RTT'];
+    (d.hops || []).forEach(h => {
+        const ip = h.ip || '* no reply';
+        const rtt = h.rtt_ms != null ? h.rtt_ms.toFixed(1) + ' ms' : '';
+        lines.push(String(h.hop).padEnd(5) + ip.padEnd(41) + rtt);
+    });
+    if (d.raw) lines.push('', '--- raw ---', d.raw);
+    return lines.join('\n') + '\n';
+}
+function _meshPingReport(d) {
+    const lines = ['Ragnar mesh — ping',
+        'Target: ' + (d.target || ''),
+        'Generated: ' + new Date().toISOString(), ''];
+    if (d.received != null) lines.push(`${d.received}/${d.transmitted} replies, ${d.loss_pct}% loss`);
+    if (d.rtt_avg != null) lines.push(`rtt min/avg/max = ${d.rtt_min}/${d.rtt_avg}/${d.rtt_max} ms`);
+    if (d.raw) lines.push('', '--- raw ---', d.raw);
+    return lines.join('\n') + '\n';
+}
+function _meshDiagReport(r, url) {
+    const lines = ['Ragnar mesh — connection diagnose',
+        'Target: ' + (r.url || url || ''),
+        'Generated: ' + new Date().toISOString(), '',
+        'Category: ' + (r.category || ''),
+        'Status: ' + (r.status != null ? r.status : '—'),
+        'Detail: ' + (r.hint || '')];
+    if (r.error) lines.push('Error: ' + r.error);
+    return lines.join('\n') + '\n';
+}
+
+function meshProbeDownload() {
+    const p = _meshProbeResult;
+    if (!p) return;
+    const text = p.kind === 'ping' ? _meshPingReport(p.data) : _meshTraceReport(p.data);
+    _meshDownloadText(`${p.kind}_${_meshSafeName(p.data.target || p.ip)}_${_meshStamp()}.txt`, text);
+}
+window.meshProbeDownload = meshProbeDownload;
+
+function meshDiagDownload() {
+    const p = _meshDiagResult;
+    if (!p) return;
+    _meshDownloadText(`diagnose_${_meshSafeName(p.ip)}_${_meshStamp()}.txt`, _meshDiagReport(p.result, p.url));
+}
+window.meshDiagDownload = meshDiagDownload;
+
+// Small inline "Download" link used in each result header.
+function _meshDownloadLink(fn) {
+    return `<button onclick="${fn}" class="ml-auto text-[11px] text-cyan-400 hover:text-cyan-300 underline flex-shrink-0">⬇ Download</button>`;
+}
+
+function _meshRenderTrace(d) {
+    const hops = d.hops || [];
+    if (!hops.length) {
+        return `<div class="text-sm text-amber-200 border border-amber-800 rounded-lg p-3 bg-amber-950/30">
+            <div class="flex items-center gap-2 mb-1 flex-wrap"><span>No hops returned.</span>${_meshDownloadLink('meshProbeDownload()')}</div>
+            ${d.raw ? `<pre class="mt-1 text-[11px] font-mono text-amber-100/80 whitespace-pre-wrap overflow-x-auto">${escapeHtml(d.raw)}</pre>` : ''}</div>`;
+    }
+    const rows = hops.map(h => `
+        <div class="flex items-center gap-3 py-1 border-b border-slate-800/60 text-xs">
+            <span class="w-6 text-right text-gray-500 font-mono">${h.hop}</span>
+            <span class="flex-1 font-mono ${h.ip ? 'text-gray-100' : 'text-gray-600'}">${h.ip ? escapeHtml(h.ip) : '* no reply'}</span>
+            <span class="text-gray-400 font-mono">${h.rtt_ms != null ? h.rtt_ms.toFixed(1) + ' ms' : ''}</span>
+        </div>`).join('');
+    const n = d.hop_count != null ? d.hop_count : hops.filter(h => h.ip).length;
+    const hopBadge = n <= 1 ? 'border-green-800 text-green-300 bg-green-950/30' : 'border-slate-700 text-gray-300';
+    return `<div class="text-sm border border-slate-700 rounded-lg p-3 bg-slate-900/50">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+            <span class="font-semibold">Route to <span class="font-mono">${escapeHtml(d.target)}</span></span>
+            <span class="text-[11px] px-2 py-0.5 rounded border ${hopBadge}">${n} hop${n === 1 ? '' : 's'}</span>
+            ${_meshDownloadLink('meshProbeDownload()')}
+        </div>
+        ${rows}
+    </div>`;
+}
+
+function _meshRenderPing(d) {
+    const loss = d.loss_pct;
+    const ok = typeof loss === 'number' && loss < 100;
+    const tone = ok ? 'border-green-800 bg-green-950/30 text-green-200'
+                    : 'border-amber-800 bg-amber-950/30 text-amber-100';
+    return `<div class="text-sm border rounded-lg p-3 ${tone}">
+        <div class="flex items-center gap-2 mb-1">
+            <span class="w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-400' : 'bg-amber-400'}"></span>
+            <span class="font-semibold">Ping <span class="font-mono">${escapeHtml(d.target)}</span></span>
+            ${_meshDownloadLink('meshProbeDownload()')}
+        </div>
+        <div class="opacity-90 text-xs">
+            ${d.received != null ? `${d.received}/${d.transmitted} replies · ${loss}% loss` : 'No summary parsed.'}
+            ${d.rtt_avg != null ? ` · avg ${d.rtt_avg} ms (min ${d.rtt_min} / max ${d.rtt_max})` : ''}
+        </div>
+    </div>`;
+}
+
+// Run a traceroute/ping from this unit to a peer. The target is validated
+// server-side against the known mesh roster, so this only passes an address the
+// status payload already gave us. Output lands in the nearest .mesh-probe-out.
+async function meshProbe(ip, kind, btn) {
+    const host = btn && (btn.closest('.glass') || btn.closest('.rounded-lg'));
+    const box = (host && host.querySelector('.mesh-probe-out')) || document.querySelector('.mesh-probe-out');
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = kind === 'ping' ? 'Pinging…' : 'Tracing…'; }
+    if (box) box.innerHTML = `<div class="text-sm text-gray-400">${kind === 'ping' ? 'Pinging' : 'Tracing route to'}
+        <span class="font-mono">${escapeHtml(ip)}</span> from this unit…</div>`;
+    const res = await _meshApi('/api/mesh/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip, kind })
+    });
+    const d = res.data || {};
+    if (!res.ok || !d.success) {
+        const msg = d.error || res.error || ('HTTP ' + res.status);
+        if (box) box.innerHTML = `<div class="text-sm text-red-300 border border-red-800 rounded-lg p-3 bg-red-950/30">${escapeHtml(msg)}</div>`;
+    } else if (box) {
+        _meshProbeResult = { kind, ip, data: d };   // for the result's Download link
+        box.innerHTML = kind === 'ping' ? _meshRenderPing(d) : _meshRenderTrace(d);
+    }
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+}
+window.meshProbe = meshProbe;
+
+// Copy a short string (an IP) to the clipboard, with a graceful fallback for
+// browsers/contexts where navigator.clipboard is unavailable.
+function meshCopyText(text, btn) {
+    const done = () => {
+        if (!btn) return;
+        const o = btn.textContent; btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = o; }, 1200);
+    };
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(done);
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); } catch (e) {}
+            document.body.removeChild(ta); done();
+        }
+    } catch (e) { done(); }
+}
+window.meshCopyText = meshCopyText;
+
+// ── Live packet capture section (node page) ─────────────────────────────────
+// Unlike the Traffic Analyzer (stats only), this starts a bounded tcpdump-to-pcap
+// on the unit and lets the operator download the .pcap, pulled over the tailnet.
+function _meshCaptureSection(id, unit) {
+    const c = ((unit.findings || {}).features || {}).capture || {};
+    const inner = (!c.available)
+        ? `<p class="text-sm text-gray-500">${escapeHtml(c.reason || 'Packet capture is unavailable on this unit.')}</p>`
+        : _meshCaptureBody(id, c);
+    return `<div class="glass rounded-lg p-4 mb-3">
+        <h4 class="font-semibold mb-2">${escapeHtml(_MESH_FEATURE_TITLE.capture)}</h4>
+        ${inner}
+    </div>`;
+}
+
+function _meshCaptureBody(id, c) {
+    const ifaces = c.interfaces || [];
+    const def = c.default_interface || (ifaces[0] || '');
+    const lim = c.limits || {};
+    const maxS = lim.max_seconds || 300;
+    const maxMB = Math.round((lim.max_bytes || 0) / 1048576);
+    const opts = ifaces.length
+        ? ifaces.map(n => `<option value="${escapeHtml(n)}"${n === def ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('')
+        : '<option value="">(no interfaces)</option>';
+    const running = !!c.running;
+    const btn = running
+        ? `<button onclick="meshCaptureCancel('${id}','${escapeHtml(c.active_id || '')}',this)"
+                   class="bg-red-600/80 hover:bg-red-600 text-white text-xs px-4 py-1.5 rounded transition-colors">Stop capture</button>`
+        : `<button onclick="meshCaptureStart('${id}',this)"
+                   class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white text-xs px-4 py-1.5 rounded transition-colors">Start capture</button>`;
+    const controls = `
+      <div class="flex flex-wrap items-end gap-2 mb-2">
+        <label class="text-[11px] text-gray-400">Interface
+          <select id="cap-iface" class="block mt-0.5 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm">${opts}</select></label>
+        <label class="text-[11px] text-gray-400">Seconds
+          <input id="cap-seconds" type="number" min="1" max="${maxS}" value="60" class="block mt-0.5 w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm"></label>
+        <label class="text-[11px] text-gray-400">Max packets
+          <input id="cap-packets" type="number" min="0" placeholder="∞" class="block mt-0.5 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm"></label>
+        <label class="text-[11px] text-gray-400 flex-1" style="min-width:10rem">Filter (BPF, optional)
+          <input id="cap-filter" type="text" placeholder="e.g. tcp port 443" class="block mt-0.5 w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm font-mono"></label>
+        ${btn}
+      </div>
+      <p class="text-[10px] text-gray-500 mb-2">Bounded capture — stops at the time or packet limit${maxMB ? `, and never exceeds ${maxMB} MB / ${maxS}s` : ''}. The .pcap streams back over the tailnet.</p>
+      <div id="cap-out" class="mb-2"></div>`;
+    return controls + _meshCaptureList(id, c.recent || []);
+}
+
+// Which captures are expanded inline, cid -> last view payload. Kept so a
+// background mesh refresh re-renders the list with open panels still open (and
+// their already-fetched packets intact), instead of collapsing them.
+let _meshCaptureOpen = {};
+
+function _meshCaptureList(id, recent) {
+    if (!recent.length) return '<p class="text-xs text-gray-500">No captures yet on this unit.</p>';
+    const rows = recent.map(r => {
+        const st = r.state || '';
+        const stCls = st === 'running' ? 'text-amber-300'
+            : st === 'error' ? 'text-red-300'
+            : st === 'done' ? 'text-green-300' : 'text-gray-400';
+        const hasFile = (st === 'done' || st === 'canceled') && r.bytes > 0;
+        const open = hasFile && Object.prototype.hasOwnProperty.call(_meshCaptureOpen, r.id);
+        const actions = hasFile
+            ? `<button onclick="meshCaptureView('${id}','${escapeHtml(r.id)}',this)" class="text-cyan-400 hover:text-cyan-300 underline whitespace-nowrap">${open ? '▾ Hide' : '▸ View'}</button>
+               <button onclick="meshCaptureDownload('${id}','${escapeHtml(r.id)}')" class="text-cyan-400 hover:text-cyan-300 underline">Download</button>`
+            : (st === 'running' ? '<span class="text-amber-300">capturing…</span>' : '<span class="text-gray-600">—</span>');
+        // Collapsible detail lives on the row itself, so the packets expand in
+        // place (phone-friendly) and open panels survive a background re-render.
+        const detail = `<div id="cap-detail-${escapeHtml(r.id)}" class="${open ? 'mt-2' : 'hidden'}">${open ? _meshRenderCaptureView(_meshCaptureOpen[r.id], id, r.id) : ''}</div>`;
+        return `<div class="py-1 border-b border-slate-800/60">
+            <div class="flex items-center justify-between gap-3 text-xs">
+              <div class="min-w-0">
+                <span class="font-mono text-gray-200">${escapeHtml(r.interface || '')}</span>
+                <span class="${stCls}">${escapeHtml(st)}</span>
+                <span class="text-gray-500">${r.packets || 0} pkts · ${escapeHtml(r.bytes_human || '0 B')} · ${r.elapsed || 0}s</span>
+                ${r.filter ? `<span class="text-gray-600 font-mono">[${escapeHtml(r.filter)}]</span>` : ''}
+                ${r.error ? `<span class="text-red-400 break-words">${escapeHtml(r.error)}</span>` : ''}
+              </div>
+              <div class="flex-shrink-0 flex gap-3">${actions}</div>
+            </div>
+            ${detail}
+        </div>`;
+    }).join('');
+    return `<div class="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Recent captures</div>${rows}`;
+}
+
+async function meshCaptureStart(nodeId, btn) {
+    const g = id => document.getElementById(id);
+    const body = {
+        node_id: nodeId,
+        interface: (g('cap-iface') || {}).value || '',
+        seconds: parseInt((g('cap-seconds') || {}).value || '60', 10) || 60,
+        max_packets: parseInt((g('cap-packets') || {}).value || '0', 10) || 0,
+        filter: ((g('cap-filter') || {}).value || '').trim(),
+    };
+    const out = g('cap-out');
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+    const res = await _meshApi('/api/mesh/peer-capture/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    const d = res.data || {};
+    if (!res.ok || !d.success) {
+        if (out) out.innerHTML = `<div class="text-sm text-red-300 border border-red-800 rounded-lg p-3 bg-red-950/30">${escapeHtml(d.error || res.error || 'Capture failed to start')}</div>`;
+        if (btn) { btn.disabled = false; btn.textContent = 'Start capture'; }
+        return;
+    }
+    _meshCapturePollStart(nodeId, d.id || (d.capture || {}).id);
+}
+window.meshCaptureStart = meshCaptureStart;
+
+let _meshCapturePoll = null;
+function _meshCapturePollStart(nodeId, cid) {
+    if (_meshCapturePoll) { clearInterval(_meshCapturePoll); _meshCapturePoll = null; }
+    const out = document.getElementById('cap-out');
+    if (out) out.innerHTML = `<div class="text-sm text-amber-200">Capturing <span class="font-mono">${escapeHtml(cid || '')}</span>…</div>`;
+    let tries = 0;
+    _meshCapturePoll = setInterval(async () => {
+        tries++;
+        const res = await _meshApi(`/api/mesh/peer-capture/status?node_id=${encodeURIComponent(nodeId)}&id=${encodeURIComponent(cid)}`);
+        const cap = (res.data || {}).capture || null;
+        const box = document.getElementById('cap-out');
+        if (cap && box) {
+            box.innerHTML = `<div class="text-sm ${cap.state === 'running' ? 'text-amber-200' : 'text-gray-300'}">Capture ${escapeHtml(cap.state)} — ${cap.packets || 0} pkts · ${escapeHtml(cap.bytes_human || '0 B')} · ${cap.elapsed || 0}s${cap.error ? ` · <span class="text-red-400">${escapeHtml(cap.error)}</span>` : ''}</div>`;
+        }
+        if ((cap && cap.state !== 'running') || tries > 180) {
+            clearInterval(_meshCapturePoll); _meshCapturePoll = null;
+            refreshMesh(true);   // repopulate the recent list + reset the Start button
+        }
+    }, 2000);
+}
+
+async function meshCaptureCancel(nodeId, cid, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+    await _meshApi('/api/mesh/peer-capture/cancel', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeId, id: cid })
+    });
+    if (_meshCapturePoll) { clearInterval(_meshCapturePoll); _meshCapturePoll = null; }
+    setTimeout(() => refreshMesh(true), 800);
+}
+window.meshCaptureCancel = meshCaptureCancel;
+
+function meshCaptureDownload(nodeId, cid) {
+    window.open(`/api/mesh/peer-capture/download?node_id=${encodeURIComponent(nodeId)}&id=${encodeURIComponent(cid)}`, '_blank');
+}
+window.meshCaptureDownload = meshCaptureDownload;
+
+// Decode a finished capture and show its packets on screen (not only download):
+// the hub reads the .pcap with tcpdump -nr over the tailnet and returns a packet
+// list + a small summary, rendered into the capture row's own collapsible box.
+const _MESH_PROTO_CLS = {
+    TCP: 'bg-sky-600/30 text-sky-200 border-sky-700',
+    UDP: 'bg-violet-600/30 text-violet-200 border-violet-700',
+    ICMP: 'bg-amber-600/30 text-amber-200 border-amber-700',
+    ICMPv6: 'bg-amber-600/30 text-amber-200 border-amber-700',
+    ARP: 'bg-emerald-600/30 text-emerald-200 border-emerald-700',
+    IPv6: 'bg-teal-600/30 text-teal-200 border-teal-700',
+    Other: 'bg-slate-600/30 text-slate-200 border-slate-600',
+};
+
+function _meshRenderCaptureView(d, nodeId, cid) {
+    const closeBtn = `<button onclick="meshCaptureView('${nodeId}','${cid}')" class="ml-auto text-[11px] text-gray-400 hover:text-white">✕ Close</button>`;
+    if (!d || !d.success) {
+        return `<div class="text-sm text-red-300 border border-red-800 rounded-lg p-3 bg-red-950/30">
+            <div class="flex items-center gap-2"><span>${escapeHtml((d && d.error) || 'Could not read the capture.')}</span>${closeBtn}</div></div>`;
+    }
+    const protos = d.protocols || {};
+    const chips = Object.keys(protos).sort((a, b) => protos[b] - protos[a]).map(p =>
+        `<span class="text-[10px] px-1.5 py-0.5 rounded border ${_MESH_PROTO_CLS[p] || _MESH_PROTO_CLS.Other}">${escapeHtml(p)} ${protos[p]}</span>`).join(' ');
+    const top = (d.top_src || []).map(([ip, n]) =>
+        `<span class="font-mono text-gray-300">${escapeHtml(ip)}</span><span class="text-gray-500"> ×${n}</span>`).join(' · ');
+    const lines = (d.lines || []).map(l => escapeHtml(l)).join('\n');
+    const countLbl = d.truncated
+        ? `showing first ${d.shown} of ${d.total} packets`
+        : `${d.shown} packet${d.shown === 1 ? '' : 's'}`;
+    const unit = (typeof _meshFindNode === 'function') ? _meshFindNode(nodeId) : null;
+    const uname = unit ? meshUnitTitle(unit) : '';
+    return `<div class="border border-slate-700 rounded-lg bg-slate-900/50 p-3">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+            <span class="font-semibold text-sm">Packets${uname ? ' · ' + escapeHtml(uname) : ''}</span>
+            <span class="text-[11px] text-gray-400">${escapeHtml(countLbl)} · ${escapeHtml(d.bytes_human || '')}</span>
+            ${closeBtn}
+        </div>
+        ${chips ? `<div class="flex flex-wrap gap-1 mb-2">${chips}</div>` : ''}
+        ${top ? `<div class="text-[11px] text-gray-500 mb-2">Top sources: ${top}</div>` : ''}
+        <pre class="text-[11px] font-mono text-gray-200 bg-slate-950/60 border border-slate-800 rounded p-2 overflow-auto" style="max-height:20rem; white-space:pre">${lines || '(no packets)'}</pre>
+    </div>`;
+}
+
+// Toggle a capture's inline collapsible view. Open → fetch + render the packets
+// into the row's own detail box; already open → collapse. The open set is kept in
+// _meshCaptureOpen so a background refresh keeps it expanded.
+async function meshCaptureView(nodeId, cid, btn) {
+    let detail = document.getElementById('cap-detail-' + cid);
+    if (Object.prototype.hasOwnProperty.call(_meshCaptureOpen, cid)) {
+        delete _meshCaptureOpen[cid];
+        if (detail) { detail.classList.add('hidden'); detail.classList.remove('mt-2'); detail.innerHTML = ''; }
+        if (btn) btn.textContent = '▸ View';
+        return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+    if (detail) { detail.classList.remove('hidden'); detail.classList.add('mt-2'); detail.innerHTML = '<div class="text-xs text-gray-400">Decoding capture…</div>'; }
+    const res = await _meshApi(`/api/mesh/peer-capture/view?node_id=${encodeURIComponent(nodeId)}&id=${encodeURIComponent(cid)}`);
+    const d = res.data || { success: false, error: res.error || ('HTTP ' + res.status) };
+    _meshCaptureOpen[cid] = d;
+    detail = document.getElementById('cap-detail-' + cid);
+    if (detail) { detail.classList.remove('hidden'); detail.classList.add('mt-2'); detail.innerHTML = _meshRenderCaptureView(d, nodeId, cid); }
+    if (btn) { btn.disabled = false; btn.textContent = '▾ Hide'; }
+}
+window.meshCaptureView = meshCaptureView;
+
 // Render the node page for one unit into #mesh-node-detail.
 function _meshRenderNodeDetail(id) {
     const el = document.getElementById('mesh-node-detail');
@@ -37504,11 +38517,28 @@ function _meshRenderNodeDetail(id) {
             <p class="text-sm text-gray-300">This node is not answering right now
                 (<span class="text-amber-300">${escapeHtml(st.label)}</span>) — its data below may be stale or empty.
                 Run a probe from <strong>this</strong> unit to find out why.</p>
-            ${diagIp ? `<button onclick="meshDiagnose('${diagIp}', ${_meshNodePort()}, this)"
-                    class="mt-3 bg-Ragnar-600 hover:bg-Ragnar-700 text-white text-sm px-4 py-2 rounded transition-colors">Diagnose connection</button>
-                <div class="mesh-diag-out mt-3"></div>` : ''}
+            ${diagIp ? `<div class="flex flex-wrap gap-2 mt-3">
+                    <button onclick="meshDiagnose('${diagIp}', ${_meshNodePort()}, this)"
+                        class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white text-sm px-4 py-2 rounded transition-colors">Diagnose connection</button>
+                    <button onclick="meshProbe('${diagIp}','trace',this)"
+                        class="bg-slate-700 hover:bg-slate-600 text-gray-200 text-sm px-4 py-2 rounded transition-colors">Trace route</button>
+                    <button onclick="meshProbe('${diagIp}','ping',this)"
+                        class="bg-slate-700 hover:bg-slate-600 text-gray-200 text-sm px-4 py-2 rounded transition-colors">Ping</button>
+                </div>
+                <div class="text-xs text-gray-500 mt-2">${_meshPathLine(unit)}</div>
+                <div class="mesh-diag-out mt-3"></div>
+                <div class="mesh-probe-out mt-3"></div>` : ''}
         </div>`;
     }
+
+    // Live probes from this unit to the peer. For an unreachable node the same
+    // buttons live on its banner (above), so this bar is reachable-only to keep
+    // exactly one probe output box on the page at a time.
+    const actionsBar = (!isSelf && st.reachable) ? _meshActionsBar(unit) : '';
+
+    // Packet capture works on this unit or any reachable peer (an unreachable
+    // one can't capture), driven through the operator capture relay.
+    const captureSection = (isSelf || st.reachable) ? _meshCaptureSection(id, unit) : '';
 
     const featureSections = ['traffic', 'threats', 'integrity', 'watchtower'].map(f => `
         <div class="glass rounded-lg p-4 mb-3">
@@ -37539,6 +38569,8 @@ function _meshRenderNodeDetail(id) {
             </div>
         </div>
         ${overview}
+        ${actionsBar}
+        ${captureSection}
         ${featureSections}
         ${vulnSection}`;
 }
@@ -37557,6 +38589,7 @@ function _meshApplyMeshView() {
 
 function meshOpenNode(id) {
     _meshOpenNodeId = id;
+    _meshCaptureOpen = {};   // fresh node → no stale expanded capture views
     _meshRenderNodeDetail(id);
     _meshApplyMeshView();
     try { window.scrollTo(0, 0); } catch (e) {}
@@ -37717,6 +38750,126 @@ function renderMeshHealth(h) {
             chip(h.not_polled, 'not polled yet', slate),
             chip(h.published, 'published', green),
         ].filter(Boolean).join('');
+    }
+}
+
+// ── Mesh node list: filter + sort ───────────────────────────────────────────
+// Client-side only: it works over _meshLastData (already pulled server-side), so
+// filtering/sorting a fleet never costs a round-trip and stays instant on a Pi
+// Zero. Self is never filtered out — it is shown in its own card above the list.
+const _meshFilter = { search: '', status: 'all', sort: 'name' };
+const _MESH_SEV_RANK_JS = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+
+// Worst severity a node is carrying (its own Watchtower + incident worst),
+// mirroring the server-side rollup so the sort agrees with the health summary.
+function _meshNodeWorstRank(unit) {
+    const h = unit.health || {};
+    let r = -1;
+    [(h.watchtower || {}).worst, (h.incidents || {}).worst].forEach(s => {
+        if (s && (_MESH_SEV_RANK_JS[s] ?? -1) > r) r = _MESH_SEV_RANK_JS[s];
+    });
+    return r;
+}
+
+// Same "needs attention" test the Mesh Health card counts with: unreachable,
+// offline, key warning/expired, undervoltage, or a high/critical finding.
+function _meshNodeNeedsAttention(unit, st) {
+    const h = unit.health || {};
+    const keyBad = ['warn', 'critical', 'expired'].includes(unit.key_state);
+    const under = !!((h.power || {}).undervoltage);
+    const offline = !unit.online && !st.reachable;
+    return (st.polled && !st.reachable) || offline || keyBad || under
+        || _meshNodeWorstRank(unit) >= _MESH_SEV_RANK_JS.high;
+}
+
+// Which status bucket a node is in, in the same language as the health summary.
+function _meshNodeBucket(st) {
+    if (st.reachable) return 'online';
+    if (!st.polled) return 'notpolled';
+    return 'unreachable';
+}
+
+function _meshNodeMatchesSearch(unit, q) {
+    if (!q) return true;
+    const hay = [
+        meshUnitTitle(unit), unit.label, unit.short_name, unit.hostname, unit.ip,
+        unit.unit_id ? 'unit ' + unit.unit_id : '',
+        unit.unit_id ? 'unit ' + String(unit.unit_id).padStart(2, '0') : '',
+        unit.unit_id ? String(unit.unit_id).padStart(2, '0') : '',
+        ...(unit.ips || [])
+    ].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+}
+
+function meshOnFilterChange() {
+    const g = id => document.getElementById(id);
+    _meshFilter.search = ((g('mesh-filter-search') || {}).value || '').trim().toLowerCase();
+    _meshFilter.status = (g('mesh-filter-status') || {}).value || 'all';
+    _meshFilter.sort = (g('mesh-filter-sort') || {}).value || 'name';
+    if (_meshLastData) _meshRenderPeerList(_meshLastData);
+}
+window.meshOnFilterChange = meshOnFilterChange;
+
+function meshResetFilters() {
+    _meshFilter.search = ''; _meshFilter.status = 'all'; _meshFilter.sort = 'name';
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+    set('mesh-filter-search', ''); set('mesh-filter-status', 'all'); set('mesh-filter-sort', 'name');
+    if (_meshLastData) _meshRenderPeerList(_meshLastData);
+}
+window.meshResetFilters = meshResetFilters;
+
+// Render the (filtered, sorted) peer list. Split out of renderMesh so the filter
+// controls can re-run it over the last payload without a re-poll.
+function _meshRenderPeerList(data) {
+    const cards = document.getElementById('mesh-peer-cards');
+    if (!cards) return;
+    const bar = document.getElementById('mesh-filter-bar');
+    const count = document.getElementById('mesh-filter-count');
+    const cardCtx = { enabled: data.enabled, meshTag: data.mesh_tag, nodePort: data.node_port };
+    const all = (data.peers || []).filter(p => p.is_ragnar);
+
+    // The filter bar only earns its space once there is more than one peer.
+    if (bar) bar.classList.toggle('hidden', all.length < 2);
+
+    if (!all.length) {
+        cards.innerHTML = `<p class="text-sm text-gray-500">
+            No other Ragnar units on this tailnet yet. A unit joins the mesh by carrying the
+            <code class="text-gray-400">${escapeHtml(data.mesh_tag || 'tag:ragnar-mesh')}</code> tag.
+        </p>`;
+        if (count) count.textContent = '';
+        return;
+    }
+
+    const f = _meshFilter;
+    const shown = all.filter(unit => {
+        const st = _meshNodeStatus(unit, false);
+        if (!_meshNodeMatchesSearch(unit, f.search)) return false;
+        if (f.status === 'all') return true;
+        if (f.status === 'attention') return _meshNodeNeedsAttention(unit, st);
+        return _meshNodeBucket(st) === f.status;
+    });
+
+    const byName = (a, b) => meshUnitTitle(a).toLowerCase().localeCompare(meshUnitTitle(b).toLowerCase());
+    shown.sort((a, b) => {
+        switch (f.sort) {
+            case 'unit': return ((a.unit_id || 999) - (b.unit_id || 999)) || byName(a, b);
+            case 'severity': return (_meshNodeWorstRank(b) - _meshNodeWorstRank(a)) || byName(a, b);
+            case 'alerts': return ((((b.health || {}).watchtower || {}).total) || 0)
+                - ((((a.health || {}).watchtower || {}).total) || 0) || byName(a, b);
+            case 'cpu': return (((b.health || {}).cpu_percent) || 0)
+                - (((a.health || {}).cpu_percent) || 0) || byName(a, b);
+            default: return byName(a, b);
+        }
+    });
+
+    cards.innerHTML = shown.length
+        ? shown.map(p => meshNodeBanner(p, false, cardCtx)).join('')
+        : `<p class="text-sm text-gray-500">No nodes match the current filter.
+           <button onclick="meshResetFilters()" class="text-cyan-400 hover:text-cyan-300 underline">Clear</button></p>`;
+    if (count) {
+        count.textContent = shown.length === all.length
+            ? `${all.length} node${all.length === 1 ? '' : 's'}`
+            : `Showing ${shown.length} of ${all.length}`;
     }
 }
 
@@ -37957,16 +39110,7 @@ function renderMesh(data) {
         document.getElementById('mesh-self-card').innerHTML = meshNodeBanner(data.self, true, cardCtx);
     }
 
-    const ragnarPeers = (data.peers || []).filter(p => p.is_ragnar);
-    const cards = document.getElementById('mesh-peer-cards');
-    if (!ragnarPeers.length) {
-        cards.innerHTML = `<p class="text-sm text-gray-500">
-            No other Ragnar units on this tailnet yet. A unit joins the mesh by carrying the
-            <code class="text-gray-400">${escapeHtml(data.mesh_tag || 'tag:ragnar-mesh')}</code> tag.
-        </p>`;
-    } else {
-        cards.innerHTML = ragnarPeers.map(p => meshNodeBanner(p, false, cardCtx)).join('');
-    }
+    _meshRenderPeerList(data);
 
     renderPiConnect(data.pi_connect || {});
     renderHttpsNote(data);
@@ -38125,8 +39269,8 @@ function renderPiConnect(pc) {
         dot = 'bg-amber-400';
         headline = 'Running, not signed in';
         detail = `The service is on but no account is linked, so you can't reach this unit ` +
-                 `through it yet. Run <code class="text-gray-400">rpi-connect signin</code>${asUser} ` +
-                 `and open the link it prints to finish. Until then it is not a usable fallback.`;
+                 `through it yet. Paste an auth key below to finish signing in${asUser}. ` +
+                 `Until then it is not a usable fallback.`;
     } else {
         // Off on THIS unit. It is per-unit and per-user: signing in on another
         // Pi does nothing here. The linger note is the common headless gotcha —
@@ -38135,11 +39279,31 @@ function renderPiConnect(pc) {
         const lingerUser = pc.user || 'pi';
         headline = 'Installed but off (this unit)';
         detail = `Pi Connect isn't running for <code class="text-gray-400">${escapeHtml(lingerUser)}</code> ` +
-                 `on this unit — it is per-unit, so signing in on another Pi doesn't count. On this box, ` +
-                 `as that user: <code class="text-gray-400">rpi-connect on</code>, ` +
-                 `<code class="text-gray-400">rpi-connect signin</code> (open the link), and ` +
-                 `<code class="text-gray-400">sudo loginctl enable-linger ${escapeHtml(lingerUser)}</code> ` +
-                 `so it survives logout and reboot. Until then it is not a usable fallback.`;
+                 `on this unit — it is per-unit, so signing in on another Pi doesn't count. Paste an auth ` +
+                 `key below to sign in: it turns the service on and enables linger (so it survives logout ` +
+                 `and reboot) for you. Until then it is not a usable fallback.`;
+    }
+
+    // Interactive controls: sign in with an auth key (rpi-connect 2.12+,
+    // non-interactive) straight from here — no terminal. Only when installed.
+    let controls = '';
+    if (pc.installed && pc.signed_in) {
+        controls = `<div class="mt-3">
+            <button onclick="piConnectSignout()" class="bg-slate-700 hover:bg-slate-600 text-gray-200 px-4 py-2 rounded text-sm">Sign out</button>
+        </div>`;
+    } else if (pc.installed) {
+        controls = `<div class="mt-3 space-y-2">
+            <label class="block text-xs text-gray-400">Auth key
+                <span class="text-gray-600">— generate one at
+                    <a href="https://connect.raspberrypi.com" target="_blank" rel="noopener" class="text-Ragnar-400 hover:underline">connect.raspberrypi.com</a>
+                    (your account → Auth keys), then paste it here. No browser device-flow, no terminal.</span>
+            </label>
+            <div class="flex flex-wrap gap-2">
+                <input id="piconnect-authkey" type="password" autocomplete="off" spellcheck="false" placeholder="paste Raspberry Pi Connect auth key"
+                       class="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-gray-300">
+                <button onclick="piConnectSignin()" class="bg-Ragnar-600 hover:bg-Ragnar-700 text-white px-4 py-2 rounded text-sm whitespace-nowrap">Sign in</button>
+            </div>
+        </div>`;
     }
 
     el.innerHTML = `<div class="flex items-start justify-between gap-3">
@@ -38150,8 +39314,49 @@ function renderPiConnect(pc) {
                 </div>
                 <p class="text-xs text-gray-400 mt-2">${detail}</p>
                 ${pc.detail ? `<p class="text-[11px] text-gray-600 mt-1 font-mono truncate">${escapeHtml(pc.detail)}</p>` : ''}
+                ${controls}
             </div>
         </div>`;
+}
+
+// Sign in to Raspberry Pi Connect non-interactively with an auth key generated
+// at connect.raspberrypi.com. The backend enables linger + the per-user service
+// so it works headless; the key is sent once and never stored client-side.
+async function piConnectSignin() {
+    const inp = document.getElementById('piconnect-authkey');
+    const key = inp && inp.value ? inp.value.trim() : '';
+    if (!key) { showNotification('Paste a Raspberry Pi Connect auth key first', 'info'); return; }
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+    try {
+        const d = await postAPI('/api/mesh/pi-connect/signin', { auth_key: key });
+        if (d && d.success) {
+            if (inp) inp.value = '';
+            showNotification('Signed in to Raspberry Pi Connect', 'success');
+            refreshMesh(true);
+        } else {
+            showNotification('Pi Connect sign-in failed: ' + ((d && d.message) || 'unknown error'), 'error');
+        }
+    } catch (e) {
+        showNotification('Pi Connect sign-in failed: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
+    }
+}
+
+async function piConnectSignout() {
+    const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing out…'; }
+    try {
+        const d = await postAPI('/api/mesh/pi-connect/signout', {});
+        showNotification(d && d.success ? 'Signed out of Raspberry Pi Connect'
+                                        : 'Sign-out failed', (d && d.success) ? 'success' : 'error');
+        refreshMesh(true);
+    } catch (e) {
+        showNotification('Sign-out failed: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Sign out'; }
+    }
 }
 
 async function refreshMesh(force) {
@@ -38723,12 +39928,14 @@ async function meshDiagnose(ip, port, btn) {
         const tone = good
             ? 'border-green-800 bg-green-950/30 text-green-200'
             : 'border-amber-800 bg-amber-950/30 text-amber-100';
+        _meshDiagResult = { ip, port, url: r.url || url, result: r };   // for Download
         if (box) {
             box.innerHTML = `<div class="text-sm border rounded-lg p-3 ${tone}">
                 <div class="flex items-center gap-2 mb-1">
                     <span class="w-2.5 h-2.5 rounded-full ${good ? 'bg-green-400' : 'bg-amber-400'}"></span>
                     <span class="font-semibold">${escapeHtml(meta[0])}</span>
                     ${r.status ? `<span class="text-[11px] opacity-70">HTTP ${escapeHtml(String(r.status))}</span>` : ''}
+                    ${_meshDownloadLink('meshDiagDownload()')}
                 </div>
                 <div class="opacity-90">${escapeHtml(r.hint || meta[1] || r.error || 'No detail.')}</div>
                 <div class="mt-2 text-[11px] font-mono opacity-60">probed ${escapeHtml(r.url || url)}${r.error ? ' · ' + escapeHtml(r.error) : ''}</div>

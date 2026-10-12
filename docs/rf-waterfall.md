@@ -1,15 +1,59 @@
 # RF Waterfall page
 
-A dedicated full-screen page that stacks two true-RF **waterfalls** — an RTL-SDR
-sub-GHz/broadcast panel (24 MHz–1.7 GHz) over a HackRF panel (1 MHz–6 GHz) —
-each scrolling a power-over-frequency heatmap, with band-scope presets and a
-free-frequency manual tune.
+A dedicated full-screen page that stacks true-RF **waterfalls** — an RTL-SDR
+sub-GHz/broadcast panel (24 MHz–1.7 GHz), a HackRF panel (1 MHz–6 GHz) and an
+ESP-SDR panel (ESP32, ~2.2–2.7 GHz) — each scrolling a power-over-frequency
+heatmap, with band-scope presets and a free-frequency manual tune.
 
 - Page: `demos/rf_waterfall.html`
 - Route: `GET /rf-waterfall` (alias `GET /demo/rf-waterfall`), login required
-- Backends: `sdr_spectrum.py` (HackRF, `hackrf_sweep`) and `rtl_sdr.py`
-  (RTL-SDR, real-time `rtl_sdr` IQ FFT with an `rtl_power` fallback), exposed at
-  `/api/net/sdr/*` and `/api/net/rtl/*`.
+- Backends: `sdr_spectrum.py` (HackRF, `hackrf_sweep`), `rtl_sdr.py`
+  (RTL-SDR, real-time `rtl_sdr` IQ FFT with an `rtl_power` fallback) and
+  `esp_sdr.py` (ESP-SDR, on-chip FFT spectra over native USB), exposed at
+  `/api/net/sdr/*`, `/api/net/rtl/*` and `/api/net/esp/*`.
+
+### ESP-SDR panel (ESP32 on-chip FFT)
+
+[ESP-SDR](https://espargos.net/espsdr/) turns an ESP32 into a receive-only SDR
+by tapping the Wi-Fi radio's raw I/Q through an undocumented debug path; the
+firmware folds it into **on-chip FFT power spectra** streamed over the chip's
+native USB serial link. Flash an ESP32 with the ESP-SDR firmware, plug it into
+the Pi's USB, and the panel flips live.
+
+- Unlike the HackRF (which *sweeps* a wide range) the ESP captures one fixed FFT
+  **window** at a time — centre = the band's centre frequency, span = the sample
+  rate (16/40/80 MHz). A narrower zoom drops to a lower sample rate for finer
+  resolution (down to ~31 kHz/bin at 16 MS/s, 512 bins).
+- On an **ESP32-S3** the usable band is ~2.2–2.7 GHz (the 2.4 GHz ISM band, where
+  it sees Wi-Fi, Bluetooth, microwave ovens, drones and jammers); software
+  tuning attempts are accepted 100–6000 MHz but reception is uncalibrated.
+- Levels are **dBFS** (0 = full scale), not calibrated dBm. The colour scale
+  floors at −85 dBFS (just below the −84.3 dBFS quantisation floor).
+- **Frequency trim (no TCXO).** The ESP32 has no temperature-compensated
+  oscillator, so its LO sits a few ppm off and drifts with temperature. The
+  panel's **Settings → Frequency trim** section corrects this at the LO via the
+  firmware's `FOFS <kHz>` command (verified 1:1 in kHz). Set an offset by hand,
+  or calibrate automatically two ways:
+  - **Auto-trim (Wi-Fi)** runs a high-resolution 2.4 GHz sweep and nulls the drift
+    against the 2.4 GHz Wi-Fi channel centres (ch 1/6/11 = 2412/2437/2462 MHz). It
+    only applies when *confident* — ch 6 and 11 agreeing within 40 kHz and inside
+    the crystal's physical range (~±100 kHz); in a congested 2.4 GHz environment
+    it declines rather than mis-calibrate. It's only as accurate as the APs' own
+    oscillators (averaged across channels).
+  - **vs HackRF** cross-references a connected **HackRF** (TCXO truth): both radios
+    sweep the same narrow ~40 MHz window around ch 6, and the ESP spectrum is
+    cross-correlated against the HackRF's (resolution-matched, sub-bin). Because
+    both see the same ambient RF, overlapping-channel contamination cancels — this
+    is the most accurate option (limited mainly by the HackRF's bin resolution over
+    the window, ~tens of kHz). Applies only on a strong correlation (≥0.5).
+
+  The trim is applied at the LO (`FOFS`) and persists across restarts
+  (`data/esp_sdr_fofs.json`, git-ignored, device-specific). Backend:
+  `esp_sdr.set_fofs` / `esp_sdr.auto_trim` / `esp_sdr.calibrate_vs_reference`, all
+  via `/api/net/esp/trim` (POST `{khz:N}` / `{auto:1}` / `{hackrf:1}`).
+- The node is auto-discovered on any Espressif serial port (env override
+  `RAGNAR_ESP_SDR_PORT`). A capture left streaming by a crashed client is
+  self-healed on the next probe (a `RELEASE` doubles as the stream stop byte).
 
 **On this page.** Reading the display:
 [engine](#sub-ghz-engine-real-time-iq-fft-vs-rtl_power-sweep) ·
@@ -41,12 +85,20 @@ The bar this is all measured against: the
 Each panel decides its own state every few seconds:
 
 - **LIVE** — its radio is detected: the page starts a sweep and streams real
-  frames (`/api/net/{sdr,rtl}/power? frames`). Plug a radio in and the panel
+  frames (`/api/net/{sdr,rtl,esp}/…/frames`). Plug a radio in and the panel
   flips to live on its own; unplug it and it drops back.
 - **SYNTHETIC** — no radio, but the **RF Waterfall demo** toggle is on: the panel
   models that band's real occupants (433.92 MHz TPMS/remote bursts, 868 MHz
   metering, 915 MHz hoppers, Wi-Fi OFDM on ch 1/6/11) so the display stays alive.
 - **IDLE** — no radio and demo off: the panel shows a "connect a device" note.
+
+**Auto collapse / expand.** An **idle** panel automatically **collapses** to a
+slim header row so it stays out of the way; a panel that goes **live** (or
+synthetic) **expands** on its own. The chevron button (`▾`) in each panel header
+overrides this at any time, and your manual choice holds until that panel's state
+changes again — then the automatic behaviour takes over. So with three radios the
+page keeps only the active waterfalls open, and a dongle you plug in pops its
+panel open by itself.
 
 ## Band presets + manual tune
 
@@ -57,8 +109,11 @@ Each panel has a row of **band-scope presets** and a **Manual tune** box:
   otherwise. Both radios carry the same broadcast/ISM scopes —
   `AM · SW · FM · Air · 27 · 40 · 315 · 433 · 868 · 915` — and the HackRF panel
   adds the Wi-Fi bands `2.4G · 5G · 6G` (it reaches 1 MHz–6 GHz, so it can sweep
-  everything the RTL-SDR can). The band tables live in `rtl_sdr.RTL_BANDS` and
-  `sdr_spectrum.BANDS`; keep them and the page's `SUBGHZ_BANDS`/`BAND_MHZ` in sync.
+  everything the RTL-SDR can). The ESP-SDR panel carries its own 2.4 GHz-centred
+  presets (`2.3G · 2.4G · 2.45G · 2.6G`), each a single FFT window not a sweep.
+  The band tables live in `rtl_sdr.RTL_BANDS`, `sdr_spectrum.BANDS` and
+  `esp_sdr.BANDS`; keep them and the page's `SUBGHZ_BANDS`/`BAND_MHZ`/`ESP_WIN`
+  in sync.
 - **Manual tune** (the `Tune ___ MHz ± ___ Go` box) sweeps an arbitrary window
   centred on any frequency the dongle can reach, reusing the zoom path
   (`lo_hz`/`hi_hz`). Hardware reach is clamped per panel:
@@ -97,13 +152,23 @@ is named under the panel title (`RTL-SDR · IQ FFT · real-time` vs
 the scroll-speed setting.
 
 **Steady flow.** Live rows are never painted as they arrive. They go into a small
-buffer (~0.8 s), and the page releases them at **one steady rate**: the SDR's
-measured data rate, worked out from the frames' own timestamps rather than from
-the jittery poll timing. The buffer is kept full by nudging the pace **at most
-±12%**, which is imperceptible, so network or backend jitter never shows up as
-a change of speed. After an interruption the buffer grows (up to 2 s) so a
-repeat is absorbed. A backlog that is seconds old (the tab was in the
-background, or the backend stalled for a long time) is skipped, not fast-forwarded.
+buffer and the page plays them back behind a fixed ~0.6 s latency, each row at
+its **own producer timestamp** — so the scroll speed is exactly the rate the SDR
+produced rows, with no rate estimate to drift and no catch-up surge when poll or
+network timing jitters.
+
+**No freeze on a slow sweep.** When the engine produces rows *slower* than a
+smooth scroll — the `rtl_power` sweep updates only ~1×/s, and a wide span retunes
+between frames — the buffer empties between frames. Rather than let the picture
+freeze and then jump when the next frame lands, the page **holds the last line**,
+scrolling it at **that panel's own measured data rate** until real data resumes.
+There is no manual scroll-rate control: every waterfall simply follows the rate
+its data actually arrives — a fast engine scrolls fast, a ~1/s sweep scrolls at
+~1/s. New spectrum still appears at the engine's true rate, and **Rows/s** still
+reports it. A fast engine (IQ ~16/s, ESP-SDR ~50/s) always has rows buffered
+ahead, so the hold never engages. A *genuine* stall (the tab was backgrounded, or
+the backend wedged) stops the hold after a few seconds and the panel shows its
+"waiting" veil rather than scrolling stale data forever.
 
 - **IQ FFT (real-time)** — for any span that fits a **single RTL-SDR tune**
   (≤ `rtl_sdr._IQ_MAX_SPAN_HZ`, ~2.8 MHz: zooms, manual tunes, Z-Wave regions,
@@ -116,9 +181,11 @@ background, or the backend stalled for a long time) is skipped, not fast-forward
 - **`rtl_power` sweep** — the fallback for **wide bands** that can't fit one tune
   (the full `868`/`915`/`subghz` scans need the dongle to retune across the
   range) and for any host missing `rtl_sdr` or numpy. `rtl_power` integrates
-  `-i 1 s` per sweep, so it advances at best ~1 row/s — fine for a broad "what's
-  out there" scan, slow for a narrow zoom (which is exactly why the IQ engine
-  exists).
+  `-i 1 s` per sweep, so it produces at best ~1 *new* row/s — fine for a broad
+  "what's out there" scan, slow for a narrow zoom (which is exactly why the IQ
+  engine exists). The waterfall still **scrolls smoothly** at your chosen Scroll
+  rate: the last line is held between sweeps (see "No freeze on a slow sweep"
+  above), so a slow producer no longer shows up as a freeze-then-jump.
 
 Both engines emit the same frame shape, feed the same ring buffer, recorder and
 `/api/net/rtl/power/frames`, so nothing else on the page changes.
@@ -1044,13 +1111,15 @@ Frequencies are written with Hz precision; levels in the on-screen units.
 ## The button and the toggle (WiFi Spectrum Analyzer)
 
 
-- **"RF Waterfall page" button** — appears in the analyzer's controls once a
-  HackRF *and/or* RTL-SDR is detected (or while the demo toggle is on), and
-  opens the page in a new tab.
-- **"🌊 RF Waterfall demo" toggle** — a config switch (`sdr_demo`). On: the page
-  is always reachable and fills empty panels with the synthetic feed; each panel
-  still flips to live automatically when its radio is connected. Off: the page is
-  served only when a radio is present (otherwise `/rf-waterfall` 404s).
+- **"RF Waterfall page" button** — always shown in Signal Intelligence → RF
+  tools, radio or not, and opens the page. Its tooltip lists the radios that are
+  live (HackRF / RTL-SDR / ESP-SDR). The page itself collapses the panel of any
+  radio that isn't connected, so there is nothing to hide up front.
+- **"🌊 RF Waterfall demo" toggle** — a config switch (`sdr_demo`). On: empty
+  panels fill with the synthetic feed (and the ADS-B / Pager / VOR buttons show
+  without an RTL-SDR); each panel still flips to live automatically when its
+  radio is connected. Off: an absent radio's panel stays collapsed. Either way
+  `/rf-waterfall` is always served.
 
 Env `RAGNAR_SDR_DEMO=1` forces the demo on without touching config.
 
