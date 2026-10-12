@@ -31754,6 +31754,34 @@ function closeTrafficPortModal() {
 
 let _wardrivingInterval = null;
 
+async function refreshWardrivingSigint() {
+    // Aircraft (ADS-B) + Mesh (Meshtastic) tiles on the Wardriving tab. Both
+    // reuse the already-live /api/net/adsb and /api/net/mesh endpoints (the
+    // ADS-B radar and Mesh node pages) rather than owning any session/DB state
+    // of their own — ADS-B shares the one RTL-SDR with other decoders and has
+    // to be started from the radar page, Meshtastic has its own USB radio (or
+    // MQTT) and does not contend for the SDR. Lightweight: both responses are
+    // small status objects, not the full aircraft/node lists.
+    try {
+        const [adsbRes, meshRes] = await Promise.all([
+            fetch("/api/net/adsb/status").catch(() => null),
+            fetch("/api/net/mesh/status").catch(() => null)
+        ]);
+        if (adsbRes && adsbRes.ok) {
+            const a = await adsbRes.json();
+            updateElement("wd-aircraft-count", String(a.aircraft || 0));
+            updateElement("wd-aircraft-sub", a.running ? "ADS-B live" : "ADS-B off");
+        }
+        if (meshRes && meshRes.ok) {
+            const m = await meshRes.json();
+            updateElement("wd-mesh-count", String(m.nodes || 0));
+            updateElement("wd-mesh-sub", m.running ? "connected" : "not connected");
+        }
+    } catch (e) {
+        console.error("[Wardriving] SIGINT refresh error:", e);
+    }
+}
+
 async function loadWardrivingData() {
     try {
         const [statusRes, sessionsRes] = await Promise.all([
@@ -31764,6 +31792,7 @@ async function loadWardrivingData() {
         const sessionsData = await sessionsRes.json();
 
         updateWardrivingUI(status);
+        refreshWardrivingSigint();
         renderWardrivingSessions(sessionsData.sessions || []);
         loadWardrivingOnBootState();
         loadHuginnConfig();
@@ -31793,6 +31822,7 @@ async function refreshWardrivingStatus() {
         updateWardrivingUI(status);
         if (status.running) {
             loadWardrivingTableByType();
+            refreshWardrivingSigint();
         } else if (_wardrivingInterval) {
             clearInterval(_wardrivingInterval);
             _wardrivingInterval = null;
