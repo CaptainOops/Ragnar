@@ -106,17 +106,26 @@ def toggle():
         log.info("Power button: Ragnar -> Pwnagotchi")
         run_swap(
             "ragnar-to-pwn-swap",
-            "systemctl stop ragnar.service && sleep 3 "
-            "&& systemctl start bettercap.service && sleep 3 "
-            "&& systemctl start pwnagotchi.service",
+            # reset_monitor_radio.sh reloads just the USB capture radio's
+            # driver before bettercap claims it -- without this, a stale
+            # managed<->monitor transition from a prior swap can wedge the
+            # rtl8812au/rtw88 driver (ping stays up, sshd hangs -- a
+            # driver-level stall, not a kernel freeze). Every step after the
+            # stop is best-effort (|| true / ; not &&) so one failing start
+            # can't strand the box with ragnar stopped and nothing else up.
+            "systemctl stop ragnar.service && sleep 3; {"
+            " bash /home/ragnar/Ragnar/scripts/reset_monitor_radio.sh wlan1 || true;"
+            " systemctl start bettercap.service || true; sleep 3;"
+            " systemctl start pwnagotchi.service || true;"
+            " }",
         )
     else:
         log.info("Power button: Pwnagotchi -> Ragnar")
         run_swap(
             "pwn-to-ragnar-swap",
-            "systemctl stop pwnagotchi.service "
-            "&& systemctl stop bettercap.service && sleep 2 "
-            "&& systemctl start ragnar.service",
+            "systemctl stop pwnagotchi.service; "
+            "systemctl stop bettercap.service; sleep 2; "
+            "systemctl start ragnar.service || true",
         )
 
 
