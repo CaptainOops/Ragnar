@@ -205,6 +205,13 @@ if pgrep -f "headlessRagnar.py" >/dev/null 2>&1; then
     HEADLESS_DETECTED=true
 elif systemctl cat ragnar.service 2>/dev/null | grep -q "headlessRagnar.py"; then
     HEADLESS_DETECTED=true
+elif systemctl show ragnar.service -p Environment 2>/dev/null | grep -q "RAGNAR_HEADLESS=1"; then
+    # This box runs headless via the RAGNAR_HEADLESS=1 env-var drop-in
+    # (/etc/systemd/system/ragnar.service.d/headless.conf), not a separate
+    # headlessRagnar.py script -- check for that too so a from-scratch
+    # install/reinstall does not silently re-enable the e-paper face and
+    # fight Ragnar own swap-button GPIO listener for the same pins.
+    HEADLESS_DETECTED=true
 fi
 if [[ "$HEADLESS_DETECTED" == true ]]; then
     PWN_DISPLAY_ENABLED="false"
